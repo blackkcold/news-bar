@@ -94,6 +94,7 @@ hdiutil convert "${DMG_RW}" -format UDZO -o "${DMG_PATH}" -quiet
 rm -f "${DMG_RW}"
 echo "   DMG icon applied"
 
+rm -rf release/latest
 ln -sfn "${VERSION}" release/latest
 
 cat > release/versions.json << VJSON
