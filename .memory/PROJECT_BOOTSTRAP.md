@@ -11,6 +11,7 @@ Sources/NewsBar/
 ├── main.swift              # 入口：单实例检测 → NSApp 启动
 ├── AppDelegate.swift        # 生命周期：statusItem、popover、延迟 keychain 读取、通知监听
 ├── Models/
+│   ├── AIProvider.swift       # 多 AI 提供商枚举（6 providers）
 │   ├── NewsItem.swift       # 新闻条目模型 (Identifiable, Codable)
 │   ├── NewsSource.swift     # 数据源枚举 (weibo/bilibili/rss)
 │   ├── AppSettings.swift    # @Observable 全局设置 (UserDefaults 持久化 + cachedAPIKey 内存缓存；onePasswordRef 走 Keychain)
@@ -22,9 +23,9 @@ Sources/NewsBar/
 │   ├── WeiboHotService.swift   # 微博热搜 (多级策略: ajax/side/hotSearch → s.weibo.com 降级；URL 由 word 字段构造 https://s.weibo.com/weibo?q=关键词&Refer=top)
 │   ├── BilibiliHotService.swift # B站热搜 (bilibili.com API)
 │   ├── RSSService.swift        # RSS/Atom Feed 解析 (XMLParser)
-│   ├── DeepSeekService.swift   # AI 总结 (DeepSeek API: deepseek-v4-flash / deepseek-v4-pro；含 finish_reason 截断检测 + 1 次自动重试)
+│   ├── AISummaryService.swift   # AI 总结（多提供商：OpenAI/Anthropic 格式分发；DeepSeek/MiniMax/Opencode/Google 等；含 finish_reason/stop_reason 截断检测 + 1 次自动重试）
 │   ├── OnePasswordService.swift # 1Password CLI 集成 (op read)
-│   ├── KeychainManager.swift   # 钥匙串读写 (双重 NoUI 保护: LAContext.interactionNotAllowed + kSecUseAuthenticationUIFail；UserDefaults flag 零 Keychain 存在性预检；写入 SecItemDelete+SecItemAdd 策略避免 ad-hoc 签名 ACL 不匹配弹窗；DEBUG mode KeychainAccessGate 开发开关)
+│   ├── KeychainManager.swift   # 钥匙串读写 (account 参数化支持多 provider；双重 NoUI 保护；写入 SecItemDelete+SecItemAdd 策略；DEBUG mode KeychainAccessGate 开发开关)
 │   ├── CacheManager.swift      # actor 隔离的文件缓存
 │       ├── RateLimiter.swift       # actor 隔离的手动刷新频率控制
 │   └── SecurityPolicies.swift  # 输入消毒、URL 校验、XML 安全配置
@@ -75,13 +76,13 @@ Output: `release/{version}/NewsBar.app` + `NewsBar-{version}.dmg`
 App 启动
   → statusItem / popover 就绪
   → 延迟 1.5s 用 kSecUseAuthenticationUIFail 做三态预检：
-      notFound + AI 开启 → NSAlert 提示配置（仅一次）；existsAccessible/existsNeedsAuth → 自动设 hasDeepSeekAPIKey flag，不读 secret
+      notFound + AI 开启 → NSAlert 提示配置（仅一次）；existsAccessible/existsNeedsAuth → 自动设 hasAIKey-{provider} flag，不读 secret
   → 若没有 key 且 AI 已开启 → NSAlert 提示前往设置；"稍后再说" 后不再提示
   → 2s 自动刷新 NewsOrchestrator.refreshIfNeeded() → 无 cachedAPIKey 时状态为 .noKey（后台）
   → 10s 自动更新检查 UpdateChecker.autoCheck() → GitHub API → 有新版则 UpdateBadge 显示「更新」按钮
   → User opens popover → loadAPIKeyFromKeychainIfNeeded() → check flag || 兜底 checkAPIKeyExistence() → readAPIKey(allowUI:false) 静默读 Keychain secret（系统授权弹窗仅在用户 AITab 中主动保存 Key 时出现）
   → 读 key 成功 → 写 cachedAPIKey → manualRefresh() 抓取所有源 → AI 总结
-  → DeepSeekService.summarize() → 首次 max_tokens=1024 → 若截断则 max_tokens=2048 重试 1 次
+  → AISummaryService.summarize(provider:) → 首次 max_tokens=1024 → 若截断则 max_tokens=2048 重试 1 次
   → AI 总结成功后才写 lastBatchHash；idle/noKey/error/fetching 可触发恢复总结；manualRefresh 强制总结
   → 结果通过 AISummaryState 驱动 UI：noKey / fetching / summarizing / done / truncated / error
   → 结果文本首次渲染直接显示（.onAppear），状态转变时逐字动画（.onChange(of:)）
@@ -106,7 +107,7 @@ User clicks 重新生成
 4. `Views/Settings/XxxTab.swift` — 添加 UI 绑定
 
 ### Security Rules
-- **API Key**: Keychain 存储（`kSecAttrAccessibleWhenUnlockedThisDeviceOnly`）；所有读取使用双重 NoUI 保护（`LAContext.interactionNotAllowed` + `kSecUseAuthenticationUIFail`）静默读取；写入使用 SecItemDelete+SecItemAdd 策略重建 ACL，避免 ad-hoc 签名每次构建触发系统授权弹窗；系统授权弹窗仅在用户 AITab 中主动保存 Key 时出现；`AppSettings.cachedAPIKey` 内存缓存避免重复弹窗；`AITab` 使用 `SecureField` 不显示明文，保存后自动清空本地输入；DEBUG 模式支持 `KeychainAccessGate` 完全禁用 Keychain（`defaults write com.newsbar.app debugDisableKeychainAccess -bool YES`）；30 天过期判断写入 `UserDefaults`
+- **API Key**: Keychain 存储（`kSecAttrAccessibleWhenUnlockedThisDeviceOnly`）；每个 AI Provider 独立 Keychain account (`"ai-key-{provider}"`)；所有读取使用双重 NoUI 保护；写入使用 SecItemDelete+SecItemAdd 策略；`AppSettings.cachedAPIKey` 内存缓存，切换 provider 时自动清除；旧 DeepSeek account 首次启动自动迁移；1Password ref 共用 `"one-password-ref"` account，不受 provider 切换影响
 - **AI 总结**: `AISummaryState` 驱动 UI；`finish_reason="length"` 截断时自动重试 1 次（扩大 max_tokens），仍截断则 UI 提示并显示「重新生成」按钮；`lastBatchHash` 仅在总结成功后更新，避免无 key/失败污染 hash；手动刷新强制总结，自动刷新在 idle/noKey/error/fetching 时允许恢复；AISummaryCard 用 `.onAppear` 直接显示已有文本，`.onChange(of:)` 触发逐字动画
 - **1Password**: `op read` 通过 `Process` 调用（数组传参，非 shell 拼接，无注入风险）；`onePasswordRef` 存储在 Keychain（`account: "one-password-ref"`），首次启动自动从 UserDefaults 迁移
 - **更新检查**: 仅访问 GitHub 公开 API（`api.github.com/repos/blackkcold/news-bar/releases/latest`），无认证；DMG 下载到 `~/Library/Caches/<bundleID>/Updates/`，下载后校验文件大小，不自动挂载或执行

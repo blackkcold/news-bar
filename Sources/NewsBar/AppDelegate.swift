@@ -24,6 +24,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         updateChecker = UpdateChecker()
         setupStatusBar()
         setupNotificationObservers()
+
+        // 迁移旧 DeepSeek Keychain 条目（必须在任何读取之前）
+        settings.migrateLegacyKeyIfNeeded()
+
         scheduleDelayedKeychainRead()
         observeAPIKeyConfigured()
         refreshAPIKeyIfNeeded()
@@ -32,7 +36,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func scheduleStartupAndAutoRefresh() {
-        // 2-second delay, then perform initial refresh for all sources
         DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
             guard let self else { return }
             Task {
@@ -40,7 +43,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
 
-        // Hourly auto-refresh timer (fires every 3600s; checks autoRefreshEnabled)
         autoRefreshTimer = Timer.scheduledTimer(withTimeInterval: 3600, repeats: true) { [weak self] _ in
             guard let self, self.settings.autoRefreshEnabled else { return }
             Task {
@@ -75,13 +77,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func refreshAPIKeyIfNeeded() {
         let ref = settings.onePasswordRef
+        let account = settings.currentProvider.apiKeyAccount()
         guard !ref.isEmpty,
-              KeychainManager.isKeyStale,
+              KeychainManager.isKeyStale(account: account),
               OnePasswordService.isInstalled() else { return }
         DispatchQueue.global().async { [self] in
             do {
                 let key = try OnePasswordService.readSecret(reference: ref)
-                if KeychainManager.saveAPIKey(key) {
+                if KeychainManager.saveAPIKey(key, account: account) {
                     DispatchQueue.main.async {
                         self.settings.cachedAPIKey = key
                     }
@@ -95,8 +98,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func scheduleDelayedKeychainRead() {
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
             guard let self else { return }
+            let account = self.settings.currentProvider.apiKeyAccount()
             DispatchQueue.global().async {
-                let existence = KeychainManager.checkAPIKeyExistence()
+                let existence = KeychainManager.checkAPIKeyExistence(account: account)
                 DispatchQueue.main.async {
                     switch existence {
                     case .notFound:
@@ -104,7 +108,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                             self.handleMissingAPIKey()
                         }
                     case .existsAccessible, .existsNeedsAuth:
-                        UserDefaults.standard.set(true, forKey: "hasDeepSeekAPIKey")
+                        UserDefaults.standard.set(true, forKey: self.settings.currentProvider.keyExistsFlag())
                         break
                     }
                     self.refreshAPIKeyIfNeeded()
@@ -116,14 +120,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func loadAPIKeyFromKeychainIfNeeded() {
         guard settings.aiSummaryEnabled,
               settings.cachedAPIKey == nil else { return }
-        let hasKey = UserDefaults.standard.bool(forKey: "hasDeepSeekAPIKey")
-            || KeychainManager.checkAPIKeyExistence() != .notFound
+        let account = settings.currentProvider.apiKeyAccount()
+        let hasKey = UserDefaults.standard.bool(forKey: settings.currentProvider.keyExistsFlag())
+            || KeychainManager.checkAPIKeyExistence(account: account) != .notFound
         guard hasKey else { return }
 
         orchestrator?.aiSummaryState = .idle
         DispatchQueue.global().async { [weak self] in
             guard let self else { return }
-            if let key = KeychainManager.readAPIKey(), !key.isEmpty {
+            if let key = KeychainManager.readAPIKey(account: account), !key.isEmpty {
                 DispatchQueue.main.async {
                     self.settings.cachedAPIKey = key
                     Task {
@@ -141,7 +146,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let alert = NSAlert()
         alert.messageText = "未配置 API Key"
-        alert.informativeText = "AI 总结功能需要 DeepSeek API Key 才能使用。\n是否前往设置进行配置？"
+        alert.informativeText = "AI 总结功能需要配置 API Key 才能使用。\n是否前往设置进行配置？"
         alert.alertStyle = .informational
         alert.addButton(withTitle: "前往设置")
         alert.addButton(withTitle: "稍后再说")

@@ -31,7 +31,7 @@
 
 ### 启用 AI 摘要
 
-在设置 → AI 标签页中填入 DeepSeek API Key，开启 AI 摘要功能。你也可以通过 1Password 安全导入 Key。
+在设置 → AI 标签页中选择 AI 提供商并填入 API Key，开启 AI 摘要功能。支持 DeepSeek、MiniMax、Opencode Go/Zen、Google AI Studio 等多种 AI API。
 
 ## 开发
 
@@ -59,6 +59,7 @@ Sources/NewsBar/
 ├── main.swift              # 入口，单实例检查
 ├── AppDelegate.swift       # 状态栏、弹窗、窗口管理
 ├── Models/
+│   ├── AIProvider.swift      # 多 AI 提供商定义
 │   ├── NewsItem.swift      # 新闻条目模型
 │   ├── NewsSource.swift    # 新闻源枚举（微博/B站/RSS）
 │   ├── AppSettings.swift   # 用户设置
@@ -69,7 +70,7 @@ Sources/NewsBar/
 │   ├── WeiboHotService.swift    # 微博热搜抓取
 │   ├── BilibiliHotService.swift # B站热搜抓取
 │   ├── RSSService.swift         # RSS 解析
-│   ├── DeepSeekService.swift    # AI 摘要
+│   ├── AISummaryService.swift   # AI 摘要（多提供商）
 │   ├── CacheManager.swift       # 本地缓存
 │   ├── KeychainManager.swift    # Keychain 存储
 │   └── RateLimiter.swift        # 频率限制
@@ -83,7 +84,7 @@ Sources/NewsBar/
 
 - **Swift 5.9** + **SwiftUI**
 - **AppKit** (NSStatusBar, NSPopover)
-- **DeepSeek API** (AI 摘要)
+- **多种 AI API**（DeepSeek / MiniMax / Opencode / Google AI Studio）(AI 摘要)
 - 零外部依赖
 
 ## License

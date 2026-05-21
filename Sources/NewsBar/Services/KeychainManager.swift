@@ -10,6 +10,7 @@ enum KeyExistence {
 
 enum KeychainManager {
 
+    /// Keychain service name — unchanged for backward compatibility.
     private static let serviceName = "com.newsbar.deepseek"
 
     // MARK: - No-UI Protection (CodexBar pattern)
@@ -54,13 +55,13 @@ enum KeychainManager {
         ]
     }
 
-    // MARK: - API Key
+    // MARK: - API Key (account-parameterized)
 
-    static func saveAPIKey(_ key: String) -> Bool {
+    static func saveAPIKey(_ key: String, account: String) -> Bool {
         guard !isDisabled else { return true }
         guard let data = key.data(using: .utf8) else { return false }
 
-        let query = baseQuery(account: "deepseek-api-key")
+        let query = baseQuery(account: account)
         SecItemDelete(query as CFDictionary)
 
         var addQuery = query
@@ -70,17 +71,17 @@ enum KeychainManager {
         let status = SecItemAdd(addQuery as CFDictionary, nil)
 
         if status == errSecSuccess {
-            UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: "apiKeyLastSaved")
-            UserDefaults.standard.set(true, forKey: "hasDeepSeekAPIKey")
+            UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: "apiKeyLastSaved-\(account)")
+            UserDefaults.standard.set(true, forKey: "hasAIKey-\(account)")
             return true
         }
         return false
     }
 
-    static func readAPIKey(allowUI: Bool = false) -> String? {
+    static func readAPIKey(account: String, allowUI: Bool = false) -> String? {
         guard !isDisabled else { return nil }
 
-        var query = baseQuery(account: "deepseek-api-key")
+        var query = baseQuery(account: account)
         query[kSecReturnData as String] = true
         query[kSecMatchLimit as String] = kSecMatchLimitOne
         if !allowUI {
@@ -99,10 +100,10 @@ enum KeychainManager {
         return key
     }
 
-    static func checkAPIKeyExistence() -> KeyExistence {
+    static func checkAPIKeyExistence(account: String) -> KeyExistence {
         guard !isDisabled else { return .notFound }
 
-        var query = baseQuery(account: "deepseek-api-key")
+        var query = baseQuery(account: account)
         query[kSecReturnAttributes as String] = true
         query[kSecMatchLimit as String] = kSecMatchLimitOne
         applyNoUI(to: &query)
@@ -116,11 +117,31 @@ enum KeychainManager {
         }
     }
 
-    static func deleteAPIKey() {
+    static func deleteAPIKey(account: String) {
         guard !isDisabled else { return }
-        let query = baseQuery(account: "deepseek-api-key")
+        let query = baseQuery(account: account)
         SecItemDelete(query as CFDictionary)
-        UserDefaults.standard.removeObject(forKey: "hasDeepSeekAPIKey")
+        UserDefaults.standard.removeObject(forKey: "hasAIKey-\(account)")
+    }
+
+    // MARK: - Staleness
+
+    static func isKeyStale(account: String) -> Bool {
+        let lastSaved = UserDefaults.standard.double(forKey: "apiKeyLastSaved-\(account)")
+        guard lastSaved > 0 else { return true }
+        return Date().timeIntervalSince1970 - lastSaved > 30 * 24 * 3600
+    }
+
+    // MARK: - Legacy Convenience (deprecated, for migration only)
+
+    /// Reads from the old hardcoded "deepseek-api-key" account. Exists only
+    /// for the one-time migration in AppSettings.
+    static func readLegacyAPIKey() -> String? {
+        readAPIKey(account: "deepseek-api-key")
+    }
+
+    static func deleteLegacyAPIKey() {
+        deleteAPIKey(account: "deepseek-api-key")
     }
 
     // MARK: - 1Password Reference
@@ -168,13 +189,5 @@ enum KeychainManager {
         guard !isDisabled else { return }
         let query = baseQuery(account: onePasswordRefAccount)
         SecItemDelete(query as CFDictionary)
-    }
-
-    // MARK: - Staleness
-
-    static var isKeyStale: Bool {
-        let lastSaved = UserDefaults.standard.double(forKey: "apiKeyLastSaved")
-        guard lastSaved > 0 else { return true }
-        return Date().timeIntervalSince1970 - lastSaved > 30 * 24 * 3600
     }
 }
