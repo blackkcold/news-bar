@@ -163,7 +163,7 @@ struct AISummaryCard: View {
             Text("API Key 未配置")
                 .font(.system(size: 12, weight: .medium))
                 .foregroundStyle(.orange)
-            Text("需要配置 DeepSeek API Key 才能使用 AI 总结功能")
+            Text("需要配置 AI API Key 才能使用 AI 总结功能")
                 .font(.system(size: 11))
                 .foregroundStyle(.secondary)
             if let onConfigureKey {

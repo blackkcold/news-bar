@@ -21,6 +21,16 @@ final class AppSettings {
     var aiMaxWords: Int {
         didSet { UserDefaults.standard.set(aiMaxWords, forKey: "aiMaxWords") }
     }
+    var aiProvider: String {
+        didSet {
+            guard !isInitializing else { return }
+            UserDefaults.standard.set(aiProvider, forKey: "aiProvider")
+            cachedAPIKey = nil
+            if let key = KeychainManager.readAPIKey(account: currentProvider.apiKeyAccount()) {
+                cachedAPIKey = key
+            }
+        }
+    }
     var onePasswordRef: String {
         didSet {
             guard !isInitializing else { return }
@@ -44,6 +54,10 @@ final class AppSettings {
     @ObservationIgnored var cachedAPIKey: String?
     private var isInitializing = true
 
+    var currentProvider: AIProvider {
+        AIProvider(rawValue: aiProvider) ?? .deepseek
+    }
+
     init() {
         let defaults = UserDefaults.standard
 
@@ -51,14 +65,17 @@ final class AppSettings {
         self.launchAtLogin = defaults.boolIfPresent(forKey: "launchAtLogin") ?? false
         self.colorScheme = defaults.stringIfPresent(forKey: "colorScheme") ?? "system"
         self.aiSummaryEnabled = defaults.boolIfPresent(forKey: "aiSummaryEnabled") ?? false
-        let savedModel = defaults.stringIfPresent(forKey: "aiModel") ?? "deepseek-v4-flash"
-        // 如果用户之前保存了即将废弃的旧模型名，自动迁移到 v4-flash
+        self.aiProvider = defaults.stringIfPresent(forKey: "aiProvider") ?? "deepseek"
+
+        let savedModel = defaults.stringIfPresent(forKey: "aiModel")
+            ?? "deepseek-v4-flash"
         let deprecatedModels: Set<String> = ["deepseek-chat", "deepseek-reasoner"]
         if deprecatedModels.contains(savedModel) {
             self.aiModel = "deepseek-v4-flash"
         } else {
             self.aiModel = savedModel
         }
+
         self.aiMaxWords = defaults.integerIfPresent(forKey: "aiMaxWords") ?? 150
         self.onePasswordRef = KeychainManager.readOnePasswordRef()
             ?? defaults.stringIfPresent(forKey: "onePasswordRef")
@@ -82,6 +99,31 @@ final class AppSettings {
         }
 
         self.isInitializing = false
+
+        if let key = KeychainManager.readAPIKey(account: currentProvider.apiKeyAccount()) {
+            self.cachedAPIKey = key
+        }
+    }
+
+    func migrateLegacyKeyIfNeeded() {
+        guard UserDefaults.standard.bool(forKey: "hasDeepSeekAPIKey") else { return }
+
+        let newAccount = AIProvider.deepseek.apiKeyAccount()
+        guard KeychainManager.checkAPIKeyExistence(account: newAccount) == .notFound else {
+            UserDefaults.standard.removeObject(forKey: "hasDeepSeekAPIKey")
+            return
+        }
+
+        guard let oldKey = KeychainManager.readLegacyAPIKey(), !oldKey.isEmpty else {
+            UserDefaults.standard.removeObject(forKey: "hasDeepSeekAPIKey")
+            return
+        }
+
+        if KeychainManager.saveAPIKey(oldKey, account: newAccount) {
+            KeychainManager.deleteLegacyAPIKey()
+            UserDefaults.standard.removeObject(forKey: "hasDeepSeekAPIKey")
+            UserDefaults.standard.set(true, forKey: AIProvider.deepseek.keyExistsFlag())
+        }
     }
 
     private func saveRSSSources() {

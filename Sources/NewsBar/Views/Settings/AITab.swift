@@ -3,6 +3,7 @@ import SwiftUI
 struct AITab: View {
     @Environment(AppSettings.self) private var settings
 
+    @State private var selectedProvider: AIProvider
     @State private var apiKeyInput = ""
     @State private var onePasswordRef = ""
     @State private var testResult: String?
@@ -10,6 +11,12 @@ struct AITab: View {
     @State private var isSaving = false
     @State private var saveResult: String?
     @State private var onePasswordResult: String?
+
+    init() {
+        let provider = AIProvider(rawValue: UserDefaults.standard.string(forKey: "aiProvider") ?? "deepseek")
+            ?? .deepseek
+        _selectedProvider = State(initialValue: provider)
+    }
 
     var body: some View {
         Form {
@@ -23,9 +30,44 @@ struct AITab: View {
             }
 
             Section {
-                SecureField("输入 DeepSeek API Key (sk-...)", text: $apiKeyInput)
+                Picker("提供商", selection: Binding(
+                    get: { selectedProvider },
+                    set: { newProvider in
+                        selectedProvider = newProvider
+                        settings.aiProvider = newProvider.rawValue
+                        settings.aiModel = newProvider.defaultModel
+                        apiKeyInput = ""
+                        testResult = nil
+                        saveResult = nil
+                        if let key = KeychainManager.readAPIKey(account: newProvider.apiKeyAccount()) {
+                            apiKeyInput = key
+                        }
+                    }
+                )) {
+                    ForEach(AIProvider.allCases, id: \.self) { provider in
+                        Text(provider.displayName).tag(provider)
+                    }
+                }
+            } header: {
+                Text("AI 提供商")
+            }
+
+            Section {
+                SecureField(selectedProvider.apiKeyPlaceholder, text: $apiKeyInput)
                     .textFieldStyle(.roundedBorder)
                     .font(.system(size: 12, design: .monospaced))
+                    .onAppear {
+                        if apiKeyInput.isEmpty,
+                           let key = KeychainManager.readAPIKey(account: selectedProvider.apiKeyAccount()) {
+                            apiKeyInput = key
+                        }
+                    }
+                    .onChange(of: selectedProvider) { _, newProvider in
+                        apiKeyInput = ""
+                        if let key = KeychainManager.readAPIKey(account: newProvider.apiKeyAccount()) {
+                            apiKeyInput = key
+                        }
+                    }
 
                 HStack {
                     Button {
@@ -61,18 +103,21 @@ struct AITab: View {
             } header: {
                 Text("API Key")
             } footer: {
-                Text("API Key 存储在系统钥匙串中，不会明文保存到磁盘。获取 Key: platform.deepseek.com → API Keys")
+                Text("API Key 存储在系统钥匙串中，不会明文保存到磁盘。获取 Key: \(selectedProvider.keyRetrievalURL)")
             }
 
             Section {
                 VStack(alignment: .leading, spacing: 6) {
-                    TextField("op://Private/DeepSeek/credential", text: $onePasswordRef)
+                    TextField(selectedProvider.onePasswordHint, text: $onePasswordRef)
                         .textFieldStyle(.roundedBorder)
                         .font(.system(size: 12, design: .monospaced))
                         .onAppear {
                             if onePasswordRef.isEmpty {
                                 onePasswordRef = settings.onePasswordRef
                             }
+                        }
+                        .onChange(of: selectedProvider) { _, _ in
+                            onePasswordRef = settings.onePasswordRef
                         }
 
                     HStack {
@@ -106,8 +151,9 @@ struct AITab: View {
                     get: { settings.aiModel },
                     set: { settings.aiModel = $0 }
                 )) {
-                    Text("deepseek-v4-flash (推荐)").tag("deepseek-v4-flash")
-                    Text("deepseek-v4-pro").tag("deepseek-v4-pro")
+                    ForEach(selectedProvider.models, id: \.self) { model in
+                        Text(model).tag(model)
+                    }
                 }
 
                 HStack {
@@ -132,18 +178,14 @@ struct AITab: View {
 
             Section {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("定价参考 (per 1M tokens)")
+                    Text("费用说明")
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                    Text("deepseek-v4-flash: ¥1 输入 / ¥2 输出 (缓存命中 ¥0.2)")
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                    Text("deepseek-v4-pro: ¥12 输入 / ¥24 输出 (缓存命中 ¥1)")
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                    Text("每次总结约消耗 200-800 tokens")
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
+                    ForEach(selectedProvider.pricingInfo, id: \.title) { item in
+                        Text("\(item.title): \(item.detail)")
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                    }
                 }
             } header: {
                 Text("费用说明")
@@ -156,7 +198,8 @@ struct AITab: View {
         isSaving = true
         saveResult = nil
         let sanitized = SecurityPolicies.sanitizeUserInput(apiKeyInput)
-        let success = KeychainManager.saveAPIKey(sanitized)
+        let account = selectedProvider.apiKeyAccount()
+        let success = KeychainManager.saveAPIKey(sanitized, account: account)
         if success {
             settings.cachedAPIKey = sanitized
             settings.onePasswordRef = onePasswordRef
@@ -181,7 +224,8 @@ struct AITab: View {
         do {
             let key = try OnePasswordService.readSecret(reference: onePasswordRef)
             apiKeyInput = key
-            let success = KeychainManager.saveAPIKey(key)
+            let account = selectedProvider.apiKeyAccount()
+            let success = KeychainManager.saveAPIKey(key, account: account)
             if success {
                 settings.cachedAPIKey = key
                 NotificationCenter.default.post(name: .apiKeyConfigured, object: nil)
@@ -213,9 +257,10 @@ struct AITab: View {
                     isTesting = false
                     return
                 }
-                let result = try await DeepSeekService.summarize(
+                let result = try await AISummaryService.summarize(
                     items: testItems,
                     maxWords: 30,
+                    provider: selectedProvider,
                     model: settings.aiModel,
                     apiKey: apiKey
                 )

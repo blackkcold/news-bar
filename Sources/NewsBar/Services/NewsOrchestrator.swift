@@ -124,7 +124,8 @@ final class NewsOrchestrator: ObservableObject {
                 items: allNewItems,
                 maxWords: settings.aiMaxWords,
                 model: settings.aiModel,
-                apiKey: apiKey
+                apiKey: apiKey,
+                provider: settings.currentProvider
             )
             if didGenerate {
                 lastBatchHash = newHash
@@ -185,7 +186,8 @@ final class NewsOrchestrator: ObservableObject {
                     items: allItems,
                     maxWords: settings.aiMaxWords,
                     model: settings.aiModel,
-                    apiKey: apiKey
+                    apiKey: apiKey,
+                    provider: settings.currentProvider
                 )
                 if didGenerate {
                     lastBatchHash = newHash
@@ -232,15 +234,16 @@ final class NewsOrchestrator: ObservableObject {
     }
 
     @discardableResult
-    private func generateSummary(items: [NewsItem], maxWords: Int, model: String, apiKey: String) async -> Bool {
+    private func generateSummary(items: [NewsItem], maxWords: Int, model: String, apiKey: String, provider: AIProvider) async -> Bool {
         guard !apiKey.isEmpty else {
             aiSummaryState = .noKey
             return false
         }
         aiSummaryState = .summarizing
         do {
-            let result = try await DeepSeekService.summarize(
-                items: items, maxWords: maxWords, model: model, apiKey: apiKey
+            let result = try await AISummaryService.summarize(
+                items: items, maxWords: maxWords, provider: provider,
+                model: model, apiKey: apiKey
             )
             if result.isTruncated {
                 aiSummaryState = .truncated(result.summary)
@@ -288,7 +291,8 @@ final class NewsOrchestrator: ObservableObject {
         }
         await generateSummary(
             items: allItems, maxWords: settings.aiMaxWords,
-            model: settings.aiModel, apiKey: apiKey
+            model: settings.aiModel, apiKey: apiKey,
+            provider: settings.currentProvider
         )
     }
 
