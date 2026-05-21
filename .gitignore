@@ -1,0 +1,30 @@
+# Build artifacts
+.build/
+DerivedData/
+
+# Release artifacts (generated, not committed)
+release/*/
+release/*.dmg
+release/versions.json
+!release/.gitkeep
+
+# IDE
+*.xcuserdata
+*.xcworkspace
+xcuserdata/
+
+# macOS
+.DS_Store
+Thumbs.db
+
+# Package
+Package.resolved
+
+# Secrets
+*.env
+.env*
+secrets.*
+*.secret
+credentials.*
+*.local
+*.xcconfig

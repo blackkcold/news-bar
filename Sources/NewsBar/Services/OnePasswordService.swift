@@ -1,0 +1,80 @@
+import Foundation
+
+enum OnePasswordError: LocalizedError {
+    case notInstalled
+    case timeout
+    case readFailed
+
+    var errorDescription: String? {
+        switch self {
+        case .notInstalled: return "1Password CLI 未安装"
+        case .timeout: return "1Password 认证超时"
+        case .readFailed: return "1Password 读取失败"
+        }
+    }
+}
+
+enum OnePasswordService {
+
+    private static let cliPath = "/usr/local/bin/op"
+    private static let timeoutSeconds: TimeInterval = 30
+
+    static func isInstalled() -> Bool {
+        FileManager.default.isExecutableFile(atPath: cliPath)
+    }
+
+    static func readSecret(reference: String) throws -> String {
+        guard isInstalled() else {
+            throw OnePasswordError.notInstalled
+        }
+
+        guard reference.hasPrefix("op://") else {
+            throw OnePasswordError.readFailed
+        }
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: cliPath)
+        process.arguments = ["read", reference]
+
+        let outputPipe = Pipe()
+        let errorPipe = Pipe()
+        process.standardOutput = outputPipe
+        process.standardError = errorPipe
+
+        do {
+            try process.run()
+        } catch {
+            throw OnePasswordError.notInstalled
+        }
+
+        let deadline = DispatchTime.now() + .seconds(Int(timeoutSeconds))
+        let semaphore = DispatchSemaphore(value: 0)
+
+        var outputData: Data?
+        var timedOut = false
+
+        DispatchQueue.global().async {
+            process.waitUntilExit()
+            outputData = outputPipe.fileHandleForReading.readDataToEndOfFile()
+            semaphore.signal()
+        }
+
+        if semaphore.wait(timeout: deadline) == .timedOut {
+            timedOut = true
+            process.terminate()
+        }
+
+        if timedOut {
+            throw OnePasswordError.timeout
+        }
+
+        guard process.terminationStatus == 0,
+              let data = outputData,
+              let secret = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !secret.isEmpty else {
+            throw OnePasswordError.readFailed
+        }
+
+        return secret
+    }
+}
