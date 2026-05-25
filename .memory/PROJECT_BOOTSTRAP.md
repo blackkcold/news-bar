@@ -25,7 +25,7 @@ Sources/NewsBar/
 │   ├── RSSService.swift        # RSS/Atom Feed 解析 (XMLParser)
 │   ├── AISummaryService.swift   # AI 总结（多提供商：OpenAI/Anthropic 格式分发；DeepSeek/MiniMax/Opencode/Google 等；含 finish_reason/stop_reason 截断检测 + 1 次自动重试）
 │   ├── OnePasswordService.swift # 1Password CLI 集成 (op read)
-│   ├── KeychainManager.swift   # 钥匙串读写 (account 参数化支持多 provider；双重 NoUI 保护；写入 SecItemDelete+SecItemAdd 策略；DEBUG mode KeychainAccessGate 开发开关)
+│   ├── KeychainManager.swift   # 钥匙串读写 (account 参数化支持多 provider；双重 NoUI 保护；写入使用 SecItemUpdate 优先 + SecItemAdd 首次兜底以保留 ACL；DEBUG mode KeychainAccessGate 开发开关)
 │   ├── CacheManager.swift      # actor 隔离的文件缓存
 │       ├── RateLimiter.swift       # actor 隔离的手动刷新频率控制
 │   └── SecurityPolicies.swift  # 输入消毒、URL 校验、XML 安全配置
@@ -107,7 +107,7 @@ User clicks 重新生成
 4. `Views/Settings/XxxTab.swift` — 添加 UI 绑定
 
 ### Security Rules
-- **API Key**: Keychain 存储（`kSecAttrAccessibleWhenUnlockedThisDeviceOnly`）；每个 AI Provider 独立 Keychain account (`"ai-key-{provider}"`)；所有读取使用双重 NoUI 保护；写入使用 SecItemDelete+SecItemAdd 策略；`AppSettings.cachedAPIKey` 内存缓存，切换 provider 时自动清除；旧 DeepSeek account 首次启动自动迁移；1Password ref 共用 `"one-password-ref"` account，不受 provider 切换影响
+- **API Key**: Keychain 存储（`kSecAttrAccessibleWhenUnlockedThisDeviceOnly`）；每个 AI Provider 独立 Keychain account (`"ai-key-{provider}"`)；所有读取使用双重 NoUI 保护；写入使用 SecItemUpdate 优先 + SecItemAdd 首次兜底（保留 ACL 避免重复弹窗）；`AppSettings.cachedAPIKey` 内存缓存，切换 provider 时自动清除；旧 DeepSeek account 首次启动自动迁移；1Password ref 共用 `"one-password-ref"` account，不受 provider 切换影响；UI 不在渲染期间读 Keychain（`cachedAPIKey` 已在上次保存时设置）
 - **AI 总结**: `AISummaryState` 驱动 UI；`finish_reason="length"` 截断时自动重试 1 次（扩大 max_tokens），仍截断则 UI 提示并显示「重新生成」按钮；`lastBatchHash` 仅在总结成功后更新，避免无 key/失败污染 hash；手动刷新强制总结，自动刷新在 idle/noKey/error/fetching 时允许恢复；AISummaryCard 用 `.onAppear` 直接显示已有文本，`.onChange(of:)` 触发逐字动画
 - **1Password**: `op read` 通过 `Process` 调用（数组传参，非 shell 拼接，无注入风险）；`onePasswordRef` 存储在 Keychain（`account: "one-password-ref"`），首次启动自动从 UserDefaults 迁移
 - **更新检查**: 仅访问 GitHub 公开 API（`api.github.com/repos/blackkcold/news-bar/releases/latest`），无认证；DMG 下载到 `~/Library/Caches/<bundleID>/Updates/`，下载后校验文件大小，不自动挂载或执行
