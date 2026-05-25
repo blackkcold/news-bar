@@ -66,8 +66,34 @@ cat > "${BUNDLE_DIR}/Contents/Info.plist" << PLIST
 PLIST
 
 echo "🔏 Signing..."
+echo ""
 
-codesign --force --deep --sign - "${BUNDLE_DIR}" 2>/dev/null || echo "⚠️  ad-hoc signing skipped"
+# NEWSBAR_SIGN_IDENTITY — env var for stable code signing.
+# Set it to a Keychain identity (e.g. "Developer ID Application: Your Name (TEAMID)")
+# to avoid repeated Keychain prompts caused by ad-hoc signing.
+# Leave unset only for quick local builds; ad-hoc signing may still trigger prompts.
+if [ -n "${NEWSBAR_SIGN_IDENTITY:-}" ]; then
+    echo "   Identity: ${NEWSBAR_SIGN_IDENTITY}"
+    if codesign --force --deep \
+        --sign "${NEWSBAR_SIGN_IDENTITY}" \
+        --options runtime --timestamp \
+        "${BUNDLE_DIR}"; then
+        echo "   Signed with runtime + timestamp"
+    else
+        echo "⚠️  Timestamped signing failed — retrying without timestamp."
+        echo "   This is expected for some local self-signed certificates."
+        codesign --force --deep \
+            --sign "${NEWSBAR_SIGN_IDENTITY}" \
+            --options runtime \
+            "${BUNDLE_DIR}"
+    fi
+else
+    echo "⚠️  NEWSBAR_SIGN_IDENTITY not set — using ad-hoc signing."
+    echo "   This may cause repeated Keychain access prompts."
+    echo "   Set NEWSBAR_SIGN_IDENTITY for stable signing."
+    codesign --force --deep --sign - "${BUNDLE_DIR}"
+fi
+
 
 echo "📦 Creating DMG..."
 
@@ -83,17 +109,18 @@ DMG_MOUNT="/Volumes/${APP_NAME}"
 # Detach if already mounted
 hdiutil detach "${DMG_MOUNT}" -quiet 2>/dev/null || true
 
-# Create writable DMG, set icon, convert to compressed read-only
+# Create writable DMG, set icon, convert to compressed read-only (best-effort)
 DMG_RW="${RELEASE_DIR}/${APP_NAME}-${VERSION}-rw.dmg"
-hdiutil convert "${DMG_PATH}" -format UDRW -o "${DMG_RW}" -quiet
-hdiutil attach "${DMG_RW}" -nobrowse -quiet 2>&1
-cp Resources/AppIcon.icns "${DMG_MOUNT}/.VolumeIcon.icns"
+hdiutil convert "${DMG_PATH}" -format UDRW -o "${DMG_RW}" -quiet || true
+hdiutil attach "${DMG_RW}" -nobrowse -quiet 2>&1 || true
+cp Resources/AppIcon.icns "${DMG_MOUNT}/.VolumeIcon.icns" 2>/dev/null || true
 SetFile -a C "${DMG_MOUNT}" 2>/dev/null || xattr -wx com.apple.FinderInfo "0000000000000000000400000000000000000000000000000000000000000000" "${DMG_MOUNT}" 2>/dev/null || true
-hdiutil detach "${DMG_MOUNT}" -quiet 2>&1
-hdiutil convert "${DMG_RW}" -format UDZO -o "${DMG_PATH}" -quiet
+hdiutil detach "${DMG_MOUNT}" -quiet 2>&1 || true
+hdiutil convert "${DMG_RW}" -format UDZO -o "${DMG_PATH}" -quiet || true
 rm -f "${DMG_RW}"
 echo "   DMG icon applied"
 
+rm -rf release/latest
 ln -sfn "${VERSION}" release/latest
 
 cat > release/versions.json << VJSON

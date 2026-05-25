@@ -39,9 +39,6 @@ struct AITab: View {
                         apiKeyInput = ""
                         testResult = nil
                         saveResult = nil
-                        if let key = KeychainManager.readAPIKey(account: newProvider.apiKeyAccount()) {
-                            apiKeyInput = key
-                        }
                     }
                 )) {
                     ForEach(AIProvider.allCases, id: \.self) { provider in
@@ -56,17 +53,8 @@ struct AITab: View {
                 SecureField(selectedProvider.apiKeyPlaceholder, text: $apiKeyInput)
                     .textFieldStyle(.roundedBorder)
                     .font(.system(size: 12, design: .monospaced))
-                    .onAppear {
-                        if apiKeyInput.isEmpty,
-                           let key = KeychainManager.readAPIKey(account: selectedProvider.apiKeyAccount()) {
-                            apiKeyInput = key
-                        }
-                    }
-                    .onChange(of: selectedProvider) { _, newProvider in
+                    .onChange(of: selectedProvider) { _, _ in
                         apiKeyInput = ""
-                        if let key = KeychainManager.readAPIKey(account: newProvider.apiKeyAccount()) {
-                            apiKeyInput = key
-                        }
                     }
 
                 HStack {
