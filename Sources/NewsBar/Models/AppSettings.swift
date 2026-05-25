@@ -26,9 +26,6 @@ final class AppSettings {
             guard !isInitializing else { return }
             UserDefaults.standard.set(aiProvider, forKey: "aiProvider")
             cachedAPIKey = nil
-            if let key = KeychainManager.readAPIKey(account: currentProvider.apiKeyAccount()) {
-                cachedAPIKey = key
-            }
         }
     }
     var onePasswordRef: String {
@@ -77,11 +74,12 @@ final class AppSettings {
         }
 
         self.aiMaxWords = defaults.integerIfPresent(forKey: "aiMaxWords") ?? 150
-        self.onePasswordRef = KeychainManager.readOnePasswordRef()
+        let savedOnePasswordRef = KeychainManager.readOnePasswordRef()
+        self.onePasswordRef = savedOnePasswordRef
             ?? defaults.stringIfPresent(forKey: "onePasswordRef")
             ?? ""
 
-        if KeychainManager.readOnePasswordRef() == nil,
+        if savedOnePasswordRef == nil,
            let legacyRef = defaults.stringIfPresent(forKey: "onePasswordRef"),
            !legacyRef.isEmpty {
             _ = KeychainManager.saveOnePasswordRef(legacyRef)
@@ -99,16 +97,20 @@ final class AppSettings {
         }
 
         self.isInitializing = false
-
-        if let key = KeychainManager.readAPIKey(account: currentProvider.apiKeyAccount()) {
-            self.cachedAPIKey = key
-        }
     }
 
     func migrateLegacyKeyIfNeeded() {
         guard UserDefaults.standard.bool(forKey: "hasDeepSeekAPIKey") else { return }
 
         let newAccount = AIProvider.deepseek.apiKeyAccount()
+        let newFlag = AIProvider.deepseek.keyExistsFlag()
+        let accountFlag = "hasAIKey-\(newAccount)"
+        if UserDefaults.standard.bool(forKey: newFlag) || UserDefaults.standard.bool(forKey: accountFlag) {
+            UserDefaults.standard.set(true, forKey: newFlag)
+            UserDefaults.standard.removeObject(forKey: "hasDeepSeekAPIKey")
+            return
+        }
+
         guard KeychainManager.checkAPIKeyExistence(account: newAccount) == .notFound else {
             UserDefaults.standard.removeObject(forKey: "hasDeepSeekAPIKey")
             return
@@ -122,7 +124,7 @@ final class AppSettings {
         if KeychainManager.saveAPIKey(oldKey, account: newAccount) {
             KeychainManager.deleteLegacyAPIKey()
             UserDefaults.standard.removeObject(forKey: "hasDeepSeekAPIKey")
-            UserDefaults.standard.set(true, forKey: AIProvider.deepseek.keyExistsFlag())
+            UserDefaults.standard.set(true, forKey: newFlag)
         }
     }
 

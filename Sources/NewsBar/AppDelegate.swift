@@ -75,10 +75,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    private func currentProviderHasSavedKeyFlag() -> Bool {
+        let provider = settings.currentProvider
+        let providerFlag = provider.keyExistsFlag()
+        if UserDefaults.standard.bool(forKey: providerFlag) {
+            return true
+        }
+
+        let accountFlag = "hasAIKey-\(provider.apiKeyAccount())"
+        guard UserDefaults.standard.bool(forKey: accountFlag) else {
+            return false
+        }
+
+        UserDefaults.standard.set(true, forKey: providerFlag)
+        return true
+    }
+
     private func refreshAPIKeyIfNeeded() {
         let ref = settings.onePasswordRef
         let account = settings.currentProvider.apiKeyAccount()
-        guard !ref.isEmpty,
+        guard currentProviderHasSavedKeyFlag(),
+              !ref.isEmpty,
               KeychainManager.isKeyStale(account: account),
               OnePasswordService.isInstalled() else { return }
         DispatchQueue.global().async { [self] in
@@ -98,21 +115,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func scheduleDelayedKeychainRead() {
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
             guard let self else { return }
-            let account = self.settings.currentProvider.apiKeyAccount()
-            DispatchQueue.global().async {
-                let existence = KeychainManager.checkAPIKeyExistence(account: account)
-                DispatchQueue.main.async {
-                    switch existence {
-                    case .notFound:
-                        if self.settings.aiSummaryEnabled {
-                            self.handleMissingAPIKey()
-                        }
-                    case .existsAccessible, .existsNeedsAuth:
-                        UserDefaults.standard.set(true, forKey: self.settings.currentProvider.keyExistsFlag())
-                        break
-                    }
-                    self.refreshAPIKeyIfNeeded()
+
+            guard self.currentProviderHasSavedKeyFlag() else {
+                if self.settings.aiSummaryEnabled {
+                    self.handleMissingAPIKey()
                 }
+                return
             }
         }
     }
@@ -120,16 +128,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func loadAPIKeyFromKeychainIfNeeded() {
         guard settings.aiSummaryEnabled,
               settings.cachedAPIKey == nil else { return }
+        guard currentProviderHasSavedKeyFlag() else {
+            orchestrator?.aiSummaryState = .noKey
+            return
+        }
         let account = settings.currentProvider.apiKeyAccount()
-        let hasKey = UserDefaults.standard.bool(forKey: settings.currentProvider.keyExistsFlag())
-            || KeychainManager.checkAPIKeyExistence(account: account) != .notFound
-        guard hasKey else { return }
 
         orchestrator?.aiSummaryState = .idle
         DispatchQueue.global().async { [weak self] in
             guard let self else { return }
             if let key = KeychainManager.readAPIKey(account: account), !key.isEmpty {
                 DispatchQueue.main.async {
+                    UserDefaults.standard.set(true, forKey: self.settings.currentProvider.keyExistsFlag())
                     self.settings.cachedAPIKey = key
                     Task {
                         await self.orchestrator?.manualRefresh(settings: self.settings)
