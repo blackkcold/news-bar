@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import SwiftUI
 
 @Observable
 final class AppSettings {
@@ -12,6 +13,14 @@ final class AppSettings {
     var colorScheme: String {
         didSet { UserDefaults.standard.set(colorScheme, forKey: "colorScheme") }
     }
+    @ObservationIgnored var resolvedColorScheme: ColorScheme? {
+        switch colorScheme {
+        case "light": return .light
+        case "dark": return .dark
+        default: return nil
+        }
+    }
+
     var aiSummaryEnabled: Bool {
         didSet { UserDefaults.standard.set(aiSummaryEnabled, forKey: "aiSummaryEnabled") }
     }
@@ -42,6 +51,18 @@ final class AppSettings {
         didSet {
             UserDefaults.standard.set(Array(selectedRSSSourceIDs), forKey: "selectedRSSSourceIDs")
         }
+    }
+    var todayRefreshCount: Int {
+        didSet { UserDefaults.standard.set(todayRefreshCount, forKey: "todayRefreshCount") }
+    }
+    var todayAIRequestCount: Int {
+        didSet { UserDefaults.standard.set(todayAIRequestCount, forKey: "todayAIRequestCount") }
+    }
+    var lastRefreshTimestamp: Double {
+        didSet { UserDefaults.standard.set(lastRefreshTimestamp, forKey: "lastRefreshTimestamp") }
+    }
+    var statsDayTimestamp: Double {
+        didSet { UserDefaults.standard.set(statsDayTimestamp, forKey: "statsDayTimestamp") }
     }
 
     var rssSources: [RSSSourceConfig] {
@@ -89,6 +110,12 @@ final class AppSettings {
         let selectedIDs = defaults.stringArray(forKey: "selectedRSSSourceIDs") ?? []
         self.selectedRSSSourceIDs = Set(selectedIDs)
 
+        let todayStart = Calendar.current.startOfDay(for: Date()).timeIntervalSince1970
+        self.todayRefreshCount = defaults.integerIfPresent(forKey: "todayRefreshCount") ?? 0
+        self.todayAIRequestCount = defaults.integerIfPresent(forKey: "todayAIRequestCount") ?? 0
+        self.lastRefreshTimestamp = defaults.doubleIfPresent(forKey: "lastRefreshTimestamp") ?? 0
+        self.statsDayTimestamp = defaults.doubleIfPresent(forKey: "statsDayTimestamp") ?? todayStart
+
         if let data = defaults.data(forKey: "rssSources"),
            let decoded = try? JSONDecoder().decode([RSSSourceConfig].self, from: data) {
             self.rssSources = decoded
@@ -97,6 +124,7 @@ final class AppSettings {
         }
 
         self.isInitializing = false
+        resetDailyStatsIfNeeded()
     }
 
     func migrateLegacyKeyIfNeeded() {
@@ -141,6 +169,33 @@ final class AppSettings {
         }
         return sources
     }
+
+    var estimatedAICostText: String {
+        currentProvider.estimatedDailyCostText(model: aiModel, requestCount: todayAIRequestCount)
+    }
+
+    func resetDailyStatsIfNeeded() {
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: Date())
+        let savedDay = calendar.startOfDay(for: Date(timeIntervalSince1970: statsDayTimestamp))
+        guard !calendar.isDate(savedDay, inSameDayAs: today) else { return }
+
+        todayRefreshCount = 0
+        todayAIRequestCount = 0
+        statsDayTimestamp = today.timeIntervalSince1970
+    }
+
+    func recordRefresh() {
+        resetDailyStatsIfNeeded()
+        todayRefreshCount += 1
+        lastRefreshTimestamp = Date().timeIntervalSince1970
+    }
+
+    func recordAIRequests(_ count: Int) {
+        guard count > 0 else { return }
+        resetDailyStatsIfNeeded()
+        todayAIRequestCount += count
+    }
 }
 
 struct RSSSourceConfig: Identifiable, Hashable, Codable {
@@ -168,5 +223,10 @@ extension UserDefaults {
 
     func stringIfPresent(forKey key: String) -> String? {
         return string(forKey: key)
+    }
+
+    func doubleIfPresent(forKey key: String) -> Double? {
+        guard object(forKey: key) != nil else { return nil }
+        return double(forKey: key)
     }
 }
