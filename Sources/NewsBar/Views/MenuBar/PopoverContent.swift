@@ -18,7 +18,7 @@ struct PopoverContent: View {
 
             ScrollView(.vertical, showsIndicators: false) {
                 VStack(spacing: 0) {
-                    if let error = orchestrator.errorMessage {
+                    if let error = allSourcesFailureMessage {
                         errorBanner(error)
                     }
 
@@ -45,7 +45,8 @@ struct PopoverContent: View {
                         icon: "flame.fill",
                         color: .orange,
                         items: orchestrator.weiboItems,
-                        showRank: true
+                        showRank: true,
+                        state: orchestrator.sourceStates[NewsSource.weibo.id] ?? .idle
                     )
 
                     Divider().padding(.horizontal, 12)
@@ -55,7 +56,8 @@ struct PopoverContent: View {
                         icon: "play.rectangle.fill",
                         color: .pink,
                         items: orchestrator.bilibiliItems,
-                        showRank: true
+                        showRank: true,
+                        state: orchestrator.sourceStates[NewsSource.bilibili.id] ?? .idle
                     )
 
                     ForEach(settings.activeSources.filter { !$0.isBuiltIn }, id: \.id) { source in
@@ -67,6 +69,7 @@ struct PopoverContent: View {
                             color: .blue,
                             items: orchestrator.rssItemsMap[source.id] ?? [],
                             showRank: false,
+                            state: orchestrator.sourceStates[source.id] ?? .idle,
                             maxVisible: 5
                         )
                     }
@@ -87,10 +90,25 @@ struct PopoverContent: View {
             )
         }
         .frame(width: 360)
+        .adaptiveColorScheme()
         .background(.regularMaterial)
         .task {
-            await orchestrator.loadCached()
+            await orchestrator.loadCached(settings: settings)
         }
+    }
+
+    private var allSourcesFailureMessage: String? {
+        let sources = settings.activeSources
+        guard !sources.isEmpty else { return nil }
+
+        let allFailed = sources.allSatisfy { source in
+            if case .failed = orchestrator.sourceStates[source.id] {
+                return true
+            }
+            return false
+        }
+
+        return allFailed ? "所有新闻源更新失败，请稍后重试" : nil
     }
 
     private var headerView: some View {

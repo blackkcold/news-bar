@@ -57,5 +57,6 @@ struct SettingsWindow: View {
         }
         .frame(minWidth: 460, minHeight: 380)
         .padding(.top, 8)
+        .adaptiveColorScheme()
     }
 }
