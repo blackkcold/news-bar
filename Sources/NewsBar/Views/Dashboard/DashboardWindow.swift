@@ -34,7 +34,8 @@ struct DashboardWindow: View {
                         icon: "flame.fill",
                         color: .orange,
                         items: orchestrator.weiboItems,
-                        showRank: true
+                        showRank: true,
+                        state: orchestrator.sourceStates[NewsSource.weibo.id] ?? .idle
                     )
 
                     Divider().padding(.horizontal, 12)
@@ -44,7 +45,8 @@ struct DashboardWindow: View {
                         icon: "play.rectangle.fill",
                         color: .pink,
                         items: orchestrator.bilibiliItems,
-                        showRank: true
+                        showRank: true,
+                        state: orchestrator.sourceStates[NewsSource.bilibili.id] ?? .idle
                     )
 
                     ForEach(settings.activeSources.filter { !$0.isBuiltIn }, id: \.id) { source in
@@ -55,6 +57,7 @@ struct DashboardWindow: View {
                             color: .blue,
                             items: orchestrator.rssItemsMap[source.id] ?? [],
                             showRank: false,
+                            state: orchestrator.sourceStates[source.id] ?? .idle,
                             maxVisible: 5
                         )
                     }
@@ -66,9 +69,10 @@ struct DashboardWindow: View {
             bottomStatusBar
         }
         .frame(minWidth: 360, minHeight: 480)
+        .adaptiveColorScheme()
         .background(.regularMaterial)
         .task {
-            await orchestrator.loadCached()
+            await orchestrator.loadCached(settings: settings)
         }
     }
 

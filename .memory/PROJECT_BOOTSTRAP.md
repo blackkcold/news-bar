@@ -14,11 +14,11 @@ Sources/NewsBar/
 │   ├── AIProvider.swift       # 多 AI 提供商枚举（6 providers）
 │   ├── NewsItem.swift       # 新闻条目模型 (Identifiable, Codable)
 │   ├── NewsSource.swift     # 数据源枚举 (weibo/bilibili/rss)
-│   ├── AppSettings.swift    # @Observable 全局设置 (UserDefaults 持久化 + cachedAPIKey 内存缓存；onePasswordRef 走 Keychain)
+│   ├── AppSettings.swift    # @Observable 全局设置 (UserDefaults 持久化 + resolvedColorScheme 外观映射 + cachedAPIKey 内存缓存；onePasswordRef 走 Keychain；刷新/AI 用量本地统计)
 │   ├── CacheEntry.swift     # 缓存条目 (items + hash + timestamp)
 │   └── UpdateInfo.swift     # GitHub Release 模型 + 版本比对
 ├── Services/
-│   ├── NewsOrchestrator.swift  # 核心调度器：刷新、缓存、AI 总结状态机
+│   ├── NewsOrchestrator.swift  # 核心调度器：刷新、缓存、每源加载状态、AI 总结状态机
 │   ├── UpdateChecker.swift     # 更新检查：GitHub API → 版本比对 → DMG 下载
 │   ├── WeiboHotService.swift   # 微博热搜 (多级策略: ajax/side/hotSearch → s.weibo.com 降级；URL 由 word 字段构造 https://s.weibo.com/weibo?q=关键词&Refer=top)
 │   ├── BilibiliHotService.swift # B站热搜 (bilibili.com API)
@@ -27,8 +27,9 @@ Sources/NewsBar/
 │   ├── OnePasswordService.swift # 1Password CLI 集成 (op read)
 │   ├── KeychainManager.swift   # 钥匙串读写 (account 参数化支持多 provider；双重 NoUI 保护；写入使用 SecItemUpdate 优先 + SecItemAdd 首次兜底以保留 ACL；DEBUG mode KeychainAccessGate 开发开关)
 │   ├── CacheManager.swift      # actor 隔离的文件缓存
-│       ├── RateLimiter.swift       # actor 隔离的手动刷新频率控制
-│   └── SecurityPolicies.swift  # 输入消毒、URL 校验、XML 安全配置
+│   ├── RefreshLog.swift         # actor 环形缓冲刷新日志 (最近 10 次，可选落盘)
+│   ├── RateLimiter.swift        # actor 隔离的手动刷新频率控制
+│   └── SecurityPolicies.swift   # 输入消毒、URL 校验、XML 安全配置
 ├── Views/
 │   ├── MenuBar/
 │   │   ├── PopoverContent.swift  # 主弹窗：Header + AI 状态卡 + 新闻列表 + BottomBar
@@ -47,7 +48,7 @@ Sources/NewsBar/
 │       └── AboutTab.swift         # 关于
 └── Extensions/
     ├── URLOpener.swift    # URL 安全打开
-    └── View+Glass.swift   # 毛玻璃 UI 修饰符
+    └── View+Glass.swift   # 毛玻璃 UI 修饰符 + AdaptiveColorSchemeModifier (暗色模式自适应：NSApp.effectiveAppearance + AppleInterfaceThemeChangedNotification)
 ```
 
 ## Build & Run
@@ -78,17 +79,18 @@ App 启动
   → 延迟 1.5s 用 kSecUseAuthenticationUIFail 做三态预检：
       notFound + AI 开启 → NSAlert 提示配置（仅一次）；existsAccessible/existsNeedsAuth → 自动设 hasAIKey-{provider} flag，不读 secret
   → 若没有 key 且 AI 已开启 → NSAlert 提示前往设置；"稍后再说" 后不再提示
-  → 2s 自动刷新 NewsOrchestrator.refreshIfNeeded() → 无 cachedAPIKey 时状态为 .noKey（后台）
+  → 2s 自动刷新 NewsOrchestrator.refreshIfNeeded() → 每源 SourceLoadState 标记 loading/loaded/failed；无 cachedAPIKey 时 AI 状态为 .noKey（后台）
   → 10s 自动更新检查 UpdateChecker.autoCheck() → GitHub API → 有新版则 UpdateBadge 显示「更新」按钮
   → User opens popover → loadAPIKeyFromKeychainIfNeeded() → check flag || 兜底 checkAPIKeyExistence() → readAPIKey(allowUI:false) 静默读 Keychain secret（系统授权弹窗仅在用户 AITab 中主动保存 Key 时出现）
   → 读 key 成功 → 写 cachedAPIKey → manualRefresh() 抓取所有源 → AI 总结
   → AISummaryService.summarize(provider:) → 首次 max_tokens=1024 → 若截断则 max_tokens=2048 重试 1 次
-  → AI 总结成功后才写 lastBatchHash；idle/noKey/error/fetching 可触发恢复总结；manualRefresh 强制总结
+  → AI 总结成功后才写 lastBatchHash，并按实际请求次数计入今日 AI 调用；idle/noKey/error/fetching 可触发恢复总结；manualRefresh 强制总结
   → 结果通过 AISummaryState 驱动 UI：noKey / fetching / summarizing / done / truncated / error
   → 结果文本首次渲染直接显示（.onAppear），状态转变时逐字动画（.onChange(of:)）
   → 若 autoRefreshEnabled，Timer(3600s) 定时刷新
 User opens popover
-  → PopoverContent.task { loadCached() } 显示缓存数据（过期缓存 >15min 不加载，显示加载中）
+  → PopoverContent.task { loadCached(settings) } 显示缓存数据（内存优先：若内存已有数据则跳过加载）
+  → 缓存过期 >15min 且内存空时状态为 idle/暂无数据；刷新失败时按源显示"加载失败"或"更新失败，显示缓存"
   → SwiftUI 自动刷新 UI
 User clicks 重新生成
   → PopoverContent → NewsOrchestrator.regenerateAISummary(settings) → 重新总结
@@ -105,6 +107,7 @@ User clicks 重新生成
 2. 敏感数据用 `KeychainManager` 存储（参考 `apiKey` / `onePasswordRef` 模式）
 3. 非敏感数据用 `UserDefaults` 持久化（didSet 自动同步）
 4. `Views/Settings/XxxTab.swift` — 添加 UI 绑定
+5. 如需全局生效（如外观设置），通过 `.adaptiveColorScheme()` 修饰符应用到所有窗口根部 (SettingsWindow / PopoverContent / DashboardWindow)
 
 ### Security Rules
 - **API Key**: Keychain 存储（`kSecAttrAccessibleWhenUnlockedThisDeviceOnly`）；每个 AI Provider 独立 Keychain account (`"ai-key-{provider}"`)；所有读取使用双重 NoUI 保护；写入使用 SecItemUpdate 优先 + SecItemAdd 首次兜底（保留 ACL 避免重复弹窗）；`AppSettings.cachedAPIKey` 内存缓存，切换 provider 时自动清除；旧 DeepSeek account 首次启动自动迁移；1Password ref 共用 `"one-password-ref"` account，不受 provider 切换影响；UI 不在渲染期间读 Keychain（`cachedAPIKey` 已在上次保存时设置）
@@ -115,11 +118,21 @@ User clicks 重新生成
 - **用户输入**: 必须通过 `SecurityPolicies.sanitizeUserInput()` 处理（移除控制字符 + `.whitespacesAndNewlines` 防 copy-paste 换行符污染）
 - **XML 解析**: 必须设置 `shouldResolveExternalEntities = false`
 
-### Rate Limiting
-- 自动刷新：启动时 2s 延迟执行一次 + 可选每小时定时刷新
+### Refresh State / Rate Limiting
+- 自动刷新：启动时 2s 延迟执行一次 + 可选每小时定时刷新；`refreshIfNeeded` 与 `manualRefresh` 都会统一计入今日刷新次数
+- 每源状态：`SourceLoadState.idle/loading/loaded/failed` 驱动 `NewsSection`，避免失败或超时后继续显示"加载中"
 - 手动刷新：每小时连续手动刷新 3 次触发警告
-- 缓存过期阈值：15 分钟（超过则 loadCached 返回空，等自动/手动刷新填充）
+- AI 用量：仅成功 AI 总结按实际请求次数计入今日 AI 调用；设置页显示本地预估花费（微博/B站/RSS 不计费）
+- 缓存过期阈值：15 分钟（超过则 `loadCached` 仅在内存无数据时从缓存加载；内存有数据时保留不覆盖，避免 stale 缓存清除自动刷新刚填入的新数据）
+- `applyCachedState` 在 `.loaded` 状态下不退回到 `.idle`（防止打开弹窗时状态闪烁）
 - `RateLimiter` 是 actor，线程安全
+
+### Refresh Log
+- `RefreshLog` 是 actor 隔离的环形缓冲，最多保留 10 条记录
+- 触发点：启动自动刷新 (`.startup`)、定时器 (`.timer1h`)、手动刷新 (`.manual`)、弹窗打开时 `loadCached` (`.popoverOpen`)
+- 每条记录包含：每源结果（ok/N、failed/原因、cache/N、skipped/N）、AI 状态前后对比
+- 日志落盘到 `~/Library/Caches/<bundleID>/refresh.log`（每次写后截断至最新 10 条）
+- UI：设置 → 通用 → 诊断 → "刷新日志"，折叠表格 + 复制按钮，不含 API Key、密码等敏感数据
 
 ## Dependencies
 
