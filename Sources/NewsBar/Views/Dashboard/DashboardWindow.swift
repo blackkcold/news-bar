@@ -12,13 +12,13 @@ struct DashboardWindow: View {
                 VStack(spacing: 0) {
                     if case .done(let summary) = orchestrator.aiSummaryState {
                         if !summary.isEmpty {
-                            summaryCard(summary)
+                            summaryCard(summary, items: orchestrator.allActiveItems(settings: settings))
                             Divider().padding(.horizontal, 12)
                         }
                     }
                     if case .truncated(let summary) = orchestrator.aiSummaryState {
                         if !summary.isEmpty {
-                            summaryCard(summary)
+                            summaryCard(summary, items: orchestrator.allActiveItems(settings: settings))
                             Divider().padding(.horizontal, 12)
                         }
                     }
@@ -107,7 +107,7 @@ struct DashboardWindow: View {
         .background(.ultraThinMaterial)
     }
 
-    private func summaryCard(_ text: String) -> some View {
+    private func summaryCard(_ text: String, items: [NewsItem] = []) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 4) {
                 Image(systemName: "sparkles")
@@ -119,15 +119,34 @@ struct DashboardWindow: View {
             }
             .padding(.horizontal, 16)
 
-            Text(text)
-                .font(.system(size: 12))
-                .foregroundStyle(.primary)
-                .lineSpacing(4)
-                .padding(12)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(.purple.opacity(0.06))
-                .clipShape(RoundedRectangle(cornerRadius: 8))
-                .padding(.horizontal, 16)
+            VStack(alignment: .leading, spacing: 8) {
+                let sections = AISummaryCard.parseSections(text, itemCount: items.count)
+                if sections.isEmpty {
+                    Text((try? AttributedString(markdown: AISummaryCard.stripCitations(text)))
+                        ?? AttributedString(AISummaryCard.stripCitations(text)))
+                        .font(.system(size: 12))
+                        .foregroundStyle(.primary)
+                        .lineSpacing(4)
+                } else {
+                    ForEach(Array(sections.enumerated()), id: \.offset) { index, section in
+                        SectionRow(
+                            title: section.title,
+                            content: section.body,
+                            matchedItem: section.primaryIndex.flatMap {
+                                items.indices.contains($0) ? items[$0] : nil
+                            }
+                        )
+                        if index < sections.count - 1 {
+                            Divider().opacity(0.3).padding(.horizontal, 4)
+                        }
+                    }
+                }
+            }
+            .padding(12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(.purple.opacity(0.06))
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .padding(.horizontal, 16)
         }
         .padding(.vertical, 8)
     }

@@ -65,6 +65,10 @@ final class AppSettings {
         didSet { UserDefaults.standard.set(statsDayTimestamp, forKey: "statsDayTimestamp") }
     }
 
+    var updateDevMode: Bool {
+        didSet { UserDefaults.standard.set(updateDevMode, forKey: "updateDevMode") }
+    }
+
     var rssSources: [RSSSourceConfig] {
         didSet { saveRSSSources() }
     }
@@ -122,6 +126,8 @@ final class AppSettings {
         } else {
             self.rssSources = []
         }
+
+        self.updateDevMode = defaults.bool(forKey: "updateDevMode")
 
         self.isInitializing = false
         resetDailyStatsIfNeeded()

@@ -35,7 +35,7 @@ Sources/NewsBar/
 │   │   ├── PopoverContent.swift  # 主弹窗：Header + AI 状态卡 + 新闻列表 + BottomBar
 │   │   ├── NewsSection.swift     # 新闻区段 (支持折叠/展开)
 │   │   ├── NewsItemRow.swift     # 单条新闻行
-│   │   ├── AISummaryCard.swift   # AI 总结卡片（状态驱动 + 逐字动画）
+│   │   ├── AISummaryCard.swift   # AI 总结卡片（状态驱动 + 逐字动画 + 模板框架 section 渲染 + [#N] 引用编号源链接角标）
 │   │   ├── UpdateBadge.swift     # 更新状态按钮（检查→下载→打开，7 态胶囊按钮）
 │   │   └── BottomBar.swift       # 底部工具栏
 │   ├── Dashboard/
@@ -85,8 +85,10 @@ App 启动
   → 读 key 成功 → 写 cachedAPIKey → manualRefresh() 抓取所有源 → AI 总结
   → AISummaryService.summarize(provider:) → 首次 max_tokens=1024 → 若截断则 max_tokens=2048 重试 1 次
   → AI 总结成功后才写 lastBatchHash，并按实际请求次数计入今日 AI 调用；idle/noKey/error/fetching 可触发恢复总结；manualRefresh 强制总结
-  → 结果通过 AISummaryState 驱动 UI：noKey / fetching / summarizing / done / truncated / error
-  → 结果文本首次渲染直接显示（.onAppear），状态转变时逐字动画（.onChange(of:)）
+   → 结果通过 AISummaryState 驱动 UI：noKey / fetching / summarizing / done / truncated / error
+   → 结果文本首次渲染直接显示（.onAppear），状态转变时逐字动画（.onChange(of:)）
+   → 动画完成后按「【标题】」模板拆分 section，通过 [#N] 引用编号确定性映射到 NewsItem
+   → 标题用原生 .bold() 渲染，正文用 AttributedString(markdown:) 仅处理内联加粗
   → 若 autoRefreshEnabled，Timer(3600s) 定时刷新
 User opens popover
   → PopoverContent.task { loadCached(settings) } 显示缓存数据（内存优先：若内存已有数据则跳过加载）

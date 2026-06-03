@@ -39,14 +39,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
             guard let self else { return }
             Task {
-                await self.orchestrator?.refreshIfNeeded(settings: self.settings)
+                await self.orchestrator?.refreshIfNeeded(settings: self.settings, trigger: .startup)
             }
         }
 
         autoRefreshTimer = Timer.scheduledTimer(withTimeInterval: 3600, repeats: true) { [weak self] _ in
             guard let self, self.settings.autoRefreshEnabled else { return }
             Task {
-                await self.orchestrator?.refreshIfNeeded(settings: self.settings)
+                await self.orchestrator?.refreshIfNeeded(settings: self.settings, trigger: .timer1h)
             }
         }
     }

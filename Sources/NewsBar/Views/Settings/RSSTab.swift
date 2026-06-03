@@ -9,6 +9,7 @@ struct RSSTab: View {
     @State private var addError: String?
     @State private var isTesting = false
     @State private var showRecommendations = false
+    @State private var showMaxAlert = false
 
     private let maxSelected = 3
 
@@ -24,7 +25,7 @@ struct RSSTab: View {
                 }
             } header: {
                 HStack {
-                    Text("我的 RSS 源")
+                    Text("我的 RSS 源 (\(settings.selectedRSSSourceIDs.count)/\(maxSelected))")
                     Spacer()
                     Button {
                         withAnimation { showRecommendations.toggle() }
@@ -52,6 +53,11 @@ struct RSSTab: View {
             }
         }
         .formStyle(.grouped)
+        .alert("提示", isPresented: $showMaxAlert) {
+            Button("知道了") { }
+        } message: {
+            Text("最多只能选择3个RSS源")
+        }
     }
 
     private var emptySourcesView: some View {
@@ -71,9 +77,10 @@ struct RSSTab: View {
     }
 
     private func rssSourceRow(_ rss: RSSSourceConfig) -> some View {
-        HStack(spacing: 8) {
-            let isSelected = settings.selectedRSSSourceIDs.contains(rss.id)
+        let isSelected = settings.selectedRSSSourceIDs.contains(rss.id)
+        let isDisabled = !isSelected && settings.selectedRSSSourceIDs.count >= maxSelected
 
+        return HStack(spacing: 8) {
             Button {
                 toggleSelection(rss.id)
             } label: {
@@ -118,6 +125,7 @@ struct RSSTab: View {
             }
             .buttonStyle(.plain)
         }
+        .opacity(isDisabled ? 0.4 : 1.0)
         .padding(.vertical, 2)
     }
 
@@ -126,6 +134,8 @@ struct RSSTab: View {
             settings.selectedRSSSourceIDs.remove(id)
         } else if settings.selectedRSSSourceIDs.count < maxSelected {
             settings.selectedRSSSourceIDs.insert(id)
+        } else {
+            showMaxAlert = true
         }
     }
 
@@ -185,7 +195,7 @@ struct RSSTab: View {
                 TextField("源名称", text: $newName)
                     .textFieldStyle(.roundedBorder)
                     .frame(width: 120)
-                TextField("RSS URL (https://...)", text: $newURL)
+                TextField("RSS URL", text: $newURL)
                     .textFieldStyle(.roundedBorder)
             }
 
@@ -215,7 +225,17 @@ struct RSSTab: View {
         let sanitizedURL = SecurityPolicies.sanitizeUserInput(newURL)
         let sanitizedName = SecurityPolicies.sanitizeUserInput(newName)
 
-        guard SecurityPolicies.validateRSSURL(sanitizedURL) else {
+        guard !sanitizedURL.isEmpty else {
+            addError = "请输入 RSS URL"
+            return
+        }
+
+        var normalizedURL = sanitizedURL
+        if URL(string: normalizedURL)?.scheme == nil {
+            normalizedURL = "https://" + normalizedURL
+        }
+
+        guard SecurityPolicies.validateRSSURL(normalizedURL) else {
             addError = "URL 格式无效，仅支持 https://"
             return
         }
@@ -225,10 +245,10 @@ struct RSSTab: View {
 
         Task {
             do {
-                let isValid = try await RSSService.validate(sanitizedURL)
+                let isValid = try await RSSService.validate(normalizedURL)
                 if isValid {
                     let source = RSSSourceConfig(
-                        name: sanitizedName, url: sanitizedURL, displayMode: .single
+                        name: sanitizedName, url: normalizedURL, displayMode: .single
                     )
                     settings.rssSources.append(source)
                     if settings.selectedRSSSourceIDs.count < maxSelected {
@@ -239,7 +259,7 @@ struct RSSTab: View {
                     NotificationCenter.default.post(
                         name: .rssSourceAdded,
                         object: nil,
-                        userInfo: ["url": sanitizedURL, "name": sanitizedName]
+                        userInfo: ["url": normalizedURL, "name": sanitizedName]
                     )
                 } else {
                     addError = "该地址不是有效的 RSS/Atom Feed"

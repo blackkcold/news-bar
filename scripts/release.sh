@@ -13,6 +13,12 @@ if [ ! -f "$DMG_FILE" ]; then
     exit 1
 fi
 
+if [ ! -f "${DMG_FILE}.sha256" ]; then
+    echo "❌ SHA256 file not found: ${DMG_FILE}.sha256"
+    echo "   Run the updated scripts/build.sh first"
+    exit 1
+fi
+
 TEMP_NOTES="/tmp/newsbar-release-notes.md"
 
 PREV_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
@@ -31,7 +37,8 @@ if command -v gh &> /dev/null; then
     gh release create "v$VERSION" \
         --title "NewsBar v$VERSION" \
         --notes-file "$TEMP_NOTES" \
-        "$DMG_FILE"
+        "$DMG_FILE" \
+        "${DMG_FILE}.sha256"
     echo "✅ Release created: v$VERSION"
 else
     echo "⚠️  gh CLI not installed. Install it with: brew install gh"

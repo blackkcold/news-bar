@@ -56,11 +56,6 @@ cat > "${BUNDLE_DIR}/Contents/Info.plist" << PLIST
     <string>AppIcon</string>
     <key>NSHighResolutionCapable</key>
     <true/>
-    <key>NSAppTransportSecurity</key>
-    <dict>
-        <key>NSAllowsArbitraryLoads</key>
-        <false/>
-    </dict>
 </dict>
 </plist>
 PLIST
@@ -134,3 +129,7 @@ echo "✅ Build complete!"
 echo "   App:  ${BUNDLE_DIR}"
 echo "   DMG:  ${DMG_PATH}"
 ls -lh "${DMG_PATH}"
+
+echo "🔐 Generating SHA256..."
+shasum -a 256 "${DMG_PATH}" | awk '{print $1}' > "${DMG_PATH}.sha256"
+echo "   SHA256: $(cat ${DMG_PATH}.sha256)"
