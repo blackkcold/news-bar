@@ -160,4 +160,36 @@ enum AIProvider: String, CaseIterable, Codable {
             ]
         }
     }
+
+    func estimatedDailyCostText(model: String, requestCount: Int) -> String {
+        guard requestCount > 0 else { return "¥0.0000" }
+
+        switch self {
+        case .deepseek:
+            let inputTokensPerRequest = 400
+            let outputTokensPerRequest = 100
+            let inputRatePerMillion: Double
+            let outputRatePerMillion: Double
+
+            if model.contains("pro") {
+                inputRatePerMillion = 12
+                outputRatePerMillion = 24
+            } else {
+                inputRatePerMillion = 1
+                outputRatePerMillion = 2
+            }
+
+            let inputCost = Double(requestCount * inputTokensPerRequest) * inputRatePerMillion / 1_000_000
+            let outputCost = Double(requestCount * outputTokensPerRequest) * outputRatePerMillion / 1_000_000
+            return String(format: "≈¥%.4f", inputCost + outputCost)
+        case .googleAIStudio:
+            return "≈¥0（免费层内）"
+        case .minimaxTokenPlan:
+            return "按 Token Plan 扣减"
+        case .minimaxAPI:
+            return "定价未内置"
+        case .opencodeGo, .opencodeZen:
+            return "由 Opencode 账户计费"
+        }
+    }
 }

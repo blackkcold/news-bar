@@ -1,18 +1,51 @@
-## v1.3.0 — 暗色模式修复 & UI 优化
+## v1.3.1 — AI Summary Template Framework & Citation Source Links
 
-### 🐛 Bug 修复
+### ✨ New Features
 
-- **修复暗色模式外观设置不生效**：设置中的「通用 → 外观 → 深色/浅色」选项现在会正确应用到所有窗口，包括主弹窗、Dashboard 和设置面板。此前该设置仅存储到 UserDefaults 但从未生效。
-- **修复"跟随系统"选项**：切换到「跟随系统」后立即检测当前 macOS 系统外观（深色/浅色）并应用。系统切换日/夜间模式时实时跟随，无需重启 App。
+- **Template-framework AI output**: Prompt replaced `##` Markdown with `【title】` template blocks. AI fills content into predefined slots, eliminating fragile Markdown parsing. Section titles use native SwiftUI `.bold()`; body text uses `AttributedString(markdown:)` only for inline bold.
+- **Citation-number source badges**: Each paragraph carries `[#N]` citation numbers deterministically mapped to original news items. Hover reveals a Liquid Glass capsule badge; click opens the source URL. Replaces probabilistic keyword matching with 100% accurate index mapping.
+- **Section dividers**: Visual separators between topic sections.
 
-### ✨ 改进
+### 🐛 Bug Fixes
 
-- 使用 `NSApp.effectiveAppearance` 替代 `@Environment(\.colorScheme)`，准确读取真实系统外观，避免被 SwiftUI 视图树残留值污染。
-- 新增 `AppleInterfaceThemeChangedNotification` 监听系统外观实时变化，确保"跟随系统"模式下即时响应。
-- 提取 `AdaptiveColorSchemeModifier` 统一管理所有窗口的暗色模式逻辑，3 个视图窗口（SettingsWindow、PopoverContent、DashboardWindow）仅需一行 `.adaptiveColorScheme()`。
+- Fix truncated-summary blank frame during character animation (first character now visible immediately)
+- Fix fallback rendering showing raw `[#N]` citation markers
+- Fix hover badge overflow when multiple sources mapped to one section
+- Fix old `##` Markdown cached data not parsing after `【】` template upgrade (add backward compatibility in parser)
 
-### 🔧 技术细节
+### 🔧 Improvements
 
-- `AppSettings.swift` 新增 `resolvedColorScheme: ColorScheme?` 计算属性，将存储的 String 值 (`"system"/"light"/"dark"`) 映射为 SwiftUI ColorScheme 枚举。
-- `View+Glass.swift` 新增 `AdaptiveColorSchemeModifier` + `.adaptiveColorScheme()` View 扩展。
-- 创建分支: `feature/v1.3.0`
+- `AISummaryService.swift`: Prompt upgraded to `【title】` + `引用：[#N]` template framework; AI selects 3–5 most important topics with `maxWords` hard constraint
+- `AISummaryCard.swift`: `parseSections` scans lines for `【` or `#` headers; `SectionRow` uses native SwiftUI controls; `stripCitations` promoted to `internal static`
+- `DashboardWindow.swift`: Removed ~90 lines of duplicate parsing functions; reuses shared `parseSections`
+- `AboutTab.swift`: Added GitHub link, AI provider list, project metadata, and searchable keywords
+- `README.md`: Complete bilingual Chinese/English rewrite with badges, provider table, and keyword section for discoverability
+- Added `LICENSE` (MIT)
+
+### 📦 Build
+
+```
+release/1.3.1/NewsBar.app
+release/1.3.1/NewsBar-1.3.1.dmg
+```
+
+---
+
+## v1.3.0 — Dark Mode Fix & UI Polish
+
+### 🐛 Bug Fixes
+
+- **Fix dark mode appearance setting not applying**: Settings → General → Appearance → Dark/Light now correctly applies to all windows (popover, dashboard, settings).
+- **Fix "Follow System" option**: Detects current macOS appearance immediately; switches in real-time without app restart.
+
+### ✨ Improvements
+
+- Use `NSApp.effectiveAppearance` instead of `@Environment(\.colorScheme)` for accurate system appearance detection.
+- Add `AppleInterfaceThemeChangedNotification` listener for real-time system appearance changes.
+- Extract `AdaptiveColorSchemeModifier` to unify dark mode across 3 views via `.adaptiveColorScheme()`.
+
+### 🔧 Technical
+
+- `AppSettings.swift`: Add `resolvedColorScheme: ColorScheme?` computed property mapping `"system"/"light"/"dark"` to SwiftUI enum.
+- `View+Glass.swift`: Add `AdaptiveColorSchemeModifier` + `.adaptiveColorScheme()` extension.
+- Branch: `feature/v1.3.0`

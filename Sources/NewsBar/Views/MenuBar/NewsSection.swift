@@ -6,6 +6,7 @@ struct NewsSection: View {
     let color: Color
     let items: [NewsItem]
     let showRank: Bool
+    var state: SourceLoadState = .idle
     var maxVisible: Int? = nil
 
     @State private var isExpanded = false
@@ -33,6 +34,10 @@ struct NewsSection: View {
                     NewsItemRow(item: item, showRank: showRank)
                 }
 
+                if case .failed(let message) = state {
+                    staleDataHint(message)
+                }
+
                 if hiddenCount > 0 {
                     expandButton
                 }
@@ -56,14 +61,52 @@ struct NewsSection: View {
     }
 
     private var emptyState: some View {
-        HStack {
-            Text("加载中...")
-                .font(.system(size: 12))
-                .foregroundStyle(.tertiary)
+        HStack(spacing: 6) {
+            switch state {
+            case .loading:
+                ProgressView()
+                    .scaleEffect(0.55)
+                    .frame(width: 14, height: 14)
+                Text("加载中...")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.tertiary)
+            case .failed(let message):
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.orange)
+                Text("加载失败")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+                Text(message)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
+            case .idle, .loaded:
+                Text("暂无数据")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.tertiary)
+            }
             Spacer()
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 8)
+    }
+
+    private func staleDataHint(_ message: String) -> some View {
+        HStack(spacing: 5) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.system(size: 8))
+            Text("更新失败，显示缓存")
+                .font(.system(size: 10))
+            Text(message)
+                .font(.system(size: 10))
+                .foregroundStyle(.tertiary)
+                .lineLimit(1)
+            Spacer()
+        }
+        .foregroundStyle(.orange)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 5)
     }
 
     private var expandButton: some View {

@@ -2,12 +2,13 @@ import SwiftUI
 
 struct UpdateBadge: View {
     @ObservedObject var checker: UpdateChecker
+    @Environment(AppSettings.self) private var settings
 
     var body: some View {
         HStack(spacing: 4) {
             switch checker.state {
             case .idle:
-                actionButton(label: "检查更新", icon: "arrow.down.circle")
+                actionButton(label: settings.updateDevMode ? "检查更新(dev)" : "检查更新", icon: "arrow.down.circle")
                     .onTapGesture { manualCheck() }
 
             case .checking:

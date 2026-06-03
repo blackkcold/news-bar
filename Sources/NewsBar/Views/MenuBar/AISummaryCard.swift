@@ -3,6 +3,7 @@ import SwiftUI
 struct AISummaryCard: View {
     let state: AISummaryState
     @Binding var isExpanded: Bool
+    var allItems: [NewsItem] = []
     var onRegenerate: (() -> Void)?
     var onConfigureKey: (() -> Void)?
 
@@ -22,14 +23,14 @@ struct AISummaryCard: View {
         .onAppear {
             switch state {
             case .done(let text), .truncated(let text):
-                displayText = text
+                displayText = stripMarkdown(text)
             default: break
             }
         }
         .onChange(of: state) { _, newState in
             switch newState {
             case .done(let text), .truncated(let text):
-                Task { await animateText(text) }
+                Task { await animateText(stripMarkdown(text)) }
             default:
                 displayText = ""
             }
@@ -195,12 +196,24 @@ struct AISummaryCard: View {
         }
     }
 
+    @ViewBuilder
     private var summaryContent: some View {
+        let fullText: String = {
+            switch state {
+            case .done(let t), .truncated(let t): return t
+            default: return ""
+            }
+        }()
+
         VStack(alignment: .leading, spacing: 8) {
-            Text(displayText)
-                .font(.system(size: 12))
-                .foregroundStyle(.primary)
-                .lineSpacing(4)
+            if displayText == stripMarkdown(fullText) {
+                sectionRenderedView(fullText)
+            } else {
+                Text(displayText)
+                    .font(.system(size: 12))
+                    .foregroundStyle(.primary)
+                    .lineSpacing(4)
+            }
 
             if case .truncated = state {
                 HStack(spacing: 6) {
@@ -216,7 +229,114 @@ struct AISummaryCard: View {
                     }
                 }
             }
+
+            if case .done = state {
+                HStack {
+                    Spacer()
+                    if let onRegenerate {
+                        regenerateButton(action: onRegenerate)
+                    }
+                }
+            }
         }
+    }
+
+    // MARK: - Section Rendering
+
+    @ViewBuilder
+    private func sectionRenderedView(_ fullText: String) -> some View {
+        let sections = Self.parseSections(fullText, itemCount: allItems.count)
+        if sections.isEmpty {
+            Text((try? AttributedString(markdown: Self.stripCitations(fullText)))
+                ?? AttributedString(Self.stripCitations(fullText)))
+                .font(.system(size: 12))
+                .foregroundStyle(.primary)
+                .lineSpacing(4)
+        } else {
+            ForEach(Array(sections.enumerated()), id: \.offset) { index, section in
+                SectionRow(
+                    title: section.title,
+                    content: section.body,
+                    matchedItem: section.primaryIndex.flatMap {
+                        allItems.indices.contains($0) ? allItems[$0] : nil
+                    }
+                )
+                if index < sections.count - 1 {
+                    Divider().opacity(0.3).padding(.horizontal, 4)
+                }
+            }
+        }
+    }
+
+    /// 按 ## 标题拆分 Markdown 文本为多个 section，提取引用编号
+    static func parseSections(_ text: String, itemCount: Int)
+        -> [(title: String, body: String, primaryIndex: Int?)] {
+        let lines = text.components(separatedBy: "\n")
+        var sections: [(title: String, body: String, primaryIndex: Int?)] = []
+        var currentTitle = ""
+        var currentBody = ""
+        var currentIndices: [Int] = []
+
+        func flush() {
+            let t = currentTitle.trimmingCharacters(in: .whitespaces)
+            let b = currentBody.trimmingCharacters(in: .whitespaces)
+            if !t.isEmpty {
+                let primary = currentIndices.first
+                sections.append((title: t, body: b, primaryIndex: primary))
+            }
+            currentTitle = ""
+            currentBody = ""
+            currentIndices = []
+        }
+
+        for line in lines {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.hasPrefix("【") {
+                flush()
+                currentTitle = extractTemplateTitle(trimmed)
+            } else if trimmed.hasPrefix("#") {
+                flush()
+                currentTitle = extractMarkdownTitle(trimmed)
+            } else if trimmed.hasPrefix("引用：") {
+                currentIndices = Self.parseCitationNumbers(trimmed, itemCount: itemCount)
+            } else if !trimmed.isEmpty, !currentTitle.isEmpty {
+                let refs = Self.parseCitationNumbers(trimmed, itemCount: itemCount)
+                currentIndices.append(contentsOf: refs)
+                currentBody += (currentBody.isEmpty ? "" : "\n") + trimmed
+            }
+        }
+        flush()
+        return sections
+    }
+
+    private static func extractTemplateTitle(_ line: String) -> String {
+        guard let start = line.firstIndex(of: "【"),
+              let end = line.firstIndex(of: "】"), end > start else {
+            return String(line.dropFirst())
+        }
+        return String(line[line.index(after: start)..<end])
+    }
+
+    private static func extractMarkdownTitle(_ line: String) -> String {
+        line.replacingOccurrences(of: "^#{1,6}\\s*", with: "", options: .regularExpression)
+            .trimmingCharacters(in: .whitespaces)
+    }
+
+    static func parseCitationNumbers(_ line: String, itemCount: Int) -> [Int] {
+        guard let regex = try? NSRegularExpression(pattern: "\\[#(\\d+)\\]") else { return [] }
+        let range = NSRange(line.startIndex..., in: line)
+        return regex.matches(in: line, range: range).compactMap { match in
+            guard match.numberOfRanges > 1,
+                  let r = Range(match.range(at: 1), in: line),
+                  let idx = Int(line[r]),
+                  idx >= 0, idx < itemCount else { return nil }
+            return idx
+        }
+    }
+
+    static func stripCitations(_ text: String) -> String {
+        text.replacingOccurrences(of: "\\[#\\d+\\]", with: "", options: .regularExpression)
+            .trimmingCharacters(in: .whitespaces)
     }
 
     private func errorContent(_ message: String) -> some View {
@@ -265,14 +385,114 @@ struct AISummaryCard: View {
 
     @MainActor
     private func animateText(_ fullText: String) async {
-        displayText = ""
         let chars: [Character] = Array(fullText)
-        for i in 0...chars.count {
+        guard !chars.isEmpty else { return }
+        displayText = String(chars.prefix(1))
+        for i in 2...chars.count {
             if Task.isCancelled { return }
             displayText = String(chars.prefix(i))
-            if i < chars.count {
-                try? await Task.sleep(nanoseconds: 25_000_000)
+            try? await Task.sleep(nanoseconds: 25_000_000)
+        }
+    }
+
+    /// 剥离 Markdown 标记，返回纯文本用于逐字动画显示
+    private func stripMarkdown(_ text: String) -> String {
+        var result = text
+        // 去除 **加粗** 标记
+        result = result.replacingOccurrences(of: "\\*\\*(.*?)\\*\\*", with: "$1", options: .regularExpression)
+        // 去除 *斜体* 标记（注意不要错误匹配 ** 中的单星号）
+        result = result.replacingOccurrences(of: "(?<!\\*)\\*(?!\\*)(.*?)(?<!\\*)\\*(?!\\*)", with: "$1", options: .regularExpression)
+        // 去除 `代码` 标记
+        result = result.replacingOccurrences(of: "`(.*?)`", with: "$1", options: .regularExpression)
+        // 去除行首 ## 标题标记
+        result = result.replacingOccurrences(of: "(?m)^#{1,6}\\s+", with: "", options: .regularExpression)
+        // 去除行首 - 列表标记
+        result = result.replacingOccurrences(of: "(?m)^[-*+]\\s+", with: "", options: .regularExpression)
+        // 去除行首 > 引用标记
+        result = result.replacingOccurrences(of: "(?m)^>\\s+", with: "", options: .regularExpression)
+        // 去除引用编号 [#N]
+        result = result.replacingOccurrences(of: "\\[#\\d+\\]", with: "", options: .regularExpression)
+        // 去除模板标记【标题】
+        result = result.replacingOccurrences(of: "【[^】]*】", with: "", options: .regularExpression)
+        // 去除引用：行
+        result = result.replacingOccurrences(of: "(?m)^引用：.*$\\n?", with: "", options: .regularExpression)
+        return result
+    }
+}
+
+// MARK: - Section Row
+
+struct SectionRow: View {
+    let title: String
+    let content: String
+    let matchedItem: NewsItem?
+
+    @State private var isHovered = false
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 0) {
+            VStack(alignment: .leading, spacing: 2) {
+                if !title.isEmpty {
+                    Text(title)
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundStyle(.primary)
+                    Text((try? AttributedString(markdown: content)) ?? AttributedString(content))
+                        .font(.system(size: 12))
+                        .foregroundStyle(.primary)
+                        .lineSpacing(4)
+                } else {
+                    Text((try? AttributedString(markdown: content)) ?? AttributedString(content))
+                        .font(.system(size: 12))
+                        .foregroundStyle(.primary)
+                        .lineSpacing(4)
+                }
+            }
+
+            Spacer(minLength: 4)
+
+            if isHovered, let item = matchedItem {
+                SourceBadge(sourceName: item.source.displayName, url: item.url)
+                    .padding(.top, 2)
+                    .transition(.scale(scale: 0.6).combined(with: .opacity))
             }
         }
+        .padding(8)
+        .background(isHovered ? Color.primary.opacity(0.04) : .clear)
+        .clipShape(RoundedRectangle(cornerRadius: 6))
+        .onHover { hovering in
+            withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
+                isHovered = hovering
+            }
+        }
+    }
+}
+
+// MARK: - Source Badge
+
+private struct SourceBadge: View {
+    let sourceName: String
+    let url: String
+
+    @State private var isBadgeHovered = false
+
+    var body: some View {
+        Button {
+            URLOpener.open(url)
+        } label: {
+            HStack(spacing: 3) {
+                Image(systemName: "arrow.up.forward")
+                    .font(.system(size: 7, weight: .bold))
+                Text(sourceName)
+                    .font(.system(size: 9, weight: .medium))
+            }
+            .padding(.horizontal, 6)
+            .padding(.vertical, 3)
+            .background(.ultraThinMaterial)
+            .clipShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .scaleEffect(isBadgeHovered ? 1.08 : 1.0)
+        .animation(.spring(response: 0.25, dampingFraction: 0.7), value: isBadgeHovered)
+        .onHover { isBadgeHovered = $0 }
     }
 }

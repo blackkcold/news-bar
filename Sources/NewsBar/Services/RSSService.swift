@@ -31,20 +31,26 @@ enum RSSService {
         }
 
         var request = URLRequest(url: url)
-        request.httpMethod = "HEAD"
         request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
         request.timeoutInterval = timeout
 
-        let (_, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await URLSession.shared.data(for: request)
 
         guard let httpResponse = response as? HTTPURLResponse,
               (200...299).contains(httpResponse.statusCode) else {
             return false
         }
 
-        let contentType = httpResponse.value(forHTTPHeaderField: "Content-Type") ?? ""
-        let validTypes = ["application/rss+xml", "application/atom+xml", "text/xml", "application/xml"]
-        return validTypes.contains { contentType.contains($0) }
+        return isRSSOrAtom(data: data)
+    }
+
+    private static func isRSSOrAtom(data: Data) -> Bool {
+        let parser = XMLParser(data: data)
+        SecurityPolicies.configureXMLParser(parser)
+        let delegate = RSSRootDetector()
+        parser.delegate = delegate
+        _ = parser.parse()
+        return delegate.isRSSOrAtom
     }
 
     private static func parseRSSFeed(data: Data, sourceName: String, sourceURL: String) throws -> [NewsItem] {
@@ -65,6 +71,19 @@ enum RSSService {
                 source: .rss(name: sourceName, url: sourceURL)
             )
         }
+    }
+}
+
+private final class RSSRootDetector: NSObject, XMLParserDelegate {
+    var isRSSOrAtom = false
+
+    func parser(_ parser: XMLParser, didStartElement elementName: String,
+                namespaceURI: String?, qualifiedName: String?,
+                attributes: [String: String] = [:]) {
+        if elementName == "rss" || elementName == "feed" || elementName == "rdf:RDF" {
+            isRSSOrAtom = true
+        }
+        parser.abortParsing()
     }
 }
 

@@ -10,6 +10,13 @@ enum AISummaryState: Equatable {
     case error(String)
 }
 
+enum SourceLoadState: Equatable {
+    case idle
+    case loading
+    case loaded
+    case failed(String)
+}
+
 enum NewsBarError: LocalizedError {
     case invalidURL
     case requestFailed
@@ -35,30 +42,97 @@ final class NewsOrchestrator: ObservableObject {
     @Published var rssItemsMap: [String: [NewsItem]] = [:]
     @Published var aiSummaryState = AISummaryState.idle
     @Published var isRefreshing = false
-    @Published var errorMessage: String?
+    @Published var sourceStates: [String: SourceLoadState] = [:]
     @Published var manualRefreshWarning: String?
 
     private let cacheManager = CacheManager()
     private let rateLimiter = RateLimiter()
     private var lastBatchHash: String?
 
-    func loadCached() async {
-        if let cached = await cacheManager.load(for: .weibo) {
-            weiboItems = cached.isStale ? [] : cached.items
+    func loadCached(settings: AppSettings) async {
+        let aiBefore = logStateLabel(aiSummaryState)
+        var sourceResults: [String: String] = [:]
+        // 内存优先: 若已有数据则不覆盖 (避免 stale 缓存清空自动刷新填入的新数据)
+        if weiboItems.isEmpty {
+            if let cached = await cacheManager.load(for: .weibo) {
+                if cached.isStale {
+                    sourceStates[NewsSource.weibo.id] = .idle
+                    sourceResults[NewsSource.weibo.displayName] = "cacheStale"
+                } else {
+                    weiboItems = cached.items
+                    applyCachedState(.loaded, for: .weibo)
+                    sourceResults[NewsSource.weibo.displayName] = "cache/\(cached.items.count)"
+                }
+            } else {
+                if sourceStates[NewsSource.weibo.id] == nil {
+                    sourceStates[NewsSource.weibo.id] = .idle
+                }
+                sourceResults[NewsSource.weibo.displayName] = "noCache"
+            }
+        } else {
+            sourceResults[NewsSource.weibo.displayName] = "skipped/\(weiboItems.count)"
         }
-        if let cached = await cacheManager.load(for: .bilibili) {
-            bilibiliItems = cached.isStale ? [] : cached.items
+        if bilibiliItems.isEmpty {
+            if let cached = await cacheManager.load(for: .bilibili) {
+                if cached.isStale {
+                    sourceStates[NewsSource.bilibili.id] = .idle
+                    sourceResults[NewsSource.bilibili.displayName] = "cacheStale"
+                } else {
+                    bilibiliItems = cached.items
+                    applyCachedState(.loaded, for: .bilibili)
+                    sourceResults[NewsSource.bilibili.displayName] = "cache/\(cached.items.count)"
+                }
+            } else {
+                if sourceStates[NewsSource.bilibili.id] == nil {
+                    sourceStates[NewsSource.bilibili.id] = .idle
+                }
+                sourceResults[NewsSource.bilibili.displayName] = "noCache"
+            }
+        } else {
+            sourceResults[NewsSource.bilibili.displayName] = "skipped/\(bilibiliItems.count)"
         }
 
-        let settings = AppSettings()
         for source in settings.activeSources where !source.isBuiltIn {
-            if let entry = await cacheManager.load(for: source) {
-                rssItemsMap[source.id] = entry.isStale ? [] : entry.items
+            if rssItemsMap[source.id, default: []].isEmpty {
+                if let entry = await cacheManager.load(for: source) {
+                    if entry.isStale {
+                        sourceStates[source.id] = .idle
+                        sourceResults[source.displayName] = "cacheStale"
+                    } else {
+                        rssItemsMap[source.id] = entry.items
+                        applyCachedState(.loaded, for: source)
+                        sourceResults[source.displayName] = "cache/\(entry.items.count)"
+                    }
+                } else {
+                    if sourceStates[source.id] == nil {
+                        sourceStates[source.id] = .idle
+                    }
+                    sourceResults[source.displayName] = "noCache"
+                }
+            } else {
+                let count = rssItemsMap[source.id]?.count ?? 0
+                sourceResults[source.displayName] = "skipped/\(count)"
             }
         }
+
+        await RefreshLog.shared.record(
+            trigger: .popoverOpen,
+            sourceResults: sourceResults,
+            aiBefore: aiBefore,
+            aiAfter: logStateLabel(aiSummaryState)
+        )
     }
 
-    func refreshIfNeeded(settings: AppSettings) async {
+    func refreshIfNeeded(settings: AppSettings, trigger: RefreshLog.Trigger = .startup) async {
+        guard !isRefreshing else { return }
+
+        let aiBefore = logStateLabel(aiSummaryState)
+
+        settings.recordRefresh()
+        isRefreshing = true
+        markSources(settings.activeSources, as: .loading)
+        defer { isRefreshing = false }
+
         let previousSummaryState = aiSummaryState
         let apiKey = settings.cachedAPIKey ?? ""
         if settings.aiSummaryEnabled {
@@ -100,46 +174,63 @@ final class NewsOrchestrator: ObservableObject {
             )
             if let items = newRSS {
                 rssItemsMap[source.id] = items
+            } else if rssItemsMap[source.id, default: []].isEmpty,
+                      let cached = await cacheManager.load(for: source) {
+                rssItemsMap[source.id] = cached.items
             }
         }
 
-        guard settings.aiSummaryEnabled else { return }
+        guard settings.aiSummaryEnabled else {
+            await recordRefreshLog(settings: settings, trigger: trigger, aiBefore: aiBefore)
+            return
+        }
 
         let allNewItems = allActiveItems(settings: settings)
         guard !allNewItems.isEmpty else {
             if !apiKey.isEmpty {
                 aiSummaryState = previousSummaryState
             }
+            await recordRefreshLog(settings: settings, trigger: trigger, aiBefore: aiBefore)
             return
         }
 
         guard !apiKey.isEmpty else {
             aiSummaryState = .noKey
+            await recordRefreshLog(settings: settings, trigger: trigger, aiBefore: aiBefore)
             return
         }
 
         let newHash = CacheEntry.hashForItems(allNewItems)
         if newHash != lastBatchHash || shouldRecoverAISummary(from: previousSummaryState) {
-            let didGenerate = await generateSummary(
+            let requestCount = await generateSummary(
                 items: allNewItems,
                 maxWords: settings.aiMaxWords,
                 model: settings.aiModel,
                 apiKey: apiKey,
                 provider: settings.currentProvider
             )
-            if didGenerate {
+            if requestCount > 0 {
+                settings.recordAIRequests(requestCount)
                 lastBatchHash = newHash
             }
         } else {
             aiSummaryState = previousSummaryState
         }
+        await recordRefreshLog(settings: settings, trigger: trigger, aiBefore: aiBefore)
     }
 
     func manualRefresh(settings: AppSettings) async {
+        guard !isRefreshing else { return }
+
+        let aiBefore = logStateLabel(aiSummaryState)
+
         manualRefreshWarning = await rateLimiter.manualRefreshWarning()
 
+        settings.recordRefresh()
         isRefreshing = true
-        errorMessage = nil
+        markSources(settings.activeSources, as: .loading)
+        defer { isRefreshing = false }
+
         let previousSummaryState = aiSummaryState
         let apiKey = settings.cachedAPIKey ?? ""
         if settings.aiSummaryEnabled {
@@ -182,20 +273,20 @@ final class NewsOrchestrator: ObservableObject {
                 }
             } else {
                 let newHash = CacheEntry.hashForItems(allItems)
-                let didGenerate = await generateSummary(
+                let requestCount = await generateSummary(
                     items: allItems,
                     maxWords: settings.aiMaxWords,
                     model: settings.aiModel,
                     apiKey: apiKey,
                     provider: settings.currentProvider
                 )
-                if didGenerate {
+                if requestCount > 0 {
+                    settings.recordAIRequests(requestCount)
                     lastBatchHash = newHash
                 }
             }
         }
-
-        isRefreshing = false
+        await recordRefreshLog(settings: settings, trigger: .manual, aiBefore: aiBefore)
     }
 
     private func fetchAndCache(
@@ -204,7 +295,10 @@ final class NewsOrchestrator: ObservableObject {
     ) async -> [NewsItem]? {
         do {
             let items = try await fetcher()
-            guard !items.isEmpty else { return nil }
+            guard !items.isEmpty else {
+                sourceStates[source.id] = .failed("未返回内容")
+                return nil
+            }
 
             let hasNew = await cacheManager.hasNewContent(for: source, newItems: items)
             if hasNew {
@@ -215,13 +309,96 @@ final class NewsOrchestrator: ObservableObject {
                 )
                 await cacheManager.save(entry, for: source)
             }
+            sourceStates[source.id] = .loaded
             return items
         } catch {
-            if source.isBuiltIn {
-                errorMessage = "\(source.displayName) 加载失败"
-            }
+            sourceStates[source.id] = .failed(sourceErrorMessage(error))
             return nil
         }
+    }
+
+    private func markSources(_ sources: [NewsSource], as state: SourceLoadState) {
+        for source in sources {
+            sourceStates[source.id] = state
+        }
+    }
+
+    private func applyCachedState(_ state: SourceLoadState, for source: NewsSource) {
+        switch sourceStates[source.id] {
+        case .some(.loading), .some(.failed):
+            return
+        case .some(.loaded):
+            return  // 已完成加载 → 不退回到 idle
+        case .some(.idle), .none:
+            sourceStates[source.id] = state
+        }
+    }
+
+    private func logStateLabel(_ state: AISummaryState) -> String {
+        switch state {
+        case .idle: return "idle"
+        case .noKey: return "noKey"
+        case .fetching: return "fetching"
+        case .summarizing: return "summarizing"
+        case .done: return "done"
+        case .truncated: return "truncated"
+        case .error(let msg): return "error(\(msg))"
+        }
+    }
+
+    private func collectSourceResults(settings: AppSettings) -> [String: String] {
+        var results: [String: String] = [:]
+        if let state = sourceStates[NewsSource.weibo.id] {
+            results[NewsSource.weibo.displayName] = sourceResultLabel(state, itemCount: weiboItems.count)
+        }
+        if let state = sourceStates[NewsSource.bilibili.id] {
+            results[NewsSource.bilibili.displayName] = sourceResultLabel(state, itemCount: bilibiliItems.count)
+        }
+        for source in settings.activeSources where !source.isBuiltIn {
+            if let state = sourceStates[source.id] {
+                let count = rssItemsMap[source.id]?.count ?? 0
+                results[source.displayName] = sourceResultLabel(state, itemCount: count)
+            }
+        }
+        return results
+    }
+
+    private func sourceResultLabel(_ state: SourceLoadState, itemCount: Int) -> String {
+        switch state {
+        case .idle: return "idle"
+        case .loading: return "loading"
+        case .loaded: return "ok/\(itemCount)"
+        case .failed(let msg): return "failed/\(msg)"
+        }
+    }
+
+    private func recordRefreshLog(settings: AppSettings, trigger: RefreshLog.Trigger, aiBefore: String) async {
+        await RefreshLog.shared.record(
+            trigger: trigger,
+            sourceResults: collectSourceResults(settings: settings),
+            aiBefore: aiBefore,
+            aiAfter: logStateLabel(aiSummaryState)
+        )
+    }
+
+    private func sourceErrorMessage(_ error: Error) -> String {
+        if let urlError = error as? URLError {
+            switch urlError.code {
+            case .timedOut:
+                return "请求超时"
+            case .notConnectedToInternet, .networkConnectionLost:
+                return "网络连接失败"
+            default:
+                return "网络请求失败"
+            }
+        }
+
+        if let newsBarError = error as? NewsBarError,
+           let description = newsBarError.errorDescription {
+            return description
+        }
+
+        return "加载失败"
     }
 
     private func shouldRecoverAISummary(from state: AISummaryState) -> Bool {
@@ -234,10 +411,10 @@ final class NewsOrchestrator: ObservableObject {
     }
 
     @discardableResult
-    private func generateSummary(items: [NewsItem], maxWords: Int, model: String, apiKey: String, provider: AIProvider) async -> Bool {
+    private func generateSummary(items: [NewsItem], maxWords: Int, model: String, apiKey: String, provider: AIProvider) async -> Int {
         guard !apiKey.isEmpty else {
             aiSummaryState = .noKey
-            return false
+            return 0
         }
         aiSummaryState = .summarizing
         do {
@@ -250,14 +427,14 @@ final class NewsOrchestrator: ObservableObject {
             } else {
                 aiSummaryState = .done(result.summary)
             }
-            return true
+            return result.requestCount
         } catch {
             if case NewsBarError.apiKeyInvalid = error {
                 aiSummaryState = .error("API Key 无效")
             } else {
                 aiSummaryState = .error("AI 总结生成失败")
             }
-            return false
+            return 0
         }
     }
 
@@ -279,6 +456,7 @@ final class NewsOrchestrator: ObservableObject {
         bilibiliItems = []
         rssItemsMap = [:]
         aiSummaryState = .idle
+        sourceStates = [:]
         lastBatchHash = nil
     }
 
@@ -289,15 +467,17 @@ final class NewsOrchestrator: ObservableObject {
             aiSummaryState = .noKey
             return
         }
-        await generateSummary(
+        let requestCount = await generateSummary(
             items: allItems, maxWords: settings.aiMaxWords,
             model: settings.aiModel, apiKey: apiKey,
             provider: settings.currentProvider
         )
+        settings.recordAIRequests(requestCount)
     }
 
     func refreshRSSSource(url: String, name: String) async {
         let source = NewsSource.rss(name: name, url: url)
+        sourceStates[source.id] = .loading
         if let items = await fetchAndCache(
             for: source,
             fetcher: {

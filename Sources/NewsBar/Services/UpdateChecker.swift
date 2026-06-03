@@ -1,11 +1,17 @@
 import Foundation
 import AppKit
+import CryptoKit
 
 final class UpdateChecker: ObservableObject {
 
     private static let repoOwner = "blackkcold"
     private static let repoName = "news-bar"
-    private static let apiURL = "https://api.github.com/repos/\(repoOwner)/\(repoName)/releases/latest"
+
+    private static let releaseAPIURLs: [(label: String, url: String)] = [
+        ("GitHub",  "https://api.github.com/repos/\(repoOwner)/\(repoName)/releases/latest"),
+        ("ghproxy", "https://gh-proxy.com/https://api.github.com/repos/\(repoOwner)/\(repoName)/releases/latest"),
+        ("ghproxy888", "https://gh.api.99988866.xyz/https://api.github.com/repos/\(repoOwner)/\(repoName)/releases/latest"),
+    ]
 
     private static let checkInterval: TimeInterval = 86400
     private static let updateCacheDir: URL = {
@@ -16,10 +22,11 @@ final class UpdateChecker: ObservableObject {
 
     @Published var state: UpdateState = .idle
 
-    private var downloadTask: URLSessionDownloadTask?
-    private lazy var urlSession: URLSession = {
-        URLSession(configuration: .default)
-    }()
+    var devMode: Bool {
+        UserDefaults.standard.bool(forKey: "updateDevMode")
+    }
+
+    private var cachedRelease: GitHubRelease?
 
     private var lastCheckDate: Date? {
         get { UserDefaults.standard.object(forKey: "lastUpdateCheckDate") as? Date }
@@ -44,6 +51,8 @@ final class UpdateChecker: ObservableObject {
             return
         }
 
+        cachedRelease = release
+
         guard versionIsNewer(release.version, than: AppVersion.current) else {
             return
         }
@@ -67,7 +76,9 @@ final class UpdateChecker: ObservableObject {
             return
         }
 
-        guard versionIsNewer(release.version, than: AppVersion.current) else {
+        cachedRelease = release
+
+        guard devMode || versionIsNewer(release.version, than: AppVersion.current) else {
             await MainActor.run { state = .upToDate(AppVersion.current) }
             try? await Task.sleep(nanoseconds: 3_000_000_000)
             if case .upToDate = state {
@@ -86,13 +97,19 @@ final class UpdateChecker: ObservableObject {
         guard case .updateAvailable = state else { return }
 
         Task {
-            guard let release = await fetchLatestRelease() else {
-                await MainActor.run { state = .error("获取下载地址失败") }
-                return
+            let release: GitHubRelease
+            if let cached = cachedRelease {
+                release = cached
+            } else {
+                guard let fetched = await fetchLatestRelease() else {
+                    await MainActor.run { state = .error("获取下载地址失败") }
+                    return
+                }
+                release = fetched
             }
 
-            guard let asset = release.assets.first(where: { $0.isDMG }),
-                  let url = URL(string: asset.browser_download_url) else {
+            guard let dmgAsset = release.assets.first(where: { $0.isDMG }),
+                  let dmgURL = URL(string: dmgAsset.browser_download_url) else {
                 await MainActor.run { state = .error("未找到 DMG 文件") }
                 return
             }
@@ -107,10 +124,11 @@ final class UpdateChecker: ObservableObject {
                 }
             }
 
-            let destinationURL = Self.updateCacheDir.appendingPathComponent(asset.name)
+            let destinationURL = Self.updateCacheDir.appendingPathComponent(dmgAsset.name)
 
             do {
-                let (tempURL, response) = try await urlSession.download(from: url)
+                let session = URLSession(configuration: .ephemeral)
+                let (tempURL, response) = try await session.download(from: dmgURL)
                 let httpResponse = response as? HTTPURLResponse
 
                 guard let code = httpResponse?.statusCode, (200...299).contains(code) else {
@@ -118,7 +136,14 @@ final class UpdateChecker: ObservableObject {
                     return
                 }
 
-                if !validateDownloadSize(tempURL: tempURL, expectedSize: asset.size) {
+                if !validateDownloadSize(tempURL: tempURL, expectedSize: dmgAsset.size) {
+                    try? FileManager.default.removeItem(at: tempURL)
+                    await MainActor.run { state = .error("文件校验失败，请重试") }
+                    return
+                }
+
+                if let expectedSHA256 = await fetchSHA256(from: release),
+                   !validateSHA256(tempURL: tempURL, expected: expectedSHA256) {
                     try? FileManager.default.removeItem(at: tempURL)
                     await MainActor.run { state = .error("文件校验失败，请重试") }
                     return
@@ -128,6 +153,8 @@ final class UpdateChecker: ObservableObject {
                     try FileManager.default.removeItem(at: destinationURL)
                 }
                 try FileManager.default.moveItem(at: tempURL, to: destinationURL)
+
+                cachedRelease = nil
 
                 await MainActor.run { state = .downloadComplete(destinationURL) }
             } catch {
@@ -142,6 +169,7 @@ final class UpdateChecker: ObservableObject {
         if case .updateAvailable(let version) = state {
             skippedVersion = version
         }
+        cachedRelease = nil
         state = .idle
     }
 
@@ -151,28 +179,81 @@ final class UpdateChecker: ObservableObject {
         state = .idle
     }
 
-    // MARK: - Helpers
+    // MARK: - Network Helpers
 
     private func fetchLatestRelease() async -> GitHubRelease? {
-        guard let url = URL(string: Self.apiURL) else { return nil }
+        for (label, urlString) in Self.releaseAPIURLs {
+            guard let url = URL(string: urlString) else { continue }
 
-        var request = URLRequest(url: url)
-        request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
-        request.setValue("NewsBar/\(AppVersion.current)", forHTTPHeaderField: "User-Agent")
-        request.timeoutInterval = 15
+            var request = URLRequest(url: url)
+            request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+            request.setValue("2022-11-28", forHTTPHeaderField: "X-GitHub-Api-Version")
+            request.timeoutInterval = 15
+
+            do {
+                let session = URLSession(configuration: .ephemeral)
+                let (data, response) = try await session.data(for: request)
+
+                guard let httpResponse = response as? HTTPURLResponse else { continue }
+                guard (200...299).contains(httpResponse.statusCode) else {
+                    if httpResponse.statusCode == 403 {
+                        NSLog("[UpdateChecker] \(label): HTTP 403 (rate limited)")
+                    } else {
+                        NSLog("[UpdateChecker] \(label): HTTP \(httpResponse.statusCode)")
+                    }
+                    continue
+                }
+
+                let decoder = JSONDecoder()
+                let release = try decoder.decode(GitHubRelease.self, from: data)
+                NSLog("[UpdateChecker] fetch succeeded via \(label), version=\(release.version)")
+                return release
+            } catch {
+                let nsError = error as NSError
+                if nsError.domain == NSURLErrorDomain {
+                    switch nsError.code {
+                    case NSURLErrorTimedOut:
+                        NSLog("[UpdateChecker] \(label): timeout")
+                    case NSURLErrorCannotFindHost, NSURLErrorDNSLookupFailed:
+                        NSLog("[UpdateChecker] \(label): DNS/Host failed")
+                    case NSURLErrorNotConnectedToInternet:
+                        NSLog("[UpdateChecker] \(label): no internet")
+                    default:
+                        NSLog("[UpdateChecker] \(label): URLError code=\(nsError.code)")
+                    }
+                } else {
+                    NSLog("[UpdateChecker] \(label): \(error.localizedDescription)")
+                }
+            }
+        }
+
+        NSLog("[UpdateChecker] all URLs exhausted")
+        return nil
+    }
+
+    private func fetchSHA256(from release: GitHubRelease) async -> String? {
+        guard let sha256Asset = release.assets.first(where: { $0.name.hasSuffix(".sha256") }),
+              let sha256URL = URL(string: sha256Asset.browser_download_url) else {
+            return nil
+        }
 
         do {
-            let (data, response) = try await urlSession.data(for: request)
-
-            guard let httpResponse = response as? HTTPURLResponse else { return nil }
-            guard (200...299).contains(httpResponse.statusCode) else { return nil }
-
-            let decoder = JSONDecoder()
-            return try decoder.decode(GitHubRelease.self, from: data)
+            let session = URLSession(configuration: .ephemeral)
+            let (data, response) = try await session.data(from: sha256URL)
+            guard let httpResponse = response as? HTTPURLResponse,
+                  (200...299).contains(httpResponse.statusCode) else { return nil }
+            guard let content = String(data: data, encoding: .utf8) else { return nil }
+            let hex = content
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .filter { $0.isHexDigit }
+            guard hex.count >= 64 else { return nil }
+            return String(hex.prefix(64)).lowercased()
         } catch {
             return nil
         }
     }
+
+    // MARK: - Validation
 
     private func validateDownloadSize(tempURL: URL, expectedSize: Int64) -> Bool {
         guard expectedSize > 0,
@@ -182,5 +263,12 @@ final class UpdateChecker: ObservableObject {
         }
         let diff = abs(downloadedSize - expectedSize)
         return diff <= expectedSize / 10
+    }
+
+    private func validateSHA256(tempURL: URL, expected: String) -> Bool {
+        guard let data = try? Data(contentsOf: tempURL) else { return false }
+        let digest = SHA256.hash(data: data)
+        let actual = digest.compactMap { String(format: "%02x", $0) }.joined()
+        return actual == expected.lowercased()
     }
 }

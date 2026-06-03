@@ -2,6 +2,12 @@ import Foundation
 
 enum AISummaryService {
 
+    struct SummaryResult {
+        let summary: String
+        let isTruncated: Bool
+        let requestCount: Int
+    }
+
     private static let timeout: TimeInterval = 30
     private static let initialMaxTokens = 1024
     private static let retryMaxTokens = 2048
@@ -12,15 +18,36 @@ enum AISummaryService {
         provider: AIProvider,
         model: String,
         apiKey: String
-    ) async throws -> (summary: String, isTruncated: Bool) {
-        let titles = items.map { item in
-            "\(item.source.displayName): \(item.title)"
+    ) async throws -> SummaryResult {
+        let titles = items.enumerated().map { index, item in
+            "[#\(index)] \(item.title)"
         }.joined(separator: "\n")
 
         let prompt = """
-        以下是最新新闻标题列表，请用中文做一个简洁的总结（不超过\(maxWords)字），抓住重点：
-        
+        以下是最新新闻标题列表，每条有引用编号 [#N]，请在「引用：」行标注来源：
+
         \(titles)
+
+        请从以上新闻中挑选 3–5 个最重要的话题，用中文写成简报。总字数不超过 \(maxWords) 字。
+
+        输出框架（严格使用【】标记）：
+
+        【话题标题】
+        一段自然概述。
+        引用：[#N]
+
+        【话题标题】
+        一段自然概述。
+        引用：[#N]
+
+        规则：
+        - 只写 3–5 个话题，不是全部；自主判断哪些最重要
+        - 每个话题「【标题】」独占一行，下接一段概述，再下接「引用：[#N]」
+        - 概述为自然段落（不要列表），内容精炼
+        - 每段只标 1 条最相关新闻的编号
+        - **加粗**仅限爆火/突发热点
+        - 不输出来源名称
+        - 总字数严格 ≤ \(maxWords) 字
         """
 
         guard let url = URL(string: provider.baseURL) else {
@@ -38,9 +65,9 @@ enum AISummaryService {
                 maxTokens: initialMaxTokens
             )
             if !result.isTruncated {
-                return result
+                return SummaryResult(summary: result.summary, isTruncated: false, requestCount: 1)
             }
-            return try await makeRequest(
+            let retryResult = try await makeRequest(
                 url: url,
                 provider: provider,
                 apiKey: apiKey,
@@ -49,6 +76,7 @@ enum AISummaryService {
                 userPrompt: prompt,
                 maxTokens: retryMaxTokens
             )
+            return SummaryResult(summary: retryResult.summary, isTruncated: retryResult.isTruncated, requestCount: 2)
         } catch {
             throw error
         }
@@ -200,6 +228,13 @@ enum AISummaryService {
     }
 
     private static func systemPrompt() -> String {
-        "你是一个专业的新闻摘要助手。请严格遵循以下原则：\n1. 简要：只保留核心信息，删除冗余修饰词\n2. 准确：严格基于提供的标题，不添加推测或外部知识\n3. 结构化：按主题归类，突出最重要的 3-5 条新闻"
+        """
+        你是一个专业的新闻摘要助手。请严格遵循以下原则：
+        1. 简要：只保留核心信息，删除冗余修饰词
+        2. 准确：严格基于提供的标题，不添加推测或外部知识
+        3. 结构化：按主题归类，使用「标题+段落」格式概述内容，不要仅列出标题
+        4. 克制：不要加粗普通关键词，仅对爆火/突发/重大热点事件使用 **加粗**；输出中不提及来源（微博/B站/RSS等）
+        5. 引用：每个主题末尾用「引用：[#N]」标注来源编号，不要遗漏
+        """
     }
 }
