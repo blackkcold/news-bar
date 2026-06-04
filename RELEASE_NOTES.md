@@ -1,3 +1,17 @@
+## v1.3.2 — Bugfix: Auto-Refresh Body Text & Source Links
+
+### 🐛 Bug Fixes
+
+- **Fix missing body text during auto-refresh**: AI occasionally outputs title and body on the same line (`【标题】正文`). The template parser now correctly extracts inline body text after the `】` delimiter, restoring both paragraph content and source link badges.
+- **Prevent empty-body sections**: Restored body-content guard in section flush logic to avoid rendering orphaned title-only sections when the `引用：` line immediately follows a title.
+
+### 🔧 Technical
+
+- `AISummaryCard.swift`: `extractTemplateTitle` returns `(title, inlineBody)` tuple; body text after `】` is preserved as first line of section content.
+- `flush()`: requires non-empty body before creating a section.
+
+---
+
 ## v1.3.1 — AI Summary Template Framework & Citation Source Links
 
 ### ✨ New Features
