@@ -280,7 +280,7 @@ struct AISummaryCard: View {
         func flush() {
             let t = currentTitle.trimmingCharacters(in: .whitespaces)
             let b = currentBody.trimmingCharacters(in: .whitespaces)
-            if !t.isEmpty {
+            if !t.isEmpty, !b.isEmpty {
                 let primary = currentIndices.first
                 sections.append((title: t, body: b, primaryIndex: primary))
             }
@@ -293,7 +293,11 @@ struct AISummaryCard: View {
             let trimmed = line.trimmingCharacters(in: .whitespaces)
             if trimmed.hasPrefix("【") {
                 flush()
-                currentTitle = extractTemplateTitle(trimmed)
+                let (title, inline) = extractTemplateTitle(trimmed)
+                currentTitle = title
+                if !inline.isEmpty {
+                    currentBody = inline
+                }
             } else if trimmed.hasPrefix("#") {
                 flush()
                 currentTitle = extractMarkdownTitle(trimmed)
@@ -309,12 +313,15 @@ struct AISummaryCard: View {
         return sections
     }
 
-    private static func extractTemplateTitle(_ line: String) -> String {
+    private static func extractTemplateTitle(_ line: String) -> (title: String, inlineBody: String) {
         guard let start = line.firstIndex(of: "【"),
               let end = line.firstIndex(of: "】"), end > start else {
-            return String(line.dropFirst())
+            return (String(line.dropFirst()), "")
         }
-        return String(line[line.index(after: start)..<end])
+        let title = String(line[line.index(after: start)..<end])
+        let after = line.index(after: end)
+        let inline = after < line.endIndex ? String(line[after...]).trimmingCharacters(in: .whitespaces) : ""
+        return (title, inline)
     }
 
     private static func extractMarkdownTitle(_ line: String) -> String {
