@@ -235,13 +235,18 @@ struct RSSTab: View {
             normalizedURL = "https://" + normalizedURL
         }
 
-        guard SecurityPolicies.validateRSSURL(normalizedURL) else {
-            addError = "URL 格式无效，仅支持 https://"
+        switch SecurityPolicies.validateRSSURL(normalizedURL) {
+        case .valid:
+            break
+        case .blocked(let reason):
+            addError = reason
             return
+        case .warning(let reason):
+            addError = reason
+            // warning is non-blocking, user can still add
         }
 
         isTesting = true
-        addError = nil
 
         Task {
             do {

@@ -120,10 +120,10 @@ struct DashboardWindow: View {
             .padding(.horizontal, 16)
 
             VStack(alignment: .leading, spacing: 8) {
-                let sections = AISummaryCard.parseSections(text, itemCount: items.count)
+                let sections = AISummaryParser.parseSections(text, itemCount: items.count)
                 if sections.isEmpty {
-                    Text((try? AttributedString(markdown: AISummaryCard.stripCitations(text)))
-                        ?? AttributedString(AISummaryCard.stripCitations(text)))
+                    Text((try? AttributedString(markdown: AISummaryParser.stripCitations(text)))
+                        ?? AttributedString(AISummaryParser.stripCitations(text)))
                         .font(.system(size: 12))
                         .foregroundStyle(.primary)
                         .lineSpacing(4)

@@ -1,3 +1,35 @@
+## v1.3.3 — 安全加固 & 架构优化
+
+### 🔐 安全修复
+
+- **修复代理 SHA256 验证漏洞**：DMG 通过镜像代理下载时，SHA256 校验文件改为从 GitHub 官方直链获取，防止代理同时篡改 DMG 和 SHA256 配对绕过验证。
+- **SSRF 防护（警告模式）**：新增 `RSSURLValidation` 枚举，对私有 IP（10.x / 172.16–31.x / 192.168.x / 169.254.x / IPv6 ULA / link-local）返回警告而非直接阻止，兼顾企业内网合法 RSS 源。
+- **修复 AppDelegate 强捕获**：`DispatchQueue.global().async { [self] in` 改为 `[weak self]` + guard，避免潜在循环引用。
+- **修复 AboutTab 缓存清除**：注入主 orchestrator 引用，替换错误创建的临时 `NewsOrchestrator()` 实例。
+- **HTML on* 事件属性纵深防御**：在 `sanitizeHTMLContent` 中添加显式 `on*=` 属性剥离正则，防止未来重构引入 XSS 漏洞。
+
+### 🧵 线程安全
+
+- **NewsOrchestrator 添加 @MainActor**：所有 `@Published` 属性赋值自动回到主线程，消除 SwiftUI 运行时警告。
+- **AppDelegate @Published 线程安全**：将 `orchestrator?.aiSummaryState` 赋值包裹在 `Task { @MainActor in ... }` 中。
+
+### 🏗️ 架构优化
+
+- **提取 HTTPClient**：WeiboHotService / BilibiliHotService / RSSService 共享的 HTTP 请求逻辑抽取为 `HTTPClient` 枚举，减少 ~45 行重复代码。
+- **提取 AISummaryParser**：AISummaryCard 中的 `parseSections` / `stripMarkdown` / `stripCitations` / `parseCitationNumbers` 抽取为独立 `AISummaryParser`，AISummaryCard 从 505 行降至 ~300 行。
+- **消除刷新重复**：`refreshIfNeeded` 和 `manualRefresh` 共享逻辑抽取为 `doRefresh`，并使用 `withTaskGroup` 并行获取微博/B站/RSS，总刷新时间从累加变为最慢单源时间。
+- **hashForItems → SHA256**：`CacheEntry.hashForItems` 从 base64(titles) 升级为 SHA256(sourceId:url:title)，提高抗碰撞能力。旧 API 保留为 deprecated wrapper。
+- **applyCachedState 逻辑修复**：允许 `failed → loaded` 状态转移，缓存恢复后可正确更新 UI。
+
+### ✨ 质量提升
+
+- **无障碍支持**：NewsItemRow / rankBadge / AISummaryCard / BottomBar 按钮添加 `accessibilityLabel` 和 `accessibilityHint`。
+- **逐字动画优化**：从 25ms/字符改为 30ms/3字符块，速度提升 ~2.5 倍同时保持流畅感。
+- **Magic Numbers 提取**：AppDelegate 中 7 个魔法数字（时间间隔、窗口尺寸）提取为 `private static let` 常量。
+- **新增单元测试**：Package.swift 添加 `NewsBarTests` target，覆盖 CacheEntry / SecurityPolicies / Version 比较逻辑（12 个测试用例）。
+
+---
+
 ## v1.3.2 — 自动刷新正文消失修复
 
 ### 🐛 Bug 修复

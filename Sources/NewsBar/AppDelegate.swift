@@ -9,6 +9,18 @@ extension Notification.Name {
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
 
+    // MARK: - Constants
+
+    private static let autoRefreshInterval: TimeInterval = 3600
+    private static let startupDelay: TimeInterval = 2
+    private static let updateCheckDelay: TimeInterval = 10
+    private static let keychainReadDelay: TimeInterval = 1.5
+    private static let popoverSize = NSSize(width: 360, height: 520)
+    private static let settingsSize = NSSize(width: 560, height: 420)
+    private static let dashboardSize = NSSize(width: 420, height: 600)
+
+    // MARK: - Properties
+
     private var statusItem: NSStatusItem?
     private var popover: NSPopover?
     private var settingsWindow: NSWindow?
@@ -36,14 +48,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func scheduleStartupAndAutoRefresh() {
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.startupDelay) { [weak self] in
             guard let self else { return }
             Task {
                 await self.orchestrator?.refreshIfNeeded(settings: self.settings, trigger: .startup)
             }
         }
 
-        autoRefreshTimer = Timer.scheduledTimer(withTimeInterval: 3600, repeats: true) { [weak self] _ in
+        autoRefreshTimer = Timer.scheduledTimer(withTimeInterval: Self.autoRefreshInterval, repeats: true) { [weak self] _ in
             guard let self, self.settings.autoRefreshEnabled else { return }
             Task {
                 await self.orchestrator?.refreshIfNeeded(settings: self.settings, trigger: .timer1h)
@@ -52,7 +64,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func scheduleAutoUpdateCheck() {
-        DispatchQueue.main.asyncAfter(deadline: .now() + 10) { [weak self] in
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.updateCheckDelay) { [weak self] in
             guard let self else { return }
             Task {
                 await self.updateChecker?.autoCheck()
@@ -98,7 +110,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
               !ref.isEmpty,
               KeychainManager.isKeyStale(account: account),
               OnePasswordService.isInstalled() else { return }
-        DispatchQueue.global().async { [self] in
+        DispatchQueue.global().async { [weak self] in
+            guard let self else {
+                NSLog("[Keychain] AppDelegate deallocated before 1Password key save")
+                return
+            }
             do {
                 let key = try OnePasswordService.readSecret(reference: ref)
                 if KeychainManager.saveAPIKey(key, account: account) {
@@ -113,7 +129,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func scheduleDelayedKeychainRead() {
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.keychainReadDelay) { [weak self] in
             guard let self else { return }
 
             guard self.currentProviderHasSavedKeyFlag() else {
@@ -129,12 +145,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard settings.aiSummaryEnabled,
               settings.cachedAPIKey == nil else { return }
         guard currentProviderHasSavedKeyFlag() else {
-            orchestrator?.aiSummaryState = .noKey
+            Task { @MainActor in orchestrator?.aiSummaryState = .noKey }
             return
         }
         let account = settings.currentProvider.apiKeyAccount()
 
-        orchestrator?.aiSummaryState = .idle
+        Task { @MainActor in orchestrator?.aiSummaryState = .idle }
         DispatchQueue.global().async { [weak self] in
             guard let self else { return }
             if let key = KeychainManager.readAPIKey(account: account), !key.isEmpty {
@@ -150,7 +166,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func handleMissingAPIKey() {
-        orchestrator?.aiSummaryState = .noKey
+        Task { @MainActor in orchestrator?.aiSummaryState = .noKey }
         let defaults = UserDefaults.standard
         if defaults.bool(forKey: "hasShownAIKeySetupPrompt") { return }
 
@@ -176,7 +192,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             queue: .main
         ) { [weak self] _ in
             guard let self else { return }
-            self.orchestrator?.aiSummaryState = .idle
+            Task { @MainActor in self.orchestrator?.aiSummaryState = .idle }
             Task {
                 await self.orchestrator?.manualRefresh(settings: self.settings)
             }
@@ -222,7 +238,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         .environment(settings)
 
         let popover = NSPopover()
-        popover.contentSize = NSSize(width: 360, height: 520)
+        popover.contentSize = Self.popoverSize
         popover.behavior = .transient
         popover.contentViewController = NSHostingController(rootView: contentView)
         popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
@@ -245,7 +261,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let initialTab = toAITab ? 2 : 0
 
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 560, height: 420),
+            contentRect: NSRect(origin: .zero, size: Self.settingsSize),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
             defer: false
@@ -255,6 +271,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.contentView = NSHostingView(
             rootView: SettingsWindow(initialTab: initialTab)
                 .environment(settings)
+                .environment(\.cacheClearAction) { [weak self] in
+                    guard let self, let orchestrator = self.orchestrator else { return }
+                    Task { await orchestrator.clearCache() }
+                }
         )
         window.isReleasedWhenClosed = false
 
@@ -273,7 +293,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 420, height: 600),
+            contentRect: NSRect(origin: .zero, size: Self.dashboardSize),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
             defer: false

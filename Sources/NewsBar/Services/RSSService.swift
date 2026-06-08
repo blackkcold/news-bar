@@ -2,44 +2,25 @@ import Foundation
 
 enum RSSService {
 
-    private static let userAgent = "NewsBar/1.0 (macOS; RSS Reader)"
-    private static let timeout: TimeInterval = 8
-
     static func fetch(url rssURL: String, sourceName: String) async throws -> [NewsItem] {
         guard let url = URL(string: rssURL) else {
             throw NewsBarError.invalidURL
         }
 
-        var request = URLRequest(url: url)
-        request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
-        request.timeoutInterval = timeout
-
-        let (data, response) = try await URLSession.shared.data(for: request)
-
-        guard let httpResponse = response as? HTTPURLResponse,
-              (200...299).contains(httpResponse.statusCode) else {
-            throw NewsBarError.requestFailed
-        }
+        let (data, _) = try await HTTPClient.data(for: url, config: .rss)
 
         return try parseRSSFeed(data: data, sourceName: sourceName, sourceURL: rssURL)
     }
 
     static func validate(_ urlString: String) async throws -> Bool {
-        guard SecurityPolicies.validateRSSURL(urlString),
-              let url = URL(string: urlString) else {
+        if case .blocked = SecurityPolicies.validateRSSURL(urlString) {
+            return false
+        }
+        guard let url = URL(string: urlString) else {
             return false
         }
 
-        var request = URLRequest(url: url)
-        request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
-        request.timeoutInterval = timeout
-
-        let (data, response) = try await URLSession.shared.data(for: request)
-
-        guard let httpResponse = response as? HTTPURLResponse,
-              (200...299).contains(httpResponse.statusCode) else {
-            return false
-        }
+        let (data, _) = try await HTTPClient.data(for: url, config: .rss)
 
         return isRSSOrAtom(data: data)
     }

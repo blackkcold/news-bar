@@ -3,24 +3,13 @@ import Foundation
 enum BilibiliHotService {
 
     private static let endpoint = "https://api.bilibili.com/x/web-interface/popular"
-    private static let userAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
 
     static func fetch() async throws -> [NewsItem] {
         guard let url = URL(string: "\(endpoint)?ps=3&pn=1") else {
             throw NewsBarError.invalidURL
         }
 
-        var request = URLRequest(url: url)
-        request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
-        request.setValue("https://www.bilibili.com", forHTTPHeaderField: "Referer")
-        request.timeoutInterval = 8
-
-        let (data, response) = try await URLSession.shared.data(for: request)
-
-        guard let httpResponse = response as? HTTPURLResponse,
-              (200...299).contains(httpResponse.statusCode) else {
-            throw NewsBarError.requestFailed
-        }
+        let (data, _) = try await HTTPClient.data(for: url, config: .bilibili)
 
         struct BilibiliResponse: Decodable {
             struct DataBlock: Decodable {

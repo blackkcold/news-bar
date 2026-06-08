@@ -1,7 +1,19 @@
 import SwiftUI
 
+private struct CacheClearActionKey: EnvironmentKey {
+    static let defaultValue: (() -> Void)? = nil
+}
+
+extension EnvironmentValues {
+    var cacheClearAction: (() -> Void)? {
+        get { self[CacheClearActionKey.self] }
+        set { self[CacheClearActionKey.self] = newValue }
+    }
+}
+
 struct AboutTab: View {
     @Environment(AppSettings.self) private var settings
+    @Environment(\.cacheClearAction) private var cacheClearAction
 
     private let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0.0"
     private let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "1"
@@ -64,10 +76,7 @@ struct AboutTab: View {
 
             Section {
                 Button("清除所有缓存") {
-                    Task {
-                        let orchestrator = NewsOrchestrator()
-                        await orchestrator.clearCache()
-                    }
+                    cacheClearAction?()
                 }
                 .foregroundStyle(.red)
             } header: {

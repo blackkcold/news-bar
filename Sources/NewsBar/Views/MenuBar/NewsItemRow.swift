@@ -33,6 +33,8 @@ struct NewsItemRow: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .accessibilityLabel(item.title)
+        .accessibilityHint("在浏览器中打开")
         .background(isHovering ? Color.primary.opacity(0.06) : Color.clear)
         .onHover { hovering in
             withAnimation(.easeInOut(duration: 0.15)) {
@@ -48,6 +50,7 @@ struct NewsItemRow: View {
             .frame(width: 18, height: 18)
             .background(rank <= 3 ? rankColor(rank) : Color.clear)
             .clipShape(RoundedRectangle(cornerRadius: 4))
+            .accessibilityLabel("排名第\(rank)")
     }
 
     private func rankColor(_ rank: Int) -> Color {

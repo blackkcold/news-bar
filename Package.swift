@@ -11,5 +11,10 @@ let package = Package(
             dependencies: [],
             path: "Sources/NewsBar"
         ),
+        .testTarget(
+            name: "NewsBarTests",
+            dependencies: ["NewsBar"],
+            path: "Tests/NewsBarTests"
+        ),
     ]
 )

@@ -35,6 +35,7 @@ enum NewsBarError: LocalizedError {
     }
 }
 
+@MainActor
 final class NewsOrchestrator: ObservableObject {
 
     @Published var weiboItems: [NewsItem] = []
@@ -124,9 +125,24 @@ final class NewsOrchestrator: ObservableObject {
     }
 
     func refreshIfNeeded(settings: AppSettings, trigger: RefreshLog.Trigger = .startup) async {
+        await doRefresh(settings: settings, trigger: trigger, isManual: false)
+    }
+
+    func manualRefresh(settings: AppSettings) async {
+        await doRefresh(settings: settings, trigger: .manual, isManual: true)
+    }
+
+    private func doRefresh(
+        settings: AppSettings,
+        trigger: RefreshLog.Trigger,
+        isManual: Bool
+    ) async {
         guard !isRefreshing else { return }
 
         let aiBefore = logStateLabel(aiSummaryState)
+        if isManual {
+            manualRefreshWarning = await rateLimiter.manualRefreshWarning()
+        }
 
         settings.recordRefresh()
         isRefreshing = true
@@ -139,71 +155,95 @@ final class NewsOrchestrator: ObservableObject {
             aiSummaryState = apiKey.isEmpty ? .noKey : .fetching
         }
 
-        let newWeibo = await fetchAndCache(
+        await withTaskGroup(of: Void.self) { group in
+            group.addTask { await self.fetchWeibo(useCacheFallback: !isManual) }
+            group.addTask { await self.fetchBilibili(useCacheFallback: !isManual) }
+            for source in settings.activeSources where !source.isBuiltIn {
+                group.addTask { await self.fetchRSS(source: source, useCacheFallback: !isManual) }
+            }
+        }
+
+        if isManual {
+            await rateLimiter.recordManualRefresh()
+            manualRefreshWarning = await rateLimiter.manualRefreshWarning()
+        }
+
+        await handleAISummary(
+            settings: settings,
+            apiKey: apiKey,
+            previousState: previousSummaryState,
+            skipHashDedup: isManual
+        )
+        await recordRefreshLog(settings: settings, trigger: trigger, aiBefore: aiBefore)
+    }
+
+    private func fetchWeibo(useCacheFallback: Bool) async {
+        if let items = await fetchAndCache(
             for: .weibo,
             fetcher: { try await WeiboHotService.fetch() }
-        )
-        if let items = newWeibo {
+        ) {
             weiboItems = items
-        } else if weiboItems.isEmpty {
-            if let cached = await cacheManager.load(for: .weibo) {
-                weiboItems = cached.items
-            }
+        } else if useCacheFallback, weiboItems.isEmpty,
+                  let cached = await cacheManager.load(for: .weibo) {
+            weiboItems = cached.items
         }
+    }
 
-        let newBilibili = await fetchAndCache(
+    private func fetchBilibili(useCacheFallback: Bool) async {
+        if let items = await fetchAndCache(
             for: .bilibili,
             fetcher: { try await BilibiliHotService.fetch() }
-        )
-        if let items = newBilibili {
+        ) {
             bilibiliItems = items
-        } else if bilibiliItems.isEmpty {
-            if let cached = await cacheManager.load(for: .bilibili) {
-                bilibiliItems = cached.items
+        } else if useCacheFallback, bilibiliItems.isEmpty,
+                  let cached = await cacheManager.load(for: .bilibili) {
+            bilibiliItems = cached.items
+        }
+    }
+
+    private func fetchRSS(source: NewsSource, useCacheFallback: Bool) async {
+        if let items = await fetchAndCache(
+            for: source,
+            fetcher: {
+                try await RSSService.fetch(url: source.id, sourceName: source.displayName)
             }
+        ) {
+            rssItemsMap[source.id] = items
+        } else if useCacheFallback, rssItemsMap[source.id, default: []].isEmpty,
+                  let cached = await cacheManager.load(for: source) {
+            rssItemsMap[source.id] = cached.items
         }
+    }
 
-        for source in settings.activeSources where !source.isBuiltIn {
-            let newRSS = await fetchAndCache(
-                for: source,
-                fetcher: {
-                    try await RSSService.fetch(
-                        url: source.id, sourceName: source.displayName
-                    )
-                }
-            )
-            if let items = newRSS {
-                rssItemsMap[source.id] = items
-            } else if rssItemsMap[source.id, default: []].isEmpty,
-                      let cached = await cacheManager.load(for: source) {
-                rssItemsMap[source.id] = cached.items
-            }
-        }
+    private func handleAISummary(
+        settings: AppSettings,
+        apiKey: String,
+        previousState: AISummaryState,
+        skipHashDedup: Bool
+    ) async {
+        guard settings.aiSummaryEnabled else { return }
 
-        guard settings.aiSummaryEnabled else {
-            await recordRefreshLog(settings: settings, trigger: trigger, aiBefore: aiBefore)
-            return
-        }
-
-        let allNewItems = allActiveItems(settings: settings)
-        guard !allNewItems.isEmpty else {
+        let allItems = allActiveItems(settings: settings)
+        guard !allItems.isEmpty else {
             if !apiKey.isEmpty {
-                aiSummaryState = previousSummaryState
+                aiSummaryState = previousState
             }
-            await recordRefreshLog(settings: settings, trigger: trigger, aiBefore: aiBefore)
             return
         }
 
         guard !apiKey.isEmpty else {
             aiSummaryState = .noKey
-            await recordRefreshLog(settings: settings, trigger: trigger, aiBefore: aiBefore)
             return
         }
 
-        let newHash = CacheEntry.hashForItems(allNewItems)
-        if newHash != lastBatchHash || shouldRecoverAISummary(from: previousSummaryState) {
+        let newHash = CacheEntry.contentIdentifier(for: allItems)
+        let shouldGenerate = skipHashDedup
+            || newHash != lastBatchHash
+            || shouldRecoverAISummary(from: previousState)
+
+        if shouldGenerate {
             let requestCount = await generateSummary(
-                items: allNewItems,
+                items: allItems,
                 maxWords: settings.aiMaxWords,
                 model: settings.aiModel,
                 apiKey: apiKey,
@@ -214,79 +254,8 @@ final class NewsOrchestrator: ObservableObject {
                 lastBatchHash = newHash
             }
         } else {
-            aiSummaryState = previousSummaryState
+            aiSummaryState = previousState
         }
-        await recordRefreshLog(settings: settings, trigger: trigger, aiBefore: aiBefore)
-    }
-
-    func manualRefresh(settings: AppSettings) async {
-        guard !isRefreshing else { return }
-
-        let aiBefore = logStateLabel(aiSummaryState)
-
-        manualRefreshWarning = await rateLimiter.manualRefreshWarning()
-
-        settings.recordRefresh()
-        isRefreshing = true
-        markSources(settings.activeSources, as: .loading)
-        defer { isRefreshing = false }
-
-        let previousSummaryState = aiSummaryState
-        let apiKey = settings.cachedAPIKey ?? ""
-        if settings.aiSummaryEnabled {
-            aiSummaryState = apiKey.isEmpty ? .noKey : .fetching
-        }
-
-        if let items = await fetchAndCache(
-            for: .weibo,
-            fetcher: { try await WeiboHotService.fetch() }
-        ) {
-            weiboItems = items
-        }
-
-        if let items = await fetchAndCache(
-            for: .bilibili,
-            fetcher: { try await BilibiliHotService.fetch() }
-        ) {
-            bilibiliItems = items
-        }
-
-        for source in settings.activeSources where !source.isBuiltIn {
-            if let items = await fetchAndCache(
-                for: source,
-                fetcher: {
-                    try await RSSService.fetch(url: source.id, sourceName: source.displayName)
-                }
-            ) {
-                rssItemsMap[source.id] = items
-            }
-        }
-
-        await rateLimiter.recordManualRefresh()
-        manualRefreshWarning = await rateLimiter.manualRefreshWarning()
-
-        if settings.aiSummaryEnabled {
-            let allItems = allActiveItems(settings: settings)
-            if allItems.isEmpty {
-                if !apiKey.isEmpty {
-                    aiSummaryState = previousSummaryState
-                }
-            } else {
-                let newHash = CacheEntry.hashForItems(allItems)
-                let requestCount = await generateSummary(
-                    items: allItems,
-                    maxWords: settings.aiMaxWords,
-                    model: settings.aiModel,
-                    apiKey: apiKey,
-                    provider: settings.currentProvider
-                )
-                if requestCount > 0 {
-                    settings.recordAIRequests(requestCount)
-                    lastBatchHash = newHash
-                }
-            }
-        }
-        await recordRefreshLog(settings: settings, trigger: .manual, aiBefore: aiBefore)
     }
 
     private func fetchAndCache(
@@ -305,7 +274,7 @@ final class NewsOrchestrator: ObservableObject {
                 let entry = CacheEntry(
                     items: items,
                     timestamp: Date(),
-                    contentHash: CacheEntry.hashForItems(items)
+                    contentHash: CacheEntry.contentIdentifier(for: items)
                 )
                 await cacheManager.save(entry, for: source)
             }
@@ -325,8 +294,12 @@ final class NewsOrchestrator: ObservableObject {
 
     private func applyCachedState(_ state: SourceLoadState, for source: NewsSource) {
         switch sourceStates[source.id] {
-        case .some(.loading), .some(.failed):
+        case .some(.loading):
             return
+        case .some(.failed):
+            if case .loaded = state {
+                sourceStates[source.id] = state
+            }
         case .some(.loaded):
             return  // 已完成加载 → 不退回到 idle
         case .some(.idle), .none:

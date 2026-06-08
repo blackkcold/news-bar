@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 struct CacheEntry: Codable {
@@ -7,10 +8,17 @@ struct CacheEntry: Codable {
     var aiSummary: String?
     var aiSummaryHash: String?
 
+    static func contentIdentifier(for items: [NewsItem]) -> String {
+        let content = items.map { "\($0.source.id):\($0.url):\($0.title)" }
+            .sorted()
+            .joined(separator: "\n")
+        let digest = SHA256.hash(data: Data(content.utf8))
+        return digest.map { String(format: "%02x", $0) }.joined()
+    }
+
+    @available(*, deprecated, message: "Use contentIdentifier(for:) instead")
     static func hashForItems(_ items: [NewsItem]) -> String {
-        let titles = items.map(\.title).sorted().joined(separator: "|")
-        let data = Data(titles.utf8)
-        return data.base64EncodedString()
+        contentIdentifier(for: items)
     }
 
     var isStale: Bool {

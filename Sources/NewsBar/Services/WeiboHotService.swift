@@ -8,8 +8,6 @@ enum WeiboHotService {
     // Tier 2: HTML page fallback
     private static let summaryURL = "https://s.weibo.com/top/summary"
 
-    private static let mobileUA = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
-
     static func fetch() async throws -> [NewsItem] {
         // Tier 1: Try the web JSON API first
         if let items = try? await fetchFromAjaxAPI() {
@@ -31,21 +29,7 @@ enum WeiboHotService {
             throw NewsBarError.invalidURL
         }
 
-        var request = URLRequest(url: url)
-        request.setValue(mobileUA, forHTTPHeaderField: "User-Agent")
-        request.setValue("zh-CN,zh;q=0.9", forHTTPHeaderField: "Accept-Language")
-        request.setValue("https://weibo.com/", forHTTPHeaderField: "Referer")
-        request.setValue("application/json, text/plain, */*", forHTTPHeaderField: "Accept")
-        request.setValue("XMLHttpRequest", forHTTPHeaderField: "X-Requested-With")
-        request.setValue("no-cache", forHTTPHeaderField: "Cache-Control")
-        request.timeoutInterval = 10
-
-        let (data, response) = try await URLSession.shared.data(for: request)
-
-        guard let httpResponse = response as? HTTPURLResponse,
-              (200...299).contains(httpResponse.statusCode) else {
-            throw NewsBarError.requestFailed
-        }
+        let (data, _) = try await HTTPClient.data(for: url, config: .weibo)
 
         return try parseAjaxResponse(data: data)
     }
@@ -98,20 +82,7 @@ enum WeiboHotService {
             throw NewsBarError.invalidURL
         }
 
-        var request = URLRequest(url: url)
-        request.setValue(mobileUA, forHTTPHeaderField: "User-Agent")
-        request.setValue("zh-CN,zh;q=0.9", forHTTPHeaderField: "Accept-Language")
-        request.setValue("https://weibo.com/", forHTTPHeaderField: "Referer")
-        request.setValue("text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8", forHTTPHeaderField: "Accept")
-        request.setValue("no-cache", forHTTPHeaderField: "Cache-Control")
-        request.timeoutInterval = 10
-
-        let (data, response) = try await URLSession.shared.data(for: request)
-
-        guard let httpResponse = response as? HTTPURLResponse,
-              (200...299).contains(httpResponse.statusCode) else {
-            throw NewsBarError.requestFailed
-        }
+        let (data, _) = try await HTTPClient.data(for: url, config: .weibo)
 
         guard let html = String(data: data, encoding: .utf8) else {
             throw NewsBarError.parseFailed
