@@ -1,47 +1,36 @@
-## v1.3.2 — Bugfix: Auto-Refresh Body Text & Source Links
+## v1.3.2 — 自动刷新正文消失修复
 
-### 🐛 Bug Fixes
+### 🐛 Bug 修复
 
-- **Fix missing body text during auto-refresh**: AI occasionally outputs title and body on the same line (`【标题】正文`). The template parser now correctly extracts inline body text after the `】` delimiter, restoring both paragraph content and source link badges.
-- **Prevent empty-body sections**: Restored body-content guard in section flush logic to avoid rendering orphaned title-only sections when the `引用：` line immediately follows a title.
-
-### 🔧 Technical
-
-- `AISummaryCard.swift`: `extractTemplateTitle` returns `(title, inlineBody)` tuple; body text after `】` is preserved as first line of section content.
-- `flush()`: requires non-empty body before creating a section.
+- **修复自动刷新时 AI 摘要只显示标题、不显示正文的问题**：部分 AI 模型会将标题和正文输出在同一行（`【标题】正文内容`），解析器未能正确提取 `】` 后的正文文本，导致段落内容被丢弃、新闻源角标也随之消失。现已修复为正确提取同行内的正文。
+- **防止空段落产生**：恢复段落内容空白检查，避免在标题后紧接引用行时产生只有标题没有正文的无效段落。
 
 ---
 
-## v1.3.1 — AI Summary Template Framework & Citation Source Links
+## v1.3.1 — AI 摘要模板框架 & 引用编号源链接
 
-### ✨ New Features
+### ✨ 新功能
 
-- **Template-framework AI output**: Prompt replaced `##` Markdown with `【title】` template blocks. AI fills content into predefined slots, eliminating fragile Markdown parsing. Section titles use native SwiftUI `.bold()`; body text uses `AttributedString(markdown:)` only for inline bold.
-- **Citation-number source badges**: Each paragraph carries `[#N]` citation numbers deterministically mapped to original news items. Hover reveals a Liquid Glass capsule badge; click opens the source URL. Replaces probabilistic keyword matching with 100% accurate index mapping.
-- **Section dividers**: Visual separators between topic sections.
+- **AI 摘要模板框架**：将 AI prompt 从脆弱的 `##` Markdown 格式升级为 `【标题】` 固定模板框架。AI 只需往预设结构中填充内容，不再依赖不稳定的 Markdown 解析。标题用原生 SwiftUI 粗体渲染，正文仅保留内联加粗，版面更稳定。
+- **引用编号源链接角标**：每段 AI 摘要末尾标注 `[#N]` 引用编号，100% 确定性地映射到原始新闻。鼠标悬停段落时右上角浮现毛玻璃胶囊角标，点击即可跳转源新闻链接。替代了原有概率性关键词匹配，准确率从不确定提升至完全可靠。
+- **段落间分隔线**：不同主题之间有视觉分隔，层次清晰。
+- **双语 README**：中英双语项目说明，带状态徽章、AI 提供商对比表格、搜索关键词区段，提升 GitHub 可发现性。
+- **MIT 开源协议**：随附完整 LICENSE 文件。
 
-### 🐛 Bug Fixes
+### 🐛 Bug 修复
 
-- Fix truncated-summary blank frame during character animation (first character now visible immediately)
-- Fix fallback rendering showing raw `[#N]` citation markers
-- Fix hover badge overflow when multiple sources mapped to one section
-- Fix old `##` Markdown cached data not parsing after `【】` template upgrade (add backward compatibility in parser)
+- 修复截断摘要（摘要可能不完整）时逐字动画首帧空白的问题
+- 修复摘要无法解析时回落路径直接显示原始 `[#N]` 引用标记
+- 修复鼠标悬停时多来源角标横向溢出布局
+- 修复旧 `##` Markdown 缓存数据在升级为 `【】` 模板后无法解析的向后兼容问题
 
-### 🔧 Improvements
+### 🔧 改进
 
-- `AISummaryService.swift`: Prompt upgraded to `【title】` + `引用：[#N]` template framework; AI selects 3–5 most important topics with `maxWords` hard constraint
-- `AISummaryCard.swift`: `parseSections` scans lines for `【` or `#` headers; `SectionRow` uses native SwiftUI controls; `stripCitations` promoted to `internal static`
-- `DashboardWindow.swift`: Removed ~90 lines of duplicate parsing functions; reuses shared `parseSections`
-- `AboutTab.swift`: Added GitHub link, AI provider list, project metadata, and searchable keywords
-- `README.md`: Complete bilingual Chinese/English rewrite with badges, provider table, and keyword section for discoverability
-- Added `LICENSE` (MIT)
-
-### 📦 Build
-
-```
-release/1.3.1/NewsBar.app
-release/1.3.1/NewsBar-1.3.1.dmg
-```
+- `AISummaryService.swift`: prompt 升级为 `【标题】` + `引用：[#N]` 模板框架；AI 自主挑选 3–5 个最重要话题，总字数 ≤ maxWords 硬约束
+- `AISummaryCard.swift`: `parseSections` 按行扫描 `【` 和 `#` 标记，同时兼容新旧格式；`SectionRow` 改用原生 SwiftUI 控件替代 Markdown 布局
+- `DashboardWindow.swift`: 消除约 90 行重复解析代码，复用共享解析函数
+- `AboutTab.swift`: 新增 GitHub 链接、AI 提供商列表、项目元信息和搜索关键词
+- `PopoverContent.swift`: 传入新闻条目列表以支持引用编号映射
 
 ---
 
