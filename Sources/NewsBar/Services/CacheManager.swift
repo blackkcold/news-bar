@@ -39,7 +39,7 @@ actor CacheManager {
 
     func hasNewContent(for source: NewsSource, newItems: [NewsItem]) -> Bool {
         guard let existing = load(for: source) else { return true }
-        let newHash = CacheEntry.hashForItems(newItems)
+        let newHash = CacheEntry.contentIdentifier(for: newItems)
         return newHash != existing.contentHash
     }
 

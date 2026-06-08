@@ -29,6 +29,15 @@ enum SecurityPolicies {
             }
         }
 
+        // Defense-in-depth: strip on* event attributes explicitly
+        let eventAttrPattern = "\\s+on\\w+\\s*=\\s*(?:\"[^\"]*\"|'[^']*'|[^\\s>]*)"
+        if let eventRegex = try? NSRegularExpression(pattern: eventAttrPattern, options: .caseInsensitive) {
+            result = eventRegex.stringByReplacingMatches(
+                in: result, range: NSRange(result.startIndex..., in: result),
+                withTemplate: ""
+            )
+        }
+
         let tagPattern = "<[^>]+>"
         if let tagRegex = try? NSRegularExpression(pattern: tagPattern, options: []) {
             result = tagRegex.stringByReplacingMatches(
@@ -66,18 +75,79 @@ enum SecurityPolicies {
         return components.url
     }
 
-    static func validateRSSURL(_ urlString: String) -> Bool {
+    enum RSSURLValidation {
+        case valid
+        case blocked(reason: String)
+        case warning(reason: String)
+    }
+
+    static func validateRSSURL(_ urlString: String) -> RSSURLValidation {
         guard let url = validateURL(urlString),
               let host = url.host else {
-            return false
+            return .blocked(reason: "Invalid URL or scheme")
         }
 
         let blockedDomains: Set<String> = ["localhost", "127.0.0.1", "0.0.0.0", "::1"]
-        if blockedDomains.contains(host.lowercased()) {
-            return false
+        let lowerHost = host.lowercased()
+        if blockedDomains.contains(lowerHost) {
+            return .blocked(reason: "Blocked host: \(host)")
         }
 
-        return true
+        if isPrivateIP(host) {
+            return .warning(reason: "Private IP range: \(host)")
+        }
+
+        return .valid
+    }
+
+    private static func isPrivateIP(_ host: String) -> Bool {
+        // IPv4 private ranges
+        let ipv4Patterns: [(String, String)] = [
+            (// 10.0.0.0/8
+                "^10\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}$",
+                "10.0.0.0/8"
+            ),
+            (// 172.16.0.0/12
+                "^172\\.(1[6-9]|2[0-9]|3[01])\\.\\d{1,3}\\.\\d{1,3}$",
+                "172.16.0.0/12"
+            ),
+            (// 192.168.0.0/16
+                "^192\\.168\\.\\d{1,3}\\.\\d{1,3}$",
+                "192.168.0.0/16"
+            ),
+            (// 169.254.0.0/16 (link-local)
+                "^169\\.254\\.\\d{1,3}\\.\\d{1,3}$",
+                "169.254.0.0/16"
+            ),
+        ]
+
+        for (pattern, _) in ipv4Patterns {
+            if let regex = try? NSRegularExpression(pattern: pattern, options: []),
+               regex.firstMatch(in: host, options: [], range: NSRange(host.startIndex..., in: host)) != nil {
+                return true
+            }
+        }
+
+        // IPv6 private/link-local ranges
+        let ipv6Patterns: [(String, String)] = [
+            (// fc00::/7
+                "^(fc|fd)[0-9a-fA-F]{0,2}:",
+                "fc00::/7"
+            ),
+            (// fe80::/10
+                "^fe[89abAB][0-9a-fA-F]{0,1}:",
+                "fe80::/10"
+            ),
+        ]
+
+        for (pattern, _) in ipv6Patterns {
+            if let regex = try? NSRegularExpression(pattern: pattern, options: []),
+               regex.firstMatch(in: host, options: [], range: NSRange(host.startIndex..., in: host)) != nil {
+                return true
+            }
+        }
+
+        return false
     }
 
     static func configureXMLParser(_ parser: XMLParser) {

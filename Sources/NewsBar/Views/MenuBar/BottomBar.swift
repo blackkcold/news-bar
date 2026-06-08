@@ -60,6 +60,7 @@ struct BottomBar: View {
                 .padding(6)
         }
         .buttonStyle(.plain)
+        .accessibilityLabel("打开Dashboard")
         .help("打开 Dashboard")
     }
 
@@ -71,6 +72,7 @@ struct BottomBar: View {
                 .padding(6)
         }
         .buttonStyle(.plain)
+        .accessibilityLabel("打开设置")
         .help("打开设置")
     }
 }

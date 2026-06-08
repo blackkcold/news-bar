@@ -142,7 +142,8 @@ final class UpdateChecker: ObservableObject {
                     return
                 }
 
-                if let expectedSHA256 = await fetchSHA256(from: release),
+                let dmgIsProxy = isProxyURL(dmgAsset.browser_download_url)
+                if let expectedSHA256 = await fetchSHA256(from: release, viaProxy: dmgIsProxy),
                    !validateSHA256(tempURL: tempURL, expected: expectedSHA256) {
                     try? FileManager.default.removeItem(at: tempURL)
                     await MainActor.run { state = .error("文件校验失败，请重试") }
@@ -231,9 +232,39 @@ final class UpdateChecker: ObservableObject {
         return nil
     }
 
-    private func fetchSHA256(from release: GitHubRelease) async -> String? {
-        guard let sha256Asset = release.assets.first(where: { $0.name.hasSuffix(".sha256") }),
-              let sha256URL = URL(string: sha256Asset.browser_download_url) else {
+    private func isProxyURL(_ urlString: String) -> Bool {
+        let proxyPrefixes = [
+            "https://gh-proxy.com/",
+            "https://gh.api.99988866.xyz/"
+        ]
+        for prefix in proxyPrefixes {
+            if urlString.hasPrefix(prefix) {
+                return true
+            }
+        }
+        return false
+    }
+
+    private func fetchSHA256(from release: GitHubRelease, viaProxy: Bool = false) async -> String? {
+        guard let sha256Asset = release.assets.first(where: { $0.name.hasSuffix(".sha256") }) else {
+            return nil
+        }
+
+        var urlString = sha256Asset.browser_download_url
+        if viaProxy {
+            let proxyPrefixes = [
+                "https://gh-proxy.com/",
+                "https://gh.api.99988866.xyz/"
+            ]
+            for prefix in proxyPrefixes {
+                if urlString.hasPrefix(prefix) {
+                    urlString = String(urlString.dropFirst(prefix.count))
+                    break
+                }
+            }
+        }
+
+        guard let sha256URL = URL(string: urlString) else {
             return nil
         }
 
