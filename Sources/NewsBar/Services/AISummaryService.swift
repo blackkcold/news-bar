@@ -12,6 +12,35 @@ enum AISummaryService {
     private static let initialMaxTokens = 1024
     private static let retryMaxTokens = 2048
 
+    // MARK: - Transient Error Retry
+
+    /// Thrown internally for 429/5xx responses to trigger retry logic.
+    private struct TransientHTTPError: Error {
+        let statusCode: Int
+    }
+
+    /// Retries the operation up to `maxRetries` times on `TransientHTTPError`,
+    /// with exponential backoff (1s, 2s). Non-transient errors propagate immediately.
+    private static func withRetry<T>(
+        maxRetries: Int = 2,
+        _ operation: () async throws -> T
+    ) async throws -> T {
+        for attempt in 0...maxRetries {
+            do {
+                return try await operation()
+            } catch let error as TransientHTTPError {
+                if attempt < maxRetries {
+                    let delaySeconds: UInt64 = attempt == 0 ? 1 : 2
+                    try await Task.sleep(nanoseconds: delaySeconds * 1_000_000_000)
+                    continue
+                }
+            } catch {
+                throw error
+            }
+        }
+        throw NewsBarError.requestFailed
+    }
+
     static func summarize(
         items: [NewsItem],
         maxWords: Int = 150,
@@ -54,8 +83,8 @@ enum AISummaryService {
             throw NewsBarError.invalidURL
         }
 
-        do {
-            let result = try await makeRequest(
+        let result = try await withRetry {
+            try await makeRequest(
                 url: url,
                 provider: provider,
                 apiKey: apiKey,
@@ -64,10 +93,12 @@ enum AISummaryService {
                 userPrompt: prompt,
                 maxTokens: initialMaxTokens
             )
-            if !result.isTruncated {
-                return SummaryResult(summary: result.summary, isTruncated: false, requestCount: 1)
-            }
-            let retryResult = try await makeRequest(
+        }
+        if !result.isTruncated {
+            return SummaryResult(summary: result.summary, isTruncated: false, requestCount: 1)
+        }
+        let retryResult = try await withRetry {
+            try await makeRequest(
                 url: url,
                 provider: provider,
                 apiKey: apiKey,
@@ -76,10 +107,8 @@ enum AISummaryService {
                 userPrompt: prompt,
                 maxTokens: retryMaxTokens
             )
-            return SummaryResult(summary: retryResult.summary, isTruncated: retryResult.isTruncated, requestCount: 2)
-        } catch {
-            throw error
         }
+        return SummaryResult(summary: retryResult.summary, isTruncated: retryResult.isTruncated, requestCount: 2)
     }
 
     private static func makeRequest(
@@ -142,6 +171,13 @@ enum AISummaryService {
             if httpResponse.statusCode == 401 {
                 throw NewsBarError.apiKeyInvalid
             }
+            if httpResponse.statusCode == 429 || (500...599).contains(httpResponse.statusCode) {
+                throw TransientHTTPError(statusCode: httpResponse.statusCode)
+            }
+            throw NewsBarError.requestFailed
+        }
+        let contentType = httpResponse.value(forHTTPHeaderField: "Content-Type") ?? ""
+        guard contentType.contains("application/json") || contentType.contains("text/event-stream") else {
             throw NewsBarError.requestFailed
         }
 
@@ -204,6 +240,13 @@ enum AISummaryService {
             if httpResponse.statusCode == 401 {
                 throw NewsBarError.apiKeyInvalid
             }
+            if httpResponse.statusCode == 429 || (500...599).contains(httpResponse.statusCode) {
+                throw TransientHTTPError(statusCode: httpResponse.statusCode)
+            }
+            throw NewsBarError.requestFailed
+        }
+        let contentType = httpResponse.value(forHTTPHeaderField: "Content-Type") ?? ""
+        guard contentType.contains("application/json") || contentType.contains("text/event-stream") else {
             throw NewsBarError.requestFailed
         }
 
