@@ -43,6 +43,8 @@ actor RateLimiter {
     /// Returns a warning string if the user has manually refreshed
     /// too many times in the past hour, nil otherwise.
     func manualRefreshWarning() -> String? {
+        let now = Date()
+        manualTimestamps = manualTimestamps.filter { now.timeIntervalSince($0) < windowSeconds }
         let count = manualTimestamps.count
         guard count >= warningThreshold else { return nil }
         return "过去 1 小时内已手动刷新 \(count) 次，频繁请求可能被封"

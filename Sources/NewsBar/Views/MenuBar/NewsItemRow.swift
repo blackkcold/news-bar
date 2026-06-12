@@ -1,10 +1,14 @@
 import SwiftUI
 
-struct NewsItemRow: View {
+struct NewsItemRow: View, Equatable {
     let item: NewsItem
     let showRank: Bool
 
     @State private var isHovering = false
+
+    static func == (lhs: NewsItemRow, rhs: NewsItemRow) -> Bool {
+        lhs.item == rhs.item && lhs.showRank == rhs.showRank
+    }
 
     var body: some View {
         Button {
@@ -33,7 +37,7 @@ struct NewsItemRow: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .accessibilityLabel(item.title)
+        .accessibilityLabel("\(item.title) - \(item.source.displayName)")
         .accessibilityHint("在浏览器中打开")
         .background(isHovering ? Color.primary.opacity(0.06) : Color.clear)
         .onHover { hovering in
