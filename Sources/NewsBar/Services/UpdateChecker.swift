@@ -38,6 +38,8 @@ final class UpdateChecker: ObservableObject {
         set { UserDefaults.standard.set(newValue, forKey: "updateSkippedVersion") }
     }
 
+    private var downloadTask: Task<Void, Never>?
+
     // MARK: - Auto Update Check (called by AppDelegate on launch)
 
     func autoCheck() async {
@@ -96,7 +98,7 @@ final class UpdateChecker: ObservableObject {
     func downloadUpdate() {
         guard case .updateAvailable = state else { return }
 
-        Task {
+        downloadTask = Task {
             let release: GitHubRelease
             if let cached = cachedRelease {
                 release = cached
@@ -142,9 +144,13 @@ final class UpdateChecker: ObservableObject {
                     return
                 }
 
-                let dmgIsProxy = isProxyURL(dmgAsset.browser_download_url)
-                if let expectedSHA256 = await fetchSHA256(from: release, viaProxy: dmgIsProxy),
-                   !validateSHA256(tempURL: tempURL, expected: expectedSHA256) {
+                guard let expectedSHA256 = await fetchSHA256FromGitHubDirect(release: release) else {
+                    try? FileManager.default.removeItem(at: tempURL)
+                    await MainActor.run { state = .error("无法获取校验文件，请从 GitHub 官方页面下载") }
+                    return
+                }
+
+                if !validateSHA256(tempURL: tempURL, expected: expectedSHA256) {
                     try? FileManager.default.removeItem(at: tempURL)
                     await MainActor.run { state = .error("文件校验失败，请重试") }
                     return
@@ -161,6 +167,8 @@ final class UpdateChecker: ObservableObject {
             } catch {
                 await MainActor.run { state = .error("下载失败，请重试") }
             }
+
+            downloadTask = nil
         }
     }
 
@@ -180,10 +188,17 @@ final class UpdateChecker: ObservableObject {
         state = .idle
     }
 
+    func cancelDownload() {
+        downloadTask?.cancel()
+        downloadTask = nil
+    }
+
     // MARK: - Network Helpers
 
     private func fetchLatestRelease() async -> GitHubRelease? {
-        for (label, urlString) in Self.releaseAPIURLs {
+        for (index, entry) in Self.releaseAPIURLs.enumerated() {
+            let label = entry.label
+            let urlString = entry.url
             guard let url = URL(string: urlString) else { continue }
 
             var request = URLRequest(url: url)
@@ -207,6 +222,16 @@ final class UpdateChecker: ObservableObject {
 
                 let decoder = JSONDecoder()
                 let release = try decoder.decode(GitHubRelease.self, from: data)
+
+                if index > 0 {
+                    let tagPattern = try! NSRegularExpression(pattern: "^v\\d+\\.\\d+\\.\\d+")
+                    let range = NSRange(location: 0, length: release.tag_name.utf16.count)
+                    guard tagPattern.firstMatch(in: release.tag_name, options: [], range: range) != nil else {
+                        NSLog("[UpdateChecker] \(label): invalid tag format '\(release.tag_name)', skipping proxy")
+                        continue
+                    }
+                }
+
                 NSLog("[UpdateChecker] fetch succeeded via \(label), version=\(release.version)")
                 return release
             } catch {
@@ -232,39 +257,9 @@ final class UpdateChecker: ObservableObject {
         return nil
     }
 
-    private func isProxyURL(_ urlString: String) -> Bool {
-        let proxyPrefixes = [
-            "https://gh-proxy.com/",
-            "https://gh.api.99988866.xyz/"
-        ]
-        for prefix in proxyPrefixes {
-            if urlString.hasPrefix(prefix) {
-                return true
-            }
-        }
-        return false
-    }
-
-    private func fetchSHA256(from release: GitHubRelease, viaProxy: Bool = false) async -> String? {
-        guard let sha256Asset = release.assets.first(where: { $0.name.hasSuffix(".sha256") }) else {
-            return nil
-        }
-
-        var urlString = sha256Asset.browser_download_url
-        if viaProxy {
-            let proxyPrefixes = [
-                "https://gh-proxy.com/",
-                "https://gh.api.99988866.xyz/"
-            ]
-            for prefix in proxyPrefixes {
-                if urlString.hasPrefix(prefix) {
-                    urlString = String(urlString.dropFirst(prefix.count))
-                    break
-                }
-            }
-        }
-
-        guard let sha256URL = URL(string: urlString) else {
+    private func fetchSHA256(from release: GitHubRelease) async -> String? {
+        guard let sha256Asset = release.assets.first(where: { $0.name.hasSuffix(".sha256") }),
+              let sha256URL = URL(string: sha256Asset.browser_download_url) else {
             return nil
         }
 
@@ -284,6 +279,47 @@ final class UpdateChecker: ObservableObject {
         }
     }
 
+    /// Always fetches the SHA256 from GitHub's direct API, ignoring proxy mirrors.
+    /// This prevents a compromised proxy from serving a modified .sha256 file
+    /// that matches a malicious DMG.
+    private func fetchSHA256FromGitHubDirect(release _: GitHubRelease) async -> String? {
+        guard let url = URL(string: Self.releaseAPIURLs[0].url) else { return nil }
+
+        var request = URLRequest(url: url)
+        request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+        request.setValue("2022-11-28", forHTTPHeaderField: "X-GitHub-Api-Version")
+        request.timeoutInterval = 15
+
+        do {
+            let session = URLSession(configuration: .ephemeral)
+            let (data, response) = try await session.data(for: request)
+
+            guard let httpResponse = response as? HTTPURLResponse,
+                  (200...299).contains(httpResponse.statusCode) else { return nil }
+
+            let decoder = JSONDecoder()
+            let directRelease = try decoder.decode(GitHubRelease.self, from: data)
+
+            guard let sha256Asset = directRelease.assets.first(where: { $0.name.hasSuffix(".sha256") }),
+                  let sha256URL = URL(string: sha256Asset.browser_download_url) else {
+                return nil
+            }
+
+            let (shaData, shaResponse) = try await session.data(from: sha256URL)
+            guard let shaHTTPResponse = shaResponse as? HTTPURLResponse,
+                  (200...299).contains(shaHTTPResponse.statusCode) else { return nil }
+            guard let content = String(data: shaData, encoding: .utf8) else { return nil }
+
+            let hex = content
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .filter { $0.isHexDigit }
+            guard hex.count >= 64 else { return nil }
+            return String(hex.prefix(64)).lowercased()
+        } catch {
+            return nil
+        }
+    }
+
     // MARK: - Validation
 
     private func validateDownloadSize(tempURL: URL, expectedSize: Int64) -> Bool {
@@ -293,7 +329,8 @@ final class UpdateChecker: ObservableObject {
             return true
         }
         let diff = abs(downloadedSize - expectedSize)
-        return diff <= expectedSize / 10
+        let tolerance = max(expectedSize / 100, 1024)
+        return diff <= tolerance
     }
 
     private func validateSHA256(tempURL: URL, expected: String) -> Bool {
