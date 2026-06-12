@@ -44,6 +44,7 @@ struct BottomBar: View {
             .clipShape(Capsule())
         }
         .buttonStyle(.plain)
+        .accessibilityLabel("刷新")
         .disabled(isRefreshing)
     }
 

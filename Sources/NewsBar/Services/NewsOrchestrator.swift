@@ -1,6 +1,6 @@
 import Foundation
 
-enum AISummaryState: Equatable {
+enum AISummaryState: Equatable, Sendable {
     case idle
     case noKey
     case fetching
@@ -10,7 +10,7 @@ enum AISummaryState: Equatable {
     case error(String)
 }
 
-enum SourceLoadState: Equatable {
+enum SourceLoadState: Equatable, Sendable {
     case idle
     case loading
     case loaded
