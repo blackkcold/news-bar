@@ -163,4 +163,22 @@ enum SecurityPolicies {
         return input.components(separatedBy: controlCharacters).joined()
             .trimmingCharacters(in: .whitespacesAndNewlines)
     }
+
+    /// Strips bytes that represent invalid XML 1.0 characters from raw data.
+    ///
+    /// XML 1.0 只允许以下字符范围: #x9 | #xA | #xD | [#x20-#xD7FF] | [#xE000-#xFFFD] | [#x10000-#x10FFFF]
+    /// 某些 RSS feed（如爱范儿 ifanr.com）的 `<content:encoded>` CDATA 中可能包含非法控制字符（如 0x05 ENQ），
+    /// 会直接导致 `XMLParser.parse()` 返回 false → "数据解析失败"。
+    ///
+    /// - Returns: 清洗后的 Data，如果原数据没有非法字符，返回原数据避免内存拷贝。
+    static func sanitizeXMLData(_ data: Data) -> Data {
+        let hasInvalid = data.contains { byte in
+            byte < 0x20 && byte != 0x09 && byte != 0x0A && byte != 0x0D
+        }
+        guard hasInvalid else { return data }
+
+        return data.filter { byte in
+            byte >= 0x20 || byte == 0x09 || byte == 0x0A || byte == 0x0D
+        }
+    }
 }

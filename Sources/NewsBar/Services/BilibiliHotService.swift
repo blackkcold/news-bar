@@ -28,9 +28,10 @@ enum BilibiliHotService {
 
         return decoded.data.list.enumerated().map { index, video in
             let link = video.short_link_v2 ?? video.short_link ?? "https://www.bilibili.com/video/\(video.bvid ?? "")"
+            let validatedURL = SecurityPolicies.validateURL(link)?.absoluteString ?? link
             return NewsItem(
                 title: SecurityPolicies.sanitizeUserInput(video.title),
-                url: link,
+                url: validatedURL,
                 source: .bilibili,
                 rank: index + 1
             )

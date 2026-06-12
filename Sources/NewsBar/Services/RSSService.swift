@@ -35,20 +35,26 @@ enum RSSService {
     }
 
     private static func parseRSSFeed(data: Data, sourceName: String, sourceURL: String) throws -> [NewsItem] {
-        let parser = XMLParser(data: data)
+        let cleanData = SecurityPolicies.sanitizeXMLData(data)
+        let parser = XMLParser(data: cleanData)
         SecurityPolicies.configureXMLParser(parser)
 
         let delegate = RSSParserDelegate()
         parser.delegate = delegate
 
         guard parser.parse(), !delegate.items.isEmpty else {
+            if let parseError = delegate.parseError {
+                throw NewsBarError.parseFailedWithDetail(parseError.localizedDescription)
+            }
             throw NewsBarError.parseFailed
         }
 
         return delegate.items.map { item in
-            NewsItem(
+            let rawLink = item.link.isEmpty ? sourceURL : item.link
+            let validatedLink = SecurityPolicies.validateURL(rawLink)?.absoluteString ?? rawLink
+            return NewsItem(
                 title: SecurityPolicies.sanitizeHTMLContent(item.title),
-                url: item.link.isEmpty ? sourceURL : item.link,
+                url: validatedLink,
                 source: .rss(name: sourceName, url: sourceURL)
             )
         }
@@ -76,6 +82,7 @@ final class RSSParserDelegate: NSObject, XMLParserDelegate {
     }
 
     private(set) var items: [Item] = []
+    private(set) var parseError: Error?
     private var currentElement = ""
     private var currentItem: Item?
     private var isInItem = false
@@ -110,6 +117,29 @@ final class RSSParserDelegate: NSObject, XMLParserDelegate {
         default:
             break
         }
+    }
+
+    func parser(_ parser: XMLParser, foundCDATA CDATABlock: Data) {
+        guard isInItem else { return }
+        guard let string = String(data: CDATABlock, encoding: .utf8) else { return }
+        let trimmed = string.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+
+        switch currentElement {
+        case "title":
+            currentItem?.title += trimmed
+        case "link":
+            if currentItem?.link.isEmpty ?? true {
+                currentItem?.link += trimmed
+            }
+        default:
+            break
+        }
+    }
+
+    func parser(_ parser: XMLParser, parseErrorOccurred error: Error) {
+        self.parseError = error
+        NSLog("[RSSParserDelegate] XML parse error at line \(parser.lineNumber), column \(parser.columnNumber): \(error.localizedDescription)")
     }
 
     func parser(_ parser: XMLParser, didEndElement elementName: String,
