@@ -23,12 +23,14 @@ enum NewsBarError: LocalizedError {
     case parseFailed
     case apiKeyInvalid
     case rateLimited
+    case parseFailedWithDetail(String)
 
     var errorDescription: String? {
         switch self {
         case .invalidURL: return "无效的 URL"
         case .requestFailed: return "网络请求失败"
         case .parseFailed: return "数据解析失败"
+        case .parseFailedWithDetail(let detail): return "XML 解析失败: \(detail)"
         case .apiKeyInvalid: return "API Key 无效"
         case .rateLimited: return "刷新频率限制"
         }

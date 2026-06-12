@@ -35,9 +35,16 @@ enum WeiboHotService {
     }
 
     private static func parseAjaxResponse(data: Data) throws -> [NewsItem] {
-        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let dataBlock = json["data"] as? [String: Any],
-              let realtime = dataBlock["realtime"] as? [[String: Any]] else {
+        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            NSLog("[WeiboHotService] Response is not valid JSON")
+            throw NewsBarError.parseFailed
+        }
+        guard let dataBlock = json["data"] as? [String: Any] else {
+            NSLog("[WeiboHotService] Missing 'data' key. Keys: \(json.keys.sorted())")
+            throw NewsBarError.parseFailed
+        }
+        guard let realtime = dataBlock["realtime"] as? [[String: Any]] else {
+            NSLog("[WeiboHotService] Missing 'realtime' key. Keys: \(dataBlock.keys.sorted())")
             throw NewsBarError.parseFailed
         }
 
