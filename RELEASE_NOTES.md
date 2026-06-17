@@ -1,3 +1,20 @@
+## v1.3.6 — Bug 修复 & 健壮性增强
+
+### 🐛 Bug 修复
+
+- **API Key 启动同步加载**：确保定时器触发时 API Key 已就绪，防止首次定时刷新时因 Key 未加载而跳过 AI 摘要
+- **Dashboard force unwrap 修复**：修复 Dashboard 窗口中 `orchestrator` 的强制解包，消除潜在的崩溃风险
+- **AI 摘要逐字动画取消支持**：将 `Task.isCancelled` 检测改为 `try/catch` 模式，正确响应 Task 取消信号
+- **AI 摘要状态数据一致**：新增 `aiSummaryItems` 属性追踪摘要所用的新闻条目，替代实时计算，避免数据不一致
+
+### 🔧 改进
+
+- **AI 摘要重试指数退避**：重试间隔改为指数增长（1s → 2s → 4s），捕获最后一次 HTTP 错误并输出详细信息
+- **AISummaryService 错误诊断增强**：在重试全部失败时返回具体 HTTP 状态码，便于定位问题
+- **NewsOrchestrator 日志增强**：获取数据源失败时增加 `NSLog` 输出，方便调试
+
+---
+
 ## v1.3.5 — 安全加固 & 架构优化
 
 ### 🔐 安全增强
