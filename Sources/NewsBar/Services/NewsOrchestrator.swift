@@ -44,6 +44,7 @@ final class NewsOrchestrator: ObservableObject {
     @Published var bilibiliItems: [NewsItem] = []
     @Published var rssItemsMap: [String: [NewsItem]] = [:]
     @Published var aiSummaryState = AISummaryState.idle
+    @Published var aiSummaryItems: [NewsItem] = []
     @Published var isRefreshing = false
     @Published var sourceStates: [String: SourceLoadState] = [:]
     @Published var manualRefreshWarning: String?
@@ -283,6 +284,7 @@ final class NewsOrchestrator: ObservableObject {
             sourceStates[source.id] = .loaded
             return items
         } catch {
+            NSLog("[NewsOrchestrator] 获取 \(source.displayName) 失败: \(error.localizedDescription)")
             sourceStates[source.id] = .failed(sourceErrorMessage(error))
             return nil
         }
@@ -397,6 +399,7 @@ final class NewsOrchestrator: ObservableObject {
                 items: items, maxWords: maxWords, provider: provider,
                 model: model, apiKey: apiKey
             )
+            aiSummaryItems = items
             if result.isTruncated {
                 aiSummaryState = .truncated(result.summary)
             } else {
@@ -431,6 +434,7 @@ final class NewsOrchestrator: ObservableObject {
         bilibiliItems = []
         rssItemsMap = [:]
         aiSummaryState = .idle
+        aiSummaryItems = []
         sourceStates = [:]
         lastBatchHash = nil
     }

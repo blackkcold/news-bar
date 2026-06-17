@@ -40,6 +40,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // 迁移旧 DeepSeek Keychain 条目（必须在任何读取之前）
         settings.migrateLegacyKeyIfNeeded()
 
+        loadAPIKeyFromKeychain()
         scheduleDelayedKeychainRead()
         observeAPIKeyConfigured()
         refreshAPIKeyIfNeeded()
@@ -125,6 +126,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             } catch {
                 // silent fail — will retry next launch
             }
+        }
+    }
+
+    /// 启动时同步加载 API Key，确保定时器触发时 key 可用
+    private func loadAPIKeyFromKeychain() {
+        guard settings.aiSummaryEnabled, settings.cachedAPIKey == nil else { return }
+        guard currentProviderHasSavedKeyFlag() else { return }
+        let account = settings.currentProvider.apiKeyAccount()
+        if let key = KeychainManager.readAPIKey(account: account), !key.isEmpty {
+            settings.cachedAPIKey = key
         }
     }
 
@@ -292,6 +303,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
+        guard let orchestrator else { return }
+
         let window = NSWindow(
             contentRect: NSRect(origin: .zero, size: Self.dashboardSize),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
@@ -301,7 +314,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.title = "NewsBar Dashboard"
         window.center()
         window.contentView = NSHostingView(
-            rootView: DashboardWindow(orchestrator: orchestrator!)
+            rootView: DashboardWindow(orchestrator: orchestrator)
                 .environment(settings)
         )
         window.isReleasedWhenClosed = false
