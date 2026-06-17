@@ -25,12 +25,14 @@ enum AISummaryService {
         maxRetries: Int = 2,
         _ operation: () async throws -> T
     ) async throws -> T {
+        var lastTransientError: TransientHTTPError?
         for attempt in 0...maxRetries {
             do {
                 return try await operation()
             } catch let error as TransientHTTPError {
+                lastTransientError = error
                 if attempt < maxRetries {
-                    let delaySeconds: UInt64 = attempt == 0 ? 1 : 2
+                    let delaySeconds: UInt64 = 1 << attempt
                     try await Task.sleep(nanoseconds: delaySeconds * 1_000_000_000)
                     continue
                 }
@@ -38,7 +40,9 @@ enum AISummaryService {
                 throw error
             }
         }
-        throw NewsBarError.requestFailed
+        throw NewsBarError.parseFailedWithDetail(
+            "HTTP \(lastTransientError?.statusCode ?? 0) — 重试 \(maxRetries + 1) 次后仍然失败"
+        )
     }
 
     static func summarize(
