@@ -144,9 +144,16 @@ final class UpdateChecker: ObservableObject {
                     return
                 }
 
-                guard let expectedSHA256 = await fetchSHA256FromGitHubDirect(release: release) else {
+                let expectedSHA256: String?
+                if let digest = dmgAsset.sha256Digest {
+                    expectedSHA256 = digest
+                } else {
+                    expectedSHA256 = await fetchSHA256(from: release)
+                }
+
+                guard let expectedSHA256 else {
                     try? FileManager.default.removeItem(at: tempURL)
-                    await MainActor.run { state = .error("无法获取校验文件，请从 GitHub 官方页面下载") }
+                    await MainActor.run { state = .error("无法获取校验信息，请从 GitHub 官方页面下载") }
                     return
                 }
 
@@ -184,7 +191,9 @@ final class UpdateChecker: ObservableObject {
 
     func openDownloadedDMG() {
         guard case .downloadComplete(let url) = state else { return }
-        NSWorkspace.shared.activateFileViewerSelecting([url])
+        if !NSWorkspace.shared.open(url) {
+            NSWorkspace.shared.activateFileViewerSelecting([url])
+        }
         state = .idle
     }
 
@@ -269,47 +278,6 @@ final class UpdateChecker: ObservableObject {
             guard let httpResponse = response as? HTTPURLResponse,
                   (200...299).contains(httpResponse.statusCode) else { return nil }
             guard let content = String(data: data, encoding: .utf8) else { return nil }
-            let hex = content
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-                .filter { $0.isHexDigit }
-            guard hex.count >= 64 else { return nil }
-            return String(hex.prefix(64)).lowercased()
-        } catch {
-            return nil
-        }
-    }
-
-    /// Always fetches the SHA256 from GitHub's direct API, ignoring proxy mirrors.
-    /// This prevents a compromised proxy from serving a modified .sha256 file
-    /// that matches a malicious DMG.
-    private func fetchSHA256FromGitHubDirect(release _: GitHubRelease) async -> String? {
-        guard let url = URL(string: Self.releaseAPIURLs[0].url) else { return nil }
-
-        var request = URLRequest(url: url)
-        request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
-        request.setValue("2022-11-28", forHTTPHeaderField: "X-GitHub-Api-Version")
-        request.timeoutInterval = 15
-
-        do {
-            let session = URLSession(configuration: .ephemeral)
-            let (data, response) = try await session.data(for: request)
-
-            guard let httpResponse = response as? HTTPURLResponse,
-                  (200...299).contains(httpResponse.statusCode) else { return nil }
-
-            let decoder = JSONDecoder()
-            let directRelease = try decoder.decode(GitHubRelease.self, from: data)
-
-            guard let sha256Asset = directRelease.assets.first(where: { $0.name.hasSuffix(".sha256") }),
-                  let sha256URL = URL(string: sha256Asset.browser_download_url) else {
-                return nil
-            }
-
-            let (shaData, shaResponse) = try await session.data(from: sha256URL)
-            guard let shaHTTPResponse = shaResponse as? HTTPURLResponse,
-                  (200...299).contains(shaHTTPResponse.statusCode) else { return nil }
-            guard let content = String(data: shaData, encoding: .utf8) else { return nil }
-
             let hex = content
                 .trimmingCharacters(in: .whitespacesAndNewlines)
                 .filter { $0.isHexDigit }
