@@ -30,7 +30,7 @@ struct PopoverContent: View {
                         AISummaryCard(
                             state: orchestrator.aiSummaryState,
                             isExpanded: $aiSummaryExpanded,
-                            allItems: orchestrator.allActiveItems(settings: settings),
+                            allItems: orchestrator.aiSummaryItems,
                             onRegenerate: {
                                 Task {
                                     await orchestrator.regenerateAISummary(settings: settings)

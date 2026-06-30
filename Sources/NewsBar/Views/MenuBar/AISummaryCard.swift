@@ -319,9 +319,12 @@ struct AISummaryCard: View {
         guard !chars.isEmpty else { return }
         let chunkSize = 3
         for i in stride(from: chunkSize, through: chars.count, by: chunkSize) {
-            if Task.isCancelled { return }
             displayText = String(chars.prefix(i))
-            try? await Task.sleep(nanoseconds: 30_000_000)
+            do {
+                try await Task.sleep(nanoseconds: 30_000_000)
+            } catch {
+                return
+            }
         }
         displayText = fullText
     }
