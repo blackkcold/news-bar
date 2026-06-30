@@ -15,7 +15,7 @@ struct AboutTab: View {
     @Environment(AppSettings.self) private var settings
     @Environment(\.cacheClearAction) private var cacheClearAction
 
-    private let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0.0"
+    private let version = AppVersion.current
     private let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "1"
 
     var body: some View {

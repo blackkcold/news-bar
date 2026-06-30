@@ -23,9 +23,26 @@ struct GitHubAsset: Decodable {
     let browser_download_url: String
     let size: Int64
     let content_type: String?
+    let digest: String?
 
     var isDMG: Bool {
         name.hasSuffix(".dmg") || content_type == "application/x-apple-diskimage"
+    }
+
+    var sha256Digest: String? {
+        guard let digest else { return nil }
+
+        let trimmed = digest.trimmingCharacters(in: .whitespacesAndNewlines)
+        let prefix = "sha256:"
+        let hex: String
+        if trimmed.lowercased().hasPrefix(prefix) {
+            hex = String(trimmed.dropFirst(prefix.count))
+        } else {
+            hex = trimmed
+        }
+
+        guard hex.count == 64, hex.allSatisfy({ $0.isHexDigit }) else { return nil }
+        return hex.lowercased()
     }
 }
 
@@ -60,8 +77,16 @@ enum AppVersion {
             return v
         }
 
-        // 3. Hardcoded fallback for development builds
-        return "1.1.0"
+        // 3. Development runs from the package root can read the checked-in version file.
+        let devVersionURL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+            .appendingPathComponent("version.txt")
+        if let v = try? String(contentsOf: devVersionURL, encoding: .utf8) {
+            let trimmed = v.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty { return trimmed }
+        }
+
+        // 4. Hardcoded fallback for unusual development launches.
+        return "1.3.5"
     }()
 }
 
@@ -71,14 +96,33 @@ enum AppVersion {
 /// Supports `major.minor.patch` format; extra segments are ignored.
 /// Non-numeric segments are treated as 0.
 func versionIsNewer(_ a: String, than b: String) -> Bool {
-    let aParts = a.split(separator: ".").prefix(3).compactMap { Int($0) }
-    let bParts = b.split(separator: ".").prefix(3).compactMap { Int($0) }
+    let aParts = semanticVersionCore(a)
+    let bParts = semanticVersionCore(b)
 
-    for i in 0..<max(aParts.count, bParts.count) {
-        let av = i < aParts.count ? aParts[i] : 0
-        let bv = i < bParts.count ? bParts[i] : 0
+    for i in 0..<3 {
+        let av = aParts[i]
+        let bv = bParts[i]
         if av > bv { return true }
         if av < bv { return false }
     }
     return false
+}
+
+private func semanticVersionCore(_ version: String) -> [Int] {
+    var normalized = version.trimmingCharacters(in: .whitespacesAndNewlines)
+    if normalized.hasPrefix("v") || normalized.hasPrefix("V") {
+        normalized.removeFirst()
+    }
+
+    let withoutPrerelease = normalized
+        .split(separator: "-", maxSplits: 1, omittingEmptySubsequences: false)
+        .first ?? ""
+    let core = withoutPrerelease
+        .split(separator: "+", maxSplits: 1, omittingEmptySubsequences: false)
+        .first ?? ""
+    var parts = core.split(separator: ".").prefix(3).map { Int($0) ?? 0 }
+    while parts.count < 3 {
+        parts.append(0)
+    }
+    return parts
 }

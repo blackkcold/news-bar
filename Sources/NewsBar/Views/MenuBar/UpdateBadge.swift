@@ -26,7 +26,7 @@ struct UpdateBadge: View {
                 downloadingButton(progress: progress)
 
             case .downloadComplete:
-                actionButton(label: "打开", icon: "checkmark.circle.fill")
+                actionButton(label: "打开安装包", icon: "checkmark.circle.fill")
                     .onTapGesture { checker.openDownloadedDMG() }
 
             case .error(let message):
