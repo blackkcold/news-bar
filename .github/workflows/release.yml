@@ -1,0 +1,182 @@
+name: Build & Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version tag to release (e.g. v1.4.1)'
+        required: true
+
+env:
+  APP_NAME: NewsBar
+  BUNDLE_ID: com.newsbar.app
+
+jobs:
+  build-and-release:
+    name: Build macOS App & Create Release
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve Version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            VERSION="${{ github.event.inputs.version }}"
+            VERSION="${VERSION#v}"
+          else
+            VERSION=$(cat version.txt | tr -d '[:space:]')
+          fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "tag=v${VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Build Binary
+        run: |
+          echo "🔨 Building ${APP_NAME} v${{ steps.version.outputs.version }}..."
+          swift build -c release --arch arm64 2>&1
+
+      - name: Create App Bundle
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          RELEASE_DIR="release/${VERSION}"
+          BUNDLE_DIR="${RELEASE_DIR}/${APP_NAME}.app"
+
+          mkdir -p "${BUNDLE_DIR}/Contents/MacOS"
+          mkdir -p "${BUNDLE_DIR}/Contents/Resources"
+
+          cp .build/release/${APP_NAME} "${BUNDLE_DIR}/Contents/MacOS/"
+          cp version.txt "${BUNDLE_DIR}/Contents/Resources/"
+          cp Resources/AppIcon.icns "${BUNDLE_DIR}/Contents/Resources/"
+
+          # Generate Info.plist — use printf to avoid heredoc indent issues
+          printf '%s\n' \
+            '<?xml version="1.0" encoding="UTF-8"?>' \
+            '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">' \
+            '<plist version="1.0">' \
+            '<dict>' \
+            '    <key>CFBundleExecutable</key>' \
+            "    <string>${APP_NAME}</string>" \
+            '    <key>CFBundleIdentifier</key>' \
+            "    <string>${BUNDLE_ID}</string>" \
+            '    <key>CFBundleName</key>' \
+            "    <string>${APP_NAME}</string>" \
+            '    <key>CFBundleDisplayName</key>' \
+            "    <string>${APP_NAME}</string>" \
+            '    <key>CFBundleVersion</key>' \
+            "    <string>${VERSION}</string>" \
+            '    <key>CFBundleShortVersionString</key>' \
+            "    <string>${VERSION}</string>" \
+            '    <key>CFBundlePackageType</key>' \
+            '    <string>APPL</string>' \
+            '    <key>CFBundleSignature</key>' \
+            '    <string>????</string>' \
+            '    <key>LSMinimumSystemVersion</key>' \
+            '    <string>15.0</string>' \
+            '    <key>LSUIElement</key>' \
+            '    <true/>' \
+            '    <key>CFBundleIconFile</key>' \
+            '    <string>AppIcon</string>' \
+            '    <key>NSHighResolutionCapable</key>' \
+            '    <true/>' \
+            '</dict>' \
+            '</plist>' \
+            > "${BUNDLE_DIR}/Contents/Info.plist"
+
+          echo "📦 Bundle created: ${BUNDLE_DIR}"
+
+      - name: Sign Bundle
+        run: |
+          BUNDLE_DIR="release/${{ steps.version.outputs.version }}/${APP_NAME}.app"
+          echo "🔏 Signing (ad-hoc)..."
+          codesign --force --deep --sign - "${BUNDLE_DIR}"
+
+      - name: Create DMG
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          RELEASE_DIR="release/${VERSION}"
+          DMG_PATH="${RELEASE_DIR}/${APP_NAME}-${VERSION}.dmg"
+
+          echo "📦 Creating DMG..."
+          hdiutil create -volname "${APP_NAME}" \
+            -srcfolder "${RELEASE_DIR}" \
+            -ov -format UDZO \
+            "${DMG_PATH}" 2>&1
+
+          # Set DMG icon (best-effort)
+          DMG_MOUNT="/Volumes/${APP_NAME}"
+          hdiutil detach "${DMG_MOUNT}" -quiet 2>/dev/null || true
+          DMG_RW="${RELEASE_DIR}/${APP_NAME}-${VERSION}-rw.dmg"
+          hdiutil convert "${DMG_PATH}" -format UDRW -o "${DMG_RW}" -quiet || true
+          hdiutil attach "${DMG_RW}" -nobrowse -quiet 2>&1 || true
+          cp Resources/AppIcon.icns "${DMG_MOUNT}/.VolumeIcon.icns" 2>/dev/null || true
+          SetFile -a C "${DMG_MOUNT}" 2>/dev/null || \
+            xattr -wx com.apple.FinderInfo \
+            "0000000000000000000400000000000000000000000000000000000000000000" \
+            "${DMG_MOUNT}" 2>/dev/null || true
+          hdiutil detach "${DMG_MOUNT}" -quiet 2>&1 || true
+          hdiutil convert "${DMG_RW}" -format UDZO -o "${DMG_PATH}" -quiet || true
+          rm -f "${DMG_RW}"
+
+          echo "   DMG: ${DMG_PATH}"
+          ls -lh "${DMG_PATH}"
+
+      - name: Generate SHA256
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          DMG_PATH="release/${VERSION}/${APP_NAME}-${VERSION}.dmg"
+          shasum -a 256 "${DMG_PATH}" | awk '{print $1}' > "${DMG_PATH}.sha256"
+          echo "🔐 SHA256: $(cat ${DMG_PATH}.sha256)"
+
+      - name: Generate Release Notes
+        id: notes
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          # Try to extract from RELEASE_NOTES.md
+          if grep -q "^## v${VERSION}" RELEASE_NOTES.md 2>/dev/null; then
+            echo "📝 Using RELEASE_NOTES.md entry for v${VERSION}"
+            awk "/^## v${VERSION}/ {found=1; next} /^## v/ && found {exit} found" RELEASE_NOTES.md > /tmp/release-notes.md
+            echo "Using curated notes from RELEASE_NOTES.md"
+          else
+            echo "📝 Auto-generating notes from git log..."
+            {
+              echo "# ${APP_NAME} v${VERSION}"
+              echo ""
+            } > /tmp/release-notes.md
+
+            PREV_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+            if [ -n "$PREV_TAG" ] && [ "$PREV_TAG" = "v${VERSION}" ]; then
+              PREV_TAG=$(git tag --sort=-creatordate | grep -v "v${VERSION}" | head -1 2>/dev/null || echo "")
+            fi
+            if [ -n "$PREV_TAG" ]; then
+              COMMIT_RANGE="$PREV_TAG..HEAD"
+            else
+              COMMIT_RANGE="HEAD~20..HEAD"
+            fi
+            git log "$COMMIT_RANGE" --no-merges --format="- %s" >> /tmp/release-notes.md
+          fi
+
+          cat /tmp/release-notes.md
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          TAG="v${VERSION}"
+          RELEASE_DIR="release/${VERSION}"
+
+          echo "📦 Creating GitHub Release ${TAG}..."
+          gh release create "${TAG}" \
+            --title "${APP_NAME} ${TAG}" \
+            --notes-file /tmp/release-notes.md \
+            "${RELEASE_DIR}/${APP_NAME}-${VERSION}.dmg" \
+            "${RELEASE_DIR}/${APP_NAME}-${VERSION}.dmg.sha256"
+
+          echo "✅ Release created: ${TAG}"
