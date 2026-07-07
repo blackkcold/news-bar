@@ -1,3 +1,19 @@
+## v1.4.1 — 平台兼容 & 健壮性增强
+
+### 🐛 Bug 修复
+
+- **1Password Apple Silicon 兼容**：支持 `/opt/homebrew/bin/op` 路径，修复 M1/M2/M3 Mac 上 1Password 集成不可用
+- **AI 摘要动画竞态修复**：状态变更时取消旧动画 Task，防止快速切换导致文本混合显示
+
+### 🔧 改进
+
+- **更新校验纵深防御**：删除 SHA256 回退路径，统一使用 GitHub API digest 字段
+- **Markdown 剥离修正**：重写粗体/斜体正则，正确清理逐字动画中的 Markdown 标记
+- **RSS 警告视觉区分**：私有 IP 警告显示橙色而非红色
+- **版本兜底值同步**：AppVersion 硬编码兜底更新至 1.4.0
+
+---
+
 ## v1.3.6 — Bug 修复 & 健壮性增强
 
 ### 🐛 Bug 修复

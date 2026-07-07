@@ -86,7 +86,7 @@ enum AppVersion {
         }
 
         // 4. Hardcoded fallback for unusual development launches.
-        return "1.3.5"
+        return "1.4.0"
     }()
 }
 

@@ -9,6 +9,7 @@ struct AISummaryCard: View {
 
     @State private var displayText = ""
     @State private var isRegenerating = false
+    @State private var animationTask: Task<Void, Never>?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -30,8 +31,11 @@ struct AISummaryCard: View {
         .onChange(of: state) { _, newState in
             switch newState {
             case .done(let text), .truncated(let text):
-                Task { await animateText(AISummaryParser.stripMarkdown(text)) }
+                animationTask?.cancel()
+                animationTask = Task { await animateText(AISummaryParser.stripMarkdown(text)) }
             default:
+                animationTask?.cancel()
+                animationTask = nil
                 displayText = ""
             }
         }
@@ -318,11 +322,15 @@ struct AISummaryCard: View {
         let chars: [Character] = Array(fullText)
         guard !chars.isEmpty else { return }
         let chunkSize = 3
-        for i in stride(from: chunkSize, through: chars.count, by: chunkSize) {
-            displayText = String(chars.prefix(i))
+        var index = 0
+        while index < chars.count {
+            index = min(index + chunkSize, chars.count)
+            displayText = String(chars.prefix(index))
+            guard index < chars.count else { break }
             do {
                 try await Task.sleep(nanoseconds: 30_000_000)
             } catch {
+                displayText = fullText
                 return
             }
         }

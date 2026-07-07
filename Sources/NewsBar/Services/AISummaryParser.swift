@@ -47,6 +47,7 @@ enum AISummaryParser {
 
     static func stripMarkdown(_ text: String) -> String {
         var result = text
+        result = result.replacingOccurrences(of: "\\*\\*\\*(.*?)\\*\\*\\*", with: "$1", options: .regularExpression)
         result = result.replacingOccurrences(of: "\\*\\*(.*?)\\*\\*", with: "$1", options: .regularExpression)
         result = result.replacingOccurrences(of: "(?<!\\*)\\*(?!\\*)(.*?)(?<!\\*)\\*(?!\\*)", with: "$1", options: .regularExpression)
         result = result.replacingOccurrences(of: "`(.*?)`", with: "$1", options: .regularExpression)

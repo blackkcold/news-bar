@@ -144,12 +144,7 @@ final class UpdateChecker: ObservableObject {
                     return
                 }
 
-                let expectedSHA256: String?
-                if let digest = dmgAsset.sha256Digest {
-                    expectedSHA256 = digest
-                } else {
-                    expectedSHA256 = await fetchSHA256(from: release)
-                }
+                let expectedSHA256 = dmgAsset.sha256Digest
 
                 guard let expectedSHA256 else {
                     try? FileManager.default.removeItem(at: tempURL)
@@ -264,28 +259,6 @@ final class UpdateChecker: ObservableObject {
 
         NSLog("[UpdateChecker] all URLs exhausted")
         return nil
-    }
-
-    private func fetchSHA256(from release: GitHubRelease) async -> String? {
-        guard let sha256Asset = release.assets.first(where: { $0.name.hasSuffix(".sha256") }),
-              let sha256URL = URL(string: sha256Asset.browser_download_url) else {
-            return nil
-        }
-
-        do {
-            let session = URLSession(configuration: .ephemeral)
-            let (data, response) = try await session.data(from: sha256URL)
-            guard let httpResponse = response as? HTTPURLResponse,
-                  (200...299).contains(httpResponse.statusCode) else { return nil }
-            guard let content = String(data: data, encoding: .utf8) else { return nil }
-            let hex = content
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-                .filter { $0.isHexDigit }
-            guard hex.count >= 64 else { return nil }
-            return String(hex.prefix(64)).lowercased()
-        } catch {
-            return nil
-        }
     }
 
     // MARK: - Validation
