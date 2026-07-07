@@ -1,0 +1,54 @@
+name: PR Audit
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+    branches: [main]
+
+permissions:
+  contents: read
+  pull-requests: write
+  checks: write
+  statuses: write
+
+jobs:
+  validate-title:
+    name: Validate PR Title
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check conventional commit format
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          # pattern: type(optional_scope): description
+          PATTERN='^(fix|feat|refactor|chore|docs|perf|test|ci|build|style|revert|release|security)(\([a-z0-9_.-]+\))?!?:\s.+'
+          if ! echo "$TITLE" | grep -qE "$PATTERN"; then
+            echo "❌ PR title does not follow conventional commit format."
+            echo ""
+            echo "Expected: type(optional_scope): description"
+            echo ""
+            echo "Examples:"
+            echo "  fix(op): fallback 1Password CLI to Intel path"
+            echo "  feat(ui): add dark mode toggle"
+            echo "  refactor(ai): extract parser to separate module"
+            echo "  chore(release): bump version to 1.4.1"
+            echo ""
+            echo "Current title: $TITLE"
+            exit 1
+          fi
+          echo "✅ PR title is valid: $TITLE"
+
+  build-and-test:
+    name: Build & Test
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build
+        run: swift build 2>&1
+
+      - name: Run Tests
+        run: swift test 2>&1
