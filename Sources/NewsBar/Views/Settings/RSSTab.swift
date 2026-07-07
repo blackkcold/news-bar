@@ -7,6 +7,7 @@ struct RSSTab: View {
     @State private var newName = ""
     @State private var isAdding = false
     @State private var addError: String?
+    @State private var addWarning: String?
     @State private var isTesting = false
     @State private var showRecommendations = false
     @State private var showMaxAlert = false
@@ -204,6 +205,11 @@ struct RSSTab: View {
                     .font(.caption)
                     .foregroundStyle(.red)
             }
+            if let warning = addWarning {
+                Text("⚠️ \(warning)")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            }
 
             HStack {
                 Button(action: addRSSSource) {
@@ -242,7 +248,8 @@ struct RSSTab: View {
             addError = reason
             return
         case .warning(let reason):
-            addError = reason
+            addWarning = reason
+            addError = nil
             // warning is non-blocking, user can still add
         }
 
@@ -261,6 +268,8 @@ struct RSSTab: View {
                     }
                     newURL = ""
                     newName = ""
+                    addError = nil
+                    addWarning = nil
                     NotificationCenter.default.post(
                         name: .rssSourceAdded,
                         object: nil,
