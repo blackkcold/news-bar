@@ -16,7 +16,11 @@ enum OnePasswordError: LocalizedError {
 
 enum OnePasswordService {
 
-    private static let cliPath = "/usr/local/bin/op"
+    private static let cliPath: String = {
+        let silicon = "/opt/homebrew/bin/op"
+        if FileManager.default.isExecutableFile(atPath: silicon) { return silicon }
+        return "/usr/local/bin/op"
+    }()
     private static let timeoutSeconds: TimeInterval = 30
 
     static func isInstalled() -> Bool {
