@@ -55,7 +55,8 @@ Settings → AI tab: select a provider and fill in API Key. Supports DeepSeek, M
 | MiniMax | api.minimaxi.com | MiniMax-M2.7, MiniMax-M2.5, MiniMax-M2.1 |
 | Opencode Go | open-code-go.aiizhi.com | deepseek-v4-flash, deepseek-v4-pro |
 | Opencode Zen | open-code-zen.aiizhi.com | deepseek-v4-flash, deepseek-v4-pro |
-| Google AI Studio | generativelanguage.googleapis.com | gemini-2.5-flash, gemini-2.5-pro |
+| Google AI Studio | generativelanguage.googleapis.com | gemini-2.5-flash, gemini-2.5-pro, gemini-2.0-flash |
+| Ollama Cloud | ollama.com | deepseek-v4-flash, deepseek-v4-pro, qwen3.5:27b, kimi-k2.7-code, gpt-oss:120b |
 
 ## Develop · 开发
 

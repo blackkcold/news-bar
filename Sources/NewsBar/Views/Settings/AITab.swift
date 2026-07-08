@@ -178,6 +178,25 @@ struct AITab: View {
             } header: {
                 Text("费用说明")
             }
+
+            Section {
+                DisclosureGroup("模型与提供商对照表") {
+                    ForEach(AIProvider.allCases, id: \.self) { provider in
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(provider.displayName)
+                                .font(.system(size: 12, weight: .semibold))
+                            ForEach(provider.models, id: \.self) { model in
+                                Text("• \(model)")
+                                    .font(.system(size: 10, design: .monospaced))
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        .padding(.vertical, 2)
+                    }
+                }
+            } header: {
+                Text("参考")
+            }
         }
         .formStyle(.grouped)
     }

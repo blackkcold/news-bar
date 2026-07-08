@@ -7,6 +7,7 @@ enum AIProvider: String, CaseIterable, Codable {
     case opencodeGo
     case opencodeZen
     case googleAIStudio
+    case ollamaCloud
 
     // MARK: - Display
 
@@ -18,6 +19,7 @@ enum AIProvider: String, CaseIterable, Codable {
         case .opencodeGo:        return "Opencode Go"
         case .opencodeZen:       return "Opencode Zen"
         case .googleAIStudio:    return "Google AI Studio"
+        case .ollamaCloud:      return "Ollama Cloud"
         }
     }
 
@@ -35,6 +37,8 @@ enum AIProvider: String, CaseIterable, Codable {
             return "https://open-code-zen.aiizhi.com/anthropic/v1/messages"
         case .googleAIStudio:
             return "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
+        case .ollamaCloud:
+            return "https://ollama.com/v1/chat/completions"
         }
     }
 
@@ -44,7 +48,7 @@ enum AIProvider: String, CaseIterable, Codable {
 
     var responseFormat: ResponseFormat {
         switch self {
-        case .deepseek, .googleAIStudio: return .openAI
+        case .deepseek, .googleAIStudio, .ollamaCloud: return .openAI
         default:                         return .anthropic
         }
     }
@@ -53,14 +57,14 @@ enum AIProvider: String, CaseIterable, Codable {
 
     var authHeaderName: String {
         switch self {
-        case .deepseek, .googleAIStudio: return "Authorization"
+        case .deepseek, .googleAIStudio, .ollamaCloud: return "Authorization"
         default:                         return "x-api-key"
         }
     }
 
     var authHeaderPrefix: String {
         switch self {
-        case .deepseek, .googleAIStudio: return "Bearer "
+        case .deepseek, .googleAIStudio, .ollamaCloud: return "Bearer "
         default:                         return ""
         }
     }
@@ -82,6 +86,8 @@ enum AIProvider: String, CaseIterable, Codable {
             return ["deepseek-v4-flash", "deepseek-v4-pro"]
         case .googleAIStudio:
             return ["gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.0-flash"]
+        case .ollamaCloud:
+            return ["deepseek-v4-flash", "deepseek-v4-pro", "qwen3.5:27b", "kimi-k2.7-code", "gpt-oss:120b"]
         }
     }
 
@@ -102,6 +108,7 @@ enum AIProvider: String, CaseIterable, Codable {
         case .opencodeGo:     return "输入 Opencode Go API Key"
         case .opencodeZen:    return "输入 Opencode Zen API Key"
         case .googleAIStudio: return "输入 Google AI Studio API Key"
+        case .ollamaCloud:    return "输入 Ollama API Key"
         }
     }
 
@@ -113,6 +120,7 @@ enum AIProvider: String, CaseIterable, Codable {
         case .opencodeGo:     return "open-code-go.aiizhi.com"
         case .opencodeZen:    return "open-code-zen.aiizhi.com"
         case .googleAIStudio: return "aistudio.google.com → Get API Key"
+        case .ollamaCloud:    return "ollama.com/settings/keys"
         }
     }
 
@@ -124,6 +132,7 @@ enum AIProvider: String, CaseIterable, Codable {
         case .opencodeGo:     return "op://Private/OpencodeGo/credential"
         case .opencodeZen:    return "op://Private/OpencodeZen/credential"
         case .googleAIStudio: return "op://Private/Gemini/credential"
+        case .ollamaCloud:    return "op://Private/Ollama/credential"
         }
     }
 
@@ -158,6 +167,11 @@ enum AIProvider: String, CaseIterable, Codable {
                 ("gemini-2.5-pro",   "免费层：每天 50 次请求"),
                 ("用量参考",          "每次总结约消耗 200-800 tokens"),
             ]
+        case .ollamaCloud:
+            return [
+                ("计费方式", "Ollama Cloud 订阅制，按月计费"),
+                ("用量参考", "每次总结约消耗 200-800 tokens"),
+            ]
         }
     }
 
@@ -190,6 +204,8 @@ enum AIProvider: String, CaseIterable, Codable {
             return "定价未内置"
         case .opencodeGo, .opencodeZen:
             return "由 Opencode 账户计费"
+        case .ollamaCloud:
+            return "由 Ollama 订阅计费"
         }
     }
 }
