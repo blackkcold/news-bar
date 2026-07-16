@@ -2,6 +2,10 @@ import Foundation
 import LocalAuthentication
 import Security
 
+/// 已废弃：保留仅用于一次性迁移读取旧 Keychain 数据。
+/// 迁移完成后，所有 API Key 存储由 `EncryptedKeyStore` 接管。
+/// 将在下一个 major version 中移除。
+@available(*, deprecated, message: "Replaced by EncryptedKeyStore. Retained only for one-time migration.")
 enum KeyExistence {
     case notFound
     case existsAccessible

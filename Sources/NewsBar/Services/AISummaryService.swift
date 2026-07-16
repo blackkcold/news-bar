@@ -45,6 +45,26 @@ enum AISummaryService {
         )
     }
 
+    // MARK: - Response Models
+
+    private struct OAIResponse: Decodable {
+        struct Choice: Decodable {
+            let finish_reason: String?
+            struct Message: Decodable { let content: String }
+            let message: Message
+        }
+        let choices: [Choice]
+    }
+
+    private struct AnthropicResponse: Decodable {
+        struct ContentBlock: Decodable {
+            let type: String
+            let text: String?
+        }
+        let content: [ContentBlock]
+        let stop_reason: String?
+    }
+
     static func summarize(
         items: [NewsItem],
         maxWords: Int = 150,
@@ -185,15 +205,6 @@ enum AISummaryService {
             throw NewsBarError.requestFailed
         }
 
-        struct OAIResponse: Decodable {
-            struct Choice: Decodable {
-                let finish_reason: String?
-                struct Message: Decodable { let content: String }
-                let message: Message
-            }
-            let choices: [Choice]
-        }
-
         let decoded = try JSONDecoder().decode(OAIResponse.self, from: data)
         guard let choice = decoded.choices.first else {
             throw NewsBarError.parseFailed
@@ -254,16 +265,24 @@ enum AISummaryService {
             throw NewsBarError.requestFailed
         }
 
-        struct AnthropicResponse: Decodable {
-            struct ContentBlock: Decodable {
-                let type: String
-                let text: String?
+        let decoded: AnthropicResponse
+        do {
+            decoded = try JSONDecoder().decode(AnthropicResponse.self, from: data)
+        } catch let anthropicDecodeError as DecodingError {
+            NSLog("[AISummaryService] Anthropic decode failed, trying OpenAI format fallback")
+            do {
+                let fallback = try JSONDecoder().decode(OAIResponse.self, from: data)
+                guard let choice = fallback.choices.first else {
+                    throw NewsBarError.parseFailed
+                }
+                let content = choice.message.content.trimmingCharacters(in: .whitespacesAndNewlines)
+                let truncated = choice.finish_reason == "length"
+                return (content, truncated)
+            } catch let fallbackError as DecodingError {
+                NSLog("[AISummaryService] OpenAI fallback also failed: %@", fallbackError.localizedDescription)
+                throw anthropicDecodeError
             }
-            let content: [ContentBlock]
-            let stop_reason: String?
         }
-
-        let decoded = try JSONDecoder().decode(AnthropicResponse.self, from: data)
         guard let textBlock = decoded.content.first(where: { $0.type == "text" }),
               let text = textBlock.text else {
             throw NewsBarError.parseFailed

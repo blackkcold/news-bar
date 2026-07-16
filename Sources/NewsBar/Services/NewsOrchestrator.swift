@@ -153,7 +153,19 @@ final class NewsOrchestrator: ObservableObject {
         defer { isRefreshing = false }
 
         let previousSummaryState = aiSummaryState
-        let apiKey = settings.cachedAPIKey ?? ""
+        let apiKey: String
+        if let cached = settings.cachedAPIKey, !cached.isEmpty {
+            apiKey = cached
+        } else {
+            let store = EncryptedKeyStore()
+            if let fallback = await store.readAPIKey(account: settings.currentProvider.apiKeyAccount()),
+               !fallback.isEmpty {
+                settings.cachedAPIKey = fallback
+                apiKey = fallback
+            } else {
+                apiKey = ""
+            }
+        }
         if settings.aiSummaryEnabled {
             aiSummaryState = apiKey.isEmpty ? .noKey : .fetching
         }
@@ -406,14 +418,31 @@ final class NewsOrchestrator: ObservableObject {
                 aiSummaryState = .done(result.summary)
             }
             return result.requestCount
-        } catch {
-            if case NewsBarError.apiKeyInvalid = error {
-                aiSummaryState = .error("API Key 无效")
-            } else {
+        } catch NewsBarError.apiKeyInvalid {
+            aiSummaryState = .error("API Key 无效")
+        } catch let error as NewsBarError {
+            switch error {
+            case .parseFailedWithDetail(let detail):
+                NSLog("[NewsOrchestrator] AI summary retry exhausted: %@", detail)
+                aiSummaryState = .error("AI 服务暂时不可用（\(detail)）")
+            case .parseFailed:
+                aiSummaryState = .error("AI 响应格式异常")
+            default:
+                NSLog("[NewsOrchestrator] AI summary NewsBarError: %@", error.localizedDescription)
                 aiSummaryState = .error("AI 总结生成失败")
             }
+        } catch let error as URLError {
+            NSLog("[NewsOrchestrator] AI summary URLError: %@", error.localizedDescription)
+            aiSummaryState = .error(error.code == .timedOut ? "AI 请求超时" : "网络连接失败")
+        } catch let error as DecodingError {
+            NSLog("[NewsOrchestrator] AI summary DecodingError: %@", error.localizedDescription)
+            aiSummaryState = .error("AI 响应格式异常")
+        } catch {
+            NSLog("[NewsOrchestrator] AI summary failed: %@", error.localizedDescription)
+            aiSummaryState = .error("AI 总结生成失败")
             return 0
         }
+        return 0
     }
 
     func allActiveItems(settings: AppSettings) -> [NewsItem] {
@@ -442,9 +471,19 @@ final class NewsOrchestrator: ObservableObject {
     func regenerateAISummary(settings: AppSettings) async {
         let allItems = allActiveItems(settings: settings)
         guard !allItems.isEmpty else { return }
-        guard let apiKey = settings.cachedAPIKey, !apiKey.isEmpty else {
-            aiSummaryState = .noKey
-            return
+        let apiKey: String
+        if let cached = settings.cachedAPIKey, !cached.isEmpty {
+            apiKey = cached
+        } else {
+            let store = EncryptedKeyStore()
+            if let fallback = await store.readAPIKey(account: settings.currentProvider.apiKeyAccount()),
+               !fallback.isEmpty {
+                settings.cachedAPIKey = fallback
+                apiKey = fallback
+            } else {
+                aiSummaryState = .noKey
+                return
+            }
         }
         let requestCount = await generateSummary(
             items: allItems, maxWords: settings.aiMaxWords,
