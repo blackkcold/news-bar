@@ -1,0 +1,38 @@
+name: Validate PR Title
+
+on:
+  pull_request:
+    types: [opened, edited, reopened, synchronize]
+    branches: [main]
+
+jobs:
+  validate-title:
+    name: Validate PR Title
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate PR title format
+        run: |
+          PR_TITLE="${{ github.event.pull_request.title }}"
+          echo "PR Title: $PR_TITLE"
+
+          # Conventional Commits pattern: type(scope): description OR type: description
+          # Also accept "release: vX.Y.Z" pattern
+          PATTERN='^(feat|fix|refactor|docs|style|test|chore|ci|build|perf|release|security|revert)(\([a-z0-9-]+\))?!?: .+'
+
+          if [[ "$PR_TITLE" =~ $PATTERN ]]; then
+            echo "✅ PR title valid: $PR_TITLE"
+            exit 0
+          else
+            echo "❌ PR title does not follow Conventional Commits format"
+            echo ""
+            echo "Expected format: <type>(<scope>): <description>"
+            echo "  type: feat|fix|refactor|docs|style|test|chore|ci|build|perf|release|security|revert"
+            echo "  scope: optional, lowercase with hyphens"
+            echo ""
+            echo "Examples:"
+            echo "  feat: add RSS display count management"
+            echo "  fix(rss): resolve SSRF vulnerability"
+            echo "  release: v1.5.0 — RSS enhancement"
+            echo "  ci: add build and test workflow"
+            exit 1
+          fi
