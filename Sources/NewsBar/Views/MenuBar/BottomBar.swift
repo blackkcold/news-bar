@@ -2,6 +2,7 @@ import SwiftUI
 
 struct BottomBar: View {
     let isRefreshing: Bool
+    var batchProgress: (completed: Int, total: Int) = (0, 0)
     let onRefresh: () -> Void
     let onOpenSettings: () -> Void
     let onOpenDashboard: () -> Void
@@ -9,6 +10,13 @@ struct BottomBar: View {
     var body: some View {
         HStack(spacing: 0) {
             refreshButton
+
+            if isRefreshing && batchProgress.total > 0 {
+                Text("\(batchProgress.completed)/\(batchProgress.total)")
+                    .font(.system(size: 9, weight: .medium, design: .monospaced))
+                    .foregroundStyle(.tertiary)
+                    .padding(.leading, 4)
+            }
 
             Spacer()
 

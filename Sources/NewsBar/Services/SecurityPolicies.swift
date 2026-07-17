@@ -164,6 +164,19 @@ enum SecurityPolicies {
             .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
+    static func extractFirstImageURL(from html: String) -> String? {
+        let pattern = "<img[^>]+src\\s*=\\s*\"([^\"]+)\""
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive),
+              let match = regex.firstMatch(in: html, range: NSRange(html.startIndex..., in: html)),
+              let range = Range(match.range(at: 1), in: html) else { return nil }
+
+        let url = String(html[range]).trimmingCharacters(in: .whitespaces)
+        if case .valid = validateRSSURL(url) {
+            return url
+        }
+        return nil
+    }
+
     /// Strips bytes that represent invalid XML 1.0 characters from raw data.
     ///
     /// XML 1.0 只允许以下字符范围: #x9 | #xA | #xD | [#x20-#xD7FF] | [#xE000-#xFFFD] | [#x10000-#x10FFFF]

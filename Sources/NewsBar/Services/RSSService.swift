@@ -7,7 +7,20 @@ enum RSSService {
             throw NewsBarError.invalidURL
         }
 
-        let (data, _) = try await HTTPClient.data(for: url, config: .rss)
+        let (data, _) = try await withThrowingTaskGroup(of: (Data, URLResponse).self) { group in
+            group.addTask {
+                try await HTTPClient.data(for: url, config: .rss)
+            }
+            group.addTask {
+                try await Task.sleep(nanoseconds: 10_000_000_000)
+                throw URLError(.timedOut)
+            }
+            guard let result = try await group.next() else {
+                throw URLError(.timedOut)
+            }
+            group.cancelAll()
+            return result
+        }
 
         return try parseRSSFeed(data: data, sourceName: sourceName, sourceURL: rssURL)
     }
@@ -52,10 +65,18 @@ enum RSSService {
         return delegate.items.map { item in
             let rawLink = item.link.isEmpty ? sourceURL : item.link
             let validatedLink = SecurityPolicies.validateURL(rawLink)?.absoluteString ?? rawLink
+            let validatedImageURL: String? = {
+                guard let rawImageURL = item.imageURL else { return nil }
+                if case .valid = SecurityPolicies.validateRSSURL(rawImageURL) {
+                    return rawImageURL
+                }
+                return nil
+            }()
             return NewsItem(
                 title: SecurityPolicies.sanitizeHTMLContent(item.title),
                 url: validatedLink,
-                source: .rss(name: sourceName, url: sourceURL)
+                source: .rss(name: sourceName, url: sourceURL),
+                imageURL: validatedImageURL
             )
         }
     }
@@ -79,6 +100,7 @@ final class RSSParserDelegate: NSObject, XMLParserDelegate {
     struct Item {
         var title: String = ""
         var link: String = ""
+        var imageURL: String? = nil
     }
 
     private(set) var items: [Item] = []
@@ -99,6 +121,22 @@ final class RSSParserDelegate: NSObject, XMLParserDelegate {
 
         if elementName == "link", let href = attributes["href"] {
             currentItem?.link = href
+        }
+
+        if elementName == "enclosure" {
+            if let url = attributes["url"],
+               let type = attributes["type"],
+               type.hasPrefix("image/") {
+                currentItem?.imageURL = url
+            }
+        }
+
+        let mediaNS = "http://search.yahoo.com/mrss/"
+        if namespaceURI == mediaNS,
+           (elementName == "content" || elementName == "thumbnail") {
+            if let url = attributes["url"], currentItem?.imageURL == nil {
+                currentItem?.imageURL = url
+            }
         }
     }
 
@@ -133,7 +171,11 @@ final class RSSParserDelegate: NSObject, XMLParserDelegate {
                 currentItem?.link += trimmed
             }
         default:
-            break
+            if currentItem?.imageURL == nil {
+                if let extractedURL = SecurityPolicies.extractFirstImageURL(from: trimmed) {
+                    currentItem?.imageURL = extractedURL
+                }
+            }
         }
     }
 

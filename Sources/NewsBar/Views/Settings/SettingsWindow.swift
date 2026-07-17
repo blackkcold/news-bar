@@ -29,6 +29,12 @@ struct SettingsWindow: View {
                     }
                     .tag(2)
 
+                NotificationTab()
+                    .tabItem {
+                        Label("通知", systemImage: "bell.fill")
+                    }
+                    .tag(4)
+
                 AboutTab()
                     .tabItem {
                         Label("关于", systemImage: "info.circle")
