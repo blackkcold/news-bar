@@ -1,0 +1,16 @@
+{
+  "repo": "blackkcold/news-bar",
+  "tag_prefix": "v",
+  "build_command": "scripts/build.sh",
+  "release_command": "scripts/release.sh",
+  "test_command": null,
+  "docs": ["RELEASE_NOTES.md", "README.md"],
+  "changelog_format": "keep-a-changelog",
+  "ci_mode": "local",
+  "release_branch": true,
+  "auto_merge": false,
+  "release_note_style": "structured-cn",
+  "summary": "Keychain 迁移到加密文件存储，Provider 连接修复，错误诊断增强",
+  "summary_en": "Migrate from Keychain to EncryptedKeyStore, provider connection fixes, enhanced error diagnostics",
+  "validation": "swift build -c release --arch arm64 通过"
+}

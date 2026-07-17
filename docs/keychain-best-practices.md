@@ -304,3 +304,77 @@ app 启动
 - [ ] 使用内存缓存（`cachedAPIKey`）避免 Session 内重复读取
 - [ ] `init()` 期间用 `isInitializing` 守卫阻止 didSet 触发 Keychain 写入
 - [ ] UI 输入使用 `SecureField`，保存后清空本地输入
+
+---
+
+## 11. 加密文件存储方案（替代 Keychain）
+
+> v1.5.0 起采用。适用于 AI API Key 等经济性资产。
+
+### 11.1 动机
+
+macOS Keychain 在 ad-hoc 签名环境下反复弹窗的问题虽然可通过双重 NoUI 保护缓解，但在某些 macOS 配置下仍可能出现授权对话框。加密文件存储方案完全消除系统弹窗，同时提供可接受的安全级别。
+
+### 11.2 架构
+
+```
+密钥派生链:
+  IOPlatformUUID (IOKit) + 硬编码 32-byte salt
+  → HKDF-SHA256(inputKeyMaterial, info=bundleID, outputByteCount=32)
+  → 256-bit AES-GCM 密钥
+
+存储:
+  ~/Library/Application Support/{bundleID}/apikeys.enc
+  文件权限 0600，目录权限 0700
+  Time Machine 排除 (NSURLIsExcludedFromBackupKey)
+  格式: { version: Int, entries: [{ account, nonce, ciphertext }] }
+
+加密:
+  AES-GCM (CryptoKit)
+  Nonce: 每次写入随机生成 (AES.GCM.Nonce() → SecRandomCopyBytes)
+  Tag: 附加在 ciphertext 末尾 (16 bytes)
+```
+
+### 11.3 安全边界
+
+| 威胁 | 防护 | 说明 |
+|------|------|------|
+| 文件浏览器查看 | ✅ AES-256-GCM 加密 | 密文不可读 |
+| 跨机器 Time Machine 恢复 | ✅ UUID 绑定 | 不同机器派生不同密钥 |
+| 其他 UID 访问 | ✅ 0600 权限 | 仅 owner 可读写 |
+| **同 UID 恶意进程** | ❌ 无防护 | IOPlatformUUID 公开可读，攻击者可派生相同密钥 |
+| 硬件更换/逻辑板更换 | ⚠️ UUID 快照 | 首次保存 UUID 快照，变更时使用旧 UUID 解密 |
+
+### 11.4 补偿措施
+
+- **原子写入**: temp → F_FULLFSYNC → replaceItemAt → 0600 → 读回验证
+- **UUID 快照**: 首次启动保存 IOPlatformUUID，后续变更时使用旧值解密
+- **Time Machine 排除**: 设置 `NSURLIsExcludedFromBackupKey`
+- **actor 隔离**: `EncryptedKeyStore` 是 actor，所有操作自动序列化
+- **版本化格式**: `version: Int` 字段支持未来密钥轮转
+- **Debug Gate**: `#if DEBUG` + UserDefaults flag，与 KeychainManager 模式一致
+
+### 11.5 迁移策略
+
+从 Keychain 迁移到加密文件存储采用**逐 item 原子策略**：
+
+1. 对每个 account: 从 Keychain 读取 (NoUI) → 写入 EncryptedKeyStore → 验证回读 → 删除 Keychain 项
+2. 每个 item 迁移成功后设置 per-item flag (`migratedToEncrypted-{account}`)
+3. 全部完成设置全局 flag (`didMigrateAPIKeysFromKeychain`)
+4. 崩溃安全：未完成的 item 下次启动自动重试
+
+### 11.6 与 Keychain 威胁模型对比
+
+| 维度 | Keychain | 加密文件 |
+|------|----------|----------|
+| 同 UID 恶意进程 | ✅ ACL 阻止 | ❌ 可派生密钥 |
+| Secure Enclave | ✅ 支持 | ❌ 不支持 |
+| 跨机器迁移 | ✅ iCloud Keychain | ❌ 数据需重新输入 |
+| 弹窗体验 | ⚠️ 可能弹窗 | ✅ 零弹窗 |
+| 开发签名容忍 | ⚠️ ad-hoc 签名导致 ACL 变化 | ✅ 与签名无关 |
+
+### 11.7 适用场景
+
+- ✅ AI API Key（经济性资产，非隐私凭证）
+- ✅ 非敏感配置（用户偏好、API endpoint）
+- ❌ 银行密码、SSH 私钥等高敏感凭证（应继续使用 Keychain + Secure Enclave）

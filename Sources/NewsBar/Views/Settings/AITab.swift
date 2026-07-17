@@ -72,7 +72,7 @@ struct AITab: View {
                     } label: {
                         Text(isTesting ? "测试中..." : "测试连接")
                     }
-                    .disabled(apiKeyInput.isEmpty || isTesting)
+                    .disabled((apiKeyInput.isEmpty && (settings.cachedAPIKey?.isEmpty ?? true)) || isTesting)
                     .buttonStyle(.bordered)
                     .controlSize(.small)
                 }
@@ -91,7 +91,7 @@ struct AITab: View {
             } header: {
                 Text("API Key")
             } footer: {
-                Text("API Key 存储在系统钥匙串中，不会明文保存到磁盘。获取 Key: \(selectedProvider.keyRetrievalURL)")
+                Text("API Key 使用 AES-256-GCM 加密存储，绑定本机硬件。获取 Key: \(selectedProvider.keyRetrievalURL)")
             }
 
             Section {
@@ -187,17 +187,22 @@ struct AITab: View {
         saveResult = nil
         let sanitized = SecurityPolicies.sanitizeUserInput(apiKeyInput)
         let account = selectedProvider.apiKeyAccount()
-        let success = KeychainManager.saveAPIKey(sanitized, account: account)
-        if success {
-            settings.cachedAPIKey = sanitized
-            settings.onePasswordRef = onePasswordRef
-            apiKeyInput = ""
-            saveResult = "已保存到钥匙串"
-            NotificationCenter.default.post(name: .apiKeyConfigured, object: nil)
-        } else {
-            saveResult = "保存失败，请检查系统钥匙串权限"
+        Task {
+            let store = EncryptedKeyStore()
+            let success = await store.saveAPIKey(sanitized, account: account)
+            await MainActor.run {
+                if success {
+                    settings.cachedAPIKey = sanitized
+                    settings.onePasswordRef = onePasswordRef
+                    apiKeyInput = ""
+                    saveResult = "已保存"
+                    NotificationCenter.default.post(name: .apiKeyConfigured, object: nil)
+                } else {
+                    saveResult = "保存失败，请重试"
+                }
+                isSaving = false
+            }
         }
-        isSaving = false
     }
 
     private func loadFrom1Password() {
@@ -213,12 +218,17 @@ struct AITab: View {
             let key = try OnePasswordService.readSecret(reference: onePasswordRef)
             apiKeyInput = key
             let account = selectedProvider.apiKeyAccount()
-            let success = KeychainManager.saveAPIKey(key, account: account)
-            if success {
-                settings.cachedAPIKey = key
-                NotificationCenter.default.post(name: .apiKeyConfigured, object: nil)
+            Task {
+                let store = EncryptedKeyStore()
+                let success = await store.saveAPIKey(key, account: account)
+                await MainActor.run {
+                    if success {
+                        settings.cachedAPIKey = key
+                        NotificationCenter.default.post(name: .apiKeyConfigured, object: nil)
+                    }
+                    onePasswordResult = success ? "加载成功，已保存" : "保存失败，请重试"
+                }
             }
-            onePasswordResult = "加载成功，已保存到钥匙串"
         } catch OnePasswordError.notInstalled {
             onePasswordResult = "1Password CLI 未安装，请运行: brew install 1password-cli"
         } catch OnePasswordError.timeout {
@@ -239,9 +249,19 @@ struct AITab: View {
                 let testItems = [
                     NewsItem(title: "测试新闻", url: "https://example.com", source: .weibo)
                 ]
-                let apiKey = settings.cachedAPIKey ?? apiKeyInput
+                let rawInput = apiKeyInput
+                let apiKey: String
+                if !rawInput.isEmpty {
+                    apiKey = SecurityPolicies.sanitizeUserInput(rawInput)
+                } else if let cachedAPIKey = settings.cachedAPIKey, !cachedAPIKey.isEmpty {
+                    apiKey = cachedAPIKey
+                } else {
+                    testResult = "请先输入或保存 API Key"
+                    isTesting = false
+                    return
+                }
                 guard !apiKey.isEmpty else {
-                    testResult = "请先保存 API Key"
+                    testResult = "API Key 不能为空"
                     isTesting = false
                     return
                 }
@@ -267,11 +287,31 @@ struct AITab: View {
                     testResult = "内部错误：URL 无效"
                 case .parseFailed:
                     testResult = "响应解析失败，模型可能不可用"
+                case .parseFailedWithDetail(let detail):
+                    testResult = "响应解析失败：\(detail)"
                 default:
                     testResult = "未知错误"
                 }
+            } catch let error as URLError {
+                NSLog("[AITab] testConnection URLError: %@", error.localizedDescription)
+                switch error.code {
+                case .timedOut:
+                    testResult = "连接超时（30s），请检查网络或代理"
+                case .notConnectedToInternet:
+                    testResult = "无网络连接"
+                case .cannotFindHost:
+                    testResult = "无法解析服务器：\(selectedProvider.baseURL)"
+                case .networkConnectionLost:
+                    testResult = "网络连接中断"
+                default:
+                    testResult = "网络错误：\(error.localizedDescription)"
+                }
+            } catch let error as DecodingError {
+                NSLog("[AITab] testConnection DecodingError: %@", error.localizedDescription)
+                testResult = "服务器返回格式异常，请检查模型是否可用"
             } catch {
-                testResult = "连接失败，请检查网络"
+                NSLog("[AITab] testConnection failed: %@", error.localizedDescription)
+                testResult = "连接失败：\(error.localizedDescription)"
             }
             isTesting = false
         }

@@ -17,7 +17,7 @@
 - **🤖 AI Summary** · AI 摘要 — Template-framework briefings with section layout; hover section to reveal source badge linking to original news
 - **⏱ Auto Refresh** · 定时刷新 — Startup fetch + optional hourly timer
 - **🔄 Auto Update** · 自动更新 — Check GitHub Releases, one-click download
-- **🔐 Secure Storage** · 安全存储 — API Key in macOS Keychain, 1Password integration
+- **🔐 Secure Storage** · 安全存储 — API Key encrypted with AES-256-GCM, machine-bound
 - **🪟 Glass UI** · 毛玻璃 UI — Native SwiftUI frosted glass, consistent with system style
 - **🌓 Dark Mode** · 暗色模式 — Light / Dark / System auto, real-time switching
 - **📦 Zero Dependencies** · 零依赖 — Pure Swift, no third-party libraries
@@ -97,7 +97,8 @@ Sources/NewsBar/
 │   ├── RSSService.swift        # RSS/Atom parser
 │   ├── AISummaryService.swift  # AI summary (multi-provider)
 │   ├── CacheManager.swift      # File cache (actor)
-│   ├── KeychainManager.swift   # Keychain storage
+│   ├── KeychainManager.swift   # Deprecated — retained for one-time migration only
+│   ├── EncryptedKeyStore.swift  # AES-256-GCM encrypted file storage (replaces Keychain)
 │   ├── RateLimiter.swift       # Rate limiter (actor)
 │   ├── RefreshLog.swift        # Refresh log (actor, ring buffer)
 │   └── SecurityPolicies.swift  # URL/sanitize/XML safety
@@ -115,7 +116,7 @@ Sources/NewsBar/
 - **Swift 5.9** + **SwiftUI** (macOS 15.0+)
 - **AppKit**: NSStatusBar, NSPopover
 - **AI APIs**: DeepSeek / MiniMax / Opencode / Google AI Studio
-- **Storage**: macOS Keychain, UserDefaults, File-based cache (actor)
+- **Storage**: Encrypted file (AES-256-GCM, CryptoKit), UserDefaults, File-based cache (actor)
 - **Zero external dependencies** · 零外部依赖
 
 ## Keywords

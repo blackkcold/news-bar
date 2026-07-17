@@ -40,10 +40,13 @@ final class AppSettings {
     var onePasswordRef: String {
         didSet {
             guard !isInitializing else { return }
-            if onePasswordRef.isEmpty {
-                KeychainManager.deleteOnePasswordRef()
-            } else {
-                _ = KeychainManager.saveOnePasswordRef(onePasswordRef)
+            Task {
+                let store = EncryptedKeyStore()
+                if onePasswordRef.isEmpty {
+                    await store.deleteOnePasswordRef()
+                } else {
+                    _ = await store.saveOnePasswordRef(onePasswordRef)
+                }
             }
         }
     }
@@ -99,16 +102,16 @@ final class AppSettings {
         }
 
         self.aiMaxWords = defaults.integerIfPresent(forKey: "aiMaxWords") ?? 150
-        let savedOnePasswordRef = KeychainManager.readOnePasswordRef()
-        self.onePasswordRef = savedOnePasswordRef
-            ?? defaults.stringIfPresent(forKey: "onePasswordRef")
-            ?? ""
-
-        if savedOnePasswordRef == nil,
-           let legacyRef = defaults.stringIfPresent(forKey: "onePasswordRef"),
+        if let legacyRef = defaults.stringIfPresent(forKey: "onePasswordRef"),
            !legacyRef.isEmpty {
-            _ = KeychainManager.saveOnePasswordRef(legacyRef)
             defaults.removeObject(forKey: "onePasswordRef")
+            self.onePasswordRef = legacyRef
+            Task {
+                let store = EncryptedKeyStore()
+                _ = await store.saveOnePasswordRef(legacyRef)
+            }
+        } else {
+            self.onePasswordRef = ""
         }
 
         let selectedIDs = defaults.stringArray(forKey: "selectedRSSSourceIDs") ?? []
@@ -134,31 +137,46 @@ final class AppSettings {
     }
 
     func migrateLegacyKeyIfNeeded() {
-        guard UserDefaults.standard.bool(forKey: "hasDeepSeekAPIKey") else { return }
+        Task {
+            let store = EncryptedKeyStore()
+            let newAccount = AIProvider.deepseek.apiKeyAccount()
+            let newFlag = AIProvider.deepseek.keyExistsFlag()
+            let accountFlag = "hasAIKey-\(newAccount)"
 
-        let newAccount = AIProvider.deepseek.apiKeyAccount()
-        let newFlag = AIProvider.deepseek.keyExistsFlag()
-        let accountFlag = "hasAIKey-\(newAccount)"
-        if UserDefaults.standard.bool(forKey: newFlag) || UserDefaults.standard.bool(forKey: accountFlag) {
-            UserDefaults.standard.set(true, forKey: newFlag)
-            UserDefaults.standard.removeObject(forKey: "hasDeepSeekAPIKey")
-            return
+            guard UserDefaults.standard.bool(forKey: "hasDeepSeekAPIKey") else { return }
+
+            if UserDefaults.standard.bool(forKey: newFlag) || UserDefaults.standard.bool(forKey: accountFlag) {
+                UserDefaults.standard.set(true, forKey: newFlag)
+                UserDefaults.standard.removeObject(forKey: "hasDeepSeekAPIKey")
+                return
+            }
+
+            let exists = await store.checkAPIKeyExistence(account: newAccount)
+            guard !exists else {
+                UserDefaults.standard.removeObject(forKey: "hasDeepSeekAPIKey")
+                return
+            }
+
+            guard let oldKey = KeychainManager.readLegacyAPIKey(), !oldKey.isEmpty else {
+                UserDefaults.standard.removeObject(forKey: "hasDeepSeekAPIKey")
+                return
+            }
+
+            if await store.saveAPIKey(oldKey, account: newAccount) {
+                KeychainManager.deleteLegacyAPIKey()
+                UserDefaults.standard.removeObject(forKey: "hasDeepSeekAPIKey")
+                UserDefaults.standard.set(true, forKey: newFlag)
+            }
         }
+    }
 
-        guard KeychainManager.checkAPIKeyExistence(account: newAccount) == .notFound else {
-            UserDefaults.standard.removeObject(forKey: "hasDeepSeekAPIKey")
-            return
-        }
-
-        guard let oldKey = KeychainManager.readLegacyAPIKey(), !oldKey.isEmpty else {
-            UserDefaults.standard.removeObject(forKey: "hasDeepSeekAPIKey")
-            return
-        }
-
-        if KeychainManager.saveAPIKey(oldKey, account: newAccount) {
-            KeychainManager.deleteLegacyAPIKey()
-            UserDefaults.standard.removeObject(forKey: "hasDeepSeekAPIKey")
-            UserDefaults.standard.set(true, forKey: newFlag)
+    func loadStoredCredentialsIfNeeded() {
+        guard onePasswordRef.isEmpty else { return }
+        Task {
+            let store = EncryptedKeyStore()
+            if let ref = await store.readOnePasswordRef(), !ref.isEmpty {
+                onePasswordRef = ref
+            }
         }
     }
 

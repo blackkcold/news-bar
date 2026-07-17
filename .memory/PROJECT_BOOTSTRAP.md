@@ -27,7 +27,8 @@ Sources/NewsBar/
 │   ├── RSSService.swift        # RSS/Atom Feed 解析 (XMLParser)
 │   ├── AISummaryService.swift   # AI 总结（多提供商：OpenAI/Anthropic 格式分发；DeepSeek/MiniMax/Opencode/Google 等；含 finish_reason/stop_reason 截断检测 + 1 次自动重试）
 │   ├── OnePasswordService.swift # 1Password CLI 集成 (op read)
-│   ├── KeychainManager.swift   # 钥匙串读写 (account 参数化支持多 provider；双重 NoUI 保护；写入使用 SecItemUpdate 优先 + SecItemAdd 首次兜底以保留 ACL；DEBUG mode KeychainAccessGate 开发开关)
+│   ├── KeychainManager.swift   # 已废弃 — 仅保留用于一次性迁移读取旧 Keychain 数据
+│   ├── EncryptedKeyStore.swift  # AES-256-GCM 加密文件存储（替代 Keychain，actor 隔离，机器绑定，无弹窗）
 │   ├── CacheManager.swift      # actor 隔离的文件缓存
 │   ├── RefreshLog.swift         # actor 环形缓冲刷新日志 (最近 10 次，可选落盘)
 │   ├── RateLimiter.swift        # actor 隔离的手动刷新频率控制
@@ -77,9 +78,10 @@ Output: `release/{version}/NewsBar.app` + `NewsBar-{version}.dmg`
 ### Data Flow
 ```
 App 启动
+  → EncryptedKeyStore.migrateFromKeychainIfNeeded() — 从 Keychain 迁移到加密文件（一次性，崩溃安全）
+  → AppSettings 初始化（从加密文件异步加载 onePasswordRef）
   → statusItem / popover 就绪
-  → 延迟 1.5s 用 kSecUseAuthenticationUIFail 做三态预检：
-      notFound + AI 开启 → NSAlert 提示配置（仅一次）；existsAccessible/existsNeedsAuth → 自动设 hasAIKey-{provider} flag，不读 secret
+  → loadAPIKeyFromFile() — 异步从加密文件读取 API Key（无弹窗、无延迟）
   → 若没有 key 且 AI 已开启 → NSAlert 提示前往设置；"稍后再说" 后不再提示
   → 2s 自动刷新 NewsOrchestrator.refreshIfNeeded() → 每源 SourceLoadState 标记 loading/loaded/failed；无 cachedAPIKey 时 AI 状态为 .noKey（后台）
   → 10s 自动更新检查 UpdateChecker.autoCheck() → GitHub API → 有新版则 UpdateBadge 显示「更新」按钮
@@ -108,13 +110,13 @@ User clicks 重新生成
 
 ### Adding a Setting
 1. `AppSettings.swift` — 添加 `@Observable` 属性
-2. 敏感数据用 `KeychainManager` 存储（参考 `apiKey` / `onePasswordRef` 模式）
+2. 敏感数据用 `EncryptedKeyStore` 存储（参考 `apiKey` / `onePasswordRef` 模式）
 3. 非敏感数据用 `UserDefaults` 持久化（didSet 自动同步）
 4. `Views/Settings/XxxTab.swift` — 添加 UI 绑定
 5. 如需全局生效（如外观设置），通过 `.adaptiveColorScheme()` 修饰符应用到所有窗口根部 (SettingsWindow / PopoverContent / DashboardWindow)
 
 ### Security Rules
-- **API Key**: Keychain 存储（`kSecAttrAccessibleWhenUnlockedThisDeviceOnly`）；每个 AI Provider 独立 Keychain account (`"ai-key-{provider}"`)；所有读取使用双重 NoUI 保护；写入使用 SecItemUpdate 优先 + SecItemAdd 首次兜底（保留 ACL 避免重复弹窗）；`AppSettings.cachedAPIKey` 内存缓存，切换 provider 时自动清除；旧 DeepSeek account 首次启动自动迁移；1Password ref 共用 `"one-password-ref"` account，不受 provider 切换影响；UI 不在渲染期间读 Keychain（`cachedAPIKey` 已在上次保存时设置）
+- **API Key**: EncryptedKeyStore 加密文件存储（AES-256-GCM + HKDF-SHA256 密钥派生，绑定 IOPlatformUUID；文件权限 0600，Time Machine 排除；actor 隔离保证线程安全；原子写入 temp→F_FULLFSYNC→rename→verify）；每个 AI Provider 独立 account (`"ai-key-{provider}"`)；旧 Keychain 数据首次启动自动迁移（逐 item 原子策略，崩溃安全）；`AppSettings.cachedAPIKey` 内存缓存，切换 provider 时自动清除；1Password ref 共用 `"one-password-ref"` account，不受 provider 切换影响；UI 不在渲染期间读文件（`cachedAPIKey` 已在上次保存时设置）
 - **AI 总结**: `AISummaryState` 驱动 UI；`finish_reason="length"` 截断时自动重试 1 次（扩大 max_tokens），仍截断则 UI 提示并显示「重新生成」按钮；`lastBatchHash` 仅在总结成功后更新，避免无 key/失败污染 hash；手动刷新强制总结，自动刷新在 idle/noKey/error/fetching 时允许恢复；AISummaryCard 用 `.onAppear` 直接显示已有文本，`.onChange(of:)` 触发逐字动画
 - **1Password**: `op read` 通过 `Process` 调用（数组传参，非 shell 拼接，无注入风险）；`onePasswordRef` 存储在 Keychain（`account: "one-password-ref"`），首次启动自动从 UserDefaults 迁移
 - **更新检查**: 仅访问 GitHub 公开 API（`api.github.com/repos/blackkcold/news-bar/releases/latest`），无认证；DMG 下载到 `~/Library/Caches/<bundleID>/Updates/`，下载后校验文件大小，不自动挂载或执行

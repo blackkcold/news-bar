@@ -14,7 +14,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private static let autoRefreshInterval: TimeInterval = 3600
     private static let startupDelay: TimeInterval = 2
     private static let updateCheckDelay: TimeInterval = 10
-    private static let keychainReadDelay: TimeInterval = 1.5
     private static let popoverSize = NSSize(width: 360, height: 520)
     private static let settingsSize = NSSize(width: 560, height: 420)
     private static let dashboardSize = NSSize(width: 420, height: 600)
@@ -26,7 +25,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var settingsWindow: NSWindow?
     private var dashboardWindow: NSWindow?
 
-    private let settings = AppSettings()
+    private var settings: AppSettings!
     private var orchestrator: NewsOrchestrator?
     private var updateChecker: UpdateChecker?
     private var autoRefreshTimer: Timer?
@@ -37,11 +36,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         setupStatusBar()
         setupNotificationObservers()
 
-        // 迁移旧 DeepSeek Keychain 条目（必须在任何读取之前）
-        settings.migrateLegacyKeyIfNeeded()
+        // 从 Keychain 迁移到加密文件存储（必须在任何读取之前）
+        EncryptedKeyStore.migrateFromKeychainIfNeeded()
+        settings = AppSettings()
 
-        loadAPIKeyFromKeychain()
-        scheduleDelayedKeychainRead()
+        loadAPIKeyFromFile()
         observeAPIKeyConfigured()
         refreshAPIKeyIfNeeded()
         scheduleStartupAndAutoRefresh()
@@ -108,18 +107,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let ref = settings.onePasswordRef
         let account = settings.currentProvider.apiKeyAccount()
         guard currentProviderHasSavedKeyFlag(),
-              !ref.isEmpty,
-              KeychainManager.isKeyStale(account: account),
-              OnePasswordService.isInstalled() else { return }
-        DispatchQueue.global().async { [weak self] in
+              !ref.isEmpty else { return }
+        Task { [weak self] in
             guard let self else {
                 NSLog("[Keychain] AppDelegate deallocated before 1Password key save")
                 return
             }
+            let store = EncryptedKeyStore()
+            guard await store.isKeyStale(account: account),
+                  OnePasswordService.isInstalled() else { return }
             do {
                 let key = try OnePasswordService.readSecret(reference: ref)
-                if KeychainManager.saveAPIKey(key, account: account) {
-                    DispatchQueue.main.async {
+                if await store.saveAPIKey(key, account: account) {
+                    await MainActor.run {
                         self.settings.cachedAPIKey = key
                     }
                 }
@@ -129,30 +129,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// 启动时同步加载 API Key，确保定时器触发时 key 可用
-    private func loadAPIKeyFromKeychain() {
+    /// 启动时异步加载 API Key，确保定时器触发时 key 可用
+    private func loadAPIKeyFromFile() {
         guard settings.aiSummaryEnabled, settings.cachedAPIKey == nil else { return }
         guard currentProviderHasSavedKeyFlag() else { return }
         let account = settings.currentProvider.apiKeyAccount()
-        if let key = KeychainManager.readAPIKey(account: account), !key.isEmpty {
-            settings.cachedAPIKey = key
-        }
-    }
-
-    private func scheduleDelayedKeychainRead() {
-        DispatchQueue.main.asyncAfter(deadline: .now() + Self.keychainReadDelay) { [weak self] in
+        Task { [weak self] in
             guard let self else { return }
-
-            guard self.currentProviderHasSavedKeyFlag() else {
-                if self.settings.aiSummaryEnabled {
-                    self.handleMissingAPIKey()
+            let store = EncryptedKeyStore()
+            if let key = await store.readAPIKey(account: account), !key.isEmpty {
+                await MainActor.run {
+                    self.settings.cachedAPIKey = key
                 }
-                return
             }
         }
     }
 
-    private func loadAPIKeyFromKeychainIfNeeded() {
+    private func loadAPIKeyIfNeeded() {
         guard settings.aiSummaryEnabled,
               settings.cachedAPIKey == nil else { return }
         guard currentProviderHasSavedKeyFlag() else {
@@ -162,10 +155,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let account = settings.currentProvider.apiKeyAccount()
 
         Task { @MainActor in orchestrator?.aiSummaryState = .idle }
-        DispatchQueue.global().async { [weak self] in
+        Task { [weak self] in
             guard let self else { return }
-            if let key = KeychainManager.readAPIKey(account: account), !key.isEmpty {
-                DispatchQueue.main.async {
+            let store = EncryptedKeyStore()
+            if let key = await store.readAPIKey(account: account), !key.isEmpty {
+                await MainActor.run {
                     UserDefaults.standard.set(true, forKey: self.settings.currentProvider.keyExistsFlag())
                     self.settings.cachedAPIKey = key
                     Task {
@@ -237,7 +231,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func showPopover(relativeTo button: NSStatusBarButton) {
         guard let orchestrator = orchestrator else { return }
-        loadAPIKeyFromKeychainIfNeeded()
+        loadAPIKeyIfNeeded()
 
         let contentView = PopoverContent(
             orchestrator: orchestrator,
