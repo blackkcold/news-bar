@@ -1,3 +1,61 @@
+## Unreleased
+
+---
+
+## v1.5.0 — RSS 增强 & 通知推送 - 2026-07-17
+
+### ✨ 新功能
+- **RSS 显示计数统一管理**：新增 unifiedDisplayCount 开关，开启后 Popover 与 Dashboard 共享全局文本/图片显示条数；关闭后支持按数据源和显示模式分别设置条数，并提供"恢复默认"一键重置为全局值
+- **移除 RSS 上限**：不再限制 3 个 RSS 源，支持任意数量
+- **RSS 双列图片卡片**：LazyVGrid 瀑布流布局，自动提取 RSS 配图，16:9 比例裁剪
+- **macOS 通知推送**：每小时自动推送最新新闻 + 每日定时摘要推送
+- **流式刷新进度**：RSS 源分批 6 并发刷新，BottomBar 显示完成进度
+- **已订阅/未订阅分组**：设置页 RSS 源列表按订阅状态分组，清晰区分已订阅与未订阅源
+- **拖拽实时预览排序**：已订阅源支持拖拽调整顺序，松开前实时预览目标位置
+- **串行可取消推荐验证**：逐源串行验证推荐可用性，支持取消、进度显示、失败重试，完成后汇总通过/失败/已取消统计
+
+### 🔐 安全增强
+- **RSS 图片 SSRF 防护**：图片 URL 使用 validateRSSURL 校验，防止内网 IP 探测
+- **图片加载隔离**：ephemeral URLSession，不共享 cookie，防止认证信息泄露
+- **推荐添加安全验证**：添加推荐源前通过 SecurityPolicies.validateRSSURL 校验，拦截内网/本地地址，警告私有网段
+
+### 🔧 改进
+- **差异化刷新**：定时刷新仅更新超过 15min 未变化的源，减少不必要的网络请求
+- **单源超时控制**：RSS 请求 10s 超时，防止慢源阻塞批次
+- **Popover 宽度 360→400px**：更宽敞的阅读体验
+- **图片缓存**：NSCache + ephemeral URLSession，滚动时不重复下载
+
+### 🔧 RSS 显示优化
+- **RSS 双模式显示**：文本流(单列紧凑列表 LazyVStack) / 图片流(双列卡片 LazyVGrid)，Picker 标签同步为"文本流"/"图片流"
+- **图片流分页加载**：展开后每批加载 4 条，滚动到底自动加载更多，sentinel guard 防无限循环
+- **文字优先渲染**：文字即时显示，图片异步加载完成后 spring 动画过渡(.scale.combined(with: .opacity))
+- **源级自动降级**：图片流模式下无图片源自动降级为文本流，会话内锁存避免刷新闪烁
+- **多源同时展开**：支持多个 RSS 源同时展开，sticky 收起条快速折叠
+- **DisplayMode 枚举重命名**：single→text, scroll→image，Codable 自定义 init(from:) 向后兼容旧值(含未知值 silent fallback)
+- **RSS 源排序**：设置页支持上下按钮调整 RSS 源顺序，主面板与 Dashboard 同步反映新顺序
+
+### 🔧 技术细节
+- `RSSRecommendations.swift`：严格直连策略，10 个出版商自托管 HTTPS 源，覆盖 4 分类（科技/综合/财经/国际）
+- `NewsOrchestrator.swift`：新增 batchProgress 字段 + lastSourceRefresh 差异化刷新追踪
+- `RSSService.swift`：RSSParserDelegate 新增 enclosure/media namespace/content:encoded 图片解析；fetch 增加 10s 超时
+- `SecurityPolicies.swift`：新增 extractFirstImageURL 函数（不修改 forbiddenTags）
+- `NewsItem.swift`：新增 imageURL Optional 字段（Codable 向后兼容）
+- `NotificationService.swift`：新增，每小时 + 每日通知推送
+- `ImageCache.swift`：新增，actor 隔离 NSCache + ephemeral URLSession
+- `RSSWaterfallView.swift`：重构为双模式视图(文本流 LazyVStack + 图片流 LazyVGrid) + ImageLoadState 枚举 + 源级自动降级(会话锁存) + 分页加载 + RSSTextRow 组件
+- `NotificationTab.swift`：新增，设置页第 5 个 Tab
+- `AppSettings.swift`：新增 5 个通知相关字段；DisplayMode 枚举重命名 single→text/scroll→image + 自定义 Codable init(from:) 兼容旧值
+- `AppDelegate.swift`：通知权限请求 + 退出时清理 pending 通知
+- `RSSTab.swift`：Picker 标签改为"文本流"/"图片流"；新增源默认 .text；新增上移/下移排序按钮 + 无障碍标签
+- `PopoverContent.swift` / `DashboardWindow.swift`：新增 expandedRSSSourceIDs/rssLoadedCounts 状态 + sticky 折叠条 + RSSWaterfallView 传参；收起条顺序改为匹配 rssSources 数组顺序
+- `DisplayModeMigrationTests.swift`：新增，覆盖旧值/新值/未知值/数组完整性测试
+- `RSSTab.swift`：移除 maxSelected 上限逻辑 + 推荐列表按分类分段 + 已订阅/未订阅分组 + 拖拽实时预览排序 + 串行可取消推荐验证面板（进度/重试/汇总）
+- `RSSValidationService.swift`：新增，串行可取消推荐验证引擎，区分 blocked/invalidURL/cancelled/networkError/notRSSFeed/success 六种结果，支持重试与汇总统计
+- `BottomBar.swift`：新增 batchProgress 进度显示
+- `NewsSection.swift`：padding 16→14 适配 400px 宽度
+
+---
+
 ## v1.4.2 — Provider 连接修复 & 错误诊断增强
 
 ### 🔐 安全修复

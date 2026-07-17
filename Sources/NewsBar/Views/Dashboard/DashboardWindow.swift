@@ -4,6 +4,9 @@ struct DashboardWindow: View {
     @Environment(AppSettings.self) private var settings
     @ObservedObject var orchestrator: NewsOrchestrator
 
+    @State private var expandedRSSSourceIDs: Set<String> = []
+    @State private var rssLoadedCounts: [String: Int] = [:]
+
     var body: some View {
         VStack(spacing: 0) {
             toolbarView
@@ -51,19 +54,73 @@ struct DashboardWindow: View {
 
                     ForEach(settings.activeSources.filter { !$0.isBuiltIn }, id: \.id) { source in
                         Divider().padding(.horizontal, 12)
-                        NewsSection(
-                            title: source.displayName,
-                            icon: "antenna.radiowaves.left.and.right",
-                            color: .blue,
-                            items: orchestrator.rssItemsMap[source.id] ?? [],
-                            showRank: false,
+                        let rssConfig = settings.rssSources.first { $0.id == source.id }
+                        let displayMode = rssConfig?.displayMode ?? .text
+                        let counts: (text: Int, image: Int) = {
+                            if let rssConfig {
+                                return (
+                                    settings.effectiveTextDisplayCount(for: rssConfig),
+                                    settings.effectiveImageDisplayCount(for: rssConfig)
+                                )
+                            }
+                            return (settings.rssDefaultTextCount, settings.rssDefaultImageCount)
+                        }()
+                        let textCount = counts.text
+                        let imageCount = counts.image
+                        let sourceItems = orchestrator.rssItemsMap[source.id] ?? []
+                        let hasAnyImage = sourceItems.contains { $0.imageURL != nil }
+                        let pageSize = displayMode == .image
+                            ? (hasAnyImage ? imageCount : textCount)
+                            : textCount
+                        RSSWaterfallView(
+                            items: sourceItems,
+                            sourceName: source.displayName,
                             state: orchestrator.sourceStates[source.id] ?? .idle,
-                            maxVisible: 5
+                            displayMode: displayMode,
+                            textCount: textCount,
+                            imageCount: imageCount,
+                            isExpanded: expandedRSSSourceIDs.contains(source.id),
+                            loadedCount: rssLoadedCounts[source.id, default: pageSize],
+                            onToggleExpand: {
+                                if expandedRSSSourceIDs.contains(source.id) {
+                                    expandedRSSSourceIDs.remove(source.id)
+                                    rssLoadedCounts.removeValue(forKey: source.id)
+                                } else {
+                                    expandedRSSSourceIDs.insert(source.id)
+                                    rssLoadedCounts[source.id] = pageSize
+                                }
+                            },
+                            onLoadMore: {
+                                let current = rssLoadedCounts[source.id, default: pageSize]
+                                let total = sourceItems.count
+                                guard current < total else { return }
+                                rssLoadedCounts[source.id] = min(current + pageSize, total)
+                            }
                         )
                     }
 
                     Color.clear.frame(height: 12)
                 }
+            }
+
+            if !expandedRSSSourceIDs.isEmpty {
+                HStack(spacing: 8) {
+                    ForEach(settings.rssSources.filter { expandedRSSSourceIDs.contains($0.id) }) { rss in
+                        Button {
+                            expandedRSSSourceIDs.remove(rss.id)
+                            rssLoadedCounts.removeValue(forKey: rss.id)
+                        } label: {
+                            Label("\(rss.name) · 收起", systemImage: "chevron.up")
+                                .font(.system(size: 10))
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 4)
+                .background(.ultraThinMaterial)
             }
 
             bottomStatusBar

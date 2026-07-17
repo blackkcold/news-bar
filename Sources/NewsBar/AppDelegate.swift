@@ -14,7 +14,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private static let autoRefreshInterval: TimeInterval = 3600
     private static let startupDelay: TimeInterval = 2
     private static let updateCheckDelay: TimeInterval = 10
-    private static let popoverSize = NSSize(width: 360, height: 520)
+    private static let popoverSize = NSSize(width: 400, height: 520)
     private static let settingsSize = NSSize(width: 560, height: 420)
     private static let dashboardSize = NSSize(width: 420, height: 600)
 
@@ -45,6 +45,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         refreshAPIKeyIfNeeded()
         scheduleStartupAndAutoRefresh()
         scheduleAutoUpdateCheck()
+
+        Task { _ = await NotificationService.requestAuthorization() }
+        if settings.dailyPushEnabled {
+            NotificationService.scheduleDailyPush(hour: settings.dailyPushHour, minute: settings.dailyPushMinute)
+        }
     }
 
     private func scheduleStartupAndAutoRefresh() {
@@ -323,5 +328,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         settingsWindow?.close()
         dashboardWindow?.close()
         popover?.close()
+        NotificationService.clearAllPending()
     }
 }

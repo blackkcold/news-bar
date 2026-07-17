@@ -55,7 +55,7 @@ struct NewsSection: View {
                 .foregroundStyle(.secondary)
             Spacer()
         }
-        .padding(.horizontal, 16)
+        .padding(.horizontal, 14)
         .padding(.top, 10)
         .padding(.bottom, 4)
     }
@@ -88,7 +88,7 @@ struct NewsSection: View {
             }
             Spacer()
         }
-        .padding(.horizontal, 16)
+        .padding(.horizontal, 14)
         .padding(.vertical, 8)
     }
 
@@ -105,7 +105,7 @@ struct NewsSection: View {
             Spacer()
         }
         .foregroundStyle(.orange)
-        .padding(.horizontal, 16)
+        .padding(.horizontal, 14)
         .padding(.vertical, 5)
     }
 

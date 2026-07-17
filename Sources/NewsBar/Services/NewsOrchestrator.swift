@@ -48,10 +48,12 @@ final class NewsOrchestrator: ObservableObject {
     @Published var isRefreshing = false
     @Published var sourceStates: [String: SourceLoadState] = [:]
     @Published var manualRefreshWarning: String?
+    @Published var batchProgress: (completed: Int, total: Int) = (0, 0)
 
     private let cacheManager = CacheManager()
     private let rateLimiter = RateLimiter()
     private var lastBatchHash: String?
+    private var lastSourceRefresh: [String: Date] = [:]
 
     func loadCached(settings: AppSettings) async {
         let aiBefore = logStateLabel(aiSummaryState)
@@ -173,9 +175,37 @@ final class NewsOrchestrator: ObservableObject {
         await withTaskGroup(of: Void.self) { group in
             group.addTask { await self.fetchWeibo(useCacheFallback: !isManual) }
             group.addTask { await self.fetchBilibili(useCacheFallback: !isManual) }
-            for source in settings.activeSources where !source.isBuiltIn {
-                group.addTask { await self.fetchRSS(source: source, useCacheFallback: !isManual) }
+        }
+
+        let now = Date()
+        let rssSources = settings.activeSources.filter { source in
+            !source.isBuiltIn && (
+                isManual ||
+                sourceStates[source.id] != .loaded ||
+                (now.timeIntervalSince(lastSourceRefresh[source.id] ?? .distantPast) > 900)
+            )
+        }
+
+        if !rssSources.isEmpty {
+            let batchSize = 6
+            batchProgress = (0, rssSources.count)
+
+            for batchStart in stride(from: 0, to: rssSources.count, by: batchSize) {
+                let batch = Array(rssSources[batchStart..<min(batchStart + batchSize, rssSources.count)])
+
+                await withTaskGroup(of: Void.self) { group in
+                    for source in batch {
+                        group.addTask { await self.fetchRSS(source: source, useCacheFallback: !isManual, settings: settings) }
+                    }
+                }
+
+                batchProgress.completed = min(batchStart + batchSize, rssSources.count)
+
+                for source in batch {
+                    lastSourceRefresh[source.id] = Date()
+                }
             }
+            batchProgress = (0, 0)
         }
 
         if isManual {
@@ -189,6 +219,22 @@ final class NewsOrchestrator: ObservableObject {
             previousState: previousSummaryState,
             skipHashDedup: isManual
         )
+
+        let allItems = allActiveItems(settings: settings)
+        if !isManual {
+            if settings.hourlyPushEnabled {
+                await NotificationService.sendHourlyPush(items: allItems, count: settings.pushCount)
+            }
+            if settings.dailyPushEnabled {
+                NotificationService.rescheduleDailyPush(
+                    items: allItems,
+                    count: settings.pushCount,
+                    hour: settings.dailyPushHour,
+                    minute: settings.dailyPushMinute
+                )
+            }
+        }
+
         await recordRefreshLog(settings: settings, trigger: trigger, aiBefore: aiBefore)
     }
 
@@ -216,7 +262,8 @@ final class NewsOrchestrator: ObservableObject {
         }
     }
 
-    private func fetchRSS(source: NewsSource, useCacheFallback: Bool) async {
+    private func fetchRSS(source: NewsSource, useCacheFallback: Bool, settings: AppSettings) async {
+        let fetchedItems: [NewsItem]?
         if let items = await fetchAndCache(
             for: source,
             fetcher: {
@@ -224,9 +271,27 @@ final class NewsOrchestrator: ObservableObject {
             }
         ) {
             rssItemsMap[source.id] = items
+            fetchedItems = items
         } else if useCacheFallback, rssItemsMap[source.id, default: []].isEmpty,
                   let cached = await cacheManager.load(for: source) {
             rssItemsMap[source.id] = cached.items
+            fetchedItems = cached.items
+        } else {
+            fetchedItems = nil
+        }
+
+        // Detect image availability and auto-correct displayMode (only on actual fetch, not empty results)
+        if let items = fetchedItems, !items.isEmpty {
+            let hasImages = items.contains { $0.imageURL != nil }
+            if let idx = settings.rssSources.firstIndex(where: { $0.id == source.id }) {
+                let current = settings.rssSources[idx]
+                if current.supportsImage != hasImages || (current.displayMode == .image && !hasImages) {
+                    settings.rssSources[idx].supportsImage = hasImages
+                    if !hasImages && current.displayMode == .image {
+                        settings.rssSources[idx].displayMode = .text
+                    }
+                }
+            }
         }
     }
 

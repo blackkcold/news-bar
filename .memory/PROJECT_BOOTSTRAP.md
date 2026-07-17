@@ -4,54 +4,59 @@
 
 macOS 菜单栏即时新闻聚合器。状态栏图标点击弹出 Popover，展示微博/B站热搜 + RSS 源 + AI 总结。
 
-**当前开发分支**: `feature/1.3.2` · **最新发版**: v1.3.2
+**当前开发分支**: `feature/v1.5.0` · **最新发版**: v1.5.0
 
 ## Architecture
 
 ```
 Sources/NewsBar/
 ├── main.swift              # 入口：单实例检测 → NSApp 启动
-├── AppDelegate.swift        # 生命周期：statusItem、popover、延迟 keychain 读取、通知监听
+├── AppDelegate.swift        # 生命周期：statusItem、popover、延迟 keychain 读取、通知监听、通知权限请求
 ├── Models/
 │   ├── AIProvider.swift       # 多 AI 提供商枚举（6 providers）
-│   ├── NewsItem.swift       # 新闻条目模型 (Identifiable, Codable)
+│   ├── NewsItem.swift       # 新闻条目模型 (Identifiable, Codable, + imageURL Optional)
 │   ├── NewsSource.swift     # 数据源枚举 (weibo/bilibili/rss)
-│   ├── AppSettings.swift    # @Observable 全局设置 (UserDefaults 持久化 + resolvedColorScheme 外观映射 + cachedAPIKey 内存缓存；onePasswordRef 走 Keychain；刷新/AI 用量本地统计)
+│   ├── AppSettings.swift    # @Observable 全局设置 (UserDefaults 持久化 + resolvedColorScheme + cachedAPIKey + 通知设置 5 字段)
 │   ├── CacheEntry.swift     # 缓存条目 (items + hash + timestamp)
 │   └── UpdateInfo.swift     # GitHub Release 模型 + 版本比对
 ├── Services/
-│   ├── NewsOrchestrator.swift  # 核心调度器：刷新、缓存、每源加载状态、AI 总结状态机
+│   ├── NewsOrchestrator.swift  # 核心调度器：刷新、缓存、每源加载状态、AI 总结状态机、batchProgress、差异化刷新、通知触发
 │   ├── UpdateChecker.swift     # 更新检查：GitHub API → 版本比对 → DMG 下载
-│   ├── WeiboHotService.swift   # 微博热搜 (多级策略: ajax/side/hotSearch → s.weibo.com 降级；URL 由 word 字段构造 https://s.weibo.com/weibo?q=关键词&Refer=top)
+│   ├── WeiboHotService.swift   # 微博热搜 (多级策略: ajax/side/hotSearch → s.weibo.com 降级)
 │   ├── BilibiliHotService.swift # B站热搜 (bilibili.com API)
-│   ├── RSSService.swift        # RSS/Atom Feed 解析 (XMLParser)
-│   ├── AISummaryService.swift   # AI 总结（多提供商：OpenAI/Anthropic 格式分发；DeepSeek/MiniMax/Opencode/Google 等；含 finish_reason/stop_reason 截断检测 + 1 次自动重试）
+│   ├── RSSService.swift        # RSS/Atom Feed 解析 (XMLParser + enclosure/media namespace 图片解析 + 10s 超时)
+│   ├── RSSRecommendations.swift # RSS 推荐源 (6 分类 25 源)
+│   ├── AISummaryService.swift   # AI 总结（多提供商：OpenAI/Anthropic 格式分发）
 │   ├── OnePasswordService.swift # 1Password CLI 集成 (op read)
 │   ├── KeychainManager.swift   # 已废弃 — 仅保留用于一次性迁移读取旧 Keychain 数据
 │   ├── EncryptedKeyStore.swift  # AES-256-GCM 加密文件存储（替代 Keychain，actor 隔离，机器绑定，无弹窗）
 │   ├── CacheManager.swift      # actor 隔离的文件缓存
+│   ├── ImageCache.swift        # actor 隔离 NSCache + ephemeral URLSession (图片缓存，不共享 cookie)
+│   ├── NotificationService.swift # macOS 通知推送 (每小时 + 每日 UNCalendarNotificationTrigger)
 │   ├── RefreshLog.swift         # actor 环形缓冲刷新日志 (最近 10 次，可选落盘)
 │   ├── RateLimiter.swift        # actor 隔离的手动刷新频率控制
-│   └── SecurityPolicies.swift   # 输入消毒、URL 校验、XML 安全配置
+│   └── SecurityPolicies.swift   # 输入消毒、URL 校验、XML 安全配置、extractFirstImageURL (SSRF 防护)
 ├── Views/
 │   ├── MenuBar/
-│   │   ├── PopoverContent.swift  # 主弹窗：Header + AI 状态卡 + 新闻列表 + BottomBar
-│   │   ├── NewsSection.swift     # 新闻区段 (支持折叠/展开)
+│   │   ├── PopoverContent.swift  # 主弹窗：Header + AI 状态卡 + 新闻列表 + BottomBar (400px 宽)
+│   │   ├── NewsSection.swift     # 新闻区段 (微博/B站用，padding 14)
 │   │   ├── NewsItemRow.swift     # 单条新闻行
-│   │   ├── AISummaryCard.swift   # AI 总结卡片（状态驱动 + 逐字动画 + 模板框架 section 渲染 + [#N] 引用编号源链接角标）
+│   │   ├── RSSWaterfallView.swift # RSS 双模式视图 (文本流 LazyVStack + 图片流 LazyVGrid) + 源级自动降级(会话锁存) + 分页加载(每批4条) + sticky 折叠条
+│   │   ├── AISummaryCard.swift   # AI 总结卡片（状态驱动 + 逐字动画 + 模板框架 + [#N] 引用编号）
 │   │   ├── UpdateBadge.swift     # 更新状态按钮（检查→下载→打开，7 态胶囊按钮）
-│   │   └── BottomBar.swift       # 底部工具栏
+│   │   └── BottomBar.swift       # 底部工具栏 (+ batchProgress 进度显示)
 │   ├── Dashboard/
-│   │   └── DashboardWindow.swift # 独立 Dashboard 窗口（同步 AI 状态）
+│   │   └── DashboardWindow.swift # 独立 Dashboard 窗口（同步 AI 状态，RSS 用 RSSWaterfallView）
 │   └── Settings/
-│       ├── SettingsWindow.swift   # 设置窗口 (TabView，可切换到 AI 标签)
+│       ├── SettingsWindow.swift   # 设置窗口 (TabView 5 标签：通用/RSS/AI/通知/关于)
 │       ├── GeneralTab.swift       # 通用设置
-│       ├── RSSTab.swift           # RSS 源管理
+│       ├── RSSTab.swift           # RSS 源管理 (无上限 + 分类分段推荐)
 │       ├── AITab.swift            # AI 配置 + 1Password
+│       ├── NotificationTab.swift  # 通知设置 (每小时/每日推送 + 权限状态)
 │       └── AboutTab.swift         # 关于
 └── Extensions/
     ├── URLOpener.swift    # URL 安全打开
-    └── View+Glass.swift   # 毛玻璃 UI 修饰符 + AdaptiveColorSchemeModifier (暗色模式自适应：NSApp.effectiveAppearance + AppleInterfaceThemeChangedNotification)
+    └── View+Glass.swift   # 毛玻璃 UI 修饰符 + AdaptiveColorSchemeModifier
 ```
 
 ## Build & Run
@@ -116,13 +121,15 @@ User clicks 重新生成
 5. 如需全局生效（如外观设置），通过 `.adaptiveColorScheme()` 修饰符应用到所有窗口根部 (SettingsWindow / PopoverContent / DashboardWindow)
 
 ### Security Rules
-- **API Key**: EncryptedKeyStore 加密文件存储（AES-256-GCM + HKDF-SHA256 密钥派生，绑定 IOPlatformUUID；文件权限 0600，Time Machine 排除；actor 隔离保证线程安全；原子写入 temp→F_FULLFSYNC→rename→verify）；每个 AI Provider 独立 account (`"ai-key-{provider}"`)；旧 Keychain 数据首次启动自动迁移（逐 item 原子策略，崩溃安全）；`AppSettings.cachedAPIKey` 内存缓存，切换 provider 时自动清除；1Password ref 共用 `"one-password-ref"` account，不受 provider 切换影响；UI 不在渲染期间读文件（`cachedAPIKey` 已在上次保存时设置）
+- **API Key**: EncryptedKeyStore 加密文件存储（AES-256-GCM + HKDF-SHA256 密钥派生，绑定 IOPlatformUUID；文件权限 0600，Time Machine 排除；actor 隔离保证线程安全；原子写入 temp→F_fullFSYNC→rename→verify）；每个 AI Provider 独立 account (`"ai-key-{provider}"`)；旧 Keychain 数据首次启动自动迁移（逐 item 原子策略，崩溃安全）；`AppSettings.cachedAPIKey` 内存缓存，切换 provider 时自动清除；1Password ref 共用 `"one-password-ref"` account，不受 provider 切换影响；UI 不在渲染期间读文件（`cachedAPIKey` 已在上次保存时设置）
 - **AI 总结**: `AISummaryState` 驱动 UI；`finish_reason="length"` 截断时自动重试 1 次（扩大 max_tokens），仍截断则 UI 提示并显示「重新生成」按钮；`lastBatchHash` 仅在总结成功后更新，避免无 key/失败污染 hash；手动刷新强制总结，自动刷新在 idle/noKey/error/fetching 时允许恢复；AISummaryCard 用 `.onAppear` 直接显示已有文本，`.onChange(of:)` 触发逐字动画
 - **1Password**: `op read` 通过 `Process` 调用（数组传参，非 shell 拼接，无注入风险）；`onePasswordRef` 存储在 Keychain（`account: "one-password-ref"`），首次启动自动从 UserDefaults 迁移
 - **更新检查**: 仅访问 GitHub 公开 API（`api.github.com/repos/blackkcold/news-bar/releases/latest`），无认证；DMG 下载到 `~/Library/Caches/<bundleID>/Updates/`，下载后校验文件大小，不自动挂载或执行
 - **URL 打开**: 必须通过 `SecurityPolicies.validateURL()` 校验 (HTTPS only)
 - **用户输入**: 必须通过 `SecurityPolicies.sanitizeUserInput()` 处理（移除控制字符 + `.whitespacesAndNewlines` 防 copy-paste 换行符污染）
 - **XML 解析**: 必须设置 `shouldResolveExternalEntities = false`
+- **RSS 图片**: `extractFirstImageURL` 独立函数（不修改 `forbiddenTags`，保留 `img` 在安全策略中）；URL 经 `validateRSSURL` 校验（SSRF 防护，杜绝内网 IP）；`ImageCache` 用 `ephemeral URLSession`（不共享 cookie，防止认证信息泄露）
+- **通知内容**: 所有通知 body 经 `sanitizeHTMLContent` 净化；每小时推送在 `doRefresh` 后触发（内容实时）；每日推送通过 `rescheduleDailyPush` 在每次刷新后更新 pending 内容
 
 ### Refresh State / Rate Limiting
 - 自动刷新：启动时 2s 延迟执行一次 + 可选每小时定时刷新；`refreshIfNeeded` 与 `manualRefresh` 都会统一计入今日刷新次数
@@ -151,6 +158,12 @@ User clicks 重新生成
 | `.rssSourceAdded` | `RSSTab` | `AppDelegate` | RSS 添加后立即刷新该源 |
 | `.switchToAITab` | `AppDelegate` | `SettingsWindow` | 打开设置时切换到 AI 标签 |
 | `.apiKeyConfigured` | `AITab` | `AppDelegate` | 保存 API Key 后自动刷新 AI 总结 |
+
+## Push Notifications (macOS UserNotifications)
+
+- **每小时推送**: `doRefresh` 完成后（仅自动刷新，非手动）调用 `NotificationService.sendHourlyPush`，内容为最新 `allActiveItems` 前 N 条（N = `pushCount`）
+- **每日推送**: `UNCalendarNotificationTrigger` 预定时间触发；每次 `doRefresh` 后调用 `rescheduleDailyPush` 更新 pending 通知内容（确保用户收到的是最近一次刷新结果）
+- **退出清理**: `applicationWillTerminate` 调用 `clearAllPending`
 
 ## Code Conventions
 

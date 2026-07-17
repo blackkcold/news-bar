@@ -72,6 +72,32 @@ final class AppSettings {
         didSet { UserDefaults.standard.set(updateDevMode, forKey: "updateDevMode") }
     }
 
+    var hourlyPushEnabled: Bool {
+        didSet { UserDefaults.standard.set(hourlyPushEnabled, forKey: "hourlyPushEnabled") }
+    }
+    var dailyPushEnabled: Bool {
+        didSet { UserDefaults.standard.set(dailyPushEnabled, forKey: "dailyPushEnabled") }
+    }
+    var pushCount: Int {
+        didSet { UserDefaults.standard.set(pushCount, forKey: "pushCount") }
+    }
+    var dailyPushHour: Int {
+        didSet { UserDefaults.standard.set(dailyPushHour, forKey: "dailyPushHour") }
+    }
+    var dailyPushMinute: Int {
+        didSet { UserDefaults.standard.set(dailyPushMinute, forKey: "dailyPushMinute") }
+    }
+
+    var rssUnifiedDisplayCount: Bool {
+        didSet { UserDefaults.standard.set(rssUnifiedDisplayCount, forKey: "rssUnifiedDisplayCount") }
+    }
+    var rssDefaultTextCount: Int {
+        didSet { UserDefaults.standard.set(rssDefaultTextCount, forKey: "rssDefaultTextCount") }
+    }
+    var rssDefaultImageCount: Int {
+        didSet { UserDefaults.standard.set(rssDefaultImageCount, forKey: "rssDefaultImageCount") }
+    }
+
     var rssSources: [RSSSourceConfig] {
         didSet { saveRSSSources() }
     }
@@ -123,6 +149,12 @@ final class AppSettings {
         self.lastRefreshTimestamp = defaults.doubleIfPresent(forKey: "lastRefreshTimestamp") ?? 0
         self.statsDayTimestamp = defaults.doubleIfPresent(forKey: "statsDayTimestamp") ?? todayStart
 
+        self.rssUnifiedDisplayCount = defaults.boolIfPresent(forKey: "rssUnifiedDisplayCount") ?? true
+        let rawTextCount = defaults.integerIfPresent(forKey: "rssDefaultTextCount") ?? 10
+        self.rssDefaultTextCount = RSSSourceConfig.validTextCounts.contains(rawTextCount) ? rawTextCount : 10
+        let rawImageCount = defaults.integerIfPresent(forKey: "rssDefaultImageCount") ?? 4
+        self.rssDefaultImageCount = RSSSourceConfig.validImageCounts.contains(rawImageCount) ? rawImageCount : 4
+
         if let data = defaults.data(forKey: "rssSources"),
            let decoded = try? JSONDecoder().decode([RSSSourceConfig].self, from: data) {
             self.rssSources = decoded
@@ -131,6 +163,12 @@ final class AppSettings {
         }
 
         self.updateDevMode = defaults.bool(forKey: "updateDevMode")
+
+        self.hourlyPushEnabled = defaults.boolIfPresent(forKey: "hourlyPushEnabled") ?? false
+        self.dailyPushEnabled = defaults.boolIfPresent(forKey: "dailyPushEnabled") ?? false
+        self.pushCount = defaults.integerIfPresent(forKey: "pushCount") ?? 3
+        self.dailyPushHour = defaults.integerIfPresent(forKey: "dailyPushHour") ?? 9
+        self.dailyPushMinute = defaults.integerIfPresent(forKey: "dailyPushMinute") ?? 0
 
         self.isInitializing = false
         resetDailyStatsIfNeeded()
@@ -220,6 +258,22 @@ final class AppSettings {
         resetDailyStatsIfNeeded()
         todayAIRequestCount += count
     }
+
+    // MARK: - RSS display-count resolution
+
+    func effectiveTextDisplayCount(for source: RSSSourceConfig) -> Int {
+        if rssUnifiedDisplayCount {
+            return RSSSourceConfig.validTextCounts.contains(rssDefaultTextCount) ? rssDefaultTextCount : 10
+        }
+        return source.effectiveTextCount(global: rssDefaultTextCount)
+    }
+
+    func effectiveImageDisplayCount(for source: RSSSourceConfig) -> Int {
+        if rssUnifiedDisplayCount {
+            return RSSSourceConfig.validImageCounts.contains(rssDefaultImageCount) ? rssDefaultImageCount : 4
+        }
+        return source.effectiveImageCount(global: rssDefaultImageCount)
+    }
 }
 
 struct RSSSourceConfig: Identifiable, Hashable, Codable {
@@ -227,10 +281,78 @@ struct RSSSourceConfig: Identifiable, Hashable, Codable {
     var name: String
     var url: String
     var displayMode: DisplayMode
+    var supportsImage: Bool = true
+    var textCountOverride: Int?
+    var imageCountOverride: Int?
+
+    init(name: String, url: String, displayMode: DisplayMode, supportsImage: Bool = true, textCountOverride: Int? = nil, imageCountOverride: Int? = nil) {
+        self.name = name
+        self.url = url
+        self.displayMode = displayMode
+        self.supportsImage = supportsImage
+        self.textCountOverride = textCountOverride
+        self.imageCountOverride = imageCountOverride
+    }
+
+    // CRITICAL: AppSettings decodes [RSSSourceConfig] with `try?` — a single throw
+    // wipes the entire array. All fields must use safe decoding.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        name = try c.decode(String.self, forKey: .name)
+        url = try c.decode(String.self, forKey: .url)
+        displayMode = (try? c.decodeIfPresent(DisplayMode.self, forKey: .displayMode)) ?? .text
+        supportsImage = (try? c.decodeIfPresent(Bool.self, forKey: .supportsImage)) ?? true
+        textCountOverride = (try? c.decodeIfPresent(Int.self, forKey: .textCountOverride))
+        imageCountOverride = (try? c.decodeIfPresent(Int.self, forKey: .imageCountOverride))
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case name, url, displayMode, supportsImage, textCountOverride, imageCountOverride
+    }
 
     enum DisplayMode: String, CaseIterable, Codable {
-        case single
-        case scroll
+        case text
+        case image
+
+        // MARK: - Codable migration (single→text, scroll→image, unknown→text)
+        // CRITICAL: Never throw on unknown values — AppSettings decodes [RSSSourceConfig]
+        // with `try?`, so a single throw wipes the entire array (all RSS sources lost).
+        init(from decoder: Decoder) throws {
+            let container = try decoder.singleValueContainer()
+            let raw = try container.decode(String.self)
+            switch raw {
+            case "single", "text":   self = .text
+            case "scroll", "image":  self = .image
+            default:                 self = .text  // silent fallback
+            }
+        }
+    }
+
+    // MARK: - Display-count whitelist & effective-count helpers
+
+    /// Whitelisted text display counts. Any value outside this set is rejected.
+    static let validTextCounts: Set<Int> = [5, 10]
+    /// Whitelisted image display counts. Any value outside this set is rejected.
+    static let validImageCounts: Set<Int> = [4, 6, 8]
+
+    func effectiveTextCount(global: Int) -> Int {
+        if let override = textCountOverride, Self.validTextCounts.contains(override) {
+            return override
+        }
+        if Self.validTextCounts.contains(global) {
+            return global
+        }
+        return 10
+    }
+
+    func effectiveImageCount(global: Int) -> Int {
+        if let override = imageCountOverride, Self.validImageCounts.contains(override) {
+            return override
+        }
+        if Self.validImageCounts.contains(global) {
+            return global
+        }
+        return 4
     }
 }
 
