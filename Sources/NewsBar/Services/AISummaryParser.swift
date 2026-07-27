@@ -1,6 +1,76 @@
 import Foundation
 
+// MARK: - Typed Parser Output
+
+struct ParsedSummary {
+    /// Sections belonging to the trend overview (Weibo/Bilibili only).
+    let trendOverview: [(title: String, body: String, primaryIndex: Int?)]
+    /// Sections belonging to daily essentials (all active sources).
+    let dailyEssentials: [(title: String, body: String, primaryIndex: Int?)]
+    /// True when the raw text was parsed as legacy (single-category) format.
+    let isLegacyFallback: Bool
+}
+
 enum AISummaryParser {
+
+    /// Parse a dual-category summary response.
+    ///
+    /// Expects the response to contain two labelled sections:
+    ///   【趋势概览】... 【每日精选】...
+    ///
+    /// Falls back to legacy `parseSections` when neither label is found.
+    ///
+    /// Trend sections are filtered: any section whose primary citation index
+    /// falls outside `weiboBilibiliRange` is moved to `dailyEssentials`.
+    /// Sections with no valid citation are omitted from trend.
+    static func parseDualSummary(
+        _ text: String,
+        itemCount: Int,
+        weiboBilibiliRange: Range<Int>
+    ) -> ParsedSummary {
+        let trendLabel = "【趋势概览】"
+        let dailyLabel = "【每日精选】"
+
+        let trendRange = text.range(of: trendLabel)
+        let dailyRange = text.range(of: dailyLabel)
+
+        if let trendStart = trendRange, let dailyStart = dailyRange {
+            let trendEnd = dailyStart.lowerBound
+            let trendContent = String(text[trendStart.upperBound..<trendEnd])
+            let dailyContent = String(text[dailyStart.upperBound...])
+
+            let rawTrendSections = parseSections(trendContent, itemCount: itemCount)
+            let rawDailySections = parseSections(dailyContent, itemCount: itemCount)
+
+            // Filter trend sections: keep only those citing Weibo/Bilibili indices
+            var filteredTrend: [(title: String, body: String, primaryIndex: Int?)] = []
+            var movedToDaily: [(title: String, body: String, primaryIndex: Int?)] = []
+            for section in rawTrendSections {
+                if let idx = section.primaryIndex, weiboBilibiliRange.contains(idx) {
+                    filteredTrend.append(section)
+                } else if section.primaryIndex != nil {
+                    // Has a citation but it's not a trend source — move to daily
+                    movedToDaily.append(section)
+                }
+                // No citation at all — omit from trend
+            }
+
+            return ParsedSummary(
+                trendOverview: filteredTrend,
+                dailyEssentials: rawDailySections + movedToDaily,
+                isLegacyFallback: false
+            )
+        }
+
+        // Fallback: treat the whole text as legacy single-category
+        let allSections = parseSections(text, itemCount: itemCount)
+        return ParsedSummary(
+            trendOverview: allSections,
+            dailyEssentials: [],
+            isLegacyFallback: true
+        )
+    }
+
     /// Parse markdown text into sections with titles and bodies
     static func parseSections(_ text: String, itemCount: Int) -> [(title: String, body: String, primaryIndex: Int?)] {
         let lines = text.components(separatedBy: "\n")

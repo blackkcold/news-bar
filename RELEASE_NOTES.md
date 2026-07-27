@@ -1,6 +1,38 @@
 ## Unreleased
 
----
+## v2.0.0 — 原生 Dashboard & 双分类 AI 简报 - 2026-07-27
+
+### ✨ 新功能
+- **原生 Dashboard 窗口**：独立 NSWindow（1180×860，最小 960×720），侧边栏热点趋势卡片（微博/B站，可折叠展开）+ AI 简报面板，右侧按来源分卡的 RSS 固定双列网格区域
+- **双分类 AI 简报**：AI 摘要升级为「趋势概览」（仅微博/B站引用）和「每日精选」（所有源）两个板块，Dashboard 中通过 segmented Picker 切换；Popover 保持单分类旧格式
+- **Dashboard RSS 按源分卡**：所有已订阅 RSS 源在 Dashboard 主区以独立卡片排列，每卡内固定双列 LazyVGrid 布局，列间距 12pt，图文卡片异步加载图片，按源着色
+- **可配置 AI 日调用上限**：新增 aiDailyCap 设置，白名单 20/50/100 次，超出后自动停止 AI 请求
+- **Dashboard 状态反馈栏**：显示手动刷新警告和 RSS 批量刷新进度
+- **独立 Popup/Dashboard AI 摘要**：Popup 在刷新时生成精简摘要（默认 120 字），Dashboard 在打开时惰性生成详细摘要（默认 360 字），两者各有独立字数预设（Popup: 80/120/160/200；Dashboard: 240/360/480/600）并共享每日 AI 调用上限
+- **Dashboard RSS 固定双列网格**：Dashboard RSS 卡片区域改为固定双列 LazyVGrid（GridItem(.flexible(), spacing: 12) × 2），原生列管理，不再依赖 onGeometryChange
+
+### 🔐 安全/隐私增强
+- **AI prompt 标题隔离**：sanitizeTitle 在注入 prompt 前剥离控制字符和【】/ [# 结构定界符，防止外部新闻标题恶意破坏 prompt 格式或注入指令
+- **AI 隐私边界声明**：system prompt 明确标注用户提供的标题为不可信外部数据，禁止视为指令或提示词注入
+- **per-dispatch 预算记账**：每次 HTTP 请求前检查 baseline + attempts ≤ cap，重试也计入 attempts，确保总请求数不超限
+- **并发生成锁**：OSAllocatedUnfairLock 防止并发 AI 请求，defer 确保释放
+- **手动再生冷却**：60s 冷却窗口，阻止频繁手动再生
+
+### 🔧 技术细节
+- `DashboardWindow.swift`：新增，独立 Dashboard 窗口，侧边栏（热点卡片 + AI 简报）+ 按源分卡 RSS 主区，状态反馈栏，工具栏刷新/设置按钮
+- `DashboardVisualComponents.swift`：新增，DashboardHotTrendCard（可折叠热点卡片，排名前三彩色徽章）、DashboardAdaptiveRSSMasonryFeed（固定双列 LazyVGrid，GridItem(.flexible(), spacing: 12) × 2，原生列管理）、DashboardRSSMasonryCard（图文卡片，ImageCache 异步加载，hover 高亮）
+- `DashboardAIBriefingPanel.swift`：新增，双分类 Picker（trendOverview/dailyEssentials），状态驱动 UI，引用快照回溯，兼容旧格式回落
+- `AISummaryParser.swift`：新增 parseDualSummary 双分类解析，按引用编号过滤趋势源，无标签时回落旧格式
+- `AISummaryService.swift`：新增 initBudget/consumeAttemptBudget/readGenerationAttempts 预算系统；tryAcquireGenerationLock/releaseGenerationLock 并发生成锁；regenerationCooldownRemaining/recordManualRegeneration 冷却机制；sanitizeTitle 标题消毒
+- `AppSettings.swift`：新增 aiDailyCap 字段 + validAICaps 白名单（20/50/100）；aiPopupMaxWords + validAIPopupMaxWords（80/120/160/200）；aiDashboardMaxWords + validAIDashboardMaxWords（240/360/480/600）；recordAIRequests 按实际请求次数记账
+- `NewsOrchestrator.swift`：新增 aiParsedSummary/dashboardParsedSummary 双缓存；generateSummary 支持 SummaryTarget（popup/dashboard）区分生成；setSummaryItems/setSummaryState/setParsedSummary 按目标路由；popupLastHash/dashboardLastHash 独立 hash 追踪；Dashboard 打开时惰性触发 generateDashboardSummary
+- `AppDelegate.swift`：新增 openDashboard/closeDashboard 窗口管理，dashboardSize/dashboardMinimumSize 常量
+- `DashboardWindow.swift`：Dashboard 中 RSS 按源分卡（DashboardRSSSourceCard），Popover 保持每源独立 RSSWaterfallView 行为；Dashboard 打开时触发惰性 AI 摘要生成
+- `AITab.swift`：新增 Popup/Dashboard 独立字数预设 Picker + 日调用上限 Picker
+- 测试覆盖：165/165 通过，涵盖 Dashboard 组件、双分类解析、预算系统、生成锁、冷却机制
+
+### 🐛 Bug 修复
+- **Dashboard RSS 长标题不再撑宽卡片**：修复长标题导致卡片宽度被撑开、列间间隙消失的问题。卡片内容改为 `.frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)`，确保所有卡片等宽，列间距稳定保持 12pt
 
 ## v1.5.0 — RSS 增强 & 通知推送 - 2026-07-17
 

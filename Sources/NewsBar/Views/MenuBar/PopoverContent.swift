@@ -14,6 +14,18 @@ struct PopoverContent: View {
     @State private var expandedRSSSourceIDs: Set<String> = []
     @State private var rssLoadedCounts: [String: Int] = [:]
 
+    private enum Metrics {
+        static let horizontalPadding: CGFloat = 12
+        static let verticalPadding: CGFloat = 6
+        static let sectionDividerInset: CGFloat = 10
+        static let bannerHorizontalPadding: CGFloat = 12
+        static let bannerVerticalPadding: CGFloat = 5
+        static let bannerBottomSpacing: CGFloat = 4
+        static let compactTextSize: CGFloat = 10
+        static let headerIconSize: CGFloat = 12
+        static let headerTextSize: CGFloat = 13
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             headerView
@@ -40,31 +52,38 @@ struct PopoverContent: View {
                             },
                             onConfigureKey: onConfigureKey
                         )
-                        Divider().padding(.horizontal, 12)
+                        Divider().padding(.horizontal, Metrics.sectionDividerInset)
                     }
 
-                    NewsSection(
-                        title: "微博热搜",
-                        icon: "flame.fill",
-                        color: .orange,
-                        items: orchestrator.weiboItems,
-                        showRank: true,
-                        state: orchestrator.sourceStates[NewsSource.weibo.id] ?? .idle
-                    )
+                    HStack(alignment: .top, spacing: 8) {
+                        NewsSection(
+                            title: "微博热搜",
+                            icon: "flame.fill",
+                            color: .orange,
+                            items: orchestrator.weiboItems,
+                            showRank: true,
+                            state: orchestrator.sourceStates[NewsSource.weibo.id] ?? .idle,
+                            maxVisible: 5,
+                            presentation: .compactTrend
+                        )
+                        .frame(maxWidth: .infinity, alignment: .leading)
 
-                    Divider().padding(.horizontal, 12)
-
-                    NewsSection(
-                        title: "B站热搜",
-                        icon: "play.rectangle.fill",
-                        color: .pink,
-                        items: orchestrator.bilibiliItems,
-                        showRank: true,
-                        state: orchestrator.sourceStates[NewsSource.bilibili.id] ?? .idle
-                    )
+                        NewsSection(
+                            title: "B站热搜",
+                            icon: "play.rectangle.fill",
+                            color: .pink,
+                            items: orchestrator.bilibiliItems,
+                            showRank: true,
+                            state: orchestrator.sourceStates[NewsSource.bilibili.id] ?? .idle,
+                            maxVisible: 3,
+                            presentation: .compactTrend
+                        )
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
 
                     ForEach(settings.activeSources.filter { !$0.isBuiltIn }, id: \.id) { source in
-                        Divider().padding(.horizontal, 12)
+                        Divider().padding(.horizontal, Metrics.sectionDividerInset)
 
                         let rssConfig = settings.rssSources.first { $0.id == source.id }
                         let displayMode = rssConfig?.displayMode ?? .text
@@ -112,7 +131,7 @@ struct PopoverContent: View {
                         )
                     }
 
-                    Color.clear.frame(height: 8)
+                    Color.clear.frame(height: 6)
                 }
             }
 
@@ -173,10 +192,10 @@ struct PopoverContent: View {
     private var headerView: some View {
         HStack {
             Image(systemName: "newspaper.fill")
-                .font(.system(size: 14, weight: .semibold))
+                .font(.system(size: Metrics.headerIconSize, weight: .semibold))
                 .foregroundStyle(.secondary)
             Text("NewsBar")
-                .font(.system(size: 13, weight: .semibold))
+                .font(.system(size: Metrics.headerTextSize, weight: .semibold))
                 .foregroundStyle(.secondary)
             Spacer()
             UpdateBadge(checker: updateChecker)
@@ -190,41 +209,41 @@ struct PopoverContent: View {
             .buttonStyle(.plain)
             .help("退出 NewsBar")
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 8)
+        .padding(.horizontal, Metrics.horizontalPadding)
+        .padding(.vertical, Metrics.verticalPadding)
     }
 
     private func errorBanner(_ message: String) -> some View {
         HStack(spacing: 6) {
             Image(systemName: "exclamationmark.triangle.fill")
-                .font(.system(size: 10))
+                .font(.system(size: Metrics.compactTextSize))
             Text(message)
-                .font(.system(size: 11))
+                .font(.system(size: Metrics.compactTextSize))
             Spacer()
         }
         .foregroundStyle(.orange)
-        .padding(.horizontal, 14)
-        .padding(.vertical, 6)
+        .padding(.horizontal, Metrics.bannerHorizontalPadding)
+        .padding(.vertical, Metrics.bannerVerticalPadding)
         .background(.orange.opacity(0.1))
         .clipShape(RoundedRectangle(cornerRadius: 6))
-        .padding(.horizontal, 12)
-        .padding(.bottom, 4)
+        .padding(.horizontal, Metrics.sectionDividerInset)
+        .padding(.bottom, Metrics.bannerBottomSpacing)
     }
 
     private func warningBanner(_ message: String) -> some View {
         HStack(spacing: 6) {
             Image(systemName: "info.circle.fill")
-                .font(.system(size: 10))
+                .font(.system(size: Metrics.compactTextSize))
             Text(message)
-                .font(.system(size: 11))
+                .font(.system(size: Metrics.compactTextSize))
             Spacer()
         }
         .foregroundStyle(.yellow)
-        .padding(.horizontal, 14)
-        .padding(.vertical, 6)
+        .padding(.horizontal, Metrics.bannerHorizontalPadding)
+        .padding(.vertical, Metrics.bannerVerticalPadding)
         .background(.yellow.opacity(0.1))
         .clipShape(RoundedRectangle(cornerRadius: 6))
-        .padding(.horizontal, 12)
-        .padding(.bottom, 4)
+        .padding(.horizontal, Metrics.sectionDividerInset)
+        .padding(.bottom, Metrics.bannerBottomSpacing)
     }
 }

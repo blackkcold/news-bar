@@ -25,7 +25,7 @@ struct BottomBar: View {
             settingsButton
         }
         .padding(.horizontal, 12)
-        .padding(.vertical, 6)
+        .padding(.vertical, 5)
         .background(.ultraThinMaterial)
         .overlay(alignment: .top) {
             Divider()
@@ -36,18 +36,18 @@ struct BottomBar: View {
         Button(action: onRefresh) {
             HStack(spacing: 4) {
                 Image(systemName: "arrow.clockwise")
-                    .font(.system(size: 11, weight: .medium))
+                    .font(.system(size: 10.5, weight: .medium))
                     .rotationEffect(.degrees(isRefreshing ? 360 : 0))
                     .animation(
                         isRefreshing ? .linear(duration: 1).repeatForever(autoreverses: false) : .default,
                         value: isRefreshing
                     )
                 Text(refreshLabel)
-                    .font(.system(size: 10))
+                    .font(.system(size: 9.5))
             }
             .foregroundStyle(.secondary)
-            .padding(.horizontal, 8)
-            .padding(.vertical, 4)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 3)
             .background(.quaternary.opacity(0.5))
             .clipShape(Capsule())
         }
@@ -64,9 +64,9 @@ struct BottomBar: View {
     private var dashboardButton: some View {
         Button(action: onOpenDashboard) {
             Image(systemName: "rectangle.split.2x1")
-                .font(.system(size: 12, weight: .medium))
+                .font(.system(size: 11, weight: .medium))
                 .foregroundStyle(.secondary)
-                .padding(6)
+                .padding(5)
         }
         .buttonStyle(.plain)
         .accessibilityLabel("打开Dashboard")
@@ -76,9 +76,9 @@ struct BottomBar: View {
     private var settingsButton: some View {
         Button(action: onOpenSettings) {
             Image(systemName: "gearshape")
-                .font(.system(size: 13, weight: .medium))
+                .font(.system(size: 12, weight: .medium))
                 .foregroundStyle(.secondary)
-                .padding(6)
+                .padding(5)
         }
         .buttonStyle(.plain)
         .accessibilityLabel("打开设置")

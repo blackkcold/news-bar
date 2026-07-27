@@ -27,8 +27,17 @@ final class AppSettings {
     var aiModel: String {
         didSet { UserDefaults.standard.set(aiModel, forKey: "aiModel") }
     }
+    var aiPopupMaxWords: Int {
+        didSet { UserDefaults.standard.set(aiPopupMaxWords, forKey: "aiPopupMaxWords") }
+    }
+    var aiDashboardMaxWords: Int {
+        didSet { UserDefaults.standard.set(aiDashboardMaxWords, forKey: "aiDashboardMaxWords") }
+    }
     var aiMaxWords: Int {
         didSet { UserDefaults.standard.set(aiMaxWords, forKey: "aiMaxWords") }
+    }
+    var aiDailyCap: Int {
+        didSet { UserDefaults.standard.set(aiDailyCap, forKey: "aiDailyCap") }
     }
     var aiProvider: String {
         didSet {
@@ -127,7 +136,13 @@ final class AppSettings {
             self.aiModel = savedModel
         }
 
+        let rawPopupMaxWords = defaults.integerIfPresent(forKey: "aiPopupMaxWords") ?? 120
+        self.aiPopupMaxWords = Self.validAIPopupMaxWords.contains(rawPopupMaxWords) ? rawPopupMaxWords : 120
+        let rawDashboardMaxWords = defaults.integerIfPresent(forKey: "aiDashboardMaxWords") ?? 360
+        self.aiDashboardMaxWords = Self.validAIDashboardMaxWords.contains(rawDashboardMaxWords) ? rawDashboardMaxWords : 360
         self.aiMaxWords = defaults.integerIfPresent(forKey: "aiMaxWords") ?? 150
+        let rawCap = defaults.integerIfPresent(forKey: "aiDailyCap") ?? 50
+        self.aiDailyCap = Self.validAICaps.contains(rawCap) ? rawCap : 50
         if let legacyRef = defaults.stringIfPresent(forKey: "onePasswordRef"),
            !legacyRef.isEmpty {
             defaults.removeObject(forKey: "onePasswordRef")
@@ -235,6 +250,17 @@ final class AppSettings {
     var estimatedAICostText: String {
         currentProvider.estimatedDailyCostText(model: aiModel, requestCount: todayAIRequestCount)
     }
+
+    var aiUsageText: String {
+        "\(todayAIRequestCount) / \(aiDailyCap) 次"
+    }
+
+    /// Whitelisted daily AI request caps. Any value outside this set is rejected.
+    static let validAICaps: Set<Int> = [20, 50, 100]
+    /// Whitelisted Popup AI summary lengths. Any value outside this set is rejected.
+    static let validAIPopupMaxWords: Set<Int> = [80, 120, 160, 200]
+    /// Whitelisted Dashboard AI summary lengths. Any value outside this set is rejected.
+    static let validAIDashboardMaxWords: Set<Int> = [240, 360, 480, 600]
 
     func resetDailyStatsIfNeeded() {
         let calendar = Calendar.current

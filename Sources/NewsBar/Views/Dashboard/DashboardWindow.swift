@@ -3,246 +3,262 @@ import SwiftUI
 struct DashboardWindow: View {
     @Environment(AppSettings.self) private var settings
     @ObservedObject var orchestrator: NewsOrchestrator
+    @State private var collapsedRSSSourceIDs: Set<NewsSource.ID> = []
 
-    @State private var expandedRSSSourceIDs: Set<String> = []
-    @State private var rssLoadedCounts: [String: Int] = [:]
+    var onOpenSettings: () -> Void = {}
+    var onConfigureAI: (() -> Void)? = nil
 
-    var body: some View {
-        VStack(spacing: 0) {
-            toolbarView
+    private let layoutBreakpoint: CGFloat = 960
+    private let sidebarWidth: CGFloat = 336
 
-            ScrollView(.vertical, showsIndicators: false) {
-                VStack(spacing: 0) {
-                    if case .done(let summary) = orchestrator.aiSummaryState {
-                        if !summary.isEmpty {
-                            summaryCard(summary, items: orchestrator.allActiveItems(settings: settings))
-                            Divider().padding(.horizontal, 12)
-                        }
-                    }
-                    if case .truncated(let summary) = orchestrator.aiSummaryState {
-                        if !summary.isEmpty {
-                            summaryCard(summary, items: orchestrator.allActiveItems(settings: settings))
-                            Divider().padding(.horizontal, 12)
-                        }
-                    }
-                    if case .fetching = orchestrator.aiSummaryState {
-                        statusCard("获取新闻数据...")
-                    }
-                    if case .summarizing = orchestrator.aiSummaryState {
-                        statusCard("AI 思考中...")
-                    }
+    private var selectedRSSSources: [NewsSource] {
+        settings.activeSources.filter { !$0.isBuiltIn }
+    }
 
-                    NewsSection(
-                        title: "微博热搜",
-                        icon: "flame.fill",
-                        color: .orange,
-                        items: orchestrator.weiboItems,
-                        showRank: true,
-                        state: orchestrator.sourceStates[NewsSource.weibo.id] ?? .idle
-                    )
-
-                    Divider().padding(.horizontal, 12)
-
-                    NewsSection(
-                        title: "B站热搜",
-                        icon: "play.rectangle.fill",
-                        color: .pink,
-                        items: orchestrator.bilibiliItems,
-                        showRank: true,
-                        state: orchestrator.sourceStates[NewsSource.bilibili.id] ?? .idle
-                    )
-
-                    ForEach(settings.activeSources.filter { !$0.isBuiltIn }, id: \.id) { source in
-                        Divider().padding(.horizontal, 12)
-                        let rssConfig = settings.rssSources.first { $0.id == source.id }
-                        let displayMode = rssConfig?.displayMode ?? .text
-                        let counts: (text: Int, image: Int) = {
-                            if let rssConfig {
-                                return (
-                                    settings.effectiveTextDisplayCount(for: rssConfig),
-                                    settings.effectiveImageDisplayCount(for: rssConfig)
-                                )
-                            }
-                            return (settings.rssDefaultTextCount, settings.rssDefaultImageCount)
-                        }()
-                        let textCount = counts.text
-                        let imageCount = counts.image
-                        let sourceItems = orchestrator.rssItemsMap[source.id] ?? []
-                        let hasAnyImage = sourceItems.contains { $0.imageURL != nil }
-                        let pageSize = displayMode == .image
-                            ? (hasAnyImage ? imageCount : textCount)
-                            : textCount
-                        RSSWaterfallView(
-                            items: sourceItems,
-                            sourceName: source.displayName,
-                            state: orchestrator.sourceStates[source.id] ?? .idle,
-                            displayMode: displayMode,
-                            textCount: textCount,
-                            imageCount: imageCount,
-                            isExpanded: expandedRSSSourceIDs.contains(source.id),
-                            loadedCount: rssLoadedCounts[source.id, default: pageSize],
-                            onToggleExpand: {
-                                if expandedRSSSourceIDs.contains(source.id) {
-                                    expandedRSSSourceIDs.remove(source.id)
-                                    rssLoadedCounts.removeValue(forKey: source.id)
-                                } else {
-                                    expandedRSSSourceIDs.insert(source.id)
-                                    rssLoadedCounts[source.id] = pageSize
-                                }
-                            },
-                            onLoadMore: {
-                                let current = rssLoadedCounts[source.id, default: pageSize]
-                                let total = sourceItems.count
-                                guard current < total else { return }
-                                rssLoadedCounts[source.id] = min(current + pageSize, total)
-                            }
-                        )
-                    }
-
-                    Color.clear.frame(height: 12)
-                }
-            }
-
-            if !expandedRSSSourceIDs.isEmpty {
-                HStack(spacing: 8) {
-                    ForEach(settings.rssSources.filter { expandedRSSSourceIDs.contains($0.id) }) { rss in
-                        Button {
-                            expandedRSSSourceIDs.remove(rss.id)
-                            rssLoadedCounts.removeValue(forKey: rss.id)
-                        } label: {
-                            Label("\(rss.name) · 收起", systemImage: "chevron.up")
-                                .font(.system(size: 10))
-                        }
-                        .buttonStyle(.plain)
-                        .foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                }
-                .padding(.horizontal, 14)
-                .padding(.vertical, 4)
-                .background(.ultraThinMaterial)
-            }
-
-            bottomStatusBar
-        }
-        .frame(minWidth: 360, minHeight: 480)
-        .adaptiveColorScheme()
-        .background(.regularMaterial)
-        .task {
-            await orchestrator.loadCached(settings: settings)
+    private var totalRSSItemCount: Int {
+        selectedRSSSources.reduce(0) { partial, source in
+            partial + (orchestrator.rssItemsMap[source.id]?.count ?? 0)
         }
     }
 
-    private var toolbarView: some View {
-        HStack(spacing: 8) {
-            Image(systemName: "newspaper.fill")
-                .font(.system(size: 14))
-                .foregroundStyle(.blue)
+    private var hasStatusFeedback: Bool {
+        orchestrator.manualRefreshWarning != nil || orchestrator.batchProgress.total > 0
+    }
+
+    private func isRSSSourceExpanded(_ source: NewsSource) -> Bool {
+        !collapsedRSSSourceIDs.contains(source.id)
+    }
+
+    private func toggleRSSSourceExpansion(_ source: NewsSource) {
+        if collapsedRSSSourceIDs.contains(source.id) {
+            collapsedRSSSourceIDs.remove(source.id)
+        } else {
+            collapsedRSSSourceIDs.insert(source.id)
+        }
+    }
+
+    private var statusFeedback: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if let warning = orchestrator.manualRefreshWarning {
+                HStack(spacing: 8) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(.orange)
+                    Text(warning)
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                    Spacer(minLength: 0)
+                }
+            }
+
+            if orchestrator.batchProgress.total > 0 {
+                HStack(spacing: 10) {
+                    ProgressView(
+                        value: Double(orchestrator.batchProgress.completed),
+                        total: Double(orchestrator.batchProgress.total)
+                    )
+                    .controlSize(.small)
+                    .tint(.blue)
+
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text("RSS 批量刷新中")
+                            .font(.system(size: 12, weight: .medium))
+                        Text("\(orchestrator.batchProgress.completed)/\(orchestrator.batchProgress.total)")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                    }
+
+                    Spacer(minLength: 0)
+                }
+            }
+        }
+        .padding(12)
+        .background(.thinMaterial)
+        .overlay {
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .strokeBorder(.separator.opacity(0.25), lineWidth: 1)
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .padding(.horizontal, 20)
+    }
+
+    var body: some View {
+        GeometryReader { proxy in
+            let isWideLayout = proxy.size.width >= layoutBreakpoint
+
+            VStack(spacing: 0) {
+                if hasStatusFeedback {
+                    statusFeedback
+                        .padding(.top, 12)
+                }
+
+                ScrollView(.vertical, showsIndicators: true) {
+                    contentLayout(isWideLayout: isWideLayout)
+                        .padding(20)
+                        .frame(maxWidth: .infinity, alignment: .topLeading)
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .toolbar {
+                ToolbarItem(placement: .principal) {
+                    toolbarTitle
+                }
+
+                ToolbarItemGroup(placement: .primaryAction) {
+                    Button {
+                        Task { await orchestrator.manualRefresh(settings: settings) }
+                    } label: {
+                        Label("刷新", systemImage: "arrow.clockwise")
+                    }
+                    .disabled(orchestrator.isRefreshing)
+
+                    Button(action: onOpenSettings) {
+                        Label("设置", systemImage: "gearshape")
+                    }
+                }
+            }
+            .background(.regularMaterial)
+            .adaptiveColorScheme()
+            .task {
+                await orchestrator.loadCached(settings: settings)
+            }
+        }
+        .frame(minWidth: 960, minHeight: 720)
+    }
+
+    @ViewBuilder
+    private func contentLayout(isWideLayout: Bool) -> some View {
+        if isWideLayout {
+            HStack(alignment: .top, spacing: 20) {
+                rssMainRegion
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                sidebarRegion
+                    .frame(width: sidebarWidth, alignment: .leading)
+            }
+        } else {
+            VStack(alignment: .leading, spacing: 20) {
+                sidebarRegion
+                rssMainRegion
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private var toolbarTitle: some View {
+        VStack(spacing: 1) {
             Text("NewsBar Dashboard")
-                .font(.system(size: 13, weight: .semibold))
+                .font(.system(size: 14, weight: .semibold))
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .frame(maxWidth: 240)
 
-            Spacer()
+            Text("趋势 · RSS · AI")
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .frame(maxWidth: 240)
+        }
+        .frame(maxWidth: 240)
+    }
 
-            Button {
-                Task {
-                    await orchestrator.manualRefresh(settings: settings)
+    private var rssMainRegion: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            regionHeader
+
+            if selectedRSSSources.isEmpty {
+                emptyRSSState
+            } else {
+                LazyVStack(alignment: .leading, spacing: 16) {
+                    ForEach(selectedRSSSources) { source in
+                        DashboardRSSSourceCard(
+                            source: source,
+                            items: orchestrator.rssItemsMap[source.id] ?? [],
+                            state: orchestrator.sourceStates[source.id] ?? .idle,
+                            isExpanded: isRSSSourceExpanded(source),
+                            onToggleExpansion: { toggleRSSSourceExpansion(source) }
+                        )
+                    }
                 }
-            } label: {
-                HStack(spacing: 4) {
-                    Image(systemName: "arrow.clockwise")
-                        .font(.system(size: 11))
-                    Text("刷新")
-                        .font(.system(size: 11))
-                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var regionHeader: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 10) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("RSS 主区")
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundStyle(.primary)
+
+                Text(selectedRSSSources.isEmpty
+                     ? "尚未启用 RSS 源"
+                     : "\(selectedRSSSources.count) 个已启用源 · \(totalRSSItemCount) 条内容")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            }
+
+            Spacer(minLength: 0)
+
+            Text("按来源分卡")
+                .font(.system(size: 10, weight: .medium))
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 7)
+                .padding(.vertical, 3)
+                .background(.quaternary.opacity(0.5))
+                .clipShape(Capsule())
+                .accessibilityHidden(true)
+        }
+    }
+
+    private var emptyRSSState: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Image(systemName: "tray")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                Text("尚未启用任何 RSS 源")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+                Spacer(minLength: 0)
+            }
+
+            Text("在设置中启用 RSS 订阅后，每个来源会以独立卡片显示在这里。")
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Button("打开设置") {
+                onOpenSettings()
             }
             .buttonStyle(.bordered)
             .controlSize(.small)
-            .disabled(orchestrator.isRefreshing)
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 8)
+        .padding(14)
         .background(.ultraThinMaterial)
+        .overlay {
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .strokeBorder(.separator.opacity(0.35), lineWidth: 1)
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
     }
 
-    private func summaryCard(_ text: String, items: [NewsItem] = []) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 4) {
-                Image(systemName: "sparkles")
-                    .font(.system(size: 10))
-                    .foregroundStyle(.purple)
-                Text("AI 总结")
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(.secondary)
-            }
-            .padding(.horizontal, 16)
+    private var sidebarRegion: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            DashboardAIBriefingPanel(
+                orchestrator: orchestrator,
+                onConfigureAI: onConfigureAI ?? onOpenSettings
+            )
 
-            VStack(alignment: .leading, spacing: 8) {
-                let sections = AISummaryParser.parseSections(text, itemCount: items.count)
-                if sections.isEmpty {
-                    Text((try? AttributedString(markdown: AISummaryParser.stripCitations(text)))
-                        ?? AttributedString(AISummaryParser.stripCitations(text)))
-                        .font(.system(size: 12))
-                        .foregroundStyle(.primary)
-                        .lineSpacing(4)
-                } else {
-                    ForEach(Array(sections.enumerated()), id: \.offset) { index, section in
-                        SectionRow(
-                            title: section.title,
-                            content: section.body,
-                            matchedItem: section.primaryIndex.flatMap {
-                                items.indices.contains($0) ? items[$0] : nil
-                            }
-                        )
-                        if index < sections.count - 1 {
-                            Divider().opacity(0.3).padding(.horizontal, 4)
-                        }
-                    }
-                }
-            }
-            .padding(12)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(.purple.opacity(0.06))
-            .clipShape(RoundedRectangle(cornerRadius: 8))
-            .padding(.horizontal, 16)
+            DashboardHotTrendCard(source: .weibo, items: orchestrator.weiboItems)
+
+            DashboardHotTrendCard(source: .bilibili, items: orchestrator.bilibiliItems)
         }
-        .padding(.vertical, 8)
-    }
-
-    private func statusCard(_ message: String) -> some View {
-        HStack(spacing: 8) {
-            ProgressView()
-                .scaleEffect(0.6)
-                .frame(width: 16, height: 16)
-            Text(message)
-                .font(.system(size: 11))
-                .foregroundStyle(.secondary)
-            Spacer()
-        }
-        .padding(.horizontal, 20)
-        .padding(.vertical, 12)
-    }
-
-    private var bottomStatusBar: some View {
-        HStack {
-            Spacer()
-
-            if orchestrator.isRefreshing {
-                HStack(spacing: 4) {
-                    ProgressView().scaleEffect(0.5)
-                    Text("刷新中...")
-                        .font(.system(size: 10))
-                }
-            }
-
-            if let warning = orchestrator.manualRefreshWarning {
-                Text(warning)
-                    .font(.system(size: 10))
-                    .foregroundStyle(.yellow)
-            }
-        }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 4)
-        .foregroundStyle(.tertiary)
-        .background(.ultraThinMaterial)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
