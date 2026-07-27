@@ -1,5 +1,14 @@
 import SwiftUI
 
+enum NewsSectionPresentation: Equatable {
+    case standard
+    case compactTrend
+
+    var isCompactTrend: Bool {
+        self == .compactTrend
+    }
+}
+
 struct NewsSection: View {
     let title: String
     let icon: String
@@ -8,8 +17,33 @@ struct NewsSection: View {
     let showRank: Bool
     var state: SourceLoadState = .idle
     var maxVisible: Int? = nil
+    var presentation: NewsSectionPresentation = .standard
 
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var isExpanded = false
+
+    private var isCompactPresentation: Bool {
+        presentation.isCompactTrend
+    }
+
+    private var cardPadding: CGFloat { isCompactPresentation ? 8 : 10 }
+    private var headerSpacing: CGFloat { isCompactPresentation ? 6 : 8 }
+    private var headerIconSize: CGFloat { isCompactPresentation ? 20 : 24 }
+    private var headerIconCornerRadius: CGFloat { isCompactPresentation ? 8 : 9 }
+    private var headerTitleSize: CGFloat { isCompactPresentation ? 12.5 : 13 }
+    private var helperTextSize: CGFloat { 10 }
+    private var headerBottomSpacing: CGFloat { isCompactPresentation ? 4 : 6 }
+    private var rowDividerLeadingRank: CGFloat { isCompactPresentation ? 28 : 32 }
+    private var rowDividerLeadingPlain: CGFloat { isCompactPresentation ? 10 : 12 }
+    private var rowDividerTrailing: CGFloat { isCompactPresentation ? 8 : 10 }
+    private var emptyStateVerticalPadding: CGFloat { isCompactPresentation ? 6 : 8 }
+    private var staleHintHorizontalPadding: CGFloat { isCompactPresentation ? 8 : 10 }
+    private var staleHintVerticalPadding: CGFloat { isCompactPresentation ? 4 : 5 }
+    private var rowButtonTextSize: CGFloat { 10 }
+    private var expandButtonIconSize: CGFloat { isCompactPresentation ? 8.5 : 8 }
+    private var expandButtonHitPadding: CGFloat { isCompactPresentation ? 2 : 0 }
+    private var expandButtonCornerRadius: CGFloat { isCompactPresentation ? 7 : 0 }
+    private var showHeaderHelperText: Bool { !isCompactPresentation }
 
     private var visibleItems: [NewsItem] {
         guard let max = maxVisible, items.count > max, !isExpanded else {
@@ -30,34 +64,78 @@ struct NewsSection: View {
             if items.isEmpty {
                 emptyState
             } else {
-                ForEach(visibleItems) { item in
-                    NewsItemRow(item: item, showRank: showRank)
+                LazyVStack(spacing: 0) {
+                    ForEach(Array(visibleItems.enumerated()), id: \.element.id) { index, item in
+                        NewsItemRow(item: item, showRank: showRank, presentation: presentation)
+
+                        if index < visibleItems.count - 1 {
+                            Divider()
+                                .padding(.leading, showRank ? rowDividerLeadingRank : rowDividerLeadingPlain)
+                                .padding(.trailing, rowDividerTrailing)
+                        }
+                    }
                 }
 
                 if case .failed(let message) = state {
                     staleDataHint(message)
                 }
-
-                if hiddenCount > 0 {
-                    expandButton
-                }
             }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(cardPadding)
+        .background(cardBackground)
+        .overlay(cardStroke)
+        .clipShape(cardShape)
     }
 
     private var sectionHeader: some View {
-        HStack(spacing: 6) {
-            Image(systemName: icon)
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(color)
-            Text(title)
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(.secondary)
+        HStack(alignment: .center, spacing: headerSpacing) {
+            ZStack {
+                RoundedRectangle(cornerRadius: headerIconCornerRadius, style: .continuous)
+                    .fill(color.opacity(0.14))
+
+                Image(systemName: icon)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(color)
+            }
+            .frame(width: headerIconSize, height: headerIconSize)
+
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 6) {
+                    Text(title)
+                        .font(.system(size: headerTitleSize, weight: .semibold))
+                        .lineLimit(1)
+                        .foregroundStyle(.primary)
+
+                    Text("\(items.count) 条")
+                        .font(.system(size: 9.5, weight: .medium))
+                        .foregroundStyle(color)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(color.opacity(0.12))
+                        .clipShape(Capsule())
+                }
+
+                if showHeaderHelperText {
+                    Text("点击打开浏览器")
+                        .font(.system(size: helperTextSize))
+                        .foregroundStyle(.secondary)
+                }
+            }
+
             Spacer()
+
+            if case .loading = state {
+                statusPill(text: "加载中", tint: .secondary)
+            } else if case .failed = state {
+                statusPill(text: "加载失败", tint: .orange)
+            }
+
+            if hiddenCount > 0 {
+                expandButton
+            }
         }
-        .padding(.horizontal, 14)
-        .padding(.top, 10)
-        .padding(.bottom, 4)
+        .padding(.bottom, headerBottomSpacing)
     }
 
     private var emptyState: some View {
@@ -65,68 +143,127 @@ struct NewsSection: View {
             switch state {
             case .loading:
                 ProgressView()
-                    .scaleEffect(0.55)
-                    .frame(width: 14, height: 14)
+                    .scaleEffect(0.52)
+                    .frame(width: 12, height: 12)
                 Text("加载中...")
-                    .font(.system(size: 12))
+                    .font(.system(size: 11))
                     .foregroundStyle(.tertiary)
             case .failed(let message):
                 Image(systemName: "exclamationmark.triangle.fill")
-                    .font(.system(size: 10))
+                    .font(.system(size: 9))
                     .foregroundStyle(.orange)
                 Text("加载失败")
-                    .font(.system(size: 12))
+                    .font(.system(size: 11))
                     .foregroundStyle(.secondary)
                 Text(message)
-                    .font(.system(size: 11))
+                    .font(.system(size: 10))
                     .foregroundStyle(.tertiary)
                     .lineLimit(1)
             case .idle, .loaded:
                 Text("暂无数据")
-                    .font(.system(size: 12))
+                    .font(.system(size: 11))
                     .foregroundStyle(.tertiary)
             }
             Spacer()
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 8)
+        .padding(.vertical, emptyStateVerticalPadding)
     }
 
     private func staleDataHint(_ message: String) -> some View {
         HStack(spacing: 5) {
             Image(systemName: "exclamationmark.triangle.fill")
-                .font(.system(size: 8))
+                .font(.system(size: 8, weight: .semibold))
             Text("更新失败，显示缓存")
-                .font(.system(size: 10))
+                .font(.system(size: 9.5, weight: .medium))
             Text(message)
-                .font(.system(size: 10))
-                .foregroundStyle(.tertiary)
+                .font(.system(size: 9.5))
+                .foregroundStyle(.secondary)
                 .lineLimit(1)
             Spacer()
         }
         .foregroundStyle(.orange)
-        .padding(.horizontal, 14)
-        .padding(.vertical, 5)
+        .padding(.horizontal, staleHintHorizontalPadding)
+        .padding(.vertical, staleHintVerticalPadding)
+        .background(.orange.opacity(0.08))
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .strokeBorder(.orange.opacity(0.15), lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .padding(.top, 8)
     }
 
+    @ViewBuilder
     private var expandButton: some View {
-        Button {
-            withAnimation(.easeInOut(duration: 0.2)) {
+        if isCompactPresentation {
+            Button {
+                toggleExpansion()
+            } label: {
+                Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
+                    .font(.system(size: expandButtonIconSize, weight: .semibold))
+                    .foregroundStyle(color)
+                    .frame(width: 18, height: 18)
+                    .padding(expandButtonHitPadding)
+                    .background(color.opacity(0.12))
+                    .clipShape(RoundedRectangle(cornerRadius: expandButtonCornerRadius, style: .continuous))
+            }
+            .buttonStyle(.plain)
+            .controlSize(.small)
+            .tint(color)
+            .accessibilityLabel(isExpanded ? "收起 \(hiddenCount) 条" : "展开 \(hiddenCount) 条")
+            .help(isExpanded ? "收起" : "展开 \(hiddenCount) 条")
+        } else {
+            Button {
+                toggleExpansion()
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
+                        .font(.system(size: expandButtonIconSize, weight: .semibold))
+                    Text(isExpanded ? "收起" : "展开 \(hiddenCount) 条")
+                        .font(.system(size: rowButtonTextSize, weight: .medium))
+                }
+                .frame(minWidth: 0)
+                .foregroundStyle(color)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .tint(color)
+            .accessibilityLabel(isExpanded ? "收起 \(hiddenCount) 条" : "展开 \(hiddenCount) 条")
+            .help(isExpanded ? "收起" : "展开 \(hiddenCount) 条")
+        }
+    }
+
+    private var cardShape: RoundedRectangle {
+        RoundedRectangle(cornerRadius: 18, style: .continuous)
+    }
+
+    private var cardBackground: some View {
+        cardShape.fill(.ultraThinMaterial)
+    }
+
+    private var cardStroke: some View {
+        cardShape.strokeBorder(.separator.opacity(0.32), lineWidth: 1)
+    }
+
+    @ViewBuilder
+    private func statusPill(text: String, tint: Color) -> some View {
+        Text(text)
+            .font(.system(size: 9.5, weight: .medium))
+            .foregroundStyle(tint)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(tint.opacity(0.12))
+            .clipShape(Capsule())
+    }
+
+    private func toggleExpansion() {
+        if reduceMotion {
+            isExpanded.toggle()
+        } else {
+            withAnimation(.spring(response: 0.28, dampingFraction: 0.86)) {
                 isExpanded.toggle()
             }
-        } label: {
-            HStack(spacing: 4) {
-                Image(systemName: "chevron.down")
-                    .font(.system(size: 7, weight: .medium))
-                    .rotationEffect(.degrees(isExpanded ? 180 : 0))
-                Text(isExpanded ? "收起" : "展开 \(hiddenCount) 条")
-                    .font(.system(size: 10))
-            }
-            .foregroundStyle(.tertiary)
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 5)
-            .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
     }
 }

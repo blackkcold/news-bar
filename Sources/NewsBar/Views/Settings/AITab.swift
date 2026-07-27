@@ -143,25 +143,32 @@ struct AITab: View {
                         Text(model).tag(model)
                     }
                 }
-
-                HStack {
-                    Text("总结最大字数")
-                    Spacer()
-                    Picker("", selection: Binding(
-                        get: { settings.aiMaxWords },
-                        set: { settings.aiMaxWords = $0 }
-                    )) {
-                        Text("50 字").tag(50)
-                        Text("100 字").tag(100)
-                        Text("150 字").tag(150)
-                        Text("200 字").tag(200)
-                        Text("300 字").tag(300)
-                    }
-                    .labelsHidden()
-                    .frame(width: 90)
-                }
             } header: {
                 Text("模型设置")
+            }
+
+            Section {
+                summaryLengthRow(
+                    title: "Popup 摘要长度",
+                    selection: Binding(
+                        get: { settings.aiPopupMaxWords },
+                        set: { settings.aiPopupMaxWords = $0 }
+                    ),
+                    presets: Array(AppSettings.validAIPopupMaxWords).sorted()
+                )
+
+                summaryLengthRow(
+                    title: "Dashboard 摘要长度",
+                    selection: Binding(
+                        get: { settings.aiDashboardMaxWords },
+                        set: { settings.aiDashboardMaxWords = $0 }
+                    ),
+                    presets: Array(AppSettings.validAIDashboardMaxWords).sorted()
+                )
+            } header: {
+                Text("摘要长度")
+            } footer: {
+                Text("Popup 用于菜单栏快速阅读，Dashboard 用于更详细的展开阅读。")
             }
 
             Section {
@@ -177,6 +184,67 @@ struct AITab: View {
                 }
             } header: {
                 Text("费用说明")
+            }
+
+            Section {
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack {
+                        Text("今日已用")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Text(settings.aiUsageText)
+                            .font(.system(size: 12, weight: .medium, design: .monospaced))
+                            .foregroundStyle(settings.todayAIRequestCount >= settings.aiDailyCap ? .red : .primary)
+                    }
+                    ProgressView(
+                        value: min(Double(settings.todayAIRequestCount), Double(settings.aiDailyCap)),
+                        total: Double(settings.aiDailyCap)
+                    )
+                    .tint(settings.todayAIRequestCount >= settings.aiDailyCap ? .red : .blue)
+                    Text("每日上限 \(settings.aiDailyCap) 次 HTTP 请求（含重试），次日重置")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
+            } header: {
+                Text("用量")
+            }
+
+            Section {
+                HStack {
+                    Text("每日请求上限")
+                    Spacer()
+                    Picker("", selection: Binding(
+                        get: { settings.aiDailyCap },
+                        set: { settings.aiDailyCap = $0 }
+                    )) {
+                        ForEach(Array(AppSettings.validAICaps).sorted(), id: \.self) { cap in
+                            Text("\(cap) 次").tag(cap)
+                        }
+                    }
+                    .labelsHidden()
+                    .frame(width: 90)
+                }
+            } header: {
+                Text("限额")
+            } footer: {
+                Text("达到上限后当日不再发起 AI 请求，次日自动重置")
+            }
+
+            Section {
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(alignment: .top, spacing: 8) {
+                        Image(systemName: "hand.raised.fill")
+                            .font(.system(size: 12))
+                            .foregroundStyle(.secondary)
+                        Text("AI 总结功能会将当前新闻标题发送至您选择的 AI 提供商进行处理。我们不会记录您的原始标题内容或提示词。API Key 使用 AES-256-GCM 加密存储，绑定本机硬件。")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .lineSpacing(3)
+                    }
+                }
+            } header: {
+                Text("隐私说明")
             }
         }
         .formStyle(.grouped)
@@ -314,6 +382,20 @@ struct AITab: View {
                 testResult = "连接失败：\(error.localizedDescription)"
             }
             isTesting = false
+        }
+    }
+
+    private func summaryLengthRow(title: String, selection: Binding<Int>, presets: [Int]) -> some View {
+        HStack {
+            Text(title)
+            Spacer()
+            Picker(title, selection: selection) {
+                ForEach(presets, id: \.self) { words in
+                    Text("\(words) 字").tag(words)
+                }
+            }
+            .labelsHidden()
+            .frame(width: 92)
         }
     }
 }

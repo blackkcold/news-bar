@@ -14,7 +14,8 @@
 - **🔥 Weibo Trending** · 微博热搜 — Real-time Weibo hot topics
 - **📺 Bilibili Trending** · B站热搜 — Bilibili popular content
 - **📡 RSS Feeds** · RSS 订阅 — Custom RSS sources, freely extensible
-- **🤖 AI Summary** · AI 摘要 — Template-framework briefings with section layout; hover section to reveal source badge linking to original news
+- **🤖 AI Summary** · AI 摘要 — Dual-category briefings (趋势概览 / 每日精选) with template-framework; hover section to reveal source badge linking to original news. Popup generates a concise summary on refresh; Dashboard lazily generates a detailed summary when opened. Both consume the shared daily AI request cap.
+- **📊 Dashboard** · 仪表盘 — Native window with sidebar (hot-trend cards + AI briefing panel) and per-source RSS card region with fixed two-column grid; lazy AI summary generation on open
 - **⏱ Auto Refresh** · 定时刷新 — Startup fetch + optional hourly timer
 - **🔄 Auto Update** · 自动更新 — Check GitHub Releases, one-click download
 - **🔐 Secure Storage** · 安全存储 — API Key encrypted with AES-256-GCM, machine-bound
@@ -38,14 +39,21 @@ Download the latest DMG from [Releases](../../releases) and drag to Applications
 3. Hover over AI summary sections to reveal source badge; click to jump to original · 鼠标悬停 AI 摘要段落，点击角标跳转原始新闻
 4. Click "Check Update" at top to manually check for new versions · 点击面板顶部「检查更新」手动检查新版本
 5. Click ⚙️ at bottom to open settings, configure RSS and AI · 点击底部 ⚙️ 进入设置，配置 RSS 源和 AI 摘要
-6. Click 📊 to open Dashboard for full news view · 点击 📊 打开 Dashboard 浏览全部新闻
+6. Click 📊 to open Dashboard for full news view: sidebar with hot-trend cards and AI briefing panel, plus per-source RSS card region with fixed two-column grid · 点击 📊 打开 Dashboard：侧边栏热点趋势卡片和 AI 简报面板，右侧按来源分卡的 RSS 固定双列网格区域
 7. Quit from the settings panel bottom · 在设置面板底部退出
+
+> Popup AI summary (concise, ~120 words) generates on refresh; Dashboard AI summary (detailed, ~360 words) generates lazily when opened. Both consume the shared daily AI request cap.
+> 弹窗 AI 摘要（精简，约 120 字）在刷新时生成；Dashboard AI 摘要（详细，约 360 字）在打开时惰性生成。两者共享每日 AI 调用上限。
 
 ### Enable AI Summary · 启用 AI 摘要
 
 Settings → AI tab: select a provider and fill in API Key. Supports DeepSeek, MiniMax, Opencode Go/Zen, Google AI Studio.
 
 设置 → AI 标签页：选择 AI 提供商并填入 API Key。支持 DeepSeek、MiniMax、Opencode Go/Zen、Google AI Studio 等。
+
+Popup and Dashboard each have independent word count presets (Popup default 120, Dashboard default 360) with fixed options. Both share the daily AI request cap (default 50, configurable 20/50/100). Dashboard summary is generated lazily when the window opens, not on refresh.
+
+弹窗和 Dashboard 各有独立的字数预设（弹窗默认 120，Dashboard 默认 360），均为固定选项。两者共享每日 AI 调用上限（默认 50，可选 20/50/100）。Dashboard 摘要仅在窗口打开时惰性生成，不在刷新时生成。
 
 ## Supported AI Providers · 支持的 AI 提供商
 
@@ -105,7 +113,7 @@ Sources/NewsBar/
 ├── Views/
 │   ├── MenuBar/                # Popover components (AISummaryCard, NewsSection, SourceBadge)
 │   ├── Settings/               # Settings window tabs
-│   └── Dashboard/              # Dashboard window
+│   └── Dashboard/              # Dashboard window (DashboardWindow, DashboardVisualComponents, DashboardAIBriefingPanel)
 └── Extensions/
     ├── URLOpener.swift          # Safe URL opening
     └── View+Glass.swift         # Glass effect + adaptive color scheme

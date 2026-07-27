@@ -5,7 +5,7 @@ enum BilibiliHotService {
     private static let endpoint = "https://api.bilibili.com/x/web-interface/popular"
 
     static func fetch() async throws -> [NewsItem] {
-        guard let url = URL(string: "\(endpoint)?ps=3&pn=1") else {
+        guard let url = URL(string: "\(endpoint)?ps=5&pn=1") else {
             throw NewsBarError.invalidURL
         }
 

@@ -16,7 +16,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private static let updateCheckDelay: TimeInterval = 10
     private static let popoverSize = NSSize(width: 400, height: 520)
     private static let settingsSize = NSSize(width: 560, height: 420)
-    private static let dashboardSize = NSSize(width: 420, height: 600)
+    private static let dashboardSize = NSSize(width: 1180, height: 860)
+    private static let dashboardMinimumSize = NSSize(width: 960, height: 720)
 
     // MARK: - Properties
 
@@ -311,10 +312,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             defer: false
         )
         window.title = "NewsBar Dashboard"
+        window.minSize = Self.dashboardMinimumSize
+        window.titlebarAppearsTransparent = true
+        window.toolbarStyle = .unifiedCompact
         window.center()
-        window.contentView = NSHostingView(
-            rootView: DashboardWindow(orchestrator: orchestrator)
-                .environment(settings)
+        window.contentViewController = NSHostingController(
+            rootView: DashboardWindow(
+                orchestrator: orchestrator,
+                onOpenSettings: { [weak self] in self?.openSettings() },
+                onConfigureAI: { [weak self] in self?.openSettings(toAITab: true) }
+            )
+            .environment(settings)
         )
         window.isReleasedWhenClosed = false
 
