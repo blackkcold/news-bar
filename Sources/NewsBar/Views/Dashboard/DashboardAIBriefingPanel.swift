@@ -356,7 +356,7 @@ struct DashboardAIBriefingPanel: View {
 
     private var dashboardSummaryNeedsGeneration: Bool {
         switch dashboardSummaryState {
-        case .idle, .error:
+        case .idle, .error, .truncated:
             return true
         default:
             return false

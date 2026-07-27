@@ -65,8 +65,14 @@ final class NewsOrchestrator: ObservableObject {
 
     private let cacheManager = CacheManager()
     private let rateLimiter = RateLimiter()
-    private var popupLastHash: String?
-    private var dashboardLastHash: String?
+    var popupLastHash: String?
+    var dashboardLastHash: String?
+    /// 截断内容哈希：防止对同一截断内容重复生成，成功生成后清除
+    var popupLastTruncatedHash: String?
+    var dashboardLastTruncatedHash: String?
+    /// 连续截断计数：超过阈值时停止自动重试，用户仍可手动重新生成
+    var consecutiveTruncationCount = 0
+    let maxConsecutiveTruncations = 3
     private var lastSourceRefresh: [String: Date] = [:]
 
     /// Identifies which summary context an operation targets.
@@ -110,6 +116,24 @@ final class NewsOrchestrator: ObservableObject {
         case .popup: popupLastHash = hash
         case .dashboard: dashboardLastHash = hash
         }
+    }
+
+    private func currentTruncatedHash(for target: SummaryTarget) -> String? {
+        switch target {
+        case .popup: return popupLastTruncatedHash
+        case .dashboard: return dashboardLastTruncatedHash
+        }
+    }
+
+    private func setTruncatedHash(_ hash: String?, for target: SummaryTarget) {
+        switch target {
+        case .popup: popupLastTruncatedHash = hash
+        case .dashboard: dashboardLastTruncatedHash = hash
+        }
+    }
+
+    private func clearTruncatedHash(for target: SummaryTarget) {
+        setTruncatedHash(nil, for: target)
     }
 
     // MARK: - Public API
@@ -386,7 +410,7 @@ final class NewsOrchestrator: ObservableObject {
 
         let newHash = CacheEntry.contentIdentifier(for: allItems)
         let shouldGenerate = skipHashDedup
-            || newHash != popupLastHash
+            || (newHash != popupLastHash && newHash != popupLastTruncatedHash)
             || shouldRecoverAISummary(from: previousState)
 
         if shouldGenerate {
@@ -394,13 +418,13 @@ final class NewsOrchestrator: ObservableObject {
             let requestCount = await generateSummary(
                 target: .popup,
                 items: allItems,
+                contentHash: newHash,
                 maxWords: settings.aiPopupMaxWords,
                 model: settings.aiModel,
                 apiKey: apiKey,
                 provider: settings.currentProvider
             )
             settings.recordAIRequests(requestCount)
-            popupLastHash = newHash
         } else {
             aiSummaryState = previousState
         }
@@ -427,7 +451,7 @@ final class NewsOrchestrator: ObservableObject {
         }
 
         let newHash = CacheEntry.contentIdentifier(for: allItems)
-        let shouldGenerate = newHash != dashboardLastHash
+        let shouldGenerate = (newHash != dashboardLastHash && newHash != dashboardLastTruncatedHash)
             || shouldRecoverAISummary(from: dashboardSummaryState)
 
         guard shouldGenerate else { return }
@@ -442,13 +466,13 @@ final class NewsOrchestrator: ObservableObject {
         let requestCount = await generateSummary(
             target: .dashboard,
             items: allItems,
+            contentHash: newHash,
             maxWords: settings.aiDashboardMaxWords,
             model: settings.aiModel,
             apiKey: apiKey,
             provider: settings.currentProvider
         )
         settings.recordAIRequests(requestCount)
-        dashboardLastHash = newHash
     }
 
     // MARK: - Manual Regeneration (Popup context)
@@ -485,9 +509,11 @@ final class NewsOrchestrator: ObservableObject {
         }
         AISummaryService.recordManualRegeneration()
         AISummaryService.initBudget(baseline: settings.todayAIRequestCount, cap: settings.aiDailyCap)
+        let newHash = CacheEntry.contentIdentifier(for: allItems)
         let requestCount = await generateSummary(
             target: .popup,
             items: allItems,
+            contentHash: newHash,
             maxWords: settings.aiPopupMaxWords,
             model: settings.aiModel,
             apiKey: apiKey,
@@ -642,6 +668,7 @@ final class NewsOrchestrator: ObservableObject {
     private func generateSummary(
         target: SummaryTarget,
         items: [NewsItem],
+        contentHash: String,
         maxWords: Int,
         model: String,
         apiKey: String,
@@ -651,11 +678,26 @@ final class NewsOrchestrator: ObservableObject {
             setSummaryState(target, .noKey)
             return AISummaryService.readGenerationAttempts()
         }
+
+        // 连续截断保护：超过阈值时停止自动重试
+        guard consecutiveTruncationCount < maxConsecutiveTruncations else {
+            setSummaryState(target, .error("AI 连续 \(maxConsecutiveTruncations) 次截断，请检查模型配置或减少新闻条目"))
+            return AISummaryService.readGenerationAttempts()
+        }
+
         setSummaryState(target, .summarizing)
+
+        let (trendRange, dailyRange): (ClosedRange<Int>, ClosedRange<Int>)
+        switch target {
+        case .popup: (trendRange, dailyRange) = (2...3, 2...3)
+        case .dashboard: (trendRange, dailyRange) = (4...5, 4...5)
+        }
+
         do {
             let result = try await AISummaryService.summarize(
                 items: items, maxWords: maxWords, provider: provider,
-                model: model, apiKey: apiKey
+                model: model, apiKey: apiKey,
+                trendTopicCount: trendRange, dailyTopicCount: dailyRange
             )
             let requestCount = AISummaryService.readGenerationAttempts()
             setSummaryItems(target, items)
@@ -667,8 +709,13 @@ final class NewsOrchestrator: ObservableObject {
             )
             setParsedSummary(target, parsed)
             if result.isTruncated {
+                setTruncatedHash(contentHash, for: target)
+                consecutiveTruncationCount += 1
                 setSummaryState(target, .truncated(result.summary))
             } else {
+                setHash(contentHash, for: target)
+                clearTruncatedHash(for: target)
+                consecutiveTruncationCount = 0
                 setSummaryState(target, .done(result.summary))
             }
             return requestCount
@@ -728,6 +775,9 @@ final class NewsOrchestrator: ObservableObject {
         sourceStates = [:]
         popupLastHash = nil
         dashboardLastHash = nil
+        popupLastTruncatedHash = nil
+        dashboardLastTruncatedHash = nil
+        consecutiveTruncationCount = 0
     }
 
     func refreshRSSSource(url: String, name: String) async {

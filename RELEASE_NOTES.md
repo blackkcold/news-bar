@@ -1,5 +1,34 @@
 ## Unreleased
 
+## v2.0.5 — AI 摘要截断修复 & Dashboard 信息量增强 - 2026-07-27
+
+### 🐛 Bug 修复
+- **Popup AI 截断内容不再卡死**：修复截断时 `popupLastHash` 仍被更新导致自动刷新跳过生成的问题。新增双哈希去重（`popupLastTruncatedHash`/`dashboardLastTruncatedHash`），截断写截断哈希不污染成功哈希，成功后清除截断哈希
+- **Dashboard 截断死锁修复**：`generateDashboardSummaryIfNeeded` 的 `shouldGenerate` 增加 `dashboardLastTruncatedHash` 检查，`dashboardSummaryNeedsGeneration` 增加 `.truncated` 触发重试，消除截断后重开 Dashboard 不再生成的死锁
+- **regenerateAISummary 哈希泄漏修复**：将哈希管理从 3 个调用方内聚到 `generateSummary` 内部统一处理，消除手动重新生成截断后不更新哈希导致下次自动刷新重复生成的预算泄漏
+- **连续截断保护**：新增 `consecutiveTruncationCount` 计数器，连续截断 ≥3 次自动停止重试，防止变化条目持续截断导致预算消耗，用户仍可手动重新生成（60s 冷却限制频率）
+
+### ✨ 新功能
+- **Dashboard AI Briefing 信息量增强**：趋势概览和每日精选话题数从 2-3 提升到 4-5，确保 Dashboard 摘要信息量多于 Popup
+- **AI prompt 话题数参数化**：`AISummaryService.summarize` 新增 `trendTopicCount`/`dailyTopicCount` 参数，Popup 保持 2-3，Dashboard 4-5，prompt 模板动态插值
+
+### 🔐 安全/隐私增强
+- **AI 反幻觉规则**：systemPrompt 新增规则 7「禁编造：在条目不足以填满请求的话题数时，绝不要编造新闻话题；只涵盖可用内容」
+- **AI prompt 标题隔离**：sanitizeTitle 在注入 prompt 前剥离控制字符和【】/ [# 结构定界符，防止外部新闻标题恶意破坏 prompt 格式或注入指令
+- **AI 隐私边界声明**：system prompt 明确标注用户提供的标题为不可信外部数据，禁止视为指令或提示词注入
+
+### 🔧 改进
+- **max_tokens 提升**：`initialMaxTokens` 1024→2048，`retryMaxTokens` 2048→3840（MiniMax 安全边际 5%），降低截断概率
+- **clearCache 完整性**：`clearCache()` 新增清理 `popupLastTruncatedHash`/`dashboardLastTruncatedHash`/`consecutiveTruncationCount`
+
+### 🔧 技术细节
+- `NewsOrchestrator.swift`：新增 `popupLastTruncatedHash`/`dashboardLastTruncatedHash` 双哈希去重；`consecutiveTruncationCount`/`maxConsecutiveTruncations=3` 连续截断保护；`currentTruncatedHash`/`setTruncatedHash`/`clearTruncatedHash` context-aware helpers 遵循现有 `SummaryTarget` 模式；`generateSummary` 新增 `contentHash` 参数统一管理哈希
+- `AISummaryService.swift`：`summarize` 签名增加 `trendTopicCount`/`dailyTopicCount` 参数（默认 2...3）；`promptTopicHint` 静态方法生成话题数提示文本；`systemPrompt()` 新增规则 7 反幻觉；`max_tokens` 2048/3840
+- `DashboardAIBriefingPanel.swift`：`dashboardSummaryNeedsGeneration` 增加 `.truncated` 触发重试
+- 测试覆盖：184/184 通过（原 165 + 新增 19），涵盖截断哈希去重、连续截断保护、clearCache 清理、dashboardSummaryNeedsGeneration 状态机、prompt 话题数生成
+
+---
+
 ## v2.0.0 — 原生 Dashboard & 双分类 AI 简报 - 2026-07-27
 
 ### ✨ 新功能

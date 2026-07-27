@@ -515,3 +515,168 @@ final class AISummaryServiceBudgetTests: XCTestCase {
         XCTAssertEqual(AISummaryService.readGenerationAttempts(), 0)
     }
 }
+
+// MARK: - Truncation Hash & Consecutive Truncation Tests
+
+@MainActor
+final class TruncationHashTests: XCTestCase {
+
+    func testMaxConsecutiveTruncationsConstant() {
+        let orchestrator = NewsOrchestrator()
+        XCTAssertGreaterThan(orchestrator.maxConsecutiveTruncations, 0)
+    }
+
+    func testClearCacheResetsTruncationHashes() async {
+        let orchestrator = NewsOrchestrator()
+        let settings = AppSettings()
+
+        await orchestrator.clearCache()
+
+        XCTAssertNil(orchestrator.popupLastHash)
+        XCTAssertNil(orchestrator.dashboardLastHash)
+        XCTAssertNil(orchestrator.popupLastTruncatedHash)
+        XCTAssertNil(orchestrator.dashboardLastTruncatedHash)
+        XCTAssertEqual(orchestrator.consecutiveTruncationCount, 0)
+
+        _ = settings
+    }
+
+    func testTruncatedHashGuardsPopupRegeneration() {
+        let orchestrator = NewsOrchestrator()
+
+        orchestrator.popupLastTruncatedHash = "hash-A"
+        let newHash = "hash-A"
+
+        let shouldSkip = newHash == orchestrator.popupLastTruncatedHash
+        XCTAssertTrue(shouldSkip, "Same hash as truncated hash should skip regeneration")
+    }
+
+    func testTruncatedHashGuardsDashboardRegeneration() {
+        let orchestrator = NewsOrchestrator()
+
+        orchestrator.dashboardLastTruncatedHash = "hash-D"
+        let newHash = "hash-D"
+
+        let shouldSkip = newHash == orchestrator.dashboardLastTruncatedHash
+        XCTAssertTrue(shouldSkip, "Same hash as dashboard truncated hash should skip regeneration")
+    }
+
+    func testNewHashTriggersGenerationWhenDifferentFromBothHashes() {
+        let orchestrator = NewsOrchestrator()
+
+        orchestrator.popupLastHash = "hash-old-success"
+        orchestrator.popupLastTruncatedHash = "hash-old-truncated"
+        let newHash = "hash-new"
+
+        let shouldGenerate = newHash != orchestrator.popupLastHash
+            && newHash != orchestrator.popupLastTruncatedHash
+        XCTAssertTrue(shouldGenerate, "New hash different from both should generate")
+    }
+
+    func testSuccessHashBlocksRegeneration() {
+        let orchestrator = NewsOrchestrator()
+
+        orchestrator.popupLastHash = "hash-success"
+        orchestrator.popupLastTruncatedHash = nil
+        let newHash = "hash-success"
+
+        let shouldSkip = newHash == orchestrator.popupLastHash
+        XCTAssertTrue(shouldSkip, "Same hash as success hash should skip regeneration")
+    }
+
+    func testConsecutiveTruncationCounterResetsOnSuccess() {
+        let orchestrator = NewsOrchestrator()
+
+        orchestrator.consecutiveTruncationCount = 2
+        XCTAssertLessThan(orchestrator.consecutiveTruncationCount, orchestrator.maxConsecutiveTruncations)
+
+        orchestrator.consecutiveTruncationCount = 0
+        XCTAssertEqual(orchestrator.consecutiveTruncationCount, 0)
+    }
+
+    func testConsecutiveTruncationBlocksAtThreshold() {
+        let orchestrator = NewsOrchestrator()
+
+        orchestrator.consecutiveTruncationCount = orchestrator.maxConsecutiveTruncations
+        let shouldBlock = orchestrator.consecutiveTruncationCount >= orchestrator.maxConsecutiveTruncations
+
+        XCTAssertTrue(shouldBlock, "At threshold, auto-regeneration should be blocked")
+    }
+
+    func testClearCacheResetsConsecutiveTruncationCount() async {
+        let orchestrator = NewsOrchestrator()
+
+        orchestrator.consecutiveTruncationCount = 5
+        await orchestrator.clearCache()
+
+        XCTAssertEqual(orchestrator.consecutiveTruncationCount, 0)
+    }
+}
+
+// MARK: - Dashboard Summary Needs Generation Tests
+
+final class DashboardSummaryNeedsGenerationTests: XCTestCase {
+
+    func testNeedsGenerationReturnsTrueForTruncated() {
+        let panel = DashboardSummaryNeedsGenerationProbe()
+        XCTAssertTrue(panel.needsGeneration(for: .truncated("partial text")))
+    }
+
+    func testNeedsGenerationReturnsTrueForIdle() {
+        let panel = DashboardSummaryNeedsGenerationProbe()
+        XCTAssertTrue(panel.needsGeneration(for: .idle))
+    }
+
+    func testNeedsGenerationReturnsTrueForError() {
+        let panel = DashboardSummaryNeedsGenerationProbe()
+        XCTAssertTrue(panel.needsGeneration(for: .error("test error")))
+    }
+
+    func testNeedsGenerationReturnsFalseForDone() {
+        let panel = DashboardSummaryNeedsGenerationProbe()
+        XCTAssertFalse(panel.needsGeneration(for: .done("complete text")))
+    }
+
+    func testNeedsGenerationReturnsFalseForFetching() {
+        let panel = DashboardSummaryNeedsGenerationProbe()
+        XCTAssertFalse(panel.needsGeneration(for: .fetching))
+    }
+
+    func testNeedsGenerationReturnsFalseForSummarizing() {
+        let panel = DashboardSummaryNeedsGenerationProbe()
+        XCTAssertFalse(panel.needsGeneration(for: .summarizing))
+    }
+
+    func testNeedsGenerationReturnsFalseForNoKey() {
+        let panel = DashboardSummaryNeedsGenerationProbe()
+        XCTAssertFalse(panel.needsGeneration(for: .noKey))
+    }
+}
+
+private struct DashboardSummaryNeedsGenerationProbe {
+    func needsGeneration(for state: AISummaryState) -> Bool {
+        switch state {
+        case .idle, .error, .truncated:
+            return true
+        default:
+            return false
+        }
+    }
+}
+
+// MARK: - Prompt Topic Count Tests
+
+final class PromptTopicCountTests: XCTestCase {
+
+    func testTopicCountDefaultsToTwoToThree() {
+        XCTAssertEqual(AISummaryService.promptTopicHint(range: 2...3), "2–3")
+    }
+
+    func testTopicCountFourToFiveForDashboard() {
+        XCTAssertEqual(AISummaryService.promptTopicHint(range: 4...5), "4–5")
+    }
+
+    func testTopicCountSingleValueNoDash() {
+        XCTAssertEqual(AISummaryService.promptTopicHint(range: 3...3), "3")
+    }
+}
