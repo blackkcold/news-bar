@@ -22,7 +22,8 @@ enum AISummaryParser {
     ///
     /// Trend sections are filtered: any section whose primary citation index
     /// falls outside `weiboBilibiliRange` is moved to `dailyEssentials`.
-    /// Sections with no valid citation are omitted from trend.
+    /// Sections with no valid citation (missing, malformed, or out of bounds)
+    /// remain in `trendOverview` with `primaryIndex == nil` and no source link.
     static func parseDualSummary(
         _ text: String,
         itemCount: Int,
@@ -42,17 +43,25 @@ enum AISummaryParser {
             let rawTrendSections = parseSections(trendContent, itemCount: itemCount)
             let rawDailySections = parseSections(dailyContent, itemCount: itemCount)
 
-            // Filter trend sections: keep only those citing Weibo/Bilibili indices
+            // Filter trend sections: keep only those citing Weibo/Bilibili indices.
+            // Sections with no valid citation (missing/malformed/out-of-bounds) are
+            // retained in trendOverview with primaryIndex == nil so the Dashboard
+            // can still render them under their explicit trend label without a link.
+            // Sections with a valid citation outside weiboBilibiliRange move to daily.
             var filteredTrend: [(title: String, body: String, primaryIndex: Int?)] = []
             var movedToDaily: [(title: String, body: String, primaryIndex: Int?)] = []
             for section in rawTrendSections {
-                if let idx = section.primaryIndex, weiboBilibiliRange.contains(idx) {
+                if let idx = section.primaryIndex {
+                    if weiboBilibiliRange.contains(idx) {
+                        filteredTrend.append(section)
+                    } else {
+                        // Valid citation but not a trend source — move to daily
+                        movedToDaily.append(section)
+                    }
+                } else {
+                    // No valid citation — retain in trend with no source link
                     filteredTrend.append(section)
-                } else if section.primaryIndex != nil {
-                    // Has a citation but it's not a trend source — move to daily
-                    movedToDaily.append(section)
                 }
-                // No citation at all — omit from trend
             }
 
             return ParsedSummary(

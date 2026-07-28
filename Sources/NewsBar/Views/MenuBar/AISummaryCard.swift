@@ -4,6 +4,7 @@ struct AISummaryCard: View {
     let state: AISummaryState
     @Binding var isExpanded: Bool
     var allItems: [NewsItem] = []
+    var parsedSummary: ParsedSummary?
     var onRegenerate: (() -> Void)?
     var onConfigureKey: (() -> Void)?
 
@@ -85,7 +86,7 @@ struct AISummaryCard: View {
                         stateHeaderBadge
                     }
 
-                    Text("趋势概览 / 每日精选 · 引用悬停可回溯原文")
+                    Text("趋势概览 / 每日精选 · 有引用显示来源徽章，点击打开原文")
                         .font(.system(size: Metrics.helperTextSize))
                         .foregroundStyle(.secondary)
                 }
@@ -306,27 +307,54 @@ struct AISummaryCard: View {
 
     @ViewBuilder
     private func sectionRenderedView(_ fullText: String) -> some View {
-        let sections = AISummaryParser.parseSections(fullText, itemCount: allItems.count)
-        if sections.isEmpty {
+        let groups = resolvedSectionGroups(for: fullText)
+        if groups.allSatisfy({ $0.sections.isEmpty }) {
             Text((try? AttributedString(markdown: AISummaryParser.stripCitations(fullText)))
                 ?? AttributedString(AISummaryParser.stripCitations(fullText)))
                 .font(.system(size: 11.5))
                 .foregroundStyle(.primary)
                 .lineSpacing(3)
         } else {
-            ForEach(Array(sections.enumerated()), id: \.offset) { index, section in
-                SectionRow(
-                    title: section.title,
-                    content: section.body,
-                    matchedItem: section.primaryIndex.flatMap {
-                        allItems.indices.contains($0) ? allItems[$0] : nil
+            ForEach(Array(groups.enumerated()), id: \.offset) { groupIndex, group in
+                if !group.sections.isEmpty {
+                    if !group.title.isEmpty {
+                        Text(group.title)
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(.secondary)
+                            .padding(.horizontal, 2)
                     }
-                )
-                if index < sections.count - 1 {
-                    Divider().opacity(0.3).padding(.horizontal, 4)
+
+                    ForEach(Array(group.sections.enumerated()), id: \.offset) { index, section in
+                        SectionRow(
+                            title: section.title,
+                            content: section.body,
+                            matchedItem: section.primaryIndex.flatMap {
+                                allItems.indices.contains($0) ? allItems[$0] : nil
+                            }
+                        )
+                        if index < group.sections.count - 1 {
+                            Divider().opacity(0.3).padding(.horizontal, 4)
+                        }
+                    }
+
+                    if groupIndex < groups.count - 1 {
+                        Divider().opacity(0.3).padding(.horizontal, 4)
+                    }
                 }
             }
         }
+    }
+
+    private func resolvedSectionGroups(for fullText: String) -> [(title: String, sections: [(title: String, body: String, primaryIndex: Int?)])] {
+        if let parsedSummary {
+            return [
+                ("趋势概览", parsedSummary.trendOverview),
+                ("每日精选", parsedSummary.dailyEssentials)
+            ].filter { !$0.sections.isEmpty }
+        }
+
+        let sections = AISummaryParser.parseSections(fullText, itemCount: allItems.count)
+        return [("", sections)]
     }
 
     private func errorContent(_ message: String) -> some View {
@@ -449,7 +477,7 @@ struct SectionRow: View {
 
     private var accessibilityHintText: String {
         if matchedItem != nil {
-            return "将鼠标移到条目上可显示来源按钮。"
+            return "可使用来源按钮打开原文。"
         }
         return "这是只读摘要内容。"
     }
@@ -468,23 +496,22 @@ struct SectionRow: View {
                     .foregroundStyle(.primary)
                     .lineSpacing(3)
             }
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(accessibilityLabelText)
+            .accessibilityValue(matchedItem?.source.displayName ?? "无可用来源")
+            .accessibilityHint(accessibilityHintText)
 
             Spacer(minLength: 4)
 
-            if isHovered, let item = matchedItem {
+            if let item = matchedItem {
                 SourceBadge(sourceName: item.source.displayName, url: item.url)
                     .padding(.top, 2)
-                    .transition(reduceMotion ? .opacity : .scale(scale: 0.6).combined(with: .opacity))
             }
         }
         .padding(8)
         .background(rowBackground)
         .overlay(rowStroke)
         .clipShape(rowShape)
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(accessibilityLabelText)
-        .accessibilityValue(matchedItem?.source.displayName ?? "无可用来源")
-        .accessibilityHint(accessibilityHintText)
         .onHover { hovering in
             if reduceMotion {
                 isHovered = hovering

@@ -45,6 +45,7 @@ struct PopoverContent: View {
                             state: orchestrator.aiSummaryState,
                             isExpanded: $aiSummaryExpanded,
                             allItems: orchestrator.aiSummaryItems,
+                            parsedSummary: orchestrator.aiParsedSummary,
                             onRegenerate: {
                                 Task {
                                     await orchestrator.regenerateAISummary(settings: settings)

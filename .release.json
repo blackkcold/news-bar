@@ -9,7 +9,7 @@
   "ci_mode": "local",
   "release_branch": true,
   "auto_merge": false,
-  "release_note_style": "structured-cn",
+  "release_note_style": "bilingual",
   "summary": "原生 Dashboard 窗口，双分类 AI 简报，RSS 按源分卡，固定双列网格，长标题宽度修复",
   "summary_en": "Native Dashboard window, dual-category AI briefing, per-source RSS cards, fixed two-column grid, long-title width fix",
   "validation": "swift build -c release --arch arm64 + swift test 165/165 通过"

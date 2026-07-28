@@ -14,7 +14,7 @@
 - **🔥 Weibo Trending** · 微博热搜 — Real-time Weibo hot topics
 - **📺 Bilibili Trending** · B站热搜 — Bilibili popular content
 - **📡 RSS Feeds** · RSS 订阅 — Custom RSS sources, freely extensible
-- **🤖 AI Summary** · AI 摘要 — Dual-category briefings (趋势概览 / 每日精选) with template-framework; hover section to reveal source badge linking to original news. Popup generates a concise summary on refresh; Dashboard lazily generates a detailed summary when opened. Both consume the shared daily AI request cap.
+- **🤖 AI Summary** · AI 摘要 — Dual-category briefings (趋势概览 / 每日精选) with template-framework; cited rows show a persistent source badge, click to open original. Uncited trend summaries remain visible without a source link. Popup generates a concise summary on refresh; Dashboard lazily generates a detailed summary when opened. Both consume the shared daily AI request cap.
 - **📊 Dashboard** · 仪表盘 — Native window with sidebar (hot-trend cards + AI briefing panel) and per-source RSS card region with fixed two-column grid; lazy AI summary generation on open
 - **⏱ Auto Refresh** · 定时刷新 — Startup fetch + optional hourly timer
 - **🔄 Auto Update** · 自动更新 — Check GitHub Releases, one-click download
@@ -36,7 +36,7 @@ Download the latest DMG from [Releases](../../releases) and drag to Applications
 
 1. Click the menu bar icon to expand the news panel · 点击菜单栏图标展开新闻面板
 2. Click any news item to open in browser · 点击任意新闻条目在浏览器中打开
-3. Hover over AI summary sections to reveal source badge; click to jump to original · 鼠标悬停 AI 摘要段落，点击角标跳转原始新闻
+3. Cited AI summary rows show a persistent source badge; click to open original · 有引用的 AI 摘要行显示常驻来源角标，点击跳转原始新闻
 4. Click "Check Update" at top to manually check for new versions · 点击面板顶部「检查更新」手动检查新版本
 5. Click ⚙️ at bottom to open settings, configure RSS and AI · 点击底部 ⚙️ 进入设置，配置 RSS 源和 AI 摘要
 6. Click 📊 to open Dashboard for full news view: sidebar with hot-trend cards and AI briefing panel, plus per-source RSS card region with fixed two-column grid · 点击 📊 打开 Dashboard：侧边栏热点趋势卡片和 AI 简报面板，右侧按来源分卡的 RSS 固定双列网格区域
@@ -60,10 +60,10 @@ Popup and Dashboard each have independent word count presets (Popup default 120,
 | Provider | Endpoint | Models |
 |---|---|---|
 | DeepSeek | api.deepseek.com | deepseek-v4-flash, deepseek-v4-pro |
-| MiniMax | api.minimaxi.com | MiniMax-M2.7, MiniMax-M2.5, MiniMax-M2.1 |
+| MiniMax | api.minimaxi.com | MiniMax-M3, MiniMax-M2.7, MiniMax-M2.7-highspeed, MiniMax-M2.5, MiniMax-M2.1 |
 | Opencode Go | open-code-go.aiizhi.com | deepseek-v4-flash, deepseek-v4-pro |
 | Opencode Zen | open-code-zen.aiizhi.com | deepseek-v4-flash, deepseek-v4-pro |
-| Google AI Studio | generativelanguage.googleapis.com | gemini-2.5-flash, gemini-2.5-pro |
+| Google AI Studio | generativelanguage.googleapis.com | gemini-3.6-flash, gemini-2.5-flash, gemini-2.5-pro, gemini-3.5-flash, gemini-3.5-flash-lite |
 
 ## Develop · 开发
 

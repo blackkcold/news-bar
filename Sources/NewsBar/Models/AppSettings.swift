@@ -2,6 +2,21 @@ import Foundation
 import Observation
 import SwiftUI
 
+/// Identifies which summary context an operation targets.
+/// Top-level so both AppSettings and AISummaryService can use it.
+enum SummaryTarget: String, Sendable, CaseIterable {
+    case popup
+    case dashboard
+}
+
+/// Budget mode for AI summary daily request caps.
+/// - shared: Popup and Dashboard share a single total daily cap (`aiDailyCap`).
+/// - independent: Each target has its own daily cap (`aiPopupDailyCap` / `aiDashboardDailyCap`).
+enum AISummaryBudgetMode: String, Sendable, CaseIterable {
+    case shared
+    case independent
+}
+
 @Observable
 final class AppSettings {
     var autoRefreshEnabled: Bool {
@@ -39,6 +54,15 @@ final class AppSettings {
     var aiDailyCap: Int {
         didSet { UserDefaults.standard.set(aiDailyCap, forKey: "aiDailyCap") }
     }
+    var aiBudgetMode: AISummaryBudgetMode {
+        didSet { UserDefaults.standard.set(aiBudgetMode.rawValue, forKey: "aiBudgetMode") }
+    }
+    var aiPopupDailyCap: Int {
+        didSet { UserDefaults.standard.set(aiPopupDailyCap, forKey: "aiPopupDailyCap") }
+    }
+    var aiDashboardDailyCap: Int {
+        didSet { UserDefaults.standard.set(aiDashboardDailyCap, forKey: "aiDashboardDailyCap") }
+    }
     var aiProvider: String {
         didSet {
             guard !isInitializing else { return }
@@ -69,6 +93,12 @@ final class AppSettings {
     }
     var todayAIRequestCount: Int {
         didSet { UserDefaults.standard.set(todayAIRequestCount, forKey: "todayAIRequestCount") }
+    }
+    var todayPopupAIRequestCount: Int {
+        didSet { UserDefaults.standard.set(todayPopupAIRequestCount, forKey: "todayPopupAIRequestCount") }
+    }
+    var todayDashboardAIRequestCount: Int {
+        didSet { UserDefaults.standard.set(todayDashboardAIRequestCount, forKey: "todayDashboardAIRequestCount") }
     }
     var lastRefreshTimestamp: Double {
         didSet { UserDefaults.standard.set(lastRefreshTimestamp, forKey: "lastRefreshTimestamp") }
@@ -143,6 +173,12 @@ final class AppSettings {
         self.aiMaxWords = defaults.integerIfPresent(forKey: "aiMaxWords") ?? 150
         let rawCap = defaults.integerIfPresent(forKey: "aiDailyCap") ?? 50
         self.aiDailyCap = Self.validAICaps.contains(rawCap) ? rawCap : 50
+        let rawBudgetMode = defaults.stringIfPresent(forKey: "aiBudgetMode") ?? AISummaryBudgetMode.shared.rawValue
+        self.aiBudgetMode = AISummaryBudgetMode(rawValue: rawBudgetMode) ?? .shared
+        let rawPopupCap = defaults.integerIfPresent(forKey: "aiPopupDailyCap") ?? 50
+        self.aiPopupDailyCap = Self.validAICaps.contains(rawPopupCap) ? rawPopupCap : 50
+        let rawDashboardCap = defaults.integerIfPresent(forKey: "aiDashboardDailyCap") ?? 50
+        self.aiDashboardDailyCap = Self.validAICaps.contains(rawDashboardCap) ? rawDashboardCap : 50
         if let legacyRef = defaults.stringIfPresent(forKey: "onePasswordRef"),
            !legacyRef.isEmpty {
             defaults.removeObject(forKey: "onePasswordRef")
@@ -160,7 +196,17 @@ final class AppSettings {
 
         let todayStart = Calendar.current.startOfDay(for: Date()).timeIntervalSince1970
         self.todayRefreshCount = defaults.integerIfPresent(forKey: "todayRefreshCount") ?? 0
-        self.todayAIRequestCount = defaults.integerIfPresent(forKey: "todayAIRequestCount") ?? 0
+        let legacyTotalCount = defaults.integerIfPresent(forKey: "todayAIRequestCount") ?? 0
+        self.todayAIRequestCount = legacyTotalCount
+        let hasPopupCount = defaults.object(forKey: "todayPopupAIRequestCount") != nil
+        let hasDashboardCount = defaults.object(forKey: "todayDashboardAIRequestCount") != nil
+        if !hasPopupCount && !hasDashboardCount && legacyTotalCount > 0 {
+            self.todayPopupAIRequestCount = legacyTotalCount
+            self.todayDashboardAIRequestCount = 0
+        } else {
+            self.todayPopupAIRequestCount = defaults.integerIfPresent(forKey: "todayPopupAIRequestCount") ?? 0
+            self.todayDashboardAIRequestCount = defaults.integerIfPresent(forKey: "todayDashboardAIRequestCount") ?? 0
+        }
         self.lastRefreshTimestamp = defaults.doubleIfPresent(forKey: "lastRefreshTimestamp") ?? 0
         self.statsDayTimestamp = defaults.doubleIfPresent(forKey: "statsDayTimestamp") ?? todayStart
 
@@ -255,6 +301,36 @@ final class AppSettings {
         "\(todayAIRequestCount) / \(aiDailyCap) 次"
     }
 
+    var aiPopupUsageText: String {
+        let cap = effectiveDailyCap(for: .popup)
+        return "\(todayPopupAIRequestCount) / \(cap) 次"
+    }
+
+    var aiDashboardUsageText: String {
+        let cap = effectiveDailyCap(for: .dashboard)
+        return "\(todayDashboardAIRequestCount) / \(cap) 次"
+    }
+
+    /// Returns the effective daily cap for a target based on the current budget mode.
+    func effectiveDailyCap(for target: SummaryTarget) -> Int {
+        switch aiBudgetMode {
+        case .shared:       return aiDailyCap
+        case .independent:
+            switch target {
+            case .popup:     return aiPopupDailyCap
+            case .dashboard: return aiDashboardDailyCap
+            }
+        }
+    }
+
+    /// Returns the persisted daily count for a target.
+    func todayAIRequestCount(for target: SummaryTarget) -> Int {
+        switch target {
+        case .popup:     return todayPopupAIRequestCount
+        case .dashboard: return todayDashboardAIRequestCount
+        }
+    }
+
     /// Whitelisted daily AI request caps. Any value outside this set is rejected.
     static let validAICaps: Set<Int> = [20, 50, 100]
     /// Whitelisted Popup AI summary lengths. Any value outside this set is rejected.
@@ -270,6 +346,8 @@ final class AppSettings {
 
         todayRefreshCount = 0
         todayAIRequestCount = 0
+        todayPopupAIRequestCount = 0
+        todayDashboardAIRequestCount = 0
         statsDayTimestamp = today.timeIntervalSince1970
     }
 
@@ -283,6 +361,17 @@ final class AppSettings {
         guard count > 0 else { return }
         resetDailyStatsIfNeeded()
         todayAIRequestCount += count
+    }
+
+    /// Target-aware recording: increments both the per-target count and the legacy total.
+    func recordAIRequests(_ count: Int, for target: SummaryTarget) {
+        guard count > 0 else { return }
+        resetDailyStatsIfNeeded()
+        todayAIRequestCount += count
+        switch target {
+        case .popup:     todayPopupAIRequestCount += count
+        case .dashboard: todayDashboardAIRequestCount += count
+        }
     }
 
     // MARK: - RSS display-count resolution

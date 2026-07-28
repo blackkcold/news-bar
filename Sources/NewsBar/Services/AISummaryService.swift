@@ -11,8 +11,9 @@ enum AISummaryService {
     /// Cooldown in seconds before manual regeneration is allowed again.
     private static let regenerationCooldown: TimeInterval = 60
 
-    /// Nonisolated flag: true while a generation is in-flight.
-    private static let _isGenerating = OSAllocatedUnfairLock<Bool>(initialState: false)
+    /// Per-target generation locks: true while a generation is in-flight for that target.
+    private static let _popupIsGenerating = OSAllocatedUnfairLock<Bool>(initialState: false)
+    private static let _dashboardIsGenerating = OSAllocatedUnfairLock<Bool>(initialState: false)
 
     /// Timestamp of the last manual regeneration.
     private static let _lastRegeneration = OSAllocatedUnfairLock<Date>(initialState: .distantPast)
@@ -24,23 +25,57 @@ enum AISummaryService {
         var cap: Int
         var attempts: Int
     }
-    private static let _budgetState = OSAllocatedUnfairLock<BudgetState>(
+
+    /// Independent-mode: per-target budget states.
+    private static let _popupBudgetState = OSAllocatedUnfairLock<BudgetState>(
         initialState: BudgetState(baseline: 0, cap: 50, attempts: 0)
     )
+    private static let _dashboardBudgetState = OSAllocatedUnfairLock<BudgetState>(
+        initialState: BudgetState(baseline: 0, cap: 50, attempts: 0)
+    )
+
+    /// Shared-mode: single budget state enforcing the shared total cap atomically.
+    private static let _sharedBudgetState = OSAllocatedUnfairLock<BudgetState>(
+        initialState: BudgetState(baseline: 0, cap: 50, attempts: 0)
+    )
+
+    private static func budgetStateLock(for target: SummaryTarget, mode: AISummaryBudgetMode)
+        -> OSAllocatedUnfairLock<BudgetState>
+    {
+        switch mode {
+        case .shared:       return _sharedBudgetState
+        case .independent:
+            switch target {
+            case .popup:     return _popupBudgetState
+            case .dashboard: return _dashboardBudgetState
+            }
+        }
+    }
+
+    private static func generationLock(for target: SummaryTarget)
+        -> OSAllocatedUnfairLock<Bool>
+    {
+        switch target {
+        case .popup:     return _popupIsGenerating
+        case .dashboard: return _dashboardIsGenerating
+        }
+    }
 
     private static let timeout: TimeInterval = 30
     private static let initialMaxTokens = 2048
     private static let retryMaxTokens = 3840
 
     /// Initialise the per-generation budget state with the persisted daily count and cap.
-    static func initBudget(baseline: Int, cap: Int) {
-        _budgetState.withLock { $0 = BudgetState(baseline: baseline, cap: cap, attempts: 0) }
+    static func initBudget(target: SummaryTarget, mode: AISummaryBudgetMode, baseline: Int, cap: Int) {
+        budgetStateLock(for: target, mode: mode).withLock {
+            $0 = BudgetState(baseline: baseline, cap: cap, attempts: 0)
+        }
     }
 
     /// Check whether the next attempt is within budget and increment if so.
-    /// Throws `NewsBarError.rateLimited` when `baseline + attempts + 1 >= cap`.
-    static func consumeAttemptBudget() throws {
-        try _budgetState.withLock { state in
+    /// Throws `NewsBarError.rateLimited` when `baseline + attempts + 1 > cap`.
+    static func consumeAttemptBudget(target: SummaryTarget, mode: AISummaryBudgetMode) throws {
+        try budgetStateLock(for: target, mode: mode).withLock { state in
             let nextTotal = state.baseline + state.attempts + 1
             guard nextTotal <= state.cap else {
                 throw NewsBarError.rateLimited
@@ -50,27 +85,27 @@ enum AISummaryService {
     }
 
     /// Read the number of actual attempts dispatched in this generation.
-    static func readGenerationAttempts() -> Int {
-        _budgetState.withLock { $0.attempts }
+    static func readGenerationAttempts(target: SummaryTarget, mode: AISummaryBudgetMode) -> Int {
+        budgetStateLock(for: target, mode: mode).withLock { $0.attempts }
     }
 
     /// Read the active cap for this generation.
-    static func readGenerationCap() -> Int {
-        _budgetState.withLock { $0.cap }
+    static func readGenerationCap(target: SummaryTarget, mode: AISummaryBudgetMode) -> Int {
+        budgetStateLock(for: target, mode: mode).withLock { $0.cap }
     }
 
-    /// Attempt to acquire the generation lock. Returns `false` if already generating.
-    static func tryAcquireGenerationLock() -> Bool {
-        _isGenerating.withLock { isGenerating in
+    /// Attempt to acquire the per-target generation lock. Returns `false` if already generating.
+    static func tryAcquireGenerationLock(for target: SummaryTarget) -> Bool {
+        generationLock(for: target).withLock { isGenerating in
             guard !isGenerating else { return false }
             isGenerating = true
             return true
         }
     }
 
-    /// Release the generation lock.
-    static func releaseGenerationLock() {
-        _isGenerating.withLock { $0 = false }
+    /// Release the per-target generation lock.
+    static func releaseGenerationLock(for target: SummaryTarget) {
+        generationLock(for: target).withLock { $0 = false }
     }
 
     /// Check whether manual regeneration is cooled down.
@@ -169,6 +204,8 @@ enum AISummaryService {
         provider: AIProvider,
         model: String,
         apiKey: String,
+        target: SummaryTarget,
+        budgetMode: AISummaryBudgetMode,
         trendTopicCount: ClosedRange<Int> = 2...3,
         dailyTopicCount: ClosedRange<Int> = 2...3
     ) async throws -> SummaryResult {
@@ -226,7 +263,9 @@ enum AISummaryService {
                 model: model,
                 systemPrompt: systemPrompt(),
                 userPrompt: prompt,
-                maxTokens: initialMaxTokens
+                maxTokens: initialMaxTokens,
+                target: target,
+                budgetMode: budgetMode
             )
         }
         if !result.isTruncated {
@@ -240,7 +279,9 @@ enum AISummaryService {
                 model: model,
                 systemPrompt: systemPrompt(),
                 userPrompt: prompt,
-                maxTokens: retryMaxTokens
+                maxTokens: retryMaxTokens,
+                target: target,
+                budgetMode: budgetMode
             )
         }
         return SummaryResult(summary: retryResult.summary, isTruncated: retryResult.isTruncated)
@@ -253,10 +294,11 @@ enum AISummaryService {
         model: String,
         systemPrompt: String,
         userPrompt: String,
-        maxTokens: Int
+        maxTokens: Int,
+        target: SummaryTarget,
+        budgetMode: AISummaryBudgetMode
     ) async throws -> (summary: String, isTruncated: Bool) {
-        // Consume budget before every HTTP dispatch — counts retries too
-        try consumeAttemptBudget()
+        try consumeAttemptBudget(target: target, mode: budgetMode)
         switch provider.responseFormat {
         case .openAI:
             return try await makeOpenAIRequest(

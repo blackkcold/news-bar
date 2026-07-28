@@ -75,12 +75,6 @@ final class NewsOrchestrator: ObservableObject {
     let maxConsecutiveTruncations = 3
     private var lastSourceRefresh: [String: Date] = [:]
 
-    /// Identifies which summary context an operation targets.
-    private enum SummaryTarget {
-        case popup
-        case dashboard
-    }
-
     // MARK: - Context-Aware State Helpers
 
     private func setSummaryState(_ target: SummaryTarget, _ state: AISummaryState) {
@@ -296,12 +290,20 @@ final class NewsOrchestrator: ObservableObject {
             manualRefreshWarning = await rateLimiter.manualRefreshWarning()
         }
 
-        await handleAISummary(
-            settings: settings,
-            apiKey: apiKey,
-            previousState: previousSummaryState,
-            skipHashDedup: isManual
-        )
+        await withTaskGroup(of: Void.self) { group in
+            group.addTask {
+                await self.handleAISummary(
+                    settings: settings,
+                    apiKey: apiKey,
+                    previousState: previousSummaryState,
+                    skipHashDedup: isManual
+                )
+            }
+            group.addTask {
+                await self.generateDashboardSummaryIfNeeded(settings: settings)
+            }
+            await group.waitForAll()
+        }
 
         let allItems = allActiveItems(settings: settings)
         if !isManual {
@@ -401,12 +403,12 @@ final class NewsOrchestrator: ObservableObject {
             return
         }
 
-        // Concurrent generation guard
-        guard AISummaryService.tryAcquireGenerationLock() else {
+        // Concurrent generation guard (per-target)
+        guard AISummaryService.tryAcquireGenerationLock(for: .popup) else {
             aiSummaryState = .error("AI 总结正在生成中")
             return
         }
-        defer { AISummaryService.releaseGenerationLock() }
+        defer { AISummaryService.releaseGenerationLock(for: .popup) }
 
         let newHash = CacheEntry.contentIdentifier(for: allItems)
         let shouldGenerate = skipHashDedup
@@ -414,7 +416,12 @@ final class NewsOrchestrator: ObservableObject {
             || shouldRecoverAISummary(from: previousState)
 
         if shouldGenerate {
-            AISummaryService.initBudget(baseline: settings.todayAIRequestCount, cap: settings.aiDailyCap)
+            AISummaryService.initBudget(
+                target: .popup,
+                mode: settings.aiBudgetMode,
+                baseline: settings.todayAIRequestCount(for: .popup),
+                cap: settings.effectiveDailyCap(for: .popup)
+            )
             let requestCount = await generateSummary(
                 target: .popup,
                 items: allItems,
@@ -422,9 +429,10 @@ final class NewsOrchestrator: ObservableObject {
                 maxWords: settings.aiPopupMaxWords,
                 model: settings.aiModel,
                 apiKey: apiKey,
-                provider: settings.currentProvider
+                provider: settings.currentProvider,
+                settings: settings
             )
-            settings.recordAIRequests(requestCount)
+            settings.recordAIRequests(requestCount, for: .popup)
         } else {
             aiSummaryState = previousState
         }
@@ -456,13 +464,18 @@ final class NewsOrchestrator: ObservableObject {
 
         guard shouldGenerate else { return }
 
-        // Try lock; if held by Popup, return silently — retryable, no error, no budget
-        guard AISummaryService.tryAcquireGenerationLock() else {
+        // Try per-target lock; if held, return silently — retryable, no error, no budget
+        guard AISummaryService.tryAcquireGenerationLock(for: .dashboard) else {
             return
         }
-        defer { AISummaryService.releaseGenerationLock() }
+        defer { AISummaryService.releaseGenerationLock(for: .dashboard) }
 
-        AISummaryService.initBudget(baseline: settings.todayAIRequestCount, cap: settings.aiDailyCap)
+        AISummaryService.initBudget(
+            target: .dashboard,
+            mode: settings.aiBudgetMode,
+            baseline: settings.todayAIRequestCount(for: .dashboard),
+            cap: settings.effectiveDailyCap(for: .dashboard)
+        )
         let requestCount = await generateSummary(
             target: .dashboard,
             items: allItems,
@@ -470,9 +483,10 @@ final class NewsOrchestrator: ObservableObject {
             maxWords: settings.aiDashboardMaxWords,
             model: settings.aiModel,
             apiKey: apiKey,
-            provider: settings.currentProvider
+            provider: settings.currentProvider,
+            settings: settings
         )
-        settings.recordAIRequests(requestCount)
+        settings.recordAIRequests(requestCount, for: .dashboard)
     }
 
     // MARK: - Manual Regeneration (Popup context)
@@ -488,10 +502,10 @@ final class NewsOrchestrator: ObservableObject {
         }
 
         // Concurrent generation guard — preserve existing summary on denial
-        guard AISummaryService.tryAcquireGenerationLock() else {
+        guard AISummaryService.tryAcquireGenerationLock(for: .popup) else {
             return
         }
-        defer { AISummaryService.releaseGenerationLock() }
+        defer { AISummaryService.releaseGenerationLock(for: .popup) }
 
         let apiKey: String
         if let cached = settings.cachedAPIKey, !cached.isEmpty {
@@ -508,7 +522,12 @@ final class NewsOrchestrator: ObservableObject {
             }
         }
         AISummaryService.recordManualRegeneration()
-        AISummaryService.initBudget(baseline: settings.todayAIRequestCount, cap: settings.aiDailyCap)
+        AISummaryService.initBudget(
+            target: .popup,
+            mode: settings.aiBudgetMode,
+            baseline: settings.todayAIRequestCount(for: .popup),
+            cap: settings.effectiveDailyCap(for: .popup)
+        )
         let newHash = CacheEntry.contentIdentifier(for: allItems)
         let requestCount = await generateSummary(
             target: .popup,
@@ -517,9 +536,10 @@ final class NewsOrchestrator: ObservableObject {
             maxWords: settings.aiPopupMaxWords,
             model: settings.aiModel,
             apiKey: apiKey,
-            provider: settings.currentProvider
+            provider: settings.currentProvider,
+            settings: settings
         )
-        settings.recordAIRequests(requestCount)
+        settings.recordAIRequests(requestCount, for: .popup)
     }
 
     // MARK: - Shared Helpers
@@ -672,17 +692,19 @@ final class NewsOrchestrator: ObservableObject {
         maxWords: Int,
         model: String,
         apiKey: String,
-        provider: AIProvider
+        provider: AIProvider,
+        settings: AppSettings
     ) async -> Int {
+        let budgetMode = settings.aiBudgetMode
         guard !apiKey.isEmpty else {
             setSummaryState(target, .noKey)
-            return AISummaryService.readGenerationAttempts()
+            return AISummaryService.readGenerationAttempts(target: target, mode: budgetMode)
         }
 
         // 连续截断保护：超过阈值时停止自动重试
         guard consecutiveTruncationCount < maxConsecutiveTruncations else {
             setSummaryState(target, .error("AI 连续 \(maxConsecutiveTruncations) 次截断，请检查模型配置或减少新闻条目"))
-            return AISummaryService.readGenerationAttempts()
+            return AISummaryService.readGenerationAttempts(target: target, mode: budgetMode)
         }
 
         setSummaryState(target, .summarizing)
@@ -697,9 +719,11 @@ final class NewsOrchestrator: ObservableObject {
             let result = try await AISummaryService.summarize(
                 items: items, maxWords: maxWords, provider: provider,
                 model: model, apiKey: apiKey,
+                target: target,
+                budgetMode: budgetMode,
                 trendTopicCount: trendRange, dailyTopicCount: dailyRange
             )
-            let requestCount = AISummaryService.readGenerationAttempts()
+            let requestCount = AISummaryService.readGenerationAttempts(target: target, mode: budgetMode)
             setSummaryItems(target, items)
             let wbRange = 0..<(weiboItems.count + bilibiliItems.count)
             let parsed = AISummaryParser.parseDualSummary(
@@ -722,8 +746,8 @@ final class NewsOrchestrator: ObservableObject {
         } catch NewsBarError.apiKeyInvalid {
             setSummaryState(target, .error("API Key 无效"))
         } catch NewsBarError.rateLimited {
-            let count = AISummaryService.readGenerationAttempts()
-            let cap = AISummaryService.readGenerationCap()
+            let count = AISummaryService.readGenerationAttempts(target: target, mode: budgetMode)
+            let cap = AISummaryService.readGenerationCap(target: target, mode: budgetMode)
             setSummaryState(target, .error("今日 AI 调用次数已达上限（\(count)/\(cap)）"))
         } catch let error as NewsBarError {
             switch error {
@@ -746,7 +770,7 @@ final class NewsOrchestrator: ObservableObject {
             NSLog("[NewsOrchestrator] AI summary failed: %@", error.localizedDescription)
             setSummaryState(target, .error("AI 总结生成失败"))
         }
-        return AISummaryService.readGenerationAttempts()
+        return AISummaryService.readGenerationAttempts(target: target, mode: budgetMode)
     }
 
     func allActiveItems(settings: AppSettings) -> [NewsItem] {
