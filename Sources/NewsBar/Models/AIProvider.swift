@@ -77,11 +77,11 @@ enum AIProvider: String, CaseIterable, Codable {
         case .deepseek:
             return ["deepseek-v4-flash", "deepseek-v4-pro"]
         case .minimaxTokenPlan, .minimaxAPI:
-            return ["MiniMax-M2.7", "MiniMax-M2.7-highspeed", "MiniMax-M2.5", "MiniMax-M2.1"]
+            return ["MiniMax-M3", "MiniMax-M2.7", "MiniMax-M2.7-highspeed", "MiniMax-M2.5", "MiniMax-M2.1"]
         case .opencodeGo, .opencodeZen:
             return ["deepseek-v4-flash", "deepseek-v4-pro"]
         case .googleAIStudio:
-            return ["gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.0-flash"]
+            return ["gemini-3.6-flash", "gemini-2.5-flash", "gemini-2.5-pro", "gemini-3.5-flash", "gemini-3.5-flash-lite"]
         }
     }
 

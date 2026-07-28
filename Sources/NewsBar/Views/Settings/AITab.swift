@@ -189,7 +189,7 @@ struct AITab: View {
             Section {
                 VStack(alignment: .leading, spacing: 6) {
                     HStack {
-                        Text("今日已用")
+                        Text("今日已用（总计）")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                         Spacer()
@@ -202,7 +202,28 @@ struct AITab: View {
                         total: Double(settings.aiDailyCap)
                     )
                     .tint(settings.todayAIRequestCount >= settings.aiDailyCap ? .red : .blue)
-                    Text("每日上限 \(settings.aiDailyCap) 次 HTTP 请求（含重试），次日重置")
+
+                    Divider().opacity(0.3)
+
+                    HStack {
+                        Text("Popup")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Text(settings.aiPopupUsageText)
+                            .font(.system(size: 11, weight: .medium, design: .monospaced))
+                            .foregroundStyle(settings.todayPopupAIRequestCount >= settings.effectiveDailyCap(for: .popup) ? .red : .primary)
+                    }
+                    HStack {
+                        Text("Dashboard")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Text(settings.aiDashboardUsageText)
+                            .font(.system(size: 11, weight: .medium, design: .monospaced))
+                            .foregroundStyle(settings.todayDashboardAIRequestCount >= settings.effectiveDailyCap(for: .dashboard) ? .red : .primary)
+                    }
+                    Text("次日重置")
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
                 }
@@ -211,24 +232,54 @@ struct AITab: View {
             }
 
             Section {
-                HStack {
-                    Text("每日请求上限")
-                    Spacer()
-                    Picker("", selection: Binding(
-                        get: { settings.aiDailyCap },
-                        set: { settings.aiDailyCap = $0 }
-                    )) {
-                        ForEach(Array(AppSettings.validAICaps).sorted(), id: \.self) { cap in
-                            Text("\(cap) 次").tag(cap)
+                Picker("预算模式", selection: Binding(
+                    get: { settings.aiBudgetMode },
+                    set: { settings.aiBudgetMode = $0 }
+                )) {
+                    Text("共享上限").tag(AISummaryBudgetMode.shared)
+                    Text("独立上限").tag(AISummaryBudgetMode.independent)
+                }
+                .pickerStyle(.segmented)
+
+                if settings.aiBudgetMode == .shared {
+                    HStack {
+                        Text("每日请求上限")
+                        Spacer()
+                        Picker("", selection: Binding(
+                            get: { settings.aiDailyCap },
+                            set: { settings.aiDailyCap = $0 }
+                        )) {
+                            ForEach(Array(AppSettings.validAICaps).sorted(), id: \.self) { cap in
+                                Text("\(cap) 次").tag(cap)
+                            }
                         }
+                        .labelsHidden()
+                        .frame(width: 90)
                     }
-                    .labelsHidden()
-                    .frame(width: 90)
+                } else {
+                    summaryLengthRow(
+                        title: "Popup 上限",
+                        selection: Binding(
+                            get: { settings.aiPopupDailyCap },
+                            set: { settings.aiPopupDailyCap = $0 }
+                        ),
+                        presets: Array(AppSettings.validAICaps).sorted(),
+                        unitLabel: "次"
+                    )
+                    summaryLengthRow(
+                        title: "Dashboard 上限",
+                        selection: Binding(
+                            get: { settings.aiDashboardDailyCap },
+                            set: { settings.aiDashboardDailyCap = $0 }
+                        ),
+                        presets: Array(AppSettings.validAICaps).sorted(),
+                        unitLabel: "次"
+                    )
                 }
             } header: {
                 Text("限额")
             } footer: {
-                Text("达到上限后当日不再发起 AI 请求，次日自动重置")
+                Text("共享上限：Popup 和 Dashboard 共用同一额度；独立上限：各自独立计算。达到上限后当日不再发起 AI 请求，次日自动重置")
             }
 
             Section {
@@ -333,12 +384,20 @@ struct AITab: View {
                     isTesting = false
                     return
                 }
+                AISummaryService.initBudget(
+                    target: .popup,
+                    mode: settings.aiBudgetMode,
+                    baseline: 0,
+                    cap: settings.effectiveDailyCap(for: .popup)
+                )
                 let result = try await AISummaryService.summarize(
                     items: testItems,
                     maxWords: 30,
                     provider: selectedProvider,
                     model: settings.aiModel,
-                    apiKey: apiKey
+                    apiKey: apiKey,
+                    target: .popup,
+                    budgetMode: settings.aiBudgetMode
                 )
                 if !result.summary.isEmpty {
                     testResult = "连接成功"
@@ -385,13 +444,13 @@ struct AITab: View {
         }
     }
 
-    private func summaryLengthRow(title: String, selection: Binding<Int>, presets: [Int]) -> some View {
+    private func summaryLengthRow(title: String, selection: Binding<Int>, presets: [Int], unitLabel: String = "字") -> some View {
         HStack {
             Text(title)
             Spacer()
             Picker(title, selection: selection) {
-                ForEach(presets, id: \.self) { words in
-                    Text("\(words) 字").tag(words)
+                ForEach(presets, id: \.self) { value in
+                    Text("\(value) \(unitLabel)").tag(value)
                 }
             }
             .labelsHidden()

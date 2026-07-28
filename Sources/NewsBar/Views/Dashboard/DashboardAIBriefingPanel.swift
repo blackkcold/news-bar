@@ -7,12 +7,6 @@ struct DashboardAIBriefingPanel: View {
     var onConfigureAI: () -> Void
 
     @State private var selectedCategory: DashboardBriefingCategory = .trendOverview
-    @State private var dashboardRetryPending = false
-    @State private var dashboardRetryConsumed = false
-
-    private var popupSummaryState: AISummaryState {
-        orchestrator.aiSummaryState
-    }
 
     private var dashboardSummaryState: AISummaryState {
         orchestrator.dashboardSummaryState
@@ -142,26 +136,6 @@ struct DashboardAIBriefingPanel: View {
                 selectedCategory = preferredCategory
             }
         }
-        .onChange(of: dashboardSummaryState) { _, newState in
-            if case .fetching = newState {
-                dashboardRetryPending = false
-            } else if case .summarizing = newState {
-                dashboardRetryPending = false
-            } else if case .done = newState {
-                dashboardRetryPending = false
-                dashboardRetryConsumed = false
-            } else if case .truncated = newState {
-                dashboardRetryPending = false
-                dashboardRetryConsumed = false
-            } else if case .noKey = newState {
-                dashboardRetryPending = false
-                dashboardRetryConsumed = false
-            }
-        }
-        .onChange(of: popupSummaryState) { oldState, newState in
-            guard isPopupBusy(oldState), !isPopupBusy(newState) else { return }
-            retryDashboardSummaryIfNeeded()
-        }
     }
 
     private var header: some View {
@@ -205,7 +179,7 @@ struct DashboardAIBriefingPanel: View {
                     }
                 }
 
-                Text("趋势概览 / 每日精选 · 引用悬停可回溯原文")
+                Text("趋势概览 / 每日精选 · 有引用显示来源徽章，点击打开原文")
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -356,16 +330,7 @@ struct DashboardAIBriefingPanel: View {
 
     private var dashboardSummaryNeedsGeneration: Bool {
         switch dashboardSummaryState {
-        case .idle, .error:
-            return true
-        default:
-            return false
-        }
-    }
-
-    private func isPopupBusy(_ state: AISummaryState) -> Bool {
-        switch state {
-        case .fetching, .summarizing:
+        case .idle, .error, .truncated:
             return true
         default:
             return false
@@ -374,29 +339,6 @@ struct DashboardAIBriefingPanel: View {
 
     private func requestDashboardSummaryIfNeeded() {
         guard dashboardSummaryNeedsGeneration else { return }
-
-        dashboardRetryConsumed = false
-        if isPopupBusy(popupSummaryState) {
-            dashboardRetryPending = true
-        } else {
-            dashboardRetryPending = false
-        }
-
-        Task {
-            await orchestrator.generateDashboardSummaryIfNeeded(settings: settings)
-        }
-    }
-
-    private func retryDashboardSummaryIfNeeded() {
-        guard dashboardRetryPending, !dashboardRetryConsumed else { return }
-        guard dashboardSummaryNeedsGeneration else {
-            dashboardRetryPending = false
-            return
-        }
-
-        dashboardRetryPending = false
-        dashboardRetryConsumed = true
-
         Task {
             await orchestrator.generateDashboardSummaryIfNeeded(settings: settings)
         }
