@@ -1,3 +1,15 @@
+## [v2.0.8] - 2026-07-28
+
+### 📦 构建优化
+- **DMG 打包增加 Applications 文件夹快捷方式**：打开 DMG 即可看到 Applications 文件夹符号链接，用户可快速拖入安装
+- **自定义 DMG 背景布局**：新增 Resources/DMGBackground.png 深色玻璃质感背景图，Finder 图标自动定位在 {200,200}（App）和 {600,200}（Applications）
+- **DMG 打包流程重构**：从纯 hdiutil 升级为 staging + 可写 DMG + Finder layout 两阶段流程，支持自定义背景和图标布局
+
+### 🔧 改进
+- `scripts/build.sh`：新增 DMG_STAGING 临时目录组装；osascript 写入 Finder 窗口布局（图标位置/大小/背景/视图选项）；压缩阶段添加 zlib-level=9 提高压缩率
+
+---
+
 ## [Unreleased]
 
 ### Added

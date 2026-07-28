@@ -93,27 +93,64 @@ fi
 echo "📦 Creating DMG..."
 
 DMG_PATH="${RELEASE_DIR}/${APP_NAME}-${VERSION}.dmg"
-hdiutil create -volname "${APP_NAME}" \
-    -srcfolder "${RELEASE_DIR}" \
-    -ov -format UDZO \
-    "${DMG_PATH}" 2>&1
-
-echo "🎨 Setting DMG icon..."
+DMG_RW="${RELEASE_DIR}/${APP_NAME}-${VERSION}-rw.dmg"
+DMG_STAGING="$(mktemp -d "${TMPDIR:-/tmp}/${APP_NAME}-dmg.XXXXXX")"
 DMG_MOUNT="/Volumes/${APP_NAME}"
 
-# Detach if already mounted
-hdiutil detach "${DMG_MOUNT}" -quiet 2>/dev/null || true
+cleanup_dmg_artifacts() {
+    hdiutil detach "${DMG_MOUNT}" -quiet 2>/dev/null || true
+    rm -rf "${DMG_STAGING}" "${DMG_RW}"
+}
+trap cleanup_dmg_artifacts EXIT
 
-# Create writable DMG, set icon, convert to compressed read-only (best-effort)
-DMG_RW="${RELEASE_DIR}/${APP_NAME}-${VERSION}-rw.dmg"
-hdiutil convert "${DMG_PATH}" -format UDRW -o "${DMG_RW}" -quiet || true
-hdiutil attach "${DMG_RW}" -nobrowse -quiet 2>&1 || true
-cp Resources/AppIcon.icns "${DMG_MOUNT}/.VolumeIcon.icns" 2>/dev/null || true
-SetFile -a C "${DMG_MOUNT}" 2>/dev/null || xattr -wx com.apple.FinderInfo "0000000000000000000400000000000000000000000000000000000000000000" "${DMG_MOUNT}" 2>/dev/null || true
-hdiutil detach "${DMG_MOUNT}" -quiet 2>&1 || true
-hdiutil convert "${DMG_RW}" -format UDZO -o "${DMG_PATH}" -quiet || true
-rm -f "${DMG_RW}"
-echo "   DMG icon applied"
+mkdir -p "${DMG_STAGING}/.background"
+cp -R "${BUNDLE_DIR}" "${DMG_STAGING}/"
+ln -s /Applications "${DMG_STAGING}/Applications"
+cp Resources/DMGBackground.png "${DMG_STAGING}/.background/DMGBackground.png"
+
+hdiutil detach "${DMG_MOUNT}" -quiet 2>/dev/null || true
+hdiutil create -volname "${APP_NAME}" \
+    -srcfolder "${DMG_STAGING}" \
+    -ov -format UDRW \
+    "${DMG_RW}" 2>&1
+hdiutil attach "${DMG_RW}" -nobrowse -quiet
+
+cp Resources/AppIcon.icns "${DMG_MOUNT}/.VolumeIcon.icns"
+SetFile -a C "${DMG_MOUNT}" 2>/dev/null || \
+    xattr -wx com.apple.FinderInfo "0000000000000000000400000000000000000000000000000000000000000000" "${DMG_MOUNT}"
+SetFile -a V "${DMG_MOUNT}/.background" 2>/dev/null || true
+
+osascript - "${APP_NAME}" "${APP_NAME}.app" <<'APPLESCRIPT'
+on run argv
+    set diskName to item 1 of argv
+    set appName to item 2 of argv
+    tell application "Finder"
+        tell disk diskName
+            open
+            set current view of container window to icon view
+            set toolbar visible of container window to false
+            set statusbar visible of container window to false
+            set bounds of container window to {100, 100, 900, 500}
+            set viewOptions to icon view options of container window
+            set arrangement of viewOptions to not arranged
+            set icon size of viewOptions to 96
+            set text size of viewOptions to 13
+            set background picture of viewOptions to file ".background:DMGBackground.png"
+            set position of item appName to {200, 200}
+            set position of item "Applications" to {600, 200}
+            update without registering applications
+            close
+        end tell
+    end tell
+end run
+APPLESCRIPT
+
+sleep 1
+hdiutil detach "${DMG_MOUNT}" -quiet
+hdiutil convert "${DMG_RW}" -format UDZO -imagekey zlib-level=9 -ov -o "${DMG_PATH}" -quiet
+rm -rf "${DMG_STAGING}" "${DMG_RW}"
+trap - EXIT
+echo "   Custom layout: NewsBar.app → Applications"
 
 rm -rf release/latest
 ln -sfn "${VERSION}" release/latest
