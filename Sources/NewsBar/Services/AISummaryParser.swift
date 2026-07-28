@@ -107,7 +107,8 @@ enum AISummaryParser {
                 let (title, inline) = extractTemplateTitle(trimmed)
                 currentTitle = title
                 if !inline.isEmpty {
-                    currentBody = inline
+                    currentIndices.append(contentsOf: parseCitationNumbers(inline, itemCount: itemCount))
+                    currentBody = stripCitations(inline)
                 }
             } else if trimmed.hasPrefix("#") {
                 flush()
@@ -140,7 +141,7 @@ enum AISummaryParser {
     }
 
     static func stripCitations(_ text: String) -> String {
-        text.replacingOccurrences(of: "\\[#\\d+\\]", with: "", options: .regularExpression)
+        text.replacingOccurrences(of: "(?:引用：)?\\[#\\d+\\]", with: "", options: .regularExpression)
             .trimmingCharacters(in: .whitespaces)
     }
 

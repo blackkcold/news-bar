@@ -234,10 +234,33 @@ final class AISummaryParserTests: XCTestCase {
         let sections = AISummaryParser.parseSections(text, itemCount: 5)
         XCTAssertEqual(sections.count, 1)
         XCTAssertEqual(sections[0].title, "标题")
-        // Citation [#0] is inline in body, not on a separate 引用： line,
-        // so it's treated as body text and primaryIndex is nil
         XCTAssertTrue(sections[0].body.contains("内联正文"))
-        XCTAssertNil(sections[0].primaryIndex)
+        XCTAssertFalse(sections[0].body.contains("引用："))
+        XCTAssertFalse(sections[0].body.contains("[#0]"))
+        XCTAssertEqual(sections[0].primaryIndex, 0)
+    }
+
+    func testParseSections_extractsCitationInlineWithTitle() {
+        let text = "【热点话题】这是热点内容。[#0]"
+        let sections = AISummaryParser.parseSections(text, itemCount: 5)
+        XCTAssertEqual(sections.count, 1)
+        XCTAssertEqual(sections[0].title, "热点话题")
+        XCTAssertEqual(sections[0].body, "这是热点内容。")
+        XCTAssertEqual(sections[0].primaryIndex, 0)
+    }
+
+    func testParseDualSummary_extractsInlineCitations() {
+        let text = """
+        【趋势概览】
+        【热点】微博热点内容。[#0]
+        【每日精选】
+        【精选】精选内容。[#5]
+        """
+        let result = AISummaryParser.parseDualSummary(text, itemCount: 10, weiboBilibiliRange: 0..<5)
+        XCTAssertEqual(result.trendOverview.count, 1)
+        XCTAssertEqual(result.trendOverview[0].primaryIndex, 0)
+        XCTAssertEqual(result.dailyEssentials.count, 1)
+        XCTAssertEqual(result.dailyEssentials[0].primaryIndex, 5)
     }
 
     func testParseSections_emptyBodySkipped() {
@@ -263,6 +286,11 @@ final class AISummaryParserTests: XCTestCase {
         let result = AISummaryParser.stripCitations("内容 [#0] 更多")
         // stripCitations replaces [#0] with empty string, leaving double space
         XCTAssertEqual(result, "内容  更多")
+    }
+
+    func testStripCitations_removesInlineCitationLabel() {
+        let result = AISummaryParser.stripCitations("内容。引用：[#0]")
+        XCTAssertEqual(result, "内容。")
     }
 
     func testStripCitations_noChangeWithoutCitations() {

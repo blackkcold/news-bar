@@ -24,6 +24,7 @@ struct AISummaryCard: View {
         static let rowPadding: CGFloat = 8
         static let badgeFontSize: CGFloat = 9
         static let chevronSize: CGFloat = 8
+        static let revealAnimationDuration: TimeInterval = 0.18
     }
 
     var body: some View {
@@ -45,7 +46,7 @@ struct AISummaryCard: View {
         .onAppear {
             switch state {
             case .done(let text), .truncated(let text):
-                displayText = AISummaryParser.stripMarkdown(text)
+                displayText = revealSourceText(for: text)
             default: break
             }
         }
@@ -53,7 +54,7 @@ struct AISummaryCard: View {
             switch newState {
             case .done(let text), .truncated(let text):
                 animationTask?.cancel()
-                animationTask = Task { await animateText(AISummaryParser.stripMarkdown(text)) }
+                animationTask = Task { await animateText(revealSourceText(for: text)) }
             default:
                 animationTask?.cancel()
                 animationTask = nil
@@ -268,14 +269,8 @@ struct AISummaryCard: View {
         }()
 
         VStack(alignment: .leading, spacing: 8) {
-            if displayText == AISummaryParser.stripMarkdown(fullText) {
-                sectionRenderedView(fullText)
-            } else {
-                Text(displayText)
-                    .font(.system(size: 11.5))
-                    .foregroundStyle(.primary)
-                    .lineSpacing(4)
-            }
+            let fullyVisible = displayText == revealSourceText(for: fullText)
+            sectionRenderedView(fullText, visibleText: fullyVisible ? nil : displayText)
 
             if case .truncated = state {
                 HStack(spacing: 6) {
@@ -306,14 +301,16 @@ struct AISummaryCard: View {
     // MARK: - Section Rendering
 
     @ViewBuilder
-    private func sectionRenderedView(_ fullText: String) -> some View {
-        let groups = resolvedSectionGroups(for: fullText)
+    private func sectionRenderedView(_ fullText: String, visibleText: String? = nil) -> some View {
+        let groups = revealedSectionGroups(for: fullText, visibleText: visibleText)
         if groups.allSatisfy({ $0.sections.isEmpty }) {
-            Text((try? AttributedString(markdown: AISummaryParser.stripCitations(fullText)))
-                ?? AttributedString(AISummaryParser.stripCitations(fullText)))
+            let fallbackText = visibleText ?? AISummaryParser.stripCitations(fullText)
+            Text((try? AttributedString(markdown: fallbackText)) ?? AttributedString(fallbackText))
                 .font(.system(size: 11.5))
                 .foregroundStyle(.primary)
                 .lineSpacing(3)
+                .contentTransition(.opacity)
+                .animation(reduceMotion ? nil : .smooth(duration: Metrics.revealAnimationDuration), value: fallbackText)
         } else {
             ForEach(Array(groups.enumerated()), id: \.offset) { groupIndex, group in
                 if !group.sections.isEmpty {
@@ -328,6 +325,7 @@ struct AISummaryCard: View {
                         SectionRow(
                             title: section.title,
                             content: section.body,
+                            visibleContent: section.visibleBody,
                             matchedItem: section.primaryIndex.flatMap {
                                 allItems.indices.contains($0) ? allItems[$0] : nil
                             }
@@ -345,16 +343,69 @@ struct AISummaryCard: View {
         }
     }
 
-    private func resolvedSectionGroups(for fullText: String) -> [(title: String, sections: [(title: String, body: String, primaryIndex: Int?)])] {
+    private struct SummarySectionGroup {
+        let title: String
+        let sections: [SummarySection]
+    }
+
+    private struct SummarySection {
+        let title: String
+        let body: String
+        let visibleBody: String?
+        let primaryIndex: Int?
+    }
+
+    private func resolvedSectionGroups(for fullText: String) -> [SummarySectionGroup] {
         if let parsedSummary {
             return [
-                ("趋势概览", parsedSummary.trendOverview),
-                ("每日精选", parsedSummary.dailyEssentials)
+                SummarySectionGroup(title: "趋势概览", sections: parsedSummary.trendOverview.map(summarySection)),
+                SummarySectionGroup(title: "每日精选", sections: parsedSummary.dailyEssentials.map(summarySection))
             ].filter { !$0.sections.isEmpty }
         }
 
         let sections = AISummaryParser.parseSections(fullText, itemCount: allItems.count)
-        return [("", sections)]
+        return [SummarySectionGroup(title: "", sections: sections.map(summarySection))]
+    }
+
+    private func revealedSectionGroups(for fullText: String, visibleText: String?) -> [SummarySectionGroup] {
+        let groups = resolvedSectionGroups(for: fullText)
+        guard let visibleText else { return groups }
+
+        var remainingCharacters = Array(visibleText).count
+        return groups.map { group in
+            let sections = group.sections.map { section in
+                let bodyText = renderedBodyText(section.body)
+                let visibleBody = String(bodyText.prefix(remainingCharacters))
+                remainingCharacters = max(0, remainingCharacters - Array(bodyText).count)
+                return SummarySection(
+                    title: section.title,
+                    body: section.body,
+                    visibleBody: visibleBody,
+                    primaryIndex: section.primaryIndex
+                )
+            }
+            return SummarySectionGroup(title: group.title, sections: sections)
+        }
+    }
+
+    private func summarySection(_ section: (title: String, body: String, primaryIndex: Int?)) -> SummarySection {
+        SummarySection(title: section.title, body: section.body, visibleBody: nil, primaryIndex: section.primaryIndex)
+    }
+
+    private func revealSourceText(for fullText: String) -> String {
+        let groups = resolvedSectionGroups(for: fullText)
+        guard !groups.allSatisfy({ $0.sections.isEmpty }) else {
+            return AISummaryParser.stripMarkdown(fullText)
+        }
+
+        return groups
+            .flatMap { $0.sections }
+            .map { renderedBodyText($0.body) }
+            .joined()
+    }
+
+    private func renderedBodyText(_ text: String) -> String {
+        AISummaryParser.stripMarkdown(text)
     }
 
     private func errorContent(_ message: String) -> some View {
@@ -460,13 +511,18 @@ struct AISummaryCard: View {
 struct SectionRow: View {
     let title: String
     let content: String
+    var visibleContent: String? = nil
     let matchedItem: NewsItem?
 
     @State private var isHovered = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
+    private enum Metrics {
+        static let revealAnimationDuration: TimeInterval = 0.18
+    }
+
     private var accessibilityLabelText: String {
-        let stripped = AISummaryParser.stripCitations(content)
+        let stripped = AISummaryParser.stripCitations(displayContent)
             .replacingOccurrences(of: "\n", with: " ")
             .trimmingCharacters(in: .whitespacesAndNewlines)
         let normalizedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -482,6 +538,10 @@ struct SectionRow: View {
         return "这是只读摘要内容。"
     }
 
+    private var displayContent: String {
+        visibleContent ?? content
+    }
+
     var body: some View {
         HStack(alignment: .top, spacing: 0) {
             VStack(alignment: .leading, spacing: 3) {
@@ -491,10 +551,12 @@ struct SectionRow: View {
                         .foregroundStyle(.primary)
                 }
 
-                Text((try? AttributedString(markdown: content)) ?? AttributedString(content))
+                Text((try? AttributedString(markdown: displayContent)) ?? AttributedString(displayContent))
                     .font(.system(size: 11.5))
                     .foregroundStyle(.primary)
                     .lineSpacing(3)
+                    .contentTransition(.opacity)
+                    .animation(reduceMotion ? nil : .smooth(duration: Metrics.revealAnimationDuration), value: displayContent)
             }
             .accessibilityElement(children: .ignore)
             .accessibilityLabel(accessibilityLabelText)

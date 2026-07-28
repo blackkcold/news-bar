@@ -711,7 +711,7 @@ final class NewsOrchestrator: ObservableObject {
 
         let (trendRange, dailyRange): (ClosedRange<Int>, ClosedRange<Int>)
         switch target {
-        case .popup: (trendRange, dailyRange) = (2...3, 2...3)
+        case .popup: (trendRange, dailyRange) = (1...2, 2...3)
         case .dashboard: (trendRange, dailyRange) = (4...5, 4...5)
         }
 
