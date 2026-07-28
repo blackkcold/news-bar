@@ -10,7 +10,7 @@
   "release_branch": true,
   "auto_merge": false,
   "release_note_style": "bilingual",
-  "summary": "原生 Dashboard 窗口，双分类 AI 简报，RSS 按源分卡，固定双列网格，长标题宽度修复",
-  "summary_en": "Native Dashboard window, dual-category AI briefing, per-source RSS cards, fixed two-column grid, long-title width fix",
+  "summary": "DMG 打包改进：添加 Applications 文件夹快捷方式与自定义背景布局",
+  "summary_en": "DMG packaging improvements: added Applications folder shortcut and custom background layout",
   "validation": "swift build -c release --arch arm64 + swift test 165/165 通过"
 }
