@@ -15,6 +15,8 @@ struct AboutTab: View {
     @Environment(AppSettings.self) private var settings
     @Environment(\.cacheClearAction) private var cacheClearAction
 
+    @State private var showCacheClearConfirmation = false
+
     private let version = AppVersion.current
     private let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "1"
 
@@ -76,7 +78,7 @@ struct AboutTab: View {
 
             Section {
                 Button("清除所有缓存") {
-                    cacheClearAction?()
+                    showCacheClearConfirmation = true
                 }
                 .foregroundStyle(.red)
             } header: {
@@ -86,7 +88,7 @@ struct AboutTab: View {
             Section {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("NewsBar 不会收集任何个人信息。")
-                    Text("API Key 仅存储在本地系统钥匙串中。")
+                    Text("API Key 仅以机器绑定的加密文件保存在本地。")
                     Text("缓存数据仅保存新闻标题，不包含用户数据。")
                     Text("所有网络请求通过 HTTPS 加密传输。")
                 }
@@ -110,6 +112,14 @@ struct AboutTab: View {
             }
         }
         .formStyle(.grouped)
+        .confirmationDialog("清除所有缓存？", isPresented: $showCacheClearConfirmation) {
+            Button("清除所有缓存", role: .destructive) {
+                cacheClearAction?()
+            }
+            Button("取消", role: .cancel) { }
+        } message: {
+            Text("将清除本地新闻缓存。下次打开或刷新时需要重新加载内容。")
+        }
     }
 
     private func dataSourceRow(_ name: String, _ source: String) -> some View {

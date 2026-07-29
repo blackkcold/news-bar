@@ -10,7 +10,7 @@
   "release_branch": true,
   "auto_merge": false,
   "release_note_style": "bilingual",
-  "summary": "DMG 打包改进：添加 Applications 文件夹快捷方式与自定义背景布局",
-  "summary_en": "DMG packaging improvements: added Applications folder shortcut and custom background layout",
-  "validation": "swift build -c release --arch arm64 + swift test 165/165 通过"
+  "summary": "安全、稳定性与体验优化：强化更新下载信任链、网络负载控制、AI 预算隔离和设置交互",
+  "summary_en": "Security, stability, and UX improvements: strengthened update trust, network payload controls, AI budget isolation, and settings interactions",
+  "validation": "swift test 301/301 + scripts/build.sh 通过"
 }

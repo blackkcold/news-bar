@@ -18,7 +18,7 @@ struct GeneralTab: View {
             } header: {
                 Text("刷新设置")
             } footer: {
-                Text("开启后，App 启动 5 秒后自动获取最新新闻，之后每小时刷新一次。")
+                Text("开启后，App 启动 2 秒后自动获取最新新闻，之后每小时刷新一次。")
             }
 
             Section {

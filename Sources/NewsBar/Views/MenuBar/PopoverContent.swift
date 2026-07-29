@@ -13,6 +13,7 @@ struct PopoverContent: View {
     @State private var aiSummaryExpanded = true
     @State private var expandedRSSSourceIDs: Set<String> = []
     @State private var rssLoadedCounts: [String: Int] = [:]
+    @State private var showQuitConfirmation = false
 
     private enum Metrics {
         static let horizontalPadding: CGFloat = 12
@@ -46,6 +47,8 @@ struct PopoverContent: View {
                             isExpanded: $aiSummaryExpanded,
                             allItems: orchestrator.aiSummaryItems,
                             parsedSummary: orchestrator.aiParsedSummary,
+                            isRegenerating: orchestrator.aiSummaryState == .fetching || orchestrator.aiSummaryState == .summarizing,
+                            regenerationCooldownRemaining: AISummaryService.regenerationCooldownRemaining(),
                             onRegenerate: {
                                 Task {
                                     await orchestrator.regenerateAISummary(settings: settings)
@@ -201,7 +204,7 @@ struct PopoverContent: View {
             Spacer()
             UpdateBadge(checker: updateChecker)
             Button {
-                NSApplication.shared.terminate(nil)
+                showQuitConfirmation = true
             } label: {
                 Image(systemName: "xmark.circle.fill")
                     .font(.system(size: 13))
@@ -209,9 +212,18 @@ struct PopoverContent: View {
             }
             .buttonStyle(.plain)
             .help("退出 NewsBar")
+            .accessibilityLabel("退出 NewsBar")
         }
         .padding(.horizontal, Metrics.horizontalPadding)
         .padding(.vertical, Metrics.verticalPadding)
+        .confirmationDialog("退出 NewsBar？", isPresented: $showQuitConfirmation) {
+            Button("退出 NewsBar", role: .destructive) {
+                NSApplication.shared.terminate(nil)
+            }
+            Button("取消", role: .cancel) { }
+        } message: {
+            Text("NewsBar 将停止刷新新闻和发送通知。")
+        }
     }
 
     private func errorBanner(_ message: String) -> some View {

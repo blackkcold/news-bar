@@ -23,6 +23,7 @@ struct RSSTab: View {
     @State private var recommendationValidationSessionID: UUID?
     @State private var draggedSubscribedRSSSourceID: String?
     @State private var dropTargetRSSSourceID: String?
+    @State private var pendingRSSDeletion: RSSSourceConfig?
 
     private let reorderAnimation = Animation.spring(response: 0.26, dampingFraction: 0.88, blendDuration: 0.08)
     private let textCountCandidates = [5, 10]
@@ -221,6 +222,23 @@ struct RSSTab: View {
         .listStyle(.inset)
         .onDisappear {
             cancelRecommendationValidation(clearHandleOnly: true)
+        }
+        .confirmationDialog(
+            "删除 RSS 源？",
+            isPresented: Binding(
+                get: { pendingRSSDeletion != nil },
+                set: { isPresented in
+                    if !isPresented { pendingRSSDeletion = nil }
+                }
+            ),
+            presenting: pendingRSSDeletion
+        ) { rss in
+            Button("删除 \(rss.name)", role: .destructive) {
+                deleteRSSSource(rss)
+            }
+            Button("取消", role: .cancel) { }
+        } message: { rss in
+            Text("将从订阅和未订阅列表中移除“\(rss.name)”。此操作不会删除本地缓存文件，但需要重新添加才能恢复。")
         }
     }
 
@@ -521,8 +539,7 @@ struct RSSTab: View {
 
     private func deleteButton(for rss: RSSSourceConfig) -> some View {
         Button {
-            settings.rssSources.removeAll { $0.id == rss.id }
-            settings.selectedRSSSourceIDs.remove(rss.id)
+            pendingRSSDeletion = rss
         } label: {
             Image(systemName: "trash")
                 .font(.system(size: 12))
@@ -532,7 +549,14 @@ struct RSSTab: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel("删除 \(rss.name)")
+        .accessibilityHint("需要确认后才会移除此 RSS 源。")
         .help("删除")
+    }
+
+    private func deleteRSSSource(_ rss: RSSSourceConfig) {
+        settings.rssSources.removeAll { $0.id == rss.id }
+        settings.selectedRSSSourceIDs.remove(rss.id)
+        pendingRSSDeletion = nil
     }
 
     private func dragHandle(for rss: RSSSourceConfig) -> some View {

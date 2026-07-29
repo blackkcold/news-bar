@@ -68,6 +68,12 @@ enum AISummaryService {
     /// Initialise the per-generation budget state with the persisted daily count and cap.
     static func initBudget(target: SummaryTarget, mode: AISummaryBudgetMode, baseline: Int, cap: Int) {
         budgetStateLock(for: target, mode: mode).withLock {
+            if mode == .shared,
+               $0.attempts > 0,
+               $0.baseline == baseline,
+               $0.cap == cap {
+                return
+            }
             $0 = BudgetState(baseline: baseline, cap: cap, attempts: 0)
         }
     }

@@ -123,7 +123,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard await store.isKeyStale(account: account),
                   OnePasswordService.isInstalled() else { return }
             do {
-                let key = try OnePasswordService.readSecret(reference: ref)
+                let key = try await OnePasswordService.readSecretAsync(reference: ref)
                 if await store.saveAPIKey(key, account: account) {
                     await MainActor.run {
                         self.settings.cachedAPIKey = key

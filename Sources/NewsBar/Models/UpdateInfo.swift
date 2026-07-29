@@ -2,11 +2,32 @@ import Foundation
 
 // MARK: - GitHub API Response Models
 
+/// Provenance of a fetched release metadata payload.
+///
+/// - canonical: Metadata was fetched directly from the canonical GitHub API
+///   (`https://api.github.com/...`). Only canonical provenance can authorize
+///   an automatic DMG download, because the digest and artifact URL are
+///   guaranteed to originate from GitHub.
+/// - proxy: Metadata was fetched from a third-party proxy mirror. Proxy
+///   metadata may be used to *surface* update availability to the user, but
+///   must never authorize an automatic download — the proxy can tamper with
+///   both the SHA-256 digest and the artifact download URL.
+enum ReleaseProvenance: Equatable {
+    case canonical
+    case proxy(label: String)
+}
+
 struct GitHubRelease: Decodable {
     let tag_name: String
     let name: String?
     let body: String?
     let assets: [GitHubAsset]
+
+    /// Provenance of this release metadata. Defaults to `.canonical` when
+    /// decoded directly from the GitHub API (e.g. in tests). The
+    /// `UpdateChecker` sets this to `.proxy` when the payload arrives via a
+    /// third-party mirror.
+    var provenance: ReleaseProvenance = .canonical
 
     /// Version string with optional "v" prefix stripped.
     var version: String {
@@ -15,6 +36,39 @@ struct GitHubRelease: Decodable {
             v.removeFirst()
         }
         return v
+    }
+
+    /// Convenience: `true` when metadata originated from canonical GitHub.
+    var isCanonical: Bool {
+        if case .canonical = provenance { return true }
+        return false
+    }
+
+    init(
+        tag_name: String,
+        name: String?,
+        body: String?,
+        assets: [GitHubAsset],
+        provenance: ReleaseProvenance = .canonical
+    ) {
+        self.tag_name = tag_name
+        self.name = name
+        self.body = body
+        self.assets = assets
+        self.provenance = provenance
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        tag_name = try c.decode(String.self, forKey: .tag_name)
+        name = try c.decodeIfPresent(String.self, forKey: .name)
+        body = try c.decodeIfPresent(String.self, forKey: .body)
+        assets = try c.decode([GitHubAsset].self, forKey: .assets)
+        provenance = .canonical
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case tag_name, name, body, assets
     }
 }
 

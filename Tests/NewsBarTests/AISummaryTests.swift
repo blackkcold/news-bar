@@ -811,6 +811,38 @@ final class AISummaryServiceBudgetTests: XCTestCase {
         XCTAssertEqual(dashboardAttempts, 3)
     }
 
+    func testSharedMode_reinitializationDoesNotDiscardActiveAttempts() {
+        AISummaryService.initBudget(target: .popup, mode: .shared, baseline: 5, cap: 10)
+        XCTAssertNoThrow(try AISummaryService.consumeAttemptBudget(target: .popup, mode: .shared))
+
+        AISummaryService.initBudget(target: .dashboard, mode: .shared, baseline: 5, cap: 10)
+
+        XCTAssertEqual(AISummaryService.readGenerationAttempts(target: .popup, mode: .shared), 1)
+        XCTAssertNoThrow(try AISummaryService.consumeAttemptBudget(target: .dashboard, mode: .shared))
+    }
+
+    func testSharedMode_concurrentTargetsCannotExceedCap() async {
+        AISummaryService.initBudget(target: .popup, mode: .shared, baseline: 0, cap: 4)
+
+        let successes = await withTaskGroup(of: Bool.self, returning: Int.self) { group in
+            for index in 0..<8 {
+                group.addTask {
+                    let target: SummaryTarget = index.isMultiple(of: 2) ? .popup : .dashboard
+                    return (try? AISummaryService.consumeAttemptBudget(target: target, mode: .shared)) != nil
+                }
+            }
+
+            var result = 0
+            for await didSucceed in group where didSucceed {
+                result += 1
+            }
+            return result
+        }
+
+        XCTAssertEqual(successes, 4)
+        XCTAssertEqual(AISummaryService.readGenerationAttempts(target: .popup, mode: .shared), 4)
+    }
+
     // MARK: - Per-Target Generation Lock
 
     func testGenerationLock_popupAndDashboardAreIndependent() {
@@ -845,7 +877,8 @@ final class TruncationHashTests: XCTestCase {
         XCTAssertNil(orchestrator.dashboardLastHash)
         XCTAssertNil(orchestrator.popupLastTruncatedHash)
         XCTAssertNil(orchestrator.dashboardLastTruncatedHash)
-        XCTAssertEqual(orchestrator.consecutiveTruncationCount, 0)
+        XCTAssertEqual(orchestrator.popupConsecutiveTruncationCount, 0)
+        XCTAssertEqual(orchestrator.dashboardConsecutiveTruncationCount, 0)
 
         _ = settings
     }
@@ -893,32 +926,79 @@ final class TruncationHashTests: XCTestCase {
         XCTAssertTrue(shouldSkip, "Same hash as success hash should skip regeneration")
     }
 
-    func testConsecutiveTruncationCounterResetsOnSuccess() {
+    func testConsecutiveTruncationCountersAreIndependent() {
         let orchestrator = NewsOrchestrator()
 
-        orchestrator.consecutiveTruncationCount = 2
-        XCTAssertLessThan(orchestrator.consecutiveTruncationCount, orchestrator.maxConsecutiveTruncations)
+        orchestrator.popupConsecutiveTruncationCount = orchestrator.maxConsecutiveTruncations
+        orchestrator.dashboardConsecutiveTruncationCount = 0
 
-        orchestrator.consecutiveTruncationCount = 0
-        XCTAssertEqual(orchestrator.consecutiveTruncationCount, 0)
+        XCTAssertEqual(orchestrator.popupConsecutiveTruncationCount, orchestrator.maxConsecutiveTruncations)
+        XCTAssertLessThan(orchestrator.dashboardConsecutiveTruncationCount, orchestrator.maxConsecutiveTruncations)
     }
 
-    func testConsecutiveTruncationBlocksAtThreshold() {
+    func testPopupTruncationThresholdDoesNotSetDashboardCounter() {
         let orchestrator = NewsOrchestrator()
 
-        orchestrator.consecutiveTruncationCount = orchestrator.maxConsecutiveTruncations
-        let shouldBlock = orchestrator.consecutiveTruncationCount >= orchestrator.maxConsecutiveTruncations
+        orchestrator.popupConsecutiveTruncationCount = orchestrator.maxConsecutiveTruncations
 
-        XCTAssertTrue(shouldBlock, "At threshold, auto-regeneration should be blocked")
+        XCTAssertEqual(orchestrator.dashboardConsecutiveTruncationCount, 0)
     }
 
-    func testClearCacheResetsConsecutiveTruncationCount() async {
+    func testClearCacheResetsBothConsecutiveTruncationCounters() async {
         let orchestrator = NewsOrchestrator()
 
-        orchestrator.consecutiveTruncationCount = 5
+        orchestrator.popupConsecutiveTruncationCount = 5
+        orchestrator.dashboardConsecutiveTruncationCount = 4
         await orchestrator.clearCache()
 
-        XCTAssertEqual(orchestrator.consecutiveTruncationCount, 0)
+        XCTAssertEqual(orchestrator.popupConsecutiveTruncationCount, 0)
+        XCTAssertEqual(orchestrator.dashboardConsecutiveTruncationCount, 0)
+    }
+}
+
+@MainActor
+final class NewsOrchestratorBudgetBaselineTests: XCTestCase {
+    private let baselineKeys = [
+        "aiBudgetMode",
+        "todayAIRequestCount",
+        "todayPopupAIRequestCount",
+        "todayDashboardAIRequestCount",
+    ]
+
+    private func restore(_ snapshot: [String: Any?]) {
+        for (key, value) in snapshot {
+            if let value {
+                UserDefaults.standard.set(value, forKey: key)
+            } else {
+                UserDefaults.standard.removeObject(forKey: key)
+            }
+        }
+    }
+
+    func testSharedModeUsesTotalDailyCountAsBaseline() {
+        let snapshot = Dictionary(uniqueKeysWithValues: baselineKeys.map { ($0, UserDefaults.standard.object(forKey: $0)) })
+        defer { restore(snapshot) }
+        let settings = AppSettings()
+        settings.aiBudgetMode = .shared
+        settings.todayAIRequestCount = 12
+        settings.todayPopupAIRequestCount = 9
+        settings.todayDashboardAIRequestCount = 3
+
+        XCTAssertEqual(NewsOrchestrator.budgetBaseline(settings: settings, target: .popup), 12)
+        XCTAssertEqual(NewsOrchestrator.budgetBaseline(settings: settings, target: .dashboard), 12)
+    }
+
+    func testIndependentModeUsesTargetSpecificCountAsBaseline() {
+        let snapshot = Dictionary(uniqueKeysWithValues: baselineKeys.map { ($0, UserDefaults.standard.object(forKey: $0)) })
+        defer { restore(snapshot) }
+        let settings = AppSettings()
+        settings.aiBudgetMode = .independent
+        settings.todayAIRequestCount = 12
+        settings.todayPopupAIRequestCount = 9
+        settings.todayDashboardAIRequestCount = 3
+
+        XCTAssertEqual(NewsOrchestrator.budgetBaseline(settings: settings, target: .popup), 9)
+        XCTAssertEqual(NewsOrchestrator.budgetBaseline(settings: settings, target: .dashboard), 3)
     }
 }
 

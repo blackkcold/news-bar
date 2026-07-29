@@ -13,6 +13,15 @@ final class UpdateChecker: ObservableObject {
         ("ghproxy888", "https://gh.api.99988866.xyz/https://api.github.com/repos/\(repoOwner)/\(repoName)/releases/latest"),
     ]
 
+    /// GitHub-owned download hosts. Only these hosts are permitted for
+    /// automatic DMG downloads. The artifact URL must come from canonical
+    /// GitHub metadata and resolve to a GitHub-owned host.
+    private static let githubOwnedHosts: Set<String> = [
+        "github.com",
+        "objects.githubusercontent.com",
+        "release-assets.githubusercontent.com",
+    ]
+
     private static let checkInterval: TimeInterval = 86400
     private static let updateCacheDir: URL = {
         let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!
@@ -113,6 +122,20 @@ final class UpdateChecker: ObservableObject {
             guard let dmgAsset = release.assets.first(where: { $0.isDMG }),
                   let dmgURL = URL(string: dmgAsset.browser_download_url) else {
                 await MainActor.run { state = .error("未找到 DMG 文件") }
+                return
+            }
+
+            // Trust chain: automatic download requires canonical GitHub
+            // provenance AND a GitHub-owned download host. Proxy-sourced
+            // metadata is only allowed to surface availability, never to
+            // authorize a download.
+            guard release.isCanonical else {
+                await MainActor.run { state = .error("更新信息来自第三方镜像，无法自动下载。请从 GitHub 官方页面下载。") }
+                return
+            }
+
+            guard Self.isGitHubOwnedHost(dmgURL.host) else {
+                await MainActor.run { state = .error("下载地址非 GitHub 官方域名，已拒绝自动下载。请从 GitHub 官方页面下载。") }
                 return
             }
 
@@ -225,7 +248,7 @@ final class UpdateChecker: ObservableObject {
                 }
 
                 let decoder = JSONDecoder()
-                let release = try decoder.decode(GitHubRelease.self, from: data)
+                var release = try decoder.decode(GitHubRelease.self, from: data)
 
                 if index > 0 {
                     let tagPattern = try! NSRegularExpression(pattern: "^v\\d+\\.\\d+\\.\\d+")
@@ -234,6 +257,9 @@ final class UpdateChecker: ObservableObject {
                         NSLog("[UpdateChecker] \(label): invalid tag format '\(release.tag_name)', skipping proxy")
                         continue
                     }
+                    release.provenance = .proxy(label: label)
+                } else {
+                    release.provenance = .canonical
                 }
 
                 NSLog("[UpdateChecker] fetch succeeded via \(label), version=\(release.version)")
@@ -279,5 +305,25 @@ final class UpdateChecker: ObservableObject {
         let digest = SHA256.hash(data: data)
         let actual = digest.compactMap { String(format: "%02x", $0) }.joined()
         return actual == expected.lowercased()
+    }
+
+    // MARK: - Trust Chain Helpers (pure, testable)
+
+    /// Returns `true` if `host` is a GitHub-owned download host.
+    /// Comparison is case-insensitive.
+    static func isGitHubOwnedHost(_ host: String?) -> Bool {
+        guard let host else { return false }
+        return githubOwnedHosts.contains(host.lowercased())
+    }
+
+    /// Determines whether a release with the given provenance and artifact
+    /// download host is authorized for automatic download.
+    ///
+    /// Both conditions must hold:
+    /// 1. Metadata provenance is `.canonical` (direct from api.github.com).
+    /// 2. The artifact download URL host is GitHub-owned.
+    static func canAuthorizeAutoDownload(provenance: ReleaseProvenance, downloadHost: String?) -> Bool {
+        guard case .canonical = provenance else { return false }
+        return isGitHubOwnedHost(downloadHost)
     }
 }
