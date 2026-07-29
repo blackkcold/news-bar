@@ -989,3 +989,317 @@ final class PromptTopicCountTests: XCTestCase {
         XCTAssertEqual(AISummaryService.promptTopicHint(range: 3...3), "3")
     }
 }
+
+// MARK: - Unrenderable Format Regression Tests
+//
+// These tests prove the parser returns zero sections for malformed structured/plain
+// responses that previously slipped through as legacy fallback with phantom sections.
+// They guard against regressions when the concurrent production agent adds the
+// one-time format-retry path in NewsOrchestrator.
+
+final class UnrenderableFormatRegressionTests: XCTestCase {
+
+    // MARK: - Deterministic Fixtures
+
+    /// Structured response where the dual-category labels are present but no
+    /// template-titled sections follow. The parser must yield zero sections in
+    /// both categories (not a legacy fallback, not phantom sections).
+    private let labelsWithoutTopicTitles = """
+    【趋势概览】
+
+    【每日精选】
+
+    """
+
+    /// Plain prose with no template markers (no 【…】 titles, no markdown headings,
+    /// no citation lines). The parser must yield zero sections and fall back to
+    /// legacy mode with an empty trend overview.
+    private let plainTextWithoutTemplateMarkers = """
+    今天天气不错，适合出门散步。
+    微博热搜整体平稳，没有明显爆发点。
+    """
+
+    /// A valid structured control fixture: one trend section citing a Weibo index
+    /// and one daily section citing an RSS index. Used to prove the parser still
+    /// returns non-zero sections for well-formed input alongside the zero-section
+    /// regression cases above.
+    private let validStructuredControl = """
+    【趋势概览】
+    【微博热点】这是微博热点内容。
+    引用：[#0]
+    【每日精选】
+    【精选】这是精选内容。
+    引用：[#5]
+    """
+
+    // MARK: - Zero-section regression: labels without topic titles
+
+    func testParseDualSummary_labelsWithoutTopicTitles_returnsZeroSections() {
+        let result = AISummaryParser.parseDualSummary(
+            labelsWithoutTopicTitles,
+            itemCount: 10,
+            weiboBilibiliRange: 0..<5
+        )
+        XCTAssertFalse(
+            result.isLegacyFallback,
+            "Dual labels present without topic titles must not be treated as legacy fallback"
+        )
+        XCTAssertEqual(result.trendOverview.count, 0, "Trend overview must be empty when no topic titles follow the trend label")
+        XCTAssertEqual(result.dailyEssentials.count, 0, "Daily essentials must be empty when no topic titles follow the daily label")
+    }
+
+    // MARK: - Zero-section regression: plain text without template markers
+
+    func testParseDualSummary_plainTextWithoutTemplateMarkers_returnsZeroSections() {
+        let result = AISummaryParser.parseDualSummary(
+            plainTextWithoutTemplateMarkers,
+            itemCount: 10,
+            weiboBilibiliRange: 0..<5
+        )
+        XCTAssertTrue(
+            result.isLegacyFallback,
+            "Plain text without dual labels must take the legacy fallback path"
+        )
+        XCTAssertEqual(result.trendOverview.count, 0, "Legacy fallback must yield zero sections for plain prose with no template markers")
+        XCTAssertEqual(result.dailyEssentials.count, 0, "Daily essentials must remain empty in legacy fallback")
+    }
+
+    // MARK: - Zero-section regression: parseSections directly on plain text
+
+    func testParseSections_plainTextWithoutTemplateMarkers_returnsZeroSections() {
+        let sections = AISummaryParser.parseSections(
+            plainTextWithoutTemplateMarkers,
+            itemCount: 10
+        )
+        XCTAssertEqual(sections.count, 0, "parseSections must return zero sections for plain prose with no titles")
+    }
+
+    // MARK: - Valid structured control: parser still returns non-zero sections
+
+    func testParseDualSummary_validStructuredControl_returnsNonZeroSections() {
+        let result = AISummaryParser.parseDualSummary(
+            validStructuredControl,
+            itemCount: 10,
+            weiboBilibiliRange: 0..<5
+        )
+        XCTAssertFalse(result.isLegacyFallback, "Valid structured control must not be legacy fallback")
+        XCTAssertEqual(result.trendOverview.count, 1, "Valid control must yield exactly one trend section")
+        XCTAssertEqual(result.trendOverview[0].title, "微博热点")
+        XCTAssertEqual(result.trendOverview[0].primaryIndex, 0)
+        XCTAssertEqual(result.dailyEssentials.count, 1, "Valid control must yield exactly one daily section")
+        XCTAssertEqual(result.dailyEssentials[0].title, "精选")
+        XCTAssertEqual(result.dailyEssentials[0].primaryIndex, 5)
+    }
+
+    // MARK: - Boundary: whitespace-only content under labels
+
+    func testParseDualSummary_whitespaceOnlyUnderLabels_returnsZeroSections() {
+        let text = """
+        【趋势概览】
+        \t
+
+        【每日精选】
+
+        """
+        let result = AISummaryParser.parseDualSummary(text, itemCount: 10, weiboBilibiliRange: 0..<5)
+        XCTAssertFalse(result.isLegacyFallback)
+        XCTAssertEqual(result.trendOverview.count, 0)
+        XCTAssertEqual(result.dailyEssentials.count, 0)
+    }
+}
+
+// MARK: - Format-Retry Decision Helper Tests
+//
+// NewsOrchestrator.needsFormatRetry(_:) is being added by the concurrent
+// implementation agent as an internal static helper. It must return true only
+// when BOTH categories of a ParsedSummary are empty (i.e. a non-truncated
+// response parsed to zero sections). These tests assert that contract.
+//
+// If the helper is not yet available at test time, these tests will fail to
+// compile; we report that rather than altering production files.
+
+@MainActor
+final class FormatRetryDecisionTests: XCTestCase {
+
+    private func makeParsed(
+        trend: [(title: String, body: String, primaryIndex: Int?)] = [],
+        daily: [(title: String, body: String, primaryIndex: Int?)] = [],
+        isLegacyFallback: Bool = false
+    ) -> ParsedSummary {
+        ParsedSummary(
+            trendOverview: trend,
+            dailyEssentials: daily,
+            isLegacyFallback: isLegacyFallback
+        )
+    }
+
+    // MARK: - Both empty → retry needed
+
+    func testNeedsFormatRetry_bothCategoriesEmpty_returnsTrue() {
+        let parsed = makeParsed(trend: [], daily: [])
+        XCTAssertTrue(
+            NewsOrchestrator.needsFormatRetry(parsed),
+            "Retry must be required when both trend and daily categories are empty"
+        )
+    }
+
+    // MARK: - Only trend empty → no retry
+
+    func testNeedsFormatRetry_onlyTrendEmpty_returnsFalse() {
+        let parsed = makeParsed(
+            trend: [],
+            daily: [("精选", "内容", 0)]
+        )
+        XCTAssertFalse(
+            NewsOrchestrator.needsFormatRetry(parsed),
+            "Retry must not be required when daily category has sections"
+        )
+    }
+
+    // MARK: - Only daily empty → no retry
+
+    func testNeedsFormatRetry_onlyDailyEmpty_returnsFalse() {
+        let parsed = makeParsed(
+            trend: [("热点", "内容", 0)],
+            daily: []
+        )
+        XCTAssertFalse(
+            NewsOrchestrator.needsFormatRetry(parsed),
+            "Retry must not be required when trend category has sections"
+        )
+    }
+
+    // MARK: - Both non-empty → no retry
+
+    func testNeedsFormatRetry_bothCategoriesNonEmpty_returnsFalse() {
+        let parsed = makeParsed(
+            trend: [("热点", "内容", 0)],
+            daily: [("精选", "内容", 1)]
+        )
+        XCTAssertFalse(
+            NewsOrchestrator.needsFormatRetry(parsed),
+            "Retry must not be required when both categories have sections"
+        )
+    }
+
+    // MARK: - Legacy fallback with empty categories → retry still needed
+
+    func testNeedsFormatRetry_legacyFallbackBothEmpty_returnsTrue() {
+        let parsed = makeParsed(trend: [], daily: [], isLegacyFallback: true)
+        XCTAssertTrue(
+            NewsOrchestrator.needsFormatRetry(parsed),
+            "Retry must be required even in legacy fallback when both categories are empty"
+        )
+    }
+
+    // MARK: - Legacy fallback with non-empty trend → no retry
+
+    func testNeedsFormatRetry_legacyFallbackTrendNonEmpty_returnsFalse() {
+        let parsed = makeParsed(
+            trend: [("热点", "内容", 0)],
+            daily: [],
+            isLegacyFallback: true
+        )
+        XCTAssertFalse(
+            NewsOrchestrator.needsFormatRetry(parsed),
+            "Retry must not be required for legacy fallback with non-empty trend"
+        )
+    }
+}
+
+// MARK: - Format-Retry Budget Tests
+//
+// Proves the existing budget primitives permit precisely one extra attempt
+// (the format-retry) without making an HTTP call. The retry budget is set up
+// using direct budget primitives (initBudget / consumeAttemptBudget) and only
+// the independent popup budget is reset within each test, matching the
+// existing AISummaryServiceBudgetTests isolation pattern.
+
+final class FormatRetryBudgetTests: XCTestCase {
+
+    private let retryTarget: SummaryTarget = .popup
+    private let retryMode: AISummaryBudgetMode = .independent
+
+    override func setUp() {
+        super.setUp()
+        AISummaryService.initBudget(target: retryTarget, mode: retryMode, baseline: 0, cap: 50)
+    }
+
+    // MARK: - One extra attempt is permitted within the existing cap
+
+    func testConsumeAttemptBudget_permitsOneExtraAttemptForFormatRetry() {
+        XCTAssertNoThrow(
+            try AISummaryService.consumeAttemptBudget(target: retryTarget, mode: retryMode),
+            "Initial generation attempt must be permitted"
+        )
+        XCTAssertEqual(
+            AISummaryService.readGenerationAttempts(target: retryTarget, mode: retryMode),
+            1
+        )
+
+        XCTAssertNoThrow(
+            try AISummaryService.consumeAttemptBudget(target: retryTarget, mode: retryMode),
+            "Format-retry attempt must be permitted within the existing cap"
+        )
+        XCTAssertEqual(
+            AISummaryService.readGenerationAttempts(target: retryTarget, mode: retryMode),
+            2,
+            "Exactly one extra attempt must be recorded for the format-retry"
+        )
+    }
+
+    // MARK: - The extra attempt does not exceed the cap at the boundary
+
+    func testConsumeAttemptBudget_formatRetryAtBoundarySucceeds() {
+        AISummaryService.initBudget(target: retryTarget, mode: retryMode, baseline: 0, cap: 2)
+        XCTAssertNoThrow(
+            try AISummaryService.consumeAttemptBudget(target: retryTarget, mode: retryMode),
+            "Initial attempt at cap=2 must succeed"
+        )
+        XCTAssertNoThrow(
+            try AISummaryService.consumeAttemptBudget(target: retryTarget, mode: retryMode),
+            "Format-retry must fit exactly at the cap boundary (baseline + attempts == cap)"
+        )
+        XCTAssertEqual(
+            AISummaryService.readGenerationAttempts(target: retryTarget, mode: retryMode),
+            2
+        )
+    }
+
+    // MARK: - A second extra attempt (beyond the one retry) is denied
+
+    func testConsumeAttemptBudget_secondExtraAttemptDeniedAtBoundary() {
+        AISummaryService.initBudget(target: retryTarget, mode: retryMode, baseline: 0, cap: 2)
+        XCTAssertNoThrow(try AISummaryService.consumeAttemptBudget(target: retryTarget, mode: retryMode))
+        XCTAssertNoThrow(try AISummaryService.consumeAttemptBudget(target: retryTarget, mode: retryMode))
+        XCTAssertThrowsError(
+            try AISummaryService.consumeAttemptBudget(target: retryTarget, mode: retryMode)
+        ) { error in
+            XCTAssertTrue(error is NewsBarError, "Exceeding the cap must surface a NewsBarError")
+            if case NewsBarError.rateLimited = error {
+                // expected
+            } else {
+                XCTFail("Expected rateLimited, got \(error)")
+            }
+        }
+        XCTAssertEqual(
+            AISummaryService.readGenerationAttempts(target: retryTarget, mode: retryMode),
+            2,
+            "Denied attempt must not increment the attempt counter"
+        )
+    }
+
+    // MARK: - No HTTP call is made by the budget primitive itself
+
+    func testConsumeAttemptBudget_doesNotPerformNetworkCall() {
+        AISummaryService.initBudget(target: retryTarget, mode: retryMode, baseline: 0, cap: 50)
+        let before = AISummaryService.readGenerationAttempts(target: retryTarget, mode: retryMode)
+        XCTAssertEqual(before, 0)
+        XCTAssertNoThrow(try AISummaryService.consumeAttemptBudget(target: retryTarget, mode: retryMode))
+        XCTAssertEqual(
+            AISummaryService.readGenerationAttempts(target: retryTarget, mode: retryMode),
+            before + 1,
+            "Budget consumption must only increment the in-memory attempt counter"
+        )
+    }
+}

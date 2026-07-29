@@ -130,6 +130,22 @@ final class NewsOrchestrator: ObservableObject {
         setTruncatedHash(nil, for: target)
     }
 
+    // MARK: - One-Time Format Retry
+
+    /// Static suffix appended to the prompt when a successful-but-unrenderable
+    /// summary triggers a single format-enforcement retry. Kept here so tests
+    /// can assert behaviour without touching the prompt builder.
+    static let formatEnforcementSuffix: String = """
+    \n重要：上一条回复未按格式输出。请务必严格使用【趋势概览】和【每日精选】两个板块标记，每个话题用「【标题】」独占一行，下接一段概述，再下接「引用：[#N]」。不要省略任何标记。
+    """
+
+    /// Decide whether a successful (non-truncated) summary should be retried
+    /// once with the format-enforcement suffix. Returns true only when the
+    /// parsed result has zero sections in both categories.
+    internal static func needsFormatRetry(_ parsed: ParsedSummary) -> Bool {
+        parsed.trendOverview.isEmpty && parsed.dailyEssentials.isEmpty
+    }
+
     // MARK: - Public API
 
     func loadCached(settings: AppSettings) async {
@@ -716,31 +732,72 @@ final class NewsOrchestrator: ObservableObject {
         }
 
         do {
-            let result = try await AISummaryService.summarize(
+            let firstResult = try await AISummaryService.summarize(
                 items: items, maxWords: maxWords, provider: provider,
                 model: model, apiKey: apiKey,
                 target: target,
                 budgetMode: budgetMode,
                 trendTopicCount: trendRange, dailyTopicCount: dailyRange
             )
-            let requestCount = AISummaryService.readGenerationAttempts(target: target, mode: budgetMode)
-            setSummaryItems(target, items)
             let wbRange = 0..<(weiboItems.count + bilibiliItems.count)
-            let parsed = AISummaryParser.parseDualSummary(
-                result.summary,
+
+            // Determine the final result. A successful-but-unrenderable response
+            // (non-truncated, zero parsed sections) triggers exactly one extra
+            // budget-accounted call with a static format-enforcement suffix.
+            // The original target/count/model/key/settings are retained; the
+            // `.summarizing` state is preserved throughout. No loop: the final
+            // state is derived solely from the final result.
+            let finalResult: AISummaryService.SummaryResult
+            if !firstResult.isTruncated {
+                let firstParsed = AISummaryParser.parseDualSummary(
+                    firstResult.summary,
+                    itemCount: items.count,
+                    weiboBilibiliRange: wbRange
+                )
+                if Self.needsFormatRetry(firstParsed) {
+                    NSLog("[NewsOrchestrator] AI summary unrenderable (0 sections), retrying once with format enforcement")
+                    finalResult = try await AISummaryService.summarize(
+                        items: items, maxWords: maxWords, provider: provider,
+                        model: model, apiKey: apiKey,
+                        target: target,
+                        budgetMode: budgetMode,
+                        trendTopicCount: trendRange, dailyTopicCount: dailyRange,
+                        formatEnforcementSuffix: Self.formatEnforcementSuffix
+                    )
+                } else {
+                    finalResult = firstResult
+                }
+            } else {
+                finalResult = firstResult
+            }
+
+            let requestCount = AISummaryService.readGenerationAttempts(target: target, mode: budgetMode)
+            let finalParsed = AISummaryParser.parseDualSummary(
+                finalResult.summary,
                 itemCount: items.count,
                 weiboBilibiliRange: wbRange
             )
-            setParsedSummary(target, parsed)
-            if result.isTruncated {
+
+            // After the single permitted format-enforcement retry, a non-truncated
+            // response that still has zero sections is a format failure: surface a
+            // clear error instead of `.done`, and do not publish the raw text/items
+            // so the Popup raw-text fallback cannot render the invalid output.
+            if !finalResult.isTruncated, Self.needsFormatRetry(finalParsed) {
+                setSummaryState(target, .error("AI 响应格式异常，未能解析出摘要板块"))
+                return requestCount
+            }
+
+            setSummaryItems(target, items)
+            setParsedSummary(target, finalParsed)
+            if finalResult.isTruncated {
                 setTruncatedHash(contentHash, for: target)
                 consecutiveTruncationCount += 1
-                setSummaryState(target, .truncated(result.summary))
+                setSummaryState(target, .truncated(finalResult.summary))
             } else {
                 setHash(contentHash, for: target)
                 clearTruncatedHash(for: target)
                 consecutiveTruncationCount = 0
-                setSummaryState(target, .done(result.summary))
+                setSummaryState(target, .done(finalResult.summary))
             }
             return requestCount
         } catch NewsBarError.apiKeyInvalid {
