@@ -24,7 +24,6 @@
 - **开发文档同步**：`.memory/PROJECT_BOOTSTRAP.md` 更新 AI 生成/重试说明。
 
 ---
-
 ## [Unreleased]
 
 ### Added
