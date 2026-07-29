@@ -5,11 +5,12 @@ struct AISummaryCard: View {
     @Binding var isExpanded: Bool
     var allItems: [NewsItem] = []
     var parsedSummary: ParsedSummary?
+    var isRegenerating = false
+    var regenerationCooldownRemaining: TimeInterval = 0
     var onRegenerate: (() -> Void)?
     var onConfigureKey: (() -> Void)?
 
     @State private var displayText = ""
-    @State private var isRegenerating = false
     @State private var animationTask: Task<Void, Never>?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -425,12 +426,12 @@ struct AISummaryCard: View {
     }
 
     private func regenerateButton(action: @escaping () -> Void) -> some View {
-        Button {
-            isRegenerating = true
+        let cooldownSeconds = Int(ceil(regenerationCooldownRemaining))
+        let isCoolingDown = cooldownSeconds > 0
+
+        return Button {
+            guard !isRegenerating, !isCoolingDown else { return }
             action()
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
-                isRegenerating = false
-            }
         } label: {
             HStack(spacing: 4) {
                 if isRegenerating {
@@ -441,13 +442,21 @@ struct AISummaryCard: View {
                     Image(systemName: "arrow.clockwise")
                         .font(.system(size: 9))
                 }
-                Text(isRegenerating ? "生成中..." : "重新生成")
+                Text(regenerateButtonTitle(cooldownSeconds: cooldownSeconds))
                     .font(.system(size: 9.5))
             }
         }
         .buttonStyle(.bordered)
         .controlSize(.small)
-        .disabled(isRegenerating)
+        .disabled(isRegenerating || isCoolingDown)
+        .accessibilityLabel(regenerateButtonTitle(cooldownSeconds: cooldownSeconds))
+        .accessibilityHint(isCoolingDown ? "请等待冷却结束后再重新生成。" : "重新生成弹窗 AI 总结。")
+    }
+
+    private func regenerateButtonTitle(cooldownSeconds: Int) -> String {
+        if isRegenerating { return "生成中..." }
+        if cooldownSeconds > 0 { return "冷却中 \(cooldownSeconds)秒" }
+        return "重新生成"
     }
 
     // MARK: - Animation

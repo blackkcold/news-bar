@@ -8,8 +8,9 @@ struct UpdateBadge: View {
         HStack(spacing: 4) {
             switch checker.state {
             case .idle:
-                actionButton(label: settings.updateDevMode ? "检查更新(dev)" : "检查更新", icon: "arrow.down.circle")
-                    .onTapGesture { manualCheck() }
+                actionButton(label: settings.updateDevMode ? "检查更新(dev)" : "检查更新", icon: "arrow.down.circle") {
+                    manualCheck()
+                }
 
             case .checking:
                 checkingLabel
@@ -18,19 +19,28 @@ struct UpdateBadge: View {
                 statusLabel(icon: "checkmark.circle.fill", text: "已是最新 \(version)", color: .green)
 
             case .updateAvailable:
-                actionButton(label: "更新", icon: "arrow.down.circle.fill")
-                    .onTapGesture { checker.downloadUpdate() }
+                actionButton(label: "更新", icon: "arrow.down.circle.fill") {
+                    checker.downloadUpdate()
+                }
                 dismissButton
 
             case .downloading(let progress):
                 downloadingButton(progress: progress)
 
             case .downloadComplete:
-                actionButton(label: "打开安装包", icon: "checkmark.circle.fill")
-                    .onTapGesture { checker.openDownloadedDMG() }
+                actionButton(label: "打开安装包", icon: "checkmark.circle.fill") {
+                    checker.openDownloadedDMG()
+                }
 
             case .error(let message):
-                errorLabel(message: message)
+                Button {
+                    manualCheck()
+                } label: {
+                    errorLabel(message: message)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("更新失败，重新检查")
+                .accessibilityValue(message)
             }
         }
         .animation(.easeInOut(duration: 0.2), value: checker.state)
@@ -38,19 +48,22 @@ struct UpdateBadge: View {
 
     // MARK: - Subviews
 
-    private func actionButton(label: String, icon: String) -> some View {
-        HStack(spacing: 3) {
-            Image(systemName: icon)
-                .font(.system(size: 9, weight: .medium))
-            Text(label)
-                .font(.system(size: 10, weight: .medium))
+    private func actionButton(label: String, icon: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 3) {
+                Image(systemName: icon)
+                    .font(.system(size: 9, weight: .medium))
+                Text(label)
+                    .font(.system(size: 10, weight: .medium))
+            }
+            .foregroundStyle(.blue)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 3)
+            .background(.blue.opacity(0.1))
+            .clipShape(Capsule())
         }
-        .foregroundStyle(.blue)
-        .padding(.horizontal, 7)
-        .padding(.vertical, 3)
-        .background(.blue.opacity(0.1))
-        .clipShape(Capsule())
-        .contentShape(Capsule())
+        .buttonStyle(.plain)
+        .accessibilityLabel(label)
     }
 
     private var checkingLabel: some View {
@@ -131,7 +144,6 @@ struct UpdateBadge: View {
         .padding(.vertical, 3)
         .background(.orange.opacity(0.1))
         .clipShape(Capsule())
-        .onTapGesture { manualCheck() }
     }
 
     private func manualCheck() {
