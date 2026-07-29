@@ -207,7 +207,8 @@ enum AISummaryService {
         target: SummaryTarget,
         budgetMode: AISummaryBudgetMode,
         trendTopicCount: ClosedRange<Int> = 2...3,
-        dailyTopicCount: ClosedRange<Int> = 2...3
+        dailyTopicCount: ClosedRange<Int> = 2...3,
+        formatEnforcementSuffix: String? = nil
     ) async throws -> SummaryResult {
         let titles = items.enumerated().map { index, item in
             let safeTitle = sanitizeTitle(item.title)
@@ -223,7 +224,7 @@ enum AISummaryService {
         let trendTopicHint = promptTopicHint(range: trendTopicCount)
         let dailyTopicHint = promptTopicHint(range: dailyTopicCount)
 
-        let prompt = """
+        var prompt = """
         以下是最新新闻标题列表，每条有引用编号 [#N] 和来源标记，请在「引用：」行标注来源编号：
 
         \(titles)
@@ -250,6 +251,10 @@ enum AISummaryService {
         - 如果条目不足以填满请求的话题数，只涵盖可用内容，绝不编造
         - 总字数严格 ≤ \(maxWords) 字
         """
+
+        if let formatEnforcementSuffix, !formatEnforcementSuffix.isEmpty {
+            prompt += "\n" + formatEnforcementSuffix
+        }
 
         guard let url = URL(string: provider.baseURL) else {
             throw NewsBarError.invalidURL
