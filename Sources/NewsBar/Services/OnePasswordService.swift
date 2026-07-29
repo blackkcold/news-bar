@@ -4,12 +4,14 @@ enum OnePasswordError: LocalizedError {
     case notInstalled
     case timeout
     case readFailed
+    case invalidReference
 
     var errorDescription: String? {
         switch self {
         case .notInstalled: return "1Password CLI 未安装"
         case .timeout: return "1Password 认证超时"
         case .readFailed: return "1Password 读取失败"
+        case .invalidReference: return "1Password 引用格式无效"
         }
     }
 }
@@ -27,13 +29,26 @@ enum OnePasswordService {
         FileManager.default.isExecutableFile(atPath: cliPath)
     }
 
+    /// Validates a 1Password item reference format.
+    /// Pure function — safe to call from any thread, no I/O.
+    static func isValidReference(_ reference: String) -> Bool {
+        guard reference.hasPrefix("op://") else { return false }
+        // op://Vault/Item/Field — at least 3 path components after the scheme
+        let remainder = String(reference.dropFirst("op://".count))
+        let components = remainder.split(separator: "/", omittingEmptySubsequences: true)
+        return components.count >= 3  // op://Vault/Item/Field
+    }
+
+    /// Synchronous read — retained for compatibility.
+    /// WARNING: Blocks the calling thread via DispatchSemaphore.
+    /// Prefer `readSecretAsync(reference:)` from UI/async contexts.
     static func readSecret(reference: String) throws -> String {
         guard isInstalled() else {
             throw OnePasswordError.notInstalled
         }
 
-        guard reference.hasPrefix("op://") else {
-            throw OnePasswordError.readFailed
+        guard isValidReference(reference) else {
+            throw OnePasswordError.invalidReference
         }
 
         let process = Process()
@@ -80,5 +95,12 @@ enum OnePasswordService {
         }
 
         return secret
+    }
+
+    /// Async read — does NOT block the calling thread.
+    static func readSecretAsync(reference: String) async throws -> String {
+        try await Task.detached(priority: .userInitiated) {
+            try Self.readSecret(reference: reference)
+        }.value
     }
 }

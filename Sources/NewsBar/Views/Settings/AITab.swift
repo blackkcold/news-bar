@@ -11,6 +11,7 @@ struct AITab: View {
     @State private var isSaving = false
     @State private var saveResult: String?
     @State private var onePasswordResult: String?
+    @State private var isLoadingFrom1Password = false
 
     init() {
         let provider = AIProvider(rawValue: UserDefaults.standard.string(forKey: "aiProvider") ?? "deepseek")
@@ -114,10 +115,10 @@ struct AITab: View {
                         } label: {
                             HStack(spacing: 4) {
                                 Image(systemName: "key.horizontal")
-                                Text("从 1Password 加载")
+                                Text(isLoadingFrom1Password ? "加载中..." : "从 1Password 加载")
                             }
                         }
-                        .disabled(onePasswordRef.isEmpty)
+                        .disabled(onePasswordRef.isEmpty || isLoadingFrom1Password)
                         .buttonStyle(.bordered)
                         .controlSize(.small)
                     }
@@ -326,36 +327,57 @@ struct AITab: View {
 
     private func loadFrom1Password() {
         guard !onePasswordRef.isEmpty else { return }
-        guard onePasswordRef.hasPrefix("op://") else {
-            onePasswordResult = "格式错误：应以 op:// 开头"
+        guard OnePasswordService.isValidReference(onePasswordRef) else {
+            onePasswordResult = "格式错误：应以 op:// 开头，格式为 op://Vault/Item/Field"
             return
         }
 
         settings.onePasswordRef = onePasswordRef
+        isLoadingFrom1Password = true
+        onePasswordResult = nil
 
-        do {
-            let key = try OnePasswordService.readSecret(reference: onePasswordRef)
-            apiKeyInput = key
-            let account = selectedProvider.apiKeyAccount()
-            Task {
+        Task {
+            do {
+                let key = try await OnePasswordService.readSecretAsync(reference: onePasswordRef)
+                let account = selectedProvider.apiKeyAccount()
                 let store = EncryptedKeyStore()
                 let success = await store.saveAPIKey(key, account: account)
                 await MainActor.run {
                     if success {
+                        apiKeyInput = key
                         settings.cachedAPIKey = key
                         NotificationCenter.default.post(name: .apiKeyConfigured, object: nil)
                     }
                     onePasswordResult = success ? "加载成功，已保存" : "保存失败，请重试"
+                    isLoadingFrom1Password = false
+                }
+            } catch OnePasswordError.notInstalled {
+                await MainActor.run {
+                    onePasswordResult = "1Password CLI 未安装，请运行: brew install 1password-cli"
+                    isLoadingFrom1Password = false
+                }
+            } catch OnePasswordError.timeout {
+                await MainActor.run {
+                    onePasswordResult = "超时：请先解锁 1Password 桌面应用"
+                    isLoadingFrom1Password = false
+                }
+            } catch OnePasswordError.readFailed {
+                await MainActor.run {
+                    onePasswordResult = "读取失败：请检查引用格式和权限"
+                    isLoadingFrom1Password = false
+                }
+            } catch OnePasswordError.invalidReference {
+                await MainActor.run {
+                    onePasswordResult = "格式错误：应以 op:// 开头，格式为 op://Vault/Item/Field"
+                    isLoadingFrom1Password = false
+                }
+            } catch {
+                NSLog("[AITab] loadFrom1Password failed: %@", error.localizedDescription)
+                await MainActor.run {
+                    onePasswordResult = "未知错误"
+                    isLoadingFrom1Password = false
                 }
             }
-        } catch OnePasswordError.notInstalled {
-            onePasswordResult = "1Password CLI 未安装，请运行: brew install 1password-cli"
-        } catch OnePasswordError.timeout {
-            onePasswordResult = "超时：请先解锁 1Password 桌面应用"
-        } catch OnePasswordError.readFailed {
-            onePasswordResult = "读取失败：请检查引用格式和权限"
-        } catch {
-            onePasswordResult = "未知错误"
         }
     }
 
