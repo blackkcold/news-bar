@@ -1,6 +1,8 @@
 import SwiftUI
 
 struct BottomBar: View {
+    @Environment(AppSettings.self) private var settings
+
     let isRefreshing: Bool
     var batchProgress: (completed: Int, total: Int) = (0, 0)
     let onRefresh: () -> Void
@@ -8,6 +10,16 @@ struct BottomBar: View {
     let onOpenDashboard: () -> Void
 
     var body: some View {
+        Group {
+            if settings.appTheme == .retroEditorial {
+                retroBottomBar
+            } else {
+                modernBottomBar
+            }
+        }
+    }
+
+    private var modernBottomBar: some View {
         HStack(spacing: 0) {
             refreshButton
 
@@ -26,9 +38,55 @@ struct BottomBar: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 5)
-        .background(.ultraThinMaterial)
+        .editorialMasthead()
+    }
+
+    private var retroBottomBar: some View {
+        HStack(spacing: 8) {
+            Button(action: onRefresh) {
+                HStack(spacing: 4) {
+                    Image(systemName: "arrow.clockwise")
+                    .rotationEffect(.degrees(isRefreshing ? 360 : 0))
+                    .animation(
+                        isRefreshing ? .linear(duration: 1).repeatForever(autoreverses: false) : .default,
+                        value: isRefreshing
+                    )
+                    Text(refreshLabel)
+                }
+            }
+            .buttonStyle(EditorialActionButtonStyle(tone: .primary, compact: true))
+            .disabled(isRefreshing)
+
+            if isRefreshing && batchProgress.total > 0 {
+                EditorialTag(
+                    text: "\(batchProgress.completed)/\(batchProgress.total)",
+                    fallbackTint: .secondary
+                )
+            }
+
+            Spacer(minLength: 4)
+
+            Button(action: onOpenDashboard) {
+                Label("总览", systemImage: "rectangle.split.2x1")
+            }
+            .buttonStyle(EditorialActionButtonStyle(compact: true))
+            .accessibilityLabel("打开 Dashboard")
+
+            Button(action: onOpenSettings) {
+                Label("设置", systemImage: "gearshape")
+            }
+            .buttonStyle(EditorialActionButtonStyle(compact: true))
+            .accessibilityLabel("打开设置")
+        }
+        .padding(.horizontal, 12)
+        .padding(.top, 8)
+        .padding(.bottom, 7)
+        .background(RetroEditorialTokens.raisedPaper)
         .overlay(alignment: .top) {
-            Divider()
+            VStack(spacing: 2) {
+                Rectangle().fill(RetroEditorialTokens.brick).frame(height: 3)
+                Rectangle().fill(RetroEditorialTokens.ink).frame(height: 1)
+            }
         }
     }
 

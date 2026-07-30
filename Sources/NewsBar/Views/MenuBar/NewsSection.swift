@@ -11,7 +11,7 @@ enum NewsSectionPresentation: Equatable {
 
 struct NewsSection: View {
     let title: String
-    let icon: String
+    let sourceMark: EditorialSourceMark
     let color: Color
     let items: [NewsItem]
     let showRank: Bool
@@ -83,37 +83,26 @@ struct NewsSection: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(cardPadding)
-        .background(cardBackground)
-        .overlay(cardStroke)
-        .clipShape(cardShape)
+        .newsCardSurface(rotation: title == "微博热搜" ? -0.2 : 0.2)
     }
 
     private var sectionHeader: some View {
         HStack(alignment: .center, spacing: headerSpacing) {
-            ZStack {
-                RoundedRectangle(cornerRadius: headerIconCornerRadius, style: .continuous)
-                    .fill(color.opacity(0.14))
-
-                Image(systemName: icon)
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(color)
-            }
-            .frame(width: headerIconSize, height: headerIconSize)
+            EditorialSourceBadge(
+                mark: sourceMark,
+                fallbackTint: color,
+                size: headerIconSize,
+                rotation: title == "微博热搜" ? -2 : 2
+            )
 
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
                     Text(title)
-                        .font(.system(size: headerTitleSize, weight: .semibold))
+                        .editorialHeading(size: headerTitleSize)
                         .lineLimit(1)
                         .foregroundStyle(.primary)
 
-                    Text("\(items.count) 条")
-                        .font(.system(size: 9.5, weight: .medium))
-                        .foregroundStyle(color)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(color.opacity(0.12))
-                        .clipShape(Capsule())
+                    EditorialTag(text: "\(items.count) 条", fallbackTint: color)
                 }
 
                 if showHeaderHelperText {
@@ -186,10 +175,10 @@ struct NewsSection: View {
         .padding(.vertical, staleHintVerticalPadding)
         .background(.orange.opacity(0.08))
         .overlay(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
+            Rectangle()
                 .strokeBorder(.orange.opacity(0.15), lineWidth: 1)
         )
-        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .editorialClipShape(cornerRadius: 10)
         .padding(.top, 8)
     }
 
@@ -205,7 +194,7 @@ struct NewsSection: View {
                     .frame(width: 18, height: 18)
                     .padding(expandButtonHitPadding)
                     .background(color.opacity(0.12))
-                    .clipShape(RoundedRectangle(cornerRadius: expandButtonCornerRadius, style: .continuous))
+                    .editorialClipShape(cornerRadius: expandButtonCornerRadius)
             }
             .buttonStyle(.plain)
             .controlSize(.small)
@@ -226,7 +215,7 @@ struct NewsSection: View {
                 .foregroundStyle(color)
                 .contentShape(Rectangle())
             }
-            .buttonStyle(.bordered)
+            .buttonStyle(EditorialActionButtonStyle(compact: true))
             .controlSize(.small)
             .tint(color)
             .accessibilityLabel(isExpanded ? "收起 \(hiddenCount) 条" : "展开 \(hiddenCount) 条")
@@ -254,7 +243,7 @@ struct NewsSection: View {
             .padding(.horizontal, 6)
             .padding(.vertical, 2)
             .background(tint.opacity(0.12))
-            .clipShape(Capsule())
+            .editorialClipShape(cornerRadius: 20)
     }
 
     private func toggleExpansion() {

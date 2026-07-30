@@ -15,6 +15,8 @@ struct PopoverContent: View {
     @State private var rssLoadedCounts: [String: Int] = [:]
     @State private var showQuitConfirmation = false
 
+    private var isRetro: Bool { settings.appTheme == .retroEditorial }
+
     private enum Metrics {
         static let horizontalPadding: CGFloat = 12
         static let verticalPadding: CGFloat = 6
@@ -59,10 +61,18 @@ struct PopoverContent: View {
                         Divider().padding(.horizontal, Metrics.sectionDividerInset)
                     }
 
+                    EditorialSectionHeading(
+                        index: "01",
+                        title: "即时热榜",
+                        subtitle: "微博与 B 站正在发生的头条"
+                    )
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 10)
+
                     HStack(alignment: .top, spacing: 8) {
                         NewsSection(
                             title: "微博热搜",
-                            icon: "flame.fill",
+                            sourceMark: .weibo,
                             color: .orange,
                             items: orchestrator.weiboItems,
                             showRank: true,
@@ -74,7 +84,7 @@ struct PopoverContent: View {
 
                         NewsSection(
                             title: "B站热搜",
-                            icon: "play.rectangle.fill",
+                            sourceMark: .bilibili,
                             color: .pink,
                             items: orchestrator.bilibiliItems,
                             showRank: true,
@@ -85,9 +95,17 @@ struct PopoverContent: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 12)
 
                     ForEach(settings.activeSources.filter { !$0.isBuiltIn }, id: \.id) { source in
-                        Divider().padding(.horizontal, Metrics.sectionDividerInset)
+                        EditorialSectionHeading(
+                            index: "02",
+                            title: source.displayName,
+                            subtitle: "订阅源 · 编辑精选"
+                        )
+                        .padding(.horizontal, 14)
+                        .padding(.top, 14)
+                        .padding(.bottom, 8)
 
                         let rssConfig = settings.rssSources.first { $0.id == source.id }
                         let displayMode = rssConfig?.displayMode ?? .text
@@ -133,6 +151,7 @@ struct PopoverContent: View {
                                 rssLoadedCounts[source.id] = min(current + pageSize, total)
                             }
                         )
+                        .padding(.horizontal, 12)
                     }
 
                     Color.clear.frame(height: 6)
@@ -156,7 +175,7 @@ struct PopoverContent: View {
                 }
                 .padding(.horizontal, 14)
                 .padding(.vertical, 4)
-                .background(.ultraThinMaterial)
+                .editorialMasthead()
             }
 
             BottomBar(
@@ -173,7 +192,7 @@ struct PopoverContent: View {
         }
         .frame(width: 400)
         .adaptiveColorScheme()
-        .background(.regularMaterial)
+        .appThemeSurface()
         .task {
             await orchestrator.loadCached(settings: settings)
         }
@@ -194,28 +213,7 @@ struct PopoverContent: View {
     }
 
     private var headerView: some View {
-        HStack {
-            Image(systemName: "newspaper.fill")
-                .font(.system(size: Metrics.headerIconSize, weight: .semibold))
-                .foregroundStyle(.secondary)
-            Text("NewsBar")
-                .font(.system(size: Metrics.headerTextSize, weight: .semibold))
-                .foregroundStyle(.secondary)
-            Spacer()
-            UpdateBadge(checker: updateChecker)
-            Button {
-                showQuitConfirmation = true
-            } label: {
-                Image(systemName: "xmark.circle.fill")
-                    .font(.system(size: 13))
-                    .foregroundStyle(.tertiary)
-            }
-            .buttonStyle(.plain)
-            .help("退出 NewsBar")
-            .accessibilityLabel("退出 NewsBar")
-        }
-        .padding(.horizontal, Metrics.horizontalPadding)
-        .padding(.vertical, Metrics.verticalPadding)
+        publicationHeaderView
         .confirmationDialog("退出 NewsBar？", isPresented: $showQuitConfirmation) {
             Button("退出 NewsBar", role: .destructive) {
                 NSApplication.shared.terminate(nil)
@@ -224,6 +222,91 @@ struct PopoverContent: View {
         } message: {
             Text("NewsBar 将停止刷新新闻和发送通知。")
         }
+    }
+
+    private var publicationHeaderView: some View {
+        VStack(spacing: 0) {
+            HStack(alignment: .center, spacing: 10) {
+                EditorialSymbolBadge(
+                    symbol: "newspaper.fill",
+                    fallbackTint: .secondary,
+                    size: 34,
+                    rotation: -2
+                )
+
+                VStack(alignment: .leading, spacing: -2) {
+                    HStack(alignment: .firstTextBaseline, spacing: 3) {
+                        Text("NEWS")
+                            .font(.system(size: 22, weight: .black, design: isRetro ? .serif : .default))
+                        Text("BAR")
+                            .font(.system(size: 22, weight: .black, design: isRetro ? .serif : .default))
+                            .foregroundStyle(isRetro ? RetroEditorialTokens.brick : .accentColor)
+                    }
+
+                    Text("THE DAILY SIGNAL")
+                        .font(.system(size: 8, weight: .bold, design: isRetro ? .monospaced : .default))
+                        .tracking(isRetro ? 1.5 : 0.4)
+                        .foregroundStyle(isRetro ? RetroEditorialTokens.fadedInk : .secondary)
+                }
+
+                Spacer(minLength: 4)
+
+                VStack(alignment: .trailing, spacing: 4) {
+                    EditorialTag(text: issueNumber, fallbackTint: .secondary, filled: true)
+                    UpdateBadge(checker: updateChecker)
+                }
+
+                Button {
+                    showQuitConfirmation = true
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 10, weight: .black))
+                }
+                .buttonStyle(EditorialActionButtonStyle(tone: .destructive, compact: true))
+                .help("退出 NewsBar")
+                .accessibilityLabel("退出 NewsBar")
+            }
+            .padding(.horizontal, 12)
+            .padding(.top, 9)
+            .padding(.bottom, 7)
+
+            HStack(spacing: 8) {
+                Text(issueDate)
+                    .font(.system(size: 9, weight: .bold, design: isRetro ? .serif : .default))
+                Rectangle()
+                    .fill(isRetro ? RetroEditorialTokens.ink : Color(nsColor: .separatorColor))
+                    .frame(height: 1)
+                Text("SHANGHAI EDITION")
+                    .font(.system(size: 8, weight: .black, design: isRetro ? .monospaced : .default))
+                    .tracking(isRetro ? 0.7 : 0.25)
+                    .foregroundStyle(isRetro ? RetroEditorialTokens.brick : .secondary)
+            }
+            .padding(.horizontal, 12)
+            .padding(.bottom, 6)
+        }
+        .background(isRetro ? AnyShapeStyle(RetroEditorialTokens.raisedPaper) : AnyShapeStyle(.regularMaterial))
+        .overlay(alignment: .bottom) {
+            VStack(spacing: 2) {
+                Rectangle()
+                    .fill(isRetro ? RetroEditorialTokens.ink : Color(nsColor: .separatorColor))
+                    .frame(height: 1)
+                Rectangle()
+                    .fill(isRetro ? RetroEditorialTokens.brick : Color.accentColor.opacity(0.65))
+                    .frame(height: isRetro ? 3 : 1)
+            }
+        }
+    }
+
+    private var issueNumber: String {
+        let day = Calendar.current.component(.day, from: Date())
+        return "NO. \(String(format: "%02d", day))"
+    }
+
+    private var issueDate: String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "zh_CN")
+        formatter.dateFormat = "yyyy年M月d日 EEEE"
+        return formatter.string(from: Date())
     }
 
     private func errorBanner(_ message: String) -> some View {
@@ -238,7 +321,7 @@ struct PopoverContent: View {
         .padding(.horizontal, Metrics.bannerHorizontalPadding)
         .padding(.vertical, Metrics.bannerVerticalPadding)
         .background(.orange.opacity(0.1))
-        .clipShape(RoundedRectangle(cornerRadius: 6))
+        .editorialClipShape(cornerRadius: 6)
         .padding(.horizontal, Metrics.sectionDividerInset)
         .padding(.bottom, Metrics.bannerBottomSpacing)
     }
@@ -255,7 +338,7 @@ struct PopoverContent: View {
         .padding(.horizontal, Metrics.bannerHorizontalPadding)
         .padding(.vertical, Metrics.bannerVerticalPadding)
         .background(.yellow.opacity(0.1))
-        .clipShape(RoundedRectangle(cornerRadius: 6))
+        .editorialClipShape(cornerRadius: 6)
         .padding(.horizontal, Metrics.sectionDividerInset)
         .padding(.bottom, Metrics.bannerBottomSpacing)
     }

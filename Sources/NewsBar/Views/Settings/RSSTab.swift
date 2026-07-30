@@ -220,6 +220,7 @@ struct RSSTab: View {
             }
         }
         .listStyle(.inset)
+        .scrollContentBackground(.hidden)
         .onDisappear {
             cancelRecommendationValidation(clearHandleOnly: true)
         }
@@ -246,9 +247,7 @@ struct RSSTab: View {
         HStack {
             Spacer()
             VStack(spacing: 6) {
-                Image(systemName: "antenna.radiowaves.left.and.right")
-                    .font(.title2)
-                    .foregroundStyle(.tertiary)
+                EditorialSourceBadge(mark: .rss, fallbackTint: .secondary, size: 28)
                 Text("暂无 RSS 源，点击下方推荐列表或手动添加")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -298,10 +297,8 @@ struct RSSTab: View {
                         Image(systemName: "text.alignleft")
                             .font(.system(size: 13))
                             .frame(width: 28, height: 24)
-                            .background(
-                                RoundedRectangle(cornerRadius: 5)
-                                    .fill(rss.displayMode == .text ? Color.accentColor.opacity(0.15) : Color.clear)
-                            )
+                            .background(rss.displayMode == .text ? Color.accentColor.opacity(0.15) : Color.clear)
+                            .editorialClipShape(cornerRadius: 5)
                             .foregroundStyle(rss.displayMode == .text ? Color.accentColor : Color.secondary)
                     }
                     .buttonStyle(.plain)
@@ -316,10 +313,8 @@ struct RSSTab: View {
                         Image(systemName: "photo")
                             .font(.system(size: 13))
                             .frame(width: 28, height: 24)
-                            .background(
-                                RoundedRectangle(cornerRadius: 5)
-                                    .fill(rss.displayMode == .image ? Color.accentColor.opacity(0.15) : Color.clear)
-                            )
+                            .background(rss.displayMode == .image ? Color.accentColor.opacity(0.15) : Color.clear)
+                            .editorialClipShape(cornerRadius: 5)
                             .foregroundStyle(rss.displayMode == .image ? Color.accentColor : Color.secondary)
                     }
                     .buttonStyle(.plain)
@@ -371,10 +366,8 @@ struct RSSTab: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.vertical, 2)
         .padding(.horizontal, 6)
-        .background {
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(isDropTarget ? Color.accentColor.opacity(0.12) : Color.clear)
-        }
+        .background(isDropTarget ? Color.accentColor.opacity(0.12) : Color.clear)
+        .editorialClipShape(cornerRadius: 8)
         .contentShape(Rectangle())
         .dropDestination(for: String.self, action: { items, _ in
             handleSubscribedRSSDrop(items, targetID: rss.id)
@@ -677,7 +670,7 @@ struct RSSTab: View {
                     addRecommended(rec)
                 }
                 .font(.caption)
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(EditorialActionButtonStyle(tone: .primary, compact: true))
                 .controlSize(.small)
                 .accessibilityLabel("添加 \(rec.name)")
                 .accessibilityHint("添加前会先通过安全策略验证。")
@@ -733,7 +726,7 @@ struct RSSTab: View {
                     }
                 }
                 .disabled(recommendationValidationIsRunning || recommendationValidationPendingCandidates.isEmpty)
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(EditorialActionButtonStyle(tone: .primary, compact: true))
                 .controlSize(.small)
                 .accessibilityLabel(recommendationValidationActionTitle)
                 .accessibilityHint(recommendationValidationActionHint)
@@ -742,7 +735,7 @@ struct RSSTab: View {
                     Button("取消") {
                         cancelRecommendationValidation()
                     }
-                    .buttonStyle(.bordered)
+                    .buttonStyle(EditorialActionButtonStyle(compact: true))
                     .controlSize(.small)
                     .accessibilityLabel("取消推荐验证")
                     .accessibilityHint("停止后续尚未开始的推荐；当前正在处理的源会在可取消点结束。")
@@ -806,7 +799,8 @@ struct RSSTab: View {
             .foregroundStyle(badge.tint)
             .padding(.horizontal, 8)
             .padding(.vertical, 4)
-            .background(badge.tint.opacity(0.12), in: Capsule())
+            .background(badge.tint.opacity(0.12))
+            .editorialClipShape(cornerRadius: 20)
             .accessibilityLabel("\(rec.name) \(badge.title)")
             .accessibilityHint(badge.hint)
     }
@@ -1095,7 +1089,7 @@ struct RSSTab: View {
                     }
                 }
                 .disabled(newName.isEmpty || newURL.isEmpty || isTesting)
-                .buttonStyle(.bordered)
+                .buttonStyle(EditorialActionButtonStyle(compact: true))
                 .controlSize(.small)
             }
         }

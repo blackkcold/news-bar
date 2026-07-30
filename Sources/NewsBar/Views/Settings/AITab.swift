@@ -65,7 +65,7 @@ struct AITab: View {
                         Text(isSaving ? "保存中..." : "保存")
                     }
                     .disabled(apiKeyInput.isEmpty || isSaving)
-                    .buttonStyle(.borderedProminent)
+                    .buttonStyle(EditorialActionButtonStyle(tone: .primary, compact: true))
                     .controlSize(.small)
 
                     Button {
@@ -74,7 +74,7 @@ struct AITab: View {
                         Text(isTesting ? "测试中..." : "测试连接")
                     }
                     .disabled((apiKeyInput.isEmpty && (settings.cachedAPIKey?.isEmpty ?? true)) || isTesting)
-                    .buttonStyle(.bordered)
+                    .buttonStyle(EditorialActionButtonStyle(compact: true))
                     .controlSize(.small)
                 }
 
@@ -119,7 +119,7 @@ struct AITab: View {
                             }
                         }
                         .disabled(onePasswordRef.isEmpty || isLoadingFrom1Password)
-                        .buttonStyle(.bordered)
+                        .buttonStyle(EditorialActionButtonStyle(compact: true))
                         .controlSize(.small)
                     }
 
@@ -300,6 +300,7 @@ struct AITab: View {
             }
         }
         .formStyle(.grouped)
+        .scrollContentBackground(.hidden)
     }
 
     private func saveAPIKey() {

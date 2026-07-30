@@ -27,10 +27,10 @@ struct AboutTab: View {
                     HStack {
                         Image(systemName: "newspaper.fill")
                             .font(.system(size: 32))
-                            .foregroundStyle(.blue)
+                            .foregroundStyle(RetroEditorialTokens.brick)
                         VStack(alignment: .leading, spacing: 2) {
                             Text("NewsBar")
-                                .font(.title3.weight(.semibold))
+                                .editorialHeading(size: 17)
                             Text("版本 \(version) (\(build))")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
@@ -112,6 +112,7 @@ struct AboutTab: View {
             }
         }
         .formStyle(.grouped)
+        .scrollContentBackground(.hidden)
         .confirmationDialog("清除所有缓存？", isPresented: $showCacheClearConfirmation) {
             Button("清除所有缓存", role: .destructive) {
                 cacheClearAction?()

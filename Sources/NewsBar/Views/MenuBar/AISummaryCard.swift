@@ -12,7 +12,10 @@ struct AISummaryCard: View {
 
     @State private var displayText = ""
     @State private var animationTask: Task<Void, Never>?
+    @Environment(AppSettings.self) private var settings
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private var isRetro: Bool { settings.appTheme == .retroEditorial }
 
     private enum Metrics {
         static let cardPadding: CGFloat = 10
@@ -41,9 +44,7 @@ struct AISummaryCard: View {
             }
         }
         .padding(Metrics.cardPadding)
-        .background(cardBackground)
-        .overlay(cardStroke)
-        .clipShape(cardShape)
+        .newsCardSurface(rotation: 0.12)
         .onAppear {
             switch state {
             case .done(let text), .truncated(let text):
@@ -71,18 +72,17 @@ struct AISummaryCard: View {
             toggleExpansion()
         } label: {
             HStack(alignment: .center, spacing: Metrics.headerSpacing) {
-                ZStack {
-                    RoundedRectangle(cornerRadius: Metrics.headerIconCornerRadius, style: .continuous)
-                        .fill(.purple.opacity(0.14))
-
-                    stateHeaderIcon
-                }
-                .frame(width: Metrics.headerIconSize, height: Metrics.headerIconSize)
+                EditorialSymbolBadge(
+                    symbol: "text.bubble.fill",
+                    fallbackTint: .purple,
+                    size: Metrics.headerIconSize,
+                    rotation: 1.5
+                )
 
                 VStack(alignment: .leading, spacing: 2) {
                     HStack(spacing: 6) {
                         Text("AI 总结")
-                            .font(.system(size: Metrics.headerTitleSize, weight: .semibold))
+                            .editorialHeading(size: Metrics.headerTitleSize)
                             .foregroundStyle(.primary)
 
                         stateHeaderBadge
@@ -135,61 +135,19 @@ struct AISummaryCard: View {
     private var stateHeaderBadge: some View {
         switch state {
         case .noKey:
-            Text("未配置")
-                .font(.system(size: Metrics.badgeFontSize, weight: .medium))
-                .foregroundStyle(.orange)
-                .padding(.horizontal, 5)
-                .padding(.vertical, 2)
-                .background(.orange.opacity(0.15))
-                .clipShape(Capsule())
+            EditorialTag(text: "未配置", fallbackTint: .orange)
         case .fetching:
-            Text("获取中")
-                .font(.system(size: Metrics.badgeFontSize, weight: .medium))
-                .foregroundStyle(.blue)
-                .padding(.horizontal, 5)
-                .padding(.vertical, 2)
-                .background(.blue.opacity(0.15))
-                .clipShape(Capsule())
+            EditorialTag(text: "获取中", fallbackTint: .blue)
         case .summarizing:
-            Text("思考中")
-                .font(.system(size: Metrics.badgeFontSize, weight: .medium))
-                .foregroundStyle(.purple)
-                .padding(.horizontal, 5)
-                .padding(.vertical, 2)
-                .background(.purple.opacity(0.15))
-                .clipShape(Capsule())
+            EditorialTag(text: "思考中", fallbackTint: .purple)
         case .error:
-            Text("失败")
-                .font(.system(size: Metrics.badgeFontSize, weight: .medium))
-                .foregroundStyle(.red)
-                .padding(.horizontal, 5)
-                .padding(.vertical, 2)
-                .background(.red.opacity(0.15))
-                .clipShape(Capsule())
+            EditorialTag(text: "失败", fallbackTint: .red)
         case .done:
-            Text("已完成")
-                .font(.system(size: Metrics.badgeFontSize, weight: .medium))
-                .foregroundStyle(.green)
-                .padding(.horizontal, 5)
-                .padding(.vertical, 2)
-                .background(.green.opacity(0.15))
-                .clipShape(Capsule())
+            EditorialTag(text: "已完成", fallbackTint: .green)
         case .truncated:
-            Text("不完整")
-                .font(.system(size: Metrics.badgeFontSize, weight: .medium))
-                .foregroundStyle(.orange)
-                .padding(.horizontal, 5)
-                .padding(.vertical, 2)
-                .background(.orange.opacity(0.15))
-                .clipShape(Capsule())
+            EditorialTag(text: "不完整", fallbackTint: .orange)
         case .idle:
-            Text("等待")
-                .font(.system(size: Metrics.badgeFontSize, weight: .medium))
-                .foregroundStyle(.secondary)
-                .padding(.horizontal, 5)
-                .padding(.vertical, 2)
-                .background(.quaternary.opacity(0.45))
-                .clipShape(Capsule())
+            EditorialTag(text: "等待", fallbackTint: .secondary)
         }
     }
 
@@ -216,11 +174,9 @@ struct AISummaryCard: View {
         .padding(Metrics.contentPadding)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(contentBackground)
-        .overlay(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .strokeBorder(.separator.opacity(0.12), lineWidth: 1)
-        )
-        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay(contentShape.stroke(Color(nsColor: .separatorColor).opacity(0.12), lineWidth: 1))
+        .compositingGroup()
+        .clipShape(contentShape)
     }
 
     private var noKeyContent: some View {
@@ -242,7 +198,7 @@ struct AISummaryCard: View {
                             .font(.system(size: 10))
                     }
                 }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(EditorialActionButtonStyle(tone: .primary, compact: true))
                 .controlSize(.small)
                 .tint(.orange)
             }
@@ -446,7 +402,7 @@ struct AISummaryCard: View {
                     .font(.system(size: 9.5))
             }
         }
-        .buttonStyle(.bordered)
+        .buttonStyle(EditorialActionButtonStyle(compact: true))
         .controlSize(.small)
         .disabled(isRegenerating || isCoolingDown)
         .accessibilityLabel(regenerateButtonTitle(cooldownSeconds: cooldownSeconds))
@@ -509,8 +465,13 @@ struct AISummaryCard: View {
     }
 
     private var contentBackground: some View {
-        RoundedRectangle(cornerRadius: 12, style: .continuous)
-            .fill(.purple.opacity(0.05))
+        contentShape.fill(.purple.opacity(0.05))
+    }
+
+    private var contentShape: AnyShape {
+        isRetro
+            ? AnyShape(Rectangle())
+            : AnyShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 
 }
@@ -524,7 +485,10 @@ struct SectionRow: View {
     let matchedItem: NewsItem?
 
     @State private var isHovered = false
+    @Environment(AppSettings.self) private var settings
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private var isRetro: Bool { settings.appTheme == .retroEditorial }
 
     private enum Metrics {
         static let revealAnimationDuration: TimeInterval = 0.18
@@ -594,8 +558,10 @@ struct SectionRow: View {
         }
     }
 
-    private var rowShape: RoundedRectangle {
-        RoundedRectangle(cornerRadius: 11, style: .continuous)
+    private var rowShape: AnyShape {
+        isRetro
+            ? AnyShape(Rectangle())
+            : AnyShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
     }
 
     private var rowBackground: some View {
@@ -603,7 +569,7 @@ struct SectionRow: View {
     }
 
     private var rowStroke: some View {
-        rowShape.strokeBorder(rowStrokeStyle, lineWidth: 1)
+        rowShape.stroke(rowStrokeStyle, lineWidth: 1)
     }
 
     private var rowStrokeStyle: AnyShapeStyle {
@@ -618,22 +584,30 @@ private struct SourceBadge: View {
     let url: String
 
     @State private var isBadgeHovered = false
+    @Environment(AppSettings.self) private var settings
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private var isRetro: Bool { settings.appTheme == .retroEditorial }
 
     var body: some View {
         Button {
             URLOpener.open(url)
         } label: {
             HStack(spacing: 3) {
+                EditorialSourceBadge(
+                    mark: sourceMark,
+                    fallbackTint: sourceTint,
+                    size: 16
+                )
                 Image(systemName: "arrow.up.forward")
                     .font(.system(size: 7, weight: .bold))
                 Text(sourceName)
-                    .font(.system(size: 8.5, weight: .medium))
+                    .font(.system(size: 8.5, weight: isRetro ? .black : .medium, design: isRetro ? .serif : .default))
             }
             .padding(.horizontal, 5)
             .padding(.vertical, 2)
             .background(.ultraThinMaterial)
-            .clipShape(Capsule())
+            .editorialClipShape(cornerRadius: 20)
         }
         .buttonStyle(.plain)
         .accessibilityLabel("打开 \(sourceName) 原文")
@@ -641,5 +615,19 @@ private struct SourceBadge: View {
         .scaleEffect(reduceMotion ? 1.0 : (isBadgeHovered ? 1.08 : 1.0))
         .animation(reduceMotion ? nil : .spring(response: 0.25, dampingFraction: 0.7), value: isBadgeHovered)
         .onHover { isBadgeHovered = $0 }
+    }
+
+    private var sourceMark: EditorialSourceMark {
+        if sourceName.contains("微博") { return .weibo }
+        if sourceName.contains("B站") || sourceName.lowercased().contains("bilibili") { return .bilibili }
+        return .rss
+    }
+
+    private var sourceTint: Color {
+        switch sourceMark {
+        case .weibo: return .orange
+        case .bilibili: return .pink
+        case .rss: return .blue
+        }
     }
 }

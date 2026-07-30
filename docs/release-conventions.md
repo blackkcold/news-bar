@@ -91,22 +91,27 @@ NewsBar vX.Y.Z
 ## 发版流程
 
 ```bash
-# 1. 更新版本号
-echo "X.Y.Z" > version.txt
+# 1. 从 main 创建发版分支
+git switch main
+git pull --ff-only origin main
+git switch -c release/vX.Y.Z
 
-# 2. 更新 RELEASE_NOTES.md
-# 在顶部添加新版本 release notes
+# 2. 更新 version.txt、RELEASE_NOTES.md、README.md 与相关项目文档
+# RELEASE_NOTES.md 在顶部添加新版本，内容与 GitHub Release Body 保持同步
 
-# 3. 提交
-git add -A
-git commit -m "feat: vX.Y.Z — 副标题"
+# 3. 测试并使用项目官方脚本打包
+swift test
+bash scripts/build.sh
+# 验收：codesign --verify、hdiutil verify、SHA256 一致
 
-# 4. 推送 feature 分支
-git push origin HEAD:feature/vX.Y.Z
+# 4. 提交并推送 release 分支
+git add <本次发版文件>
+git commit -m "release: vX.Y.Z — 副标题"
+git push -u origin release/vX.Y.Z
 
-# 5. 创建 PR（不要 merge）
-gh pr create --base main --head feature/vX.Y.Z \
-  --title "feat: vX.Y.Z — 副标题" \
+# 5. 创建 PR，等待全部 required checks 通过后合并
+gh pr create --base main --head release/vX.Y.Z \
+  --title "release: vX.Y.Z — 副标题" \
   --body "$(cat <<'EOF'
 ## vX.Y.Z — 副标题
 ### 变更摘要
@@ -114,23 +119,24 @@ gh pr create --base main --head feature/vX.Y.Z \
 EOF
 )"
 
-# 6. 打 tag 并推送
-git tag vX.Y.Z
+# 查看 CI；失败时在 release 分支修复并重新等待
+gh pr checks --watch
+gh pr merge --merge --delete-branch=false
+
+# 6. 在合并后的 main 创建 annotated tag 并推送
+git switch main
+git pull --ff-only origin main
+git tag -a vX.Y.Z -m "vX.Y.Z — 副标题"
 git push origin vX.Y.Z
 
-# 7. 构建
+# 7. 在 tag 对应提交上再次使用官方脚本构建
 bash scripts/build.sh
 
-# 8. 创建 GitHub Release
-gh release create vX.Y.Z \
-  --title "NewsBar vX.Y.Z" \
-  --notes "$(cat <<'EOF'
-## vX.Y.Z — 副标题
-### 完整 release notes...
-EOF
-)" \
-  release/X.Y.Z/NewsBar-X.Y.Z.dmg \
-  release/X.Y.Z/NewsBar-X.Y.Z.dmg.sha256
+# 8. 使用项目脚本创建 GitHub Release 并上传 DMG/SHA256
+bash scripts/release.sh
+
+# 9. 验证远端 Tag、Release 标题、Release Body 与两个附件
+gh release view vX.Y.Z
 ```
 
 ---

@@ -22,7 +22,7 @@ struct NotificationTab: View {
                             }
                         }
                         .font(.caption)
-                        .buttonStyle(.bordered)
+                        .buttonStyle(EditorialActionButtonStyle(compact: true))
                         .controlSize(.small)
                     }
                 }
@@ -99,6 +99,7 @@ struct NotificationTab: View {
             }
         }
         .formStyle(.grouped)
+        .scrollContentBackground(.hidden)
         .task {
             let status = await NotificationService.authorizationStatus()
             authorized = (status == .authorized || status == .provisional)

@@ -44,7 +44,22 @@ struct GeneralTab: View {
             }
 
             Section {
-                Picker("主题", selection: Binding(
+                Toggle("启用复古报刊编辑风", isOn: Binding(
+                    get: { settings.appTheme == .retroEditorial },
+                    set: { settings.appTheme = $0 ? .retroEditorial : .modern }
+                ))
+
+                HStack(spacing: 8) {
+                    themeSwatch(RetroEditorialTokens.paper, label: "米白")
+                    themeSwatch(RetroEditorialTokens.brick, label: "砖红")
+                    themeSwatch(RetroEditorialTokens.ink, label: "墨黑")
+                    Spacer()
+                    Text(settings.appTheme.displayName)
+                        .font(.system(size: 11, weight: .bold, design: .serif))
+                        .foregroundStyle(settings.appTheme == .retroEditorial ? RetroEditorialTokens.brick : .secondary)
+                }
+
+                Picker("明暗外观", selection: Binding(
                     get: { settings.colorScheme },
                     set: { settings.colorScheme = $0 }
                 )) {
@@ -54,8 +69,13 @@ struct GeneralTab: View {
                 }
                 .pickerStyle(.segmented)
                 .labelsHidden()
+                .disabled(settings.appTheme == .retroEditorial)
             } header: {
-                Text("外观")
+                Text("主题设置")
+            } footer: {
+                Text(settings.appTheme == .retroEditorial
+                     ? "复古报刊主题固定使用米白纸张基底；关闭后恢复现代主题及明暗外观选择。"
+                     : "现代主题支持跟随系统、浅色或深色；复古报刊主题使用 1960 年代编辑设计语言。")
             }
 
             Section {
@@ -81,6 +101,7 @@ struct GeneralTab: View {
             }
         }
         .formStyle(.grouped)
+        .scrollContentBackground(.hidden)
         .task {
             logEntries = await RefreshLog.shared.snapshot()
         }
@@ -145,7 +166,7 @@ struct GeneralTab: View {
                             .font(.system(size: 11))
                     }
                 }
-                .buttonStyle(.bordered)
+                .buttonStyle(EditorialActionButtonStyle(compact: true))
                 .controlSize(.small)
 
                 Button {
@@ -157,7 +178,7 @@ struct GeneralTab: View {
                     Text("清空日志")
                         .font(.system(size: 11))
                 }
-                .buttonStyle(.bordered)
+                .buttonStyle(EditorialActionButtonStyle(compact: true))
                 .controlSize(.small)
                 .tint(.red)
             }
@@ -209,7 +230,7 @@ struct GeneralTab: View {
             .padding(.horizontal, 4)
             .padding(.vertical, 1)
             .background(color.opacity(0.12))
-            .clipShape(Capsule())
+            .editorialClipShape(cornerRadius: 20)
     }
 
     private func sourcesSummary(_ results: [String: String]) -> String {
@@ -246,5 +267,19 @@ struct GeneralTab: View {
             Text(value)
                 .foregroundStyle(.secondary)
         }
+    }
+
+    private func themeSwatch(_ color: Color, label: String) -> some View {
+        HStack(spacing: 4) {
+            Rectangle()
+                .fill(color)
+                .frame(width: 18, height: 14)
+                .overlay(Rectangle().stroke(RetroEditorialTokens.ink, lineWidth: 1))
+            Text(label)
+                .font(.system(size: 10))
+                .foregroundStyle(.secondary)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("主题色 (label)")
     }
 }
