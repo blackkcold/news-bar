@@ -73,8 +73,8 @@ Popup and Dashboard each have independent word count presets (Popup default 120,
 # Build · 构建
 swift build -c release --arch arm64
 
-# Or use the build script · 或使用打包脚本
-scripts/build.sh
+# Or use the official packaging script · 或使用官方打包脚本
+bash scripts/build.sh
 ```
 
 ### Release Workflow · 发布流程
