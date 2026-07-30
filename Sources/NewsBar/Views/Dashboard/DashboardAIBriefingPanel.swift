@@ -120,9 +120,7 @@ struct DashboardAIBriefingPanel: View {
             }
         }
         .padding(16)
-        .background(cardBackground)
-        .overlay(cardStroke)
-        .clipShape(cardShape)
+        .newsCardSurface(rotation: 0.14)
         .accessibilityElement(children: .contain)
         .frame(maxWidth: .infinity, alignment: .leading)
         .onAppear {
@@ -140,42 +138,31 @@ struct DashboardAIBriefingPanel: View {
 
     private var header: some View {
         HStack(alignment: .center, spacing: 10) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 11, style: .continuous)
-                    .fill(.purple.opacity(0.14))
-
-                Image(systemName: "sparkles")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(.purple)
-            }
-            .frame(width: 28, height: 28)
+            EditorialSymbolBadge(
+                symbol: "text.bubble.fill",
+                fallbackTint: .purple,
+                size: 30,
+                rotation: 1.5
+            )
 
             VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 6) {
-                    Text("AI Briefing")
-                        .font(.system(size: 14, weight: .semibold))
-                        .foregroundStyle(.primary)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 6) {
+                        briefingTitle
+                        EditorialTag(text: cardStateText, fallbackTint: stateTint)
+                        if parsedSummary?.isLegacyFallback == true {
+                            EditorialTag(text: "兼容格式", fallbackTint: .secondary)
+                        }
+                    }
 
-                    Text(cardStateText)
-                        .font(.system(size: 10, weight: .medium))
-                        .foregroundStyle(stateTint)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(stateTint.opacity(0.12))
-                        .clipShape(Capsule())
-
-                    if parsedSummary?.isLegacyFallback == true {
-                        Text("兼容格式")
-                            .font(.system(size: 10, weight: .medium))
-                            .foregroundStyle(.secondary)
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(.quaternary.opacity(0.45))
-                            .clipShape(Capsule())
+                    VStack(alignment: .leading, spacing: 4) {
+                        briefingTitle
+                        HStack(spacing: 5) {
+                            EditorialTag(text: cardStateText, fallbackTint: stateTint)
+                            if parsedSummary?.isLegacyFallback == true {
+                                EditorialTag(text: "兼容格式", fallbackTint: .secondary)
+                            }
+                        }
                     }
                 }
 
@@ -188,6 +175,14 @@ struct DashboardAIBriefingPanel: View {
 
             Spacer(minLength: 0)
         }
+    }
+
+    private var briefingTitle: some View {
+        Text("AI Briefing")
+            .editorialHeading(size: 14)
+            .foregroundStyle(.primary)
+            .lineLimit(1)
+            .truncationMode(.tail)
     }
 
     @ViewBuilder
@@ -276,7 +271,7 @@ struct DashboardAIBriefingPanel: View {
             Button("重新打开设置") {
                 onConfigureAI()
             }
-            .buttonStyle(.bordered)
+            .buttonStyle(EditorialActionButtonStyle(compact: true))
             .controlSize(.small)
         }
     }
@@ -297,7 +292,7 @@ struct DashboardAIBriefingPanel: View {
                 Button(actionTitle) {
                     action()
                 }
-                    .buttonStyle(.bordered)
+                    .buttonStyle(EditorialActionButtonStyle(tone: .primary, compact: true))
                     .controlSize(.small)
             }
         }

@@ -17,6 +17,20 @@ enum AISummaryBudgetMode: String, Sendable, CaseIterable {
     case independent
 }
 
+enum AppTheme: String, Sendable, CaseIterable, Identifiable {
+    case modern
+    case retroEditorial
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .modern: return "现代材质"
+        case .retroEditorial: return "复古报刊"
+        }
+    }
+}
+
 @Observable
 final class AppSettings {
     var autoRefreshEnabled: Bool {
@@ -28,7 +42,11 @@ final class AppSettings {
     var colorScheme: String {
         didSet { UserDefaults.standard.set(colorScheme, forKey: "colorScheme") }
     }
+    var appTheme: AppTheme {
+        didSet { UserDefaults.standard.set(appTheme.rawValue, forKey: "appTheme") }
+    }
     @ObservationIgnored var resolvedColorScheme: ColorScheme? {
+        if appTheme == .retroEditorial { return .light }
         switch colorScheme {
         case "light": return .light
         case "dark": return .dark
@@ -154,6 +172,7 @@ final class AppSettings {
         self.autoRefreshEnabled = defaults.boolIfPresent(forKey: "autoRefreshEnabled") ?? false
         self.launchAtLogin = defaults.boolIfPresent(forKey: "launchAtLogin") ?? false
         self.colorScheme = defaults.stringIfPresent(forKey: "colorScheme") ?? "system"
+        self.appTheme = AppTheme(rawValue: defaults.stringIfPresent(forKey: "appTheme") ?? "") ?? .modern
         self.aiSummaryEnabled = defaults.boolIfPresent(forKey: "aiSummaryEnabled") ?? false
         self.aiProvider = defaults.stringIfPresent(forKey: "aiProvider") ?? "deepseek"
 

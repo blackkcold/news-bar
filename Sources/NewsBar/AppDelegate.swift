@@ -312,6 +312,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             defer: false
         )
         window.title = "NewsBar Dashboard"
+        window.titleVisibility = .hidden
         window.minSize = Self.dashboardMinimumSize
         window.titlebarAppearsTransparent = true
         window.toolbarStyle = .unifiedCompact

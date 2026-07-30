@@ -80,9 +80,7 @@ struct RSSWaterfallView: View {
             }
         }
         .padding(10)
-        .background(cardBackground)
-        .overlay(cardStroke)
-        .clipShape(cardShape)
+        .newsCardSurface(rotation: -0.12)
         .onAppear {
             if effectiveDisplayMode == nil, !items.isEmpty {
                 effectiveDisplayMode = resolvedMode
@@ -92,37 +90,25 @@ struct RSSWaterfallView: View {
 
     private var sectionHeader: some View {
         HStack(alignment: .center, spacing: 8) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(sourceTint.opacity(0.14))
-
-                Image(systemName: "antenna.radiowaves.left.and.right")
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(sourceTint)
-            }
-            .frame(width: 24, height: 24)
+            EditorialSourceBadge(
+                mark: .rss,
+                fallbackTint: sourceTint,
+                size: 24,
+                rotation: -1
+            )
 
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
                     Text(sourceName)
-                        .font(.system(size: 13, weight: .semibold))
+                        .editorialHeading(size: 13)
                         .foregroundStyle(.primary)
 
-                    Text("\(items.count) 条")
-                        .font(.system(size: 10, weight: .medium))
-                        .foregroundStyle(sourceTint)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(sourceTint.opacity(0.12))
-                        .clipShape(Capsule())
+                    EditorialTag(text: "\(items.count) 条", fallbackTint: sourceTint)
 
-                    Text(resolvedMode == .image ? "图文" : "纯文本")
-                        .font(.system(size: 10, weight: .medium))
-                        .foregroundStyle(.secondary)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(.quaternary.opacity(0.45))
-                        .clipShape(Capsule())
+                    EditorialTag(
+                        text: resolvedMode == .image ? "图文" : "纯文本",
+                        fallbackTint: .secondary
+                    )
                 }
 
                 Text("点击打开浏览器")
@@ -151,7 +137,7 @@ struct RSSWaterfallView: View {
                     Label(isExpanded ? "收起" : "展开 \(items.count - pageSize) 条", systemImage: isExpanded ? "chevron.up" : "chevron.down")
                         .font(.system(size: 11, weight: .medium))
                 }
-                .buttonStyle(.bordered)
+                .buttonStyle(EditorialActionButtonStyle(compact: true))
                 .controlSize(.small)
                 .tint(sourceTint)
             }
@@ -247,10 +233,10 @@ struct RSSWaterfallView: View {
         .padding(.vertical, 5)
         .background(.orange.opacity(0.08))
         .overlay(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
+            Rectangle()
                 .strokeBorder(.orange.opacity(0.15), lineWidth: 1)
         )
-        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .editorialClipShape(cornerRadius: 10)
         .padding(.top, 8)
     }
 
@@ -274,7 +260,7 @@ struct RSSWaterfallView: View {
             .padding(.horizontal, 6)
             .padding(.vertical, 2)
             .background(tint.opacity(0.12))
-            .clipShape(Capsule())
+            .editorialClipShape(cornerRadius: 20)
     }
 }
 
@@ -282,14 +268,19 @@ struct RSSTextRow: View {
     let item: NewsItem
     let sourceName: String
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(AppSettings.self) private var settings
     @State private var isHovering = false
+
+    private var isRetro: Bool { settings.appTheme == .retroEditorial }
 
     private var sourceTint: Color {
         tint(for: item.source)
     }
 
-    private var cardShape: RoundedRectangle {
-        RoundedRectangle(cornerRadius: 12, style: .continuous)
+    private var cardShape: AnyShape {
+        isRetro
+            ? AnyShape(Rectangle())
+            : AnyShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 
     var body: some View {
@@ -304,13 +295,16 @@ struct RSSTextRow: View {
                     .multilineTextAlignment(.leading)
 
                 HStack(spacing: 4) {
-                    Label(sourceName, systemImage: item.source.iconName)
-                        .font(.system(size: 10, weight: .medium))
+                    HStack(spacing: 4) {
+                        EditorialSourceBadge(mark: .rss, fallbackTint: sourceTint, size: 16)
+                        Text(sourceName)
+                            .font(.system(size: 10, weight: isRetro ? .black : .medium, design: isRetro ? .serif : .default))
+                    }
                         .foregroundStyle(sourceTint)
                         .padding(.horizontal, 6)
                         .padding(.vertical, 2)
                         .background(sourceTint.opacity(0.12))
-                        .clipShape(Capsule())
+                        .editorialClipShape(cornerRadius: 20)
 
                     if let host = URL(string: item.url)?.host, !host.isEmpty {
                         Text(host)
@@ -355,7 +349,7 @@ struct RSSTextRow: View {
 
     private var cardStroke: some View {
         cardShape
-            .strokeBorder(rowStrokeStyle, lineWidth: 1)
+            .stroke(rowStrokeStyle, lineWidth: 1)
     }
 
     private var rowStrokeStyle: AnyShapeStyle {
@@ -378,8 +372,11 @@ struct RSSImageCard: View {
     let item: NewsItem
     let sourceName: String
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(AppSettings.self) private var settings
     @State private var imageLoadState: ImageLoadState = .idle
     @State private var isHovering = false
+
+    private var isRetro: Bool { settings.appTheme == .retroEditorial }
 
     enum ImageLoadState {
         case idle
@@ -406,6 +403,7 @@ struct RSSImageCard: View {
                         Image(nsImage: img)
                             .resizable()
                             .aspectRatio(16 / 9, contentMode: .fill)
+                            .editorialArchiveImage()
                             .frame(height: 84)
                             .clipped()
                             .transition(reduceMotion ? .identity : .scale(scale: 0.92).combined(with: .opacity))
@@ -439,9 +437,7 @@ struct RSSImageCard: View {
                 .padding(8)
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .background(cardBackground)
-            .overlay(cardStroke)
-            .clipShape(cardShape)
+            .newsCardSurface(cornerRadius: 16, rotation: 0.16, isHovering: isHovering)
         }
         .buttonStyle(.plain)
         .accessibilityLabel("\(item.title) - \(sourceName)")
@@ -502,30 +498,32 @@ struct RSSImageCard: View {
 
     private var sourceBadge: some View {
         HStack(spacing: 4) {
-            Image(systemName: item.source.iconName)
-                .font(.system(size: 8, weight: .semibold))
+            EditorialSourceBadge(mark: .rss, fallbackTint: sourceTint, size: 16)
             Text(item.source.displayName)
-                .font(.system(size: 10, weight: .medium))
+                .font(.system(size: 10, weight: isRetro ? .black : .medium, design: isRetro ? .serif : .default))
                 .lineLimit(1)
         }
         .foregroundStyle(sourceTint)
         .padding(.horizontal, 6)
         .padding(.vertical, 2)
         .background(.ultraThinMaterial)
-        .clipShape(Capsule())
+        .editorialClipShape(cornerRadius: 20)
         .accessibilityHidden(true)
     }
 
     private var footerMeta: some View {
         HStack(alignment: .center, spacing: 4) {
-            Label(item.source.displayName, systemImage: item.source.iconName)
-                .font(.system(size: 10, weight: .medium))
+            HStack(spacing: 4) {
+                EditorialSourceBadge(mark: .rss, fallbackTint: sourceTint, size: 16)
+                Text(item.source.displayName)
+                    .font(.system(size: 10, weight: isRetro ? .black : .medium, design: isRetro ? .serif : .default))
+            }
                 .foregroundStyle(sourceTint)
                 .lineLimit(1)
                 .padding(.horizontal, 6)
                 .padding(.vertical, 2)
                 .background(sourceTint.opacity(0.12))
-                .clipShape(Capsule())
+                .editorialClipShape(cornerRadius: 20)
 
             if let host = URL(string: item.url)?.host, !host.isEmpty {
                 Text(host)

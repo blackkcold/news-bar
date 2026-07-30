@@ -4,11 +4,13 @@ struct UpdateBadge: View {
     @ObservedObject var checker: UpdateChecker
     @Environment(AppSettings.self) private var settings
 
+    private var isRetro: Bool { settings.appTheme == .retroEditorial }
+
     var body: some View {
         HStack(spacing: 4) {
             switch checker.state {
             case .idle:
-                actionButton(label: settings.updateDevMode ? "检查更新(dev)" : "检查更新", icon: "arrow.down.circle") {
+                actionButton(label: isRetro ? "更新" : (settings.updateDevMode ? "检查更新(dev)" : "检查更新"), icon: "arrow.down.circle") {
                     manualCheck()
                 }
 
@@ -50,49 +52,51 @@ struct UpdateBadge: View {
 
     private func actionButton(label: String, icon: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            HStack(spacing: 3) {
-                Image(systemName: icon)
-                    .font(.system(size: 9, weight: .medium))
-                Text(label)
-                    .font(.system(size: 10, weight: .medium))
-            }
-            .foregroundStyle(.blue)
-            .padding(.horizontal, 7)
-            .padding(.vertical, 3)
-            .background(.blue.opacity(0.1))
-            .clipShape(Capsule())
+            Label(label, systemImage: icon)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(EditorialActionButtonStyle(tone: .secondary, compact: true))
         .accessibilityLabel(label)
     }
 
     private var checkingLabel: some View {
-        HStack(spacing: 4) {
-            ProgressView()
-                .scaleEffect(0.55)
-                .frame(width: 10, height: 10)
-            Text("检查中")
-                .font(.system(size: 10, weight: .medium))
+        Group {
+            if isRetro {
+                EditorialTag(text: "检查中", fallbackTint: .secondary)
+            } else {
+                HStack(spacing: 4) {
+                    ProgressView()
+                        .scaleEffect(0.55)
+                        .frame(width: 10, height: 10)
+                    Text("检查中")
+                        .font(.system(size: 10, weight: .medium))
+                }
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 7)
+                .padding(.vertical, 3)
+                .background(.quaternary.opacity(0.5))
+                .clipShape(Capsule())
+            }
         }
-        .foregroundStyle(.secondary)
-        .padding(.horizontal, 7)
-        .padding(.vertical, 3)
-        .background(.quaternary.opacity(0.5))
-        .clipShape(Capsule())
     }
 
     private func statusLabel(icon: String, text: String, color: Color) -> some View {
-        HStack(spacing: 3) {
-            Image(systemName: icon)
-                .font(.system(size: 9, weight: .medium))
-            Text(text)
-                .font(.system(size: 10, weight: .medium))
+        Group {
+            if isRetro {
+                EditorialTag(text: text, fallbackTint: color)
+            } else {
+                HStack(spacing: 3) {
+                    Image(systemName: icon)
+                        .font(.system(size: 9, weight: .medium))
+                    Text(text)
+                        .font(.system(size: 10, weight: .medium))
+                }
+                .foregroundStyle(color)
+                .padding(.horizontal, 7)
+                .padding(.vertical, 3)
+                .background(color.opacity(0.1))
+                .clipShape(Capsule())
+            }
         }
-        .foregroundStyle(color)
-        .padding(.horizontal, 7)
-        .padding(.vertical, 3)
-        .background(color.opacity(0.1))
-        .clipShape(Capsule())
     }
 
     private var dismissButton: some View {
@@ -105,45 +109,60 @@ struct UpdateBadge: View {
                 .padding(.horizontal, 4)
                 .padding(.vertical, 3)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(EditorialActionButtonStyle(compact: true))
     }
 
     private func downloadingButton(progress: Double) -> some View {
-        HStack(spacing: 3) {
-            Image(systemName: "arrow.down.circle.fill")
-                .font(.system(size: 9, weight: .medium))
-            Text("更新中")
-                .font(.system(size: 10, weight: .medium))
-        }
-        .foregroundStyle(.blue)
-        .padding(.horizontal, 7)
-        .padding(.vertical, 3)
-        .background(
-            GeometryReader { geo in
-                ZStack(alignment: .leading) {
-                    Color.blue.opacity(0.1)
-                    Color.blue.opacity(0.3)
-                        .frame(width: max(0, geo.size.width * CGFloat(progress)))
-                        .animation(.linear(duration: 0.3), value: progress)
+        Group {
+            if isRetro {
+                EditorialTag(
+                    text: "更新 \(Int((progress * 100).rounded()))%",
+                    fallbackTint: RetroEditorialTokens.brick
+                )
+            } else {
+                HStack(spacing: 3) {
+                    Image(systemName: "arrow.down.circle.fill")
+                        .font(.system(size: 9, weight: .medium))
+                    Text("更新中")
+                        .font(.system(size: 10, weight: .medium))
                 }
+                .foregroundStyle(.blue)
+                .padding(.horizontal, 7)
+                .padding(.vertical, 3)
+                .background(
+                    GeometryReader { geo in
+                        ZStack(alignment: .leading) {
+                            Color.blue.opacity(0.1)
+                            Color.blue.opacity(0.3)
+                                .frame(width: max(0, geo.size.width * CGFloat(progress)))
+                                .animation(.linear(duration: 0.3), value: progress)
+                        }
+                    }
+                )
+                .clipShape(Capsule())
             }
-        )
-        .clipShape(Capsule())
+        }
     }
 
     private func errorLabel(message: String) -> some View {
-        HStack(spacing: 3) {
-            Image(systemName: "exclamationmark.triangle.fill")
-                .font(.system(size: 9, weight: .medium))
-            Text(message)
-                .font(.system(size: 9))
-                .lineLimit(1)
+        Group {
+            if isRetro {
+                EditorialTag(text: "更新失败", fallbackTint: .orange)
+            } else {
+                HStack(spacing: 3) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.system(size: 9, weight: .medium))
+                    Text(message)
+                        .font(.system(size: 9))
+                        .lineLimit(1)
+                }
+                .foregroundStyle(.orange)
+                .padding(.horizontal, 7)
+                .padding(.vertical, 3)
+                .background(.orange.opacity(0.1))
+                .clipShape(Capsule())
+            }
         }
-        .foregroundStyle(.orange)
-        .padding(.horizontal, 7)
-        .padding(.vertical, 3)
-        .background(.orange.opacity(0.1))
-        .clipShape(Capsule())
     }
 
     private func manualCheck() {

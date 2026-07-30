@@ -36,6 +36,7 @@ struct DashboardHotTrendCard: View {
                         DashboardTrendRow(
                             item: item,
                             sourceLabel: presentation.title,
+                            sourceMark: presentation.mark,
                             accent: presentation.accent,
                             rankFallback: index + 1,
                             reduceMotion: reduceMotion
@@ -53,38 +54,27 @@ struct DashboardHotTrendCard: View {
             }
         }
         .padding(14)
-        .background(cardBackground)
-        .overlay(cardStroke)
-        .clipShape(cardShape)
+        .newsCardSurface(rotation: presentation.title == "微博热搜" ? -0.16 : 0.16)
     }
 
     private var header: some View {
         HStack(alignment: .center, spacing: 10) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 11, style: .continuous)
-                    .fill(presentation.accent.opacity(0.16))
-
-                Image(systemName: presentation.symbol)
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(presentation.accent)
-            }
-            .frame(width: 28, height: 28)
+            EditorialSourceBadge(
+                mark: presentation.mark,
+                fallbackTint: presentation.accent,
+                size: 30,
+                rotation: presentation.title == "微博热搜" ? -2 : 2
+            )
 
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
                     Text(presentation.title)
-                        .font(.system(size: 14, weight: .semibold))
+                        .editorialHeading(size: 14)
                         .foregroundStyle(.primary)
                         .lineLimit(1)
                         .truncationMode(.tail)
 
-                    Text("\(items.count) 条")
-                        .font(.system(size: 10, weight: .medium))
-                        .foregroundStyle(presentation.accent)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(presentation.accent.opacity(0.12))
-                        .clipShape(Capsule())
+                    EditorialTag(text: "\(items.count) 条", fallbackTint: presentation.accent)
                 }
 
                 Text("原生热点卡片 · 点击打开浏览器")
@@ -103,7 +93,7 @@ struct DashboardHotTrendCard: View {
                     Label(isExpanded ? "收起" : "展开 \(hiddenCount) 条", systemImage: isExpanded ? "chevron.up" : "chevron.down")
                         .font(.system(size: 11, weight: .medium))
                 }
-                .buttonStyle(.bordered)
+                .buttonStyle(EditorialActionButtonStyle(compact: true))
                 .controlSize(.small)
                 .tint(presentation.accent)
                 .accessibilityLabel(isExpanded ? "收起 \(presentation.title)" : "展开更多 \(presentation.title)")
@@ -124,7 +114,7 @@ struct DashboardHotTrendCard: View {
             }
             .frame(maxWidth: .infinity)
         }
-        .buttonStyle(.bordered)
+        .buttonStyle(EditorialActionButtonStyle(compact: true))
         .controlSize(.small)
         .tint(presentation.accent)
         .padding(.top, 10)
@@ -170,11 +160,15 @@ struct DashboardHotTrendCard: View {
 private struct DashboardTrendRow: View {
     let item: NewsItem
     let sourceLabel: String
+    let sourceMark: EditorialSourceMark
     let accent: Color
     let rankFallback: Int
     let reduceMotion: Bool
 
+    @Environment(AppSettings.self) private var settings
     @State private var isHovering = false
+
+    private var isRetro: Bool { settings.appTheme == .retroEditorial }
 
     private var rank: Int {
         item.rank ?? rankFallback
@@ -216,7 +210,7 @@ private struct DashboardTrendRow: View {
             .padding(.horizontal, 10)
             .padding(.vertical, 10)
             .background(rowBackground)
-            .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .contentShape(rowShape)
         }
         .buttonStyle(.plain)
         .accessibilityElement(children: .ignore)
@@ -240,28 +234,40 @@ private struct DashboardTrendRow: View {
             .foregroundStyle(rank <= 3 ? .white : accent)
             .frame(width: 22, height: 22)
             .background(rank <= 3 ? rankColor(rank) : accent.opacity(0.12))
-            .clipShape(Capsule())
+            .editorialClipShape(cornerRadius: 11)
             .accessibilityHidden(true)
     }
 
     private var sourcePill: some View {
-        Label(sourceLabel, systemImage: "antenna.radiowaves.left.and.right")
-            .font(.system(size: 10, weight: .medium))
+        HStack(spacing: 4) {
+            EditorialSourceBadge(
+                mark: sourceMark,
+                fallbackTint: accent,
+                size: 17
+            )
+            Text(sourceLabel)
+                .font(.system(size: 10, weight: isRetro ? .black : .medium, design: isRetro ? .serif : .default))
+        }
             .foregroundStyle(accent)
-            .padding(.horizontal, 6)
-            .padding(.vertical, 2)
+            .padding(.horizontal, isRetro ? 4 : 6)
+            .padding(.vertical, isRetro ? 3 : 2)
             .background(accent.opacity(0.12))
-            .clipShape(Capsule())
+            .editorialClipShape(cornerRadius: 20)
             .accessibilityHidden(true)
     }
 
     private var rowBackground: some View {
-        RoundedRectangle(cornerRadius: 12, style: .continuous)
+        rowShape
             .fill(isHovering ? accent.opacity(0.07) : Color.clear)
             .overlay {
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .strokeBorder(isHovering ? accent.opacity(0.16) : .clear, lineWidth: 1)
+                rowShape.stroke(isHovering ? accent.opacity(0.16) : .clear, lineWidth: 1)
             }
+    }
+
+    private var rowShape: AnyShape {
+        isRetro
+            ? AnyShape(Rectangle())
+            : AnyShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 
     private var accessibilityLabel: String {
@@ -272,6 +278,9 @@ private struct DashboardTrendRow: View {
     }
 
     private func rankColor(_ rank: Int) -> Color {
+        if isRetro {
+            return rank <= 3 ? RetroEditorialTokens.brick : RetroEditorialTokens.ink
+        }
         switch rank {
         case 1: return .red
         case 2: return .orange
@@ -283,22 +292,22 @@ private struct DashboardTrendRow: View {
 
 private struct DashboardTrendPresentation {
     let title: String
-    let symbol: String
+    let mark: EditorialSourceMark
     let accent: Color
 
     init(for source: NewsSource) {
         switch source {
         case .weibo:
             title = "微博热搜"
-            symbol = "flame.fill"
+            mark = .weibo
             accent = .orange
         case .bilibili:
             title = "B站热搜"
-            symbol = "play.rectangle.fill"
+            mark = .bilibili
             accent = .pink
         case let .rss(name, _):
             title = name
-            symbol = "antenna.radiowaves.left.and.right"
+            mark = .rss
             accent = DashboardPalette.tint(for: name)
         }
     }
@@ -349,47 +358,30 @@ struct DashboardRSSSourceCard: View {
             }
         }
         .padding(14)
-        .background(cardBackground)
-        .overlay(cardStroke)
-        .clipShape(cardShape)
+        .newsCardSurface(rotation: -0.1)
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var header: some View {
         HStack(alignment: .center, spacing: 10) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 11, style: .continuous)
-                    .fill(sourceTint.opacity(0.16))
-
-                Image(systemName: source.iconName)
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(sourceTint)
-            }
-            .frame(width: 28, height: 28)
+            EditorialSourceBadge(
+                mark: .rss,
+                fallbackTint: sourceTint,
+                size: 30,
+                rotation: -1.5
+            )
 
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
                     Text(source.displayName)
-                        .font(.system(size: 14, weight: .semibold))
+                        .editorialHeading(size: 14)
                         .foregroundStyle(.primary)
                         .lineLimit(1)
                         .truncationMode(.tail)
 
-                    Text("\(items.count) 条")
-                        .font(.system(size: 10, weight: .medium))
-                        .foregroundStyle(sourceTint)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(sourceTint.opacity(0.12))
-                        .clipShape(Capsule())
+                    EditorialTag(text: "\(items.count) 条", fallbackTint: sourceTint)
 
-                    Text(stateLabel)
-                        .font(.system(size: 10, weight: .medium))
-                        .foregroundStyle(stateTint)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(stateTint.opacity(0.12))
-                        .clipShape(Capsule())
+                    EditorialTag(text: stateLabel, fallbackTint: stateTint)
                 }
 
                 Text("自适应瀑布流 · 点击在浏览器中打开")
@@ -407,7 +399,7 @@ struct DashboardRSSSourceCard: View {
                 Label(isExpanded ? "收起" : "展开", systemImage: isExpanded ? "chevron.up" : "chevron.down")
                     .font(.system(size: 11, weight: .medium))
             }
-            .buttonStyle(.bordered)
+            .buttonStyle(EditorialActionButtonStyle(compact: true))
             .controlSize(.small)
             .tint(sourceTint)
             .accessibilityLabel(isExpanded ? "收起 \(source.displayName)" : "展开 \(source.displayName)")
@@ -524,15 +516,12 @@ struct DashboardAdaptiveRSSMasonryFeed: View {
 
     private var header: some View {
         HStack(alignment: .center, spacing: 10) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 11, style: .continuous)
-                    .fill(.blue.opacity(0.14))
-
-                Image(systemName: "antenna.radiowaves.left.and.right")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(.blue)
-            }
-            .frame(width: 28, height: 28)
+            EditorialSourceBadge(
+                mark: .rss,
+                fallbackTint: .blue,
+                size: 30,
+                rotation: 1
+            )
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)
@@ -561,13 +550,7 @@ struct DashboardAdaptiveRSSMasonryFeed: View {
 
             Spacer(minLength: 0)
 
-            Text("自适应")
-                .font(.system(size: 10, weight: .medium))
-                .foregroundStyle(.secondary)
-                .padding(.horizontal, 7)
-                .padding(.vertical, 3)
-                .background(.quaternary.opacity(0.5))
-                .clipShape(Capsule())
+            EditorialTag(text: "自适应", fallbackTint: .secondary)
                 .accessibilityLabel("自适应布局")
         }
     }
@@ -602,8 +585,11 @@ private struct DashboardRSSMasonryCard: View {
     let reduceMotion: Bool
 
     @Environment(\.accessibilityReduceMotion) private var environmentReduceMotion
+    @Environment(AppSettings.self) private var settings
     @State private var imagePhase: DashboardRemoteImagePhase = .idle
     @State private var isHovering = false
+
+    private var isRetro: Bool { settings.appTheme == .retroEditorial }
 
     private var sourceTint: Color {
         DashboardPalette.tint(for: item.source.displayName)
@@ -628,9 +614,7 @@ private struct DashboardRSSMasonryCard: View {
             cardContent
             .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
             .fixedSize(horizontal: false, vertical: true)
-            .background(cardBackground)
-            .overlay(cardStroke)
-            .clipShape(cardShape)
+            .newsCardSurface(cornerRadius: 16, rotation: 0.12, isHovering: isHovering)
         }
         .buttonStyle(.plain)
         .accessibilityElement(children: .ignore)
@@ -698,6 +682,7 @@ private struct DashboardRSSMasonryCard: View {
                 Image(nsImage: image)
                     .resizable()
                     .aspectRatio(contentMode: .fill)
+                    .editorialArchiveImage()
                     .frame(maxWidth: .infinity)
                     .frame(height: 120)
                     .clipped()
@@ -748,31 +733,41 @@ private struct DashboardRSSMasonryCard: View {
 
     private var sourceBadge: some View {
         HStack(spacing: 4) {
-            Image(systemName: item.source.iconName)
-                .font(.system(size: 8, weight: .semibold))
+            EditorialSourceBadge(
+                mark: sourceMark,
+                fallbackTint: sourceTint,
+                size: 16
+            )
             Text(item.source.displayName)
-                .font(.system(size: 10, weight: .medium))
+                .font(.system(size: 10, weight: isRetro ? .black : .medium, design: isRetro ? .serif : .default))
                 .lineLimit(1)
         }
         .foregroundStyle(sourceTint)
         .padding(.horizontal, 7)
         .padding(.vertical, 3)
         .background(.ultraThinMaterial)
-        .clipShape(Capsule())
+        .editorialClipShape(cornerRadius: 20)
         .accessibilityHidden(true)
     }
 
     private var footerMeta: some View {
         HStack(alignment: .center, spacing: 6) {
-            Label(item.source.displayName, systemImage: item.source.iconName)
-                .font(.system(size: 10, weight: .medium))
+            HStack(spacing: 4) {
+                EditorialSourceBadge(
+                    mark: sourceMark,
+                    fallbackTint: sourceTint,
+                    size: 16
+                )
+                Text(item.source.displayName)
+                    .font(.system(size: 10, weight: isRetro ? .black : .medium, design: isRetro ? .serif : .default))
+            }
                 .foregroundStyle(sourceTint)
                 .lineLimit(1)
                 .truncationMode(.tail)
                 .padding(.horizontal, 6)
                 .padding(.vertical, 2)
                 .background(sourceTint.opacity(0.12))
-                .clipShape(Capsule())
+                .editorialClipShape(cornerRadius: 20)
 
             if let host = URL(string: item.url)?.host, !host.isEmpty {
                 Text(host)
@@ -802,6 +797,14 @@ private struct DashboardRSSMasonryCard: View {
 
     private var cardStroke: some View {
         cardShape.strokeBorder(.separator.opacity(isHovering ? 0.45 : 0.28), lineWidth: 1)
+    }
+
+    private var sourceMark: EditorialSourceMark {
+        switch item.source {
+        case .weibo: return .weibo
+        case .bilibili: return .bilibili
+        case .rss: return .rss
+        }
     }
 
     private func loadImage() async {

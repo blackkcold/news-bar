@@ -6,7 +6,10 @@ struct NewsItemRow: View, Equatable {
     var presentation: NewsSectionPresentation = .standard
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(AppSettings.self) private var settings
     @State private var isHovering = false
+
+    private var isRetro: Bool { settings.appTheme == .retroEditorial }
 
     static func == (lhs: NewsItemRow, rhs: NewsItemRow) -> Bool {
         lhs.item == rhs.item
@@ -101,30 +104,40 @@ struct NewsItemRow: View, Equatable {
             .foregroundStyle(rank <= 3 ? .white : accent)
             .frame(width: rankBadgeSize, height: rankBadgeSize)
             .background(rank <= 3 ? rankColor(rank) : accent.opacity(0.12))
-            .clipShape(Capsule())
+            .editorialClipShape(cornerRadius: rankBadgeSize / 2)
             .accessibilityLabel("排名第\(rank)")
     }
 
     private var sourcePill: some View {
-        Label(item.source.displayName, systemImage: item.source.iconName)
-            .font(.system(size: 10, weight: .medium))
+        HStack(spacing: 4) {
+            EditorialSourceBadge(
+                mark: sourceMark,
+                fallbackTint: accent,
+                size: 17
+            )
+            Text(item.source.displayName)
+                .font(.system(size: 10, weight: isRetro ? .black : .medium, design: isRetro ? .serif : .default))
+                .lineLimit(1)
+        }
             .foregroundStyle(accent)
-            .padding(.horizontal, 6)
-            .padding(.vertical, 2)
+            .padding(.horizontal, isRetro ? 4 : 6)
+            .padding(.vertical, isRetro ? 3 : 2)
             .background(accent.opacity(0.12))
-            .clipShape(Capsule())
+            .editorialClipShape(cornerRadius: 20)
             .accessibilityHidden(true)
     }
 
-    private var rowShape: RoundedRectangle {
-        RoundedRectangle(cornerRadius: 12, style: .continuous)
+    private var rowShape: AnyShape {
+        isRetro
+            ? AnyShape(Rectangle())
+            : AnyShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 
     private var rowBackground: some View {
         rowShape
             .fill(isHovering ? accent.opacity(0.06) : Color.clear)
             .overlay {
-                rowShape.strokeBorder(rowStrokeStyle, lineWidth: 1)
+                rowShape.stroke(rowStrokeStyle, lineWidth: 1)
             }
     }
 
@@ -143,6 +156,14 @@ struct NewsItemRow: View, Equatable {
         }
     }
 
+    private var sourceMark: EditorialSourceMark {
+        switch item.source {
+        case .weibo: return .weibo
+        case .bilibili: return .bilibili
+        case .rss: return .rss
+        }
+    }
+
     private func paletteTint(for key: String) -> Color {
         let colors: [Color] = [.blue, .purple, .teal, .green, .orange, .pink, .indigo, .cyan]
         let seed = key.unicodeScalars.reduce(0) { partial, scalar in
@@ -153,6 +174,9 @@ struct NewsItemRow: View, Equatable {
     }
 
     private func rankColor(_ rank: Int) -> Color {
+        if isRetro {
+            return rank <= 3 ? RetroEditorialTokens.brick : RetroEditorialTokens.ink
+        }
         switch rank {
         case 1: return .red
         case 2: return .orange

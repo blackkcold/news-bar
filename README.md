@@ -15,11 +15,12 @@
 - **📺 Bilibili Trending** · B站热搜 — Bilibili popular content
 - **📡 RSS Feeds** · RSS 订阅 — Custom RSS sources, freely extensible
 - **🤖 AI Summary** · AI 摘要 — Dual-category briefings (趋势概览 / 每日精选) with template-framework; cited rows show a persistent source badge, click to open original. Uncited trend summaries remain visible without a source link. Popup generates a concise summary on refresh; Dashboard lazily generates a detailed summary when opened. Both consume the shared daily AI request cap.
-- **📊 Dashboard** · 仪表盘 — Native window with sidebar (hot-trend cards + AI briefing panel) and per-source RSS card region with fixed two-column grid; lazy AI summary generation on open
+- **📊 Editorial Dashboard** · 编辑式仪表盘 — Responsive masthead, redesigned trend cards, AI briefing and per-source RSS layout; lazy AI summary generation on open
 - **⏱ Auto Refresh** · 定时刷新 — Startup fetch + optional hourly timer
 - **🔄 Auto Update** · 自动更新 — Check GitHub Releases, one-click download
 - **🔐 Secure Storage** · 安全存储 — API Key encrypted with AES-256-GCM, machine-bound
-- **🪟 Glass UI** · 毛玻璃 UI — Native SwiftUI frosted glass, consistent with system style
+- **📰 Retro Editorial Theme** · 复古报刊主题 — Optional 1960s editorial design with paper texture, brick-red accents, square clipping cards and print-style source marks across Dashboard, Popup and Settings
+- **🪟 Modern Material Theme** · 现代材质主题 — Native SwiftUI material appearance with the same clearer editorial page headings
 - **🌓 Dark Mode** · 暗色模式 — Light / Dark / System auto, real-time switching
 - **📦 Zero Dependencies** · 零依赖 — Pure Swift, no third-party libraries
 - **🆓 Free & Open Source** · 免费开源 — MIT License
@@ -40,7 +41,8 @@ Download the latest DMG from [Releases](../../releases) and drag to Applications
 4. Click "Check Update" at top to manually check for new versions · 点击面板顶部「检查更新」手动检查新版本
 5. Click ⚙️ at bottom to open settings, configure RSS and AI · 点击底部 ⚙️ 进入设置，配置 RSS 源和 AI 摘要
 6. Click 📊 to open Dashboard for full news view: sidebar with hot-trend cards and AI briefing panel, plus per-source RSS card region with fixed two-column grid · 点击 📊 打开 Dashboard：侧边栏热点趋势卡片和 AI 简报面板，右侧按来源分卡的 RSS 固定双列网格区域
-7. Quit from the settings panel bottom · 在设置面板底部退出
+7. Choose Modern Material or Retro Editorial under Settings → General → Theme · 在「设置 → 通用 → 主题」切换现代材质或复古报刊主题
+8. Quit from the settings panel bottom · 在设置面板底部退出
 
 > Popup AI summary (concise, ~120 words) generates on refresh; Dashboard AI summary (detailed, ~360 words) generates lazily when opened. Both consume the shared daily AI request cap.
 > 弹窗 AI 摘要（精简，约 120 字）在刷新时生成；Dashboard AI 摘要（详细，约 360 字）在打开时惰性生成。两者共享每日 AI 调用上限。
@@ -71,18 +73,23 @@ Popup and Dashboard each have independent word count presets (Popup default 120,
 # Build · 构建
 swift build -c release --arch arm64
 
-# Or use the build script · 或使用打包脚本
-scripts/build.sh
+# Or use the official packaging script · 或使用官方打包脚本
+bash scripts/build.sh
 ```
 
 ### Release Workflow · 发布流程
 
 ```bash
-scripts/bump-version.sh          # Bump version + tag · 升级版本号并打 tag
-scripts/bump-version.sh 1.1.0    # Or specify version · 或指定版本号
-scripts/build.sh                 # Build DMG · 构建 DMG
-scripts/release.sh               # GitHub Release + upload DMG · 创建发布并上传
+# Update version.txt and RELEASE_NOTES.md on release/vX.Y.Z first
+swift test                       # Run the full test suite · 运行全量测试
+bash scripts/build.sh            # Official app + DMG packaging · 官方 App 与 DMG 打包
+# Open a PR to main, wait for required CI, then merge
+git tag -a vX.Y.Z -m "vX.Y.Z — summary"
+git push origin vX.Y.Z
+bash scripts/release.sh          # GitHub Release + DMG/SHA256 upload
 ```
+
+See [docs/release-conventions.md](docs/release-conventions.md) for the complete PR, CI, merge, tagging and verification workflow.
 
 ## Project Structure · 项目结构
 
@@ -113,7 +120,8 @@ Sources/NewsBar/
 ├── Views/
 │   ├── MenuBar/                # Popover components (AISummaryCard, NewsSection, SourceBadge)
 │   ├── Settings/               # Settings window tabs
-│   └── Dashboard/              # Dashboard window (DashboardWindow, DashboardVisualComponents, DashboardAIBriefingPanel)
+│   ├── Dashboard/              # Dashboard window (DashboardWindow, DashboardVisualComponents, DashboardAIBriefingPanel)
+│   └── Theme/                  # Shared Modern Material / Retro Editorial primitives
 └── Extensions/
     ├── URLOpener.swift          # Safe URL opening
     └── View+Glass.swift         # Glass effect + adaptive color scheme

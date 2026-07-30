@@ -11,6 +11,8 @@ struct DashboardWindow: View {
     private let layoutBreakpoint: CGFloat = 960
     private let sidebarWidth: CGFloat = 336
 
+    private var isRetro: Bool { settings.appTheme == .retroEditorial }
+
     private var selectedRSSSources: [NewsSource] {
         settings.activeSources.filter { !$0.isBuiltIn }
     }
@@ -74,12 +76,7 @@ struct DashboardWindow: View {
             }
         }
         .padding(12)
-        .background(.thinMaterial)
-        .overlay {
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .strokeBorder(.separator.opacity(0.25), lineWidth: 1)
-        }
-        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .newsCardSurface(cornerRadius: 14)
         .padding(.horizontal, 20)
     }
 
@@ -94,7 +91,11 @@ struct DashboardWindow: View {
                 }
 
                 ScrollView(.vertical, showsIndicators: true) {
-                    contentLayout(isWideLayout: isWideLayout)
+                    VStack(alignment: .leading, spacing: 22) {
+                        dashboardMasthead
+
+                        contentLayout(isWideLayout: isWideLayout)
+                    }
                         .padding(20)
                         .frame(maxWidth: .infinity, alignment: .topLeading)
                 }
@@ -106,20 +107,23 @@ struct DashboardWindow: View {
                 }
 
                 ToolbarItemGroup(placement: .primaryAction) {
-                    Button {
+                    DashboardToolbarAction(
+                        title: "刷新",
+                        symbol: "arrow.clockwise",
+                        isDisabled: orchestrator.isRefreshing
+                    ) {
                         Task { await orchestrator.manualRefresh(settings: settings) }
-                    } label: {
-                        Label("刷新", systemImage: "arrow.clockwise")
                     }
-                    .disabled(orchestrator.isRefreshing)
 
-                    Button(action: onOpenSettings) {
-                        Label("设置", systemImage: "gearshape")
-                    }
+                    DashboardToolbarAction(
+                        title: "设置",
+                        symbol: "gearshape",
+                        action: onOpenSettings
+                    )
                 }
             }
-            .background(.regularMaterial)
             .adaptiveColorScheme()
+            .appThemeSurface()
             .task {
                 await orchestrator.loadCached(settings: settings)
             }
@@ -147,21 +151,142 @@ struct DashboardWindow: View {
     }
 
     private var toolbarTitle: some View {
-        VStack(spacing: 1) {
-            Text("NewsBar Dashboard")
-                .font(.system(size: 14, weight: .semibold))
-                .lineLimit(1)
-                .truncationMode(.tail)
-                .frame(maxWidth: 240)
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 6) {
+                Image(systemName: "rectangle.split.2x1")
+                    .font(.system(size: 10, weight: isRetro ? .black : .semibold))
+                Text("DASHBOARD")
+                    .font(.system(size: 11, weight: isRetro ? .black : .semibold, design: isRetro ? .monospaced : .default))
+                    .tracking(isRetro ? 0.7 : 0)
+                Text("趋势 · RSS · AI")
+                    .font(.system(size: 9))
+                    .foregroundStyle(.secondary)
+            }
 
-            Text("趋势 · RSS · AI")
-                .font(.system(size: 11))
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .truncationMode(.tail)
-                .frame(maxWidth: 240)
+            Text("DASHBOARD")
+                .font(.system(size: 10, weight: isRetro ? .black : .semibold, design: isRetro ? .monospaced : .default))
+
+            Image(systemName: "rectangle.split.2x1")
+                .accessibilityLabel("Dashboard")
         }
-        .frame(maxWidth: 240)
+        .lineLimit(1)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Dashboard")
+    }
+
+    private var dashboardMasthead: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 10) {
+                Text("VOL. 06 · NO. \(issueNumber)")
+                    .font(.system(size: 9, weight: .black, design: .monospaced))
+                    .tracking(0.7)
+                Rectangle()
+                    .fill(mastheadInk)
+                    .frame(height: 1)
+                Text(issueDate)
+                    .font(.system(size: 10, weight: .bold, design: .serif))
+                EditorialTag(text: "上海版", fallbackTint: .secondary, filled: true)
+            }
+            .padding(.bottom, 9)
+
+            Rectangle()
+                .fill(RetroEditorialTokens.ink)
+                .frame(height: 2)
+
+            ViewThatFits(in: .horizontal) {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text("NEWS")
+                        .font(.system(size: 46, weight: .black, design: isRetro ? .serif : .default))
+                        .tracking(-1.5)
+                    Text("BAR")
+                        .font(.system(size: 46, weight: .black, design: isRetro ? .serif : .default))
+                        .tracking(-1.5)
+                        .foregroundStyle(mastheadAccent)
+                    Text("新闻编辑台")
+                        .font(.system(size: 17, weight: .bold, design: isRetro ? .serif : .default))
+                        .foregroundStyle(mastheadSecondary)
+                    Spacer(minLength: 12)
+                    Text("TREND · RSS · AI")
+                        .font(.system(size: 10, weight: .black, design: isRetro ? .monospaced : .default))
+                        .tracking(1.1)
+                }
+
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Text("NEWSBAR")
+                        .font(.system(size: 34, weight: .black, design: isRetro ? .serif : .default))
+                    Text("新闻编辑台")
+                        .font(.system(size: 14, weight: .bold, design: isRetro ? .serif : .default))
+                        .foregroundStyle(mastheadAccent)
+                }
+            }
+            .padding(.vertical, 6)
+
+            HStack(spacing: 8) {
+                Text("实时聚合 · 档案式阅读 · AI 每日简报")
+                    .font(.system(size: 11, weight: .medium, design: isRetro ? .serif : .default))
+                    .foregroundStyle(mastheadSecondary)
+                Spacer(minLength: 8)
+                EditorialTag(text: "热榜 \(orchestrator.weiboItems.count + orchestrator.bilibiliItems.count)", fallbackTint: .secondary)
+                EditorialTag(text: "RSS \(totalRSSItemCount)", fallbackTint: .secondary)
+                EditorialTag(text: "来源 \(selectedRSSSources.count + 2)", fallbackTint: .secondary)
+            }
+            .padding(.bottom, 8)
+
+            VStack(spacing: 2) {
+                Rectangle().fill(mastheadAccent).frame(height: isRetro ? 4 : 2)
+                Rectangle().fill(mastheadInk).frame(height: 1)
+            }
+        }
+        .padding(16)
+        .background {
+            if isRetro {
+                Rectangle().fill(RetroEditorialTokens.raisedPaper)
+            } else {
+                RoundedRectangle(cornerRadius: 14, style: .continuous).fill(.ultraThinMaterial)
+            }
+        }
+        .overlay {
+            if isRetro {
+                Rectangle().strokeBorder(RetroEditorialTokens.ink, lineWidth: 1.5)
+            } else {
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .strokeBorder(Color(nsColor: .separatorColor).opacity(0.35), lineWidth: 1)
+            }
+        }
+        .compositingGroup()
+        .editorialClipShape(cornerRadius: 14)
+        .background {
+            if isRetro {
+                Rectangle()
+                    .fill(RetroEditorialTokens.ink.opacity(0.72))
+                    .offset(x: 4, y: 4)
+            }
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("NewsBar 新闻编辑台，\(issueDate)，RSS \(totalRSSItemCount) 条")
+    }
+
+    private var mastheadInk: Color {
+        isRetro ? RetroEditorialTokens.ink : .primary
+    }
+
+    private var mastheadAccent: Color {
+        isRetro ? RetroEditorialTokens.brick : .accentColor
+    }
+
+    private var mastheadSecondary: Color {
+        isRetro ? RetroEditorialTokens.fadedInk : .secondary
+    }
+
+    private var issueNumber: String {
+        String(format: "%02d", Calendar.current.component(.day, from: Date()))
+    }
+
+    private var issueDate: String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "zh_CN")
+        formatter.dateFormat = "yyyy年M月d日 EEEE"
+        return formatter.string(from: Date())
     }
 
     private var rssMainRegion: some View {
@@ -188,32 +313,13 @@ struct DashboardWindow: View {
     }
 
     private var regionHeader: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 10) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text("RSS 主区")
-                    .font(.system(size: 17, weight: .semibold))
-                    .foregroundStyle(.primary)
-
-                Text(selectedRSSSources.isEmpty
-                     ? "尚未启用 RSS 源"
-                     : "\(selectedRSSSources.count) 个已启用源 · \(totalRSSItemCount) 条内容")
-                    .font(.system(size: 12))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-            }
-
-            Spacer(minLength: 0)
-
-            Text("按来源分卡")
-                .font(.system(size: 10, weight: .medium))
-                .foregroundStyle(.secondary)
-                .padding(.horizontal, 7)
-                .padding(.vertical, 3)
-                .background(.quaternary.opacity(0.5))
-                .clipShape(Capsule())
-                .accessibilityHidden(true)
-        }
+        EditorialSectionHeading(
+            index: "03",
+            title: "RSS 主版",
+            subtitle: selectedRSSSources.isEmpty
+                ? "尚未启用 RSS 源"
+                : "\(selectedRSSSources.count) 个已启用源 · \(totalRSSItemCount) 条内容"
+        )
     }
 
     private var emptyRSSState: some View {
@@ -236,23 +342,30 @@ struct DashboardWindow: View {
             Button("打开设置") {
                 onOpenSettings()
             }
-            .buttonStyle(.bordered)
+            .buttonStyle(EditorialActionButtonStyle(tone: .primary, compact: true))
             .controlSize(.small)
         }
         .padding(14)
-        .background(.ultraThinMaterial)
-        .overlay {
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .strokeBorder(.separator.opacity(0.35), lineWidth: 1)
-        }
-        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .newsCardSurface()
     }
 
     private var sidebarRegion: some View {
         VStack(alignment: .leading, spacing: 16) {
+            EditorialSectionHeading(
+                index: "01",
+                title: "每日简报",
+                subtitle: "AI 编辑部整理的重要线索"
+            )
+
             DashboardAIBriefingPanel(
                 orchestrator: orchestrator,
                 onConfigureAI: onConfigureAI ?? onOpenSettings
+            )
+
+            EditorialSectionHeading(
+                index: "02",
+                title: "实时热榜",
+                subtitle: "社交平台正在发生"
             )
 
             DashboardHotTrendCard(source: .weibo, items: orchestrator.weiboItems)
@@ -260,5 +373,35 @@ struct DashboardWindow: View {
             DashboardHotTrendCard(source: .bilibili, items: orchestrator.bilibiliItems)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+private struct DashboardToolbarAction: View {
+    @Environment(AppSettings.self) private var settings
+
+    let title: String
+    let symbol: String
+    var isDisabled = false
+    let action: () -> Void
+
+    var body: some View {
+        Group {
+            if settings.appTheme == .retroEditorial {
+                Button(action: action) {
+                    ViewThatFits(in: .horizontal) {
+                        Label(title, systemImage: symbol)
+                        Image(systemName: symbol)
+                    }
+                }
+                .buttonStyle(EditorialActionButtonStyle(compact: true))
+            } else {
+                Button(action: action) {
+                    Label(title, systemImage: symbol)
+                }
+            }
+        }
+        .disabled(isDisabled)
+        .help(title)
+        .accessibilityLabel(title)
     }
 }

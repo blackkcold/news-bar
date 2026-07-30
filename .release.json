@@ -9,8 +9,8 @@
   "ci_mode": "local",
   "release_branch": true,
   "auto_merge": false,
-  "release_note_style": "bilingual",
-  "summary": "安全、稳定性与体验优化：强化更新下载信任链、网络负载控制、AI 预算隔离和设置交互",
-  "summary_en": "Security, stability, and UX improvements: strengthened update trust, network payload controls, AI budget isolation, and settings interactions",
-  "validation": "swift test 301/301 + scripts/build.sh 通过"
+  "release_note_style": "structured-cn",
+  "summary": "复古报刊编辑风主题与 Dashboard、Popup 全局视觉重制",
+  "summary_en": "Retro Editorial theme with a comprehensive Dashboard and Popup visual redesign",
+  "validation": "swift test 303/303 + scripts/build.sh + codesign verify + hdiutil verify 通过"
 }
