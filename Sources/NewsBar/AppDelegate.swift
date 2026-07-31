@@ -41,6 +41,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         EncryptedKeyStore.migrateFromKeychainIfNeeded()
         settings = AppSettings()
 
+        preloadCachedNews()
         loadAPIKeyFromFile()
         observeAPIKeyConfigured()
         refreshAPIKeyIfNeeded()
@@ -88,8 +89,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                   let url = notification.userInfo?["url"] as? String,
                   let name = notification.userInfo?["name"] as? String else { return }
             Task {
-                await self.orchestrator?.refreshRSSSource(url: url, name: name)
+                await self.orchestrator?.refreshRSSSource(url: url, name: name, settings: self.settings)
             }
+        }
+    }
+
+    private func preloadCachedNews() {
+        Task { [weak self] in
+            guard let self, let orchestrator = self.orchestrator else { return }
+            await orchestrator.preloadCached(settings: self.settings)
         }
     }
 
@@ -236,12 +244,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func showPopover(relativeTo button: NSStatusBarButton) {
-        guard let orchestrator = orchestrator else { return }
+        guard let orchestrator, let updateChecker else { return }
         loadAPIKeyIfNeeded()
 
+        let activePopover: NSPopover
+        if let popover {
+            activePopover = popover
+        } else {
+            let createdPopover = makePopover(
+                orchestrator: orchestrator,
+                updateChecker: updateChecker
+            )
+            popover = createdPopover
+            activePopover = createdPopover
+        }
+
+        activePopover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+    }
+
+    private func makePopover(
+        orchestrator: NewsOrchestrator,
+        updateChecker: UpdateChecker
+    ) -> NSPopover {
         let contentView = PopoverContent(
             orchestrator: orchestrator,
-            updateChecker: updateChecker ?? UpdateChecker(),
+            updateChecker: updateChecker,
             onOpenSettings: { [weak self] in self?.openSettings() },
             onOpenDashboard: { [weak self] in self?.openDashboard() },
             onConfigureKey: { [weak self] in self?.openSettings(toAITab: true) }
@@ -252,9 +279,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         popover.contentSize = Self.popoverSize
         popover.behavior = .transient
         popover.contentViewController = NSHostingController(rootView: contentView)
-        popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
-
-        self.popover = popover
+        return popover
     }
 
     func openSettings(toAITab: Bool = false) {

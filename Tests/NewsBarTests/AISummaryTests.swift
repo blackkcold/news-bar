@@ -297,6 +297,43 @@ final class AISummaryParserTests: XCTestCase {
         let result = AISummaryParser.stripCitations("普通文本")
         XCTAssertEqual(result, "普通文本")
     }
+
+    func testLimitedSummary_capsEachCategoryWithoutChangingSource() {
+        let parsed = ParsedSummary(
+            trendOverview: [
+                ("趋势一", "内容一", 0),
+                ("趋势二", "内容二", 1),
+                ("趋势三", "内容三", 2),
+            ],
+            dailyEssentials: [
+                ("精选一", "内容一", 3),
+                ("精选二", "内容二", 4),
+                ("精选三", "内容三", 5),
+            ],
+            isLegacyFallback: false
+        )
+
+        let limited = AISummaryParser.limited(parsed, maxSectionsPerCategory: 2)
+
+        XCTAssertEqual(limited.trendOverview.map(\.title), ["趋势一", "趋势二"])
+        XCTAssertEqual(limited.dailyEssentials.map(\.title), ["精选一", "精选二"])
+        XCTAssertEqual(parsed.trendOverview.count, 3)
+        XCTAssertEqual(parsed.dailyEssentials.count, 3)
+    }
+
+    func testLimitedSummary_nilLimitReturnsAllSections() {
+        let parsed = ParsedSummary(
+            trendOverview: [("趋势", "内容", 0)],
+            dailyEssentials: [("精选", "内容", 1)],
+            isLegacyFallback: true
+        )
+
+        let result = AISummaryParser.limited(parsed, maxSectionsPerCategory: nil)
+
+        XCTAssertEqual(result.trendOverview.count, 1)
+        XCTAssertEqual(result.dailyEssentials.count, 1)
+        XCTAssertTrue(result.isLegacyFallback)
+    }
 }
 
 // MARK: - AppSettings Budget Cap Tests
@@ -873,86 +910,61 @@ final class TruncationHashTests: XCTestCase {
 
         await orchestrator.clearCache()
 
-        XCTAssertNil(orchestrator.popupLastHash)
-        XCTAssertNil(orchestrator.dashboardLastHash)
-        XCTAssertNil(orchestrator.popupLastTruncatedHash)
-        XCTAssertNil(orchestrator.dashboardLastTruncatedHash)
-        XCTAssertEqual(orchestrator.popupConsecutiveTruncationCount, 0)
-        XCTAssertEqual(orchestrator.dashboardConsecutiveTruncationCount, 0)
+        XCTAssertNil(orchestrator.sharedSummaryLastHash)
+        XCTAssertNil(orchestrator.sharedSummaryLastTruncatedHash)
+        XCTAssertEqual(orchestrator.sharedSummaryConsecutiveTruncationCount, 0)
 
         _ = settings
     }
 
-    func testTruncatedHashGuardsPopupRegeneration() {
+    func testTruncatedHashGuardsSharedRegeneration() {
         let orchestrator = NewsOrchestrator()
 
-        orchestrator.popupLastTruncatedHash = "hash-A"
+        orchestrator.sharedSummaryLastTruncatedHash = "hash-A"
         let newHash = "hash-A"
 
-        let shouldSkip = newHash == orchestrator.popupLastTruncatedHash
+        let shouldSkip = newHash == orchestrator.sharedSummaryLastTruncatedHash
         XCTAssertTrue(shouldSkip, "Same hash as truncated hash should skip regeneration")
-    }
-
-    func testTruncatedHashGuardsDashboardRegeneration() {
-        let orchestrator = NewsOrchestrator()
-
-        orchestrator.dashboardLastTruncatedHash = "hash-D"
-        let newHash = "hash-D"
-
-        let shouldSkip = newHash == orchestrator.dashboardLastTruncatedHash
-        XCTAssertTrue(shouldSkip, "Same hash as dashboard truncated hash should skip regeneration")
     }
 
     func testNewHashTriggersGenerationWhenDifferentFromBothHashes() {
         let orchestrator = NewsOrchestrator()
 
-        orchestrator.popupLastHash = "hash-old-success"
-        orchestrator.popupLastTruncatedHash = "hash-old-truncated"
+        orchestrator.sharedSummaryLastHash = "hash-old-success"
+        orchestrator.sharedSummaryLastTruncatedHash = "hash-old-truncated"
         let newHash = "hash-new"
 
-        let shouldGenerate = newHash != orchestrator.popupLastHash
-            && newHash != orchestrator.popupLastTruncatedHash
+        let shouldGenerate = newHash != orchestrator.sharedSummaryLastHash
+            && newHash != orchestrator.sharedSummaryLastTruncatedHash
         XCTAssertTrue(shouldGenerate, "New hash different from both should generate")
     }
 
     func testSuccessHashBlocksRegeneration() {
         let orchestrator = NewsOrchestrator()
 
-        orchestrator.popupLastHash = "hash-success"
-        orchestrator.popupLastTruncatedHash = nil
+        orchestrator.sharedSummaryLastHash = "hash-success"
+        orchestrator.sharedSummaryLastTruncatedHash = nil
         let newHash = "hash-success"
 
-        let shouldSkip = newHash == orchestrator.popupLastHash
+        let shouldSkip = newHash == orchestrator.sharedSummaryLastHash
         XCTAssertTrue(shouldSkip, "Same hash as success hash should skip regeneration")
     }
 
-    func testConsecutiveTruncationCountersAreIndependent() {
+    func testSharedTruncationCounterUsesSingleContext() {
         let orchestrator = NewsOrchestrator()
 
-        orchestrator.popupConsecutiveTruncationCount = orchestrator.maxConsecutiveTruncations
-        orchestrator.dashboardConsecutiveTruncationCount = 0
+        orchestrator.sharedSummaryConsecutiveTruncationCount = orchestrator.maxConsecutiveTruncations
 
-        XCTAssertEqual(orchestrator.popupConsecutiveTruncationCount, orchestrator.maxConsecutiveTruncations)
-        XCTAssertLessThan(orchestrator.dashboardConsecutiveTruncationCount, orchestrator.maxConsecutiveTruncations)
+        XCTAssertEqual(orchestrator.sharedSummaryConsecutiveTruncationCount, orchestrator.maxConsecutiveTruncations)
     }
 
-    func testPopupTruncationThresholdDoesNotSetDashboardCounter() {
+    func testClearCacheResetsSharedConsecutiveTruncationCounter() async {
         let orchestrator = NewsOrchestrator()
 
-        orchestrator.popupConsecutiveTruncationCount = orchestrator.maxConsecutiveTruncations
-
-        XCTAssertEqual(orchestrator.dashboardConsecutiveTruncationCount, 0)
-    }
-
-    func testClearCacheResetsBothConsecutiveTruncationCounters() async {
-        let orchestrator = NewsOrchestrator()
-
-        orchestrator.popupConsecutiveTruncationCount = 5
-        orchestrator.dashboardConsecutiveTruncationCount = 4
+        orchestrator.sharedSummaryConsecutiveTruncationCount = 5
         await orchestrator.clearCache()
 
-        XCTAssertEqual(orchestrator.popupConsecutiveTruncationCount, 0)
-        XCTAssertEqual(orchestrator.dashboardConsecutiveTruncationCount, 0)
+        XCTAssertEqual(orchestrator.sharedSummaryConsecutiveTruncationCount, 0)
     }
 }
 
@@ -1055,6 +1067,7 @@ private struct DashboardSummaryNeedsGenerationProbe {
 
 // MARK: - Prompt Topic Count Tests
 
+@MainActor
 final class PromptTopicCountTests: XCTestCase {
 
     func testTopicCountDefaultsToTwoToThree() {
@@ -1063,6 +1076,10 @@ final class PromptTopicCountTests: XCTestCase {
 
     func testTopicCountFourToFiveForDashboard() {
         XCTAssertEqual(AISummaryService.promptTopicHint(range: 4...5), "4–5")
+    }
+
+    func testSharedSummaryUsesDetailedDashboardPromptTarget() {
+        XCTAssertEqual(NewsOrchestrator.sharedSummaryTarget, .dashboard)
     }
 
     func testTopicCountSingleValueNoDash() {

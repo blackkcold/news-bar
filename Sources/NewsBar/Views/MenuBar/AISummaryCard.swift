@@ -5,6 +5,7 @@ struct AISummaryCard: View {
     @Binding var isExpanded: Bool
     var allItems: [NewsItem] = []
     var parsedSummary: ParsedSummary?
+    var maxSectionsPerCategory: Int?
     var isRegenerating = false
     var regenerationCooldownRemaining: TimeInterval = 0
     var onRegenerate: (() -> Void)?
@@ -314,9 +315,13 @@ struct AISummaryCard: View {
 
     private func resolvedSectionGroups(for fullText: String) -> [SummarySectionGroup] {
         if let parsedSummary {
+            let visibleSummary = AISummaryParser.limited(
+                parsedSummary,
+                maxSectionsPerCategory: maxSectionsPerCategory
+            )
             return [
-                SummarySectionGroup(title: "趋势概览", sections: parsedSummary.trendOverview.map(summarySection)),
-                SummarySectionGroup(title: "每日精选", sections: parsedSummary.dailyEssentials.map(summarySection))
+                SummarySectionGroup(title: "趋势概览", sections: visibleSummary.trendOverview.map(summarySection)),
+                SummarySectionGroup(title: "每日精选", sections: visibleSummary.dailyEssentials.map(summarySection))
             ].filter { !$0.sections.isEmpty }
         }
 
@@ -406,7 +411,7 @@ struct AISummaryCard: View {
         .controlSize(.small)
         .disabled(isRegenerating || isCoolingDown)
         .accessibilityLabel(regenerateButtonTitle(cooldownSeconds: cooldownSeconds))
-        .accessibilityHint(isCoolingDown ? "请等待冷却结束后再重新生成。" : "重新生成弹窗 AI 总结。")
+        .accessibilityHint(isCoolingDown ? "请等待冷却结束后再重新生成。" : "重新生成 Popup 与 Dashboard 共用的 AI 总结。")
     }
 
     private func regenerateButtonTitle(cooldownSeconds: Int) -> String {

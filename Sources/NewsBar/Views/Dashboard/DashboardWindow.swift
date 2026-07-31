@@ -11,6 +11,13 @@ struct DashboardWindow: View {
     private let layoutBreakpoint: CGFloat = 960
     private let sidebarWidth: CGFloat = 336
 
+    private static let issueDateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "zh_CN")
+        formatter.dateFormat = "yyyy年M月d日 EEEE"
+        return formatter
+    }()
+
     private var isRetro: Bool { settings.appTheme == .retroEditorial }
 
     private var selectedRSSSources: [NewsSource] {
@@ -283,10 +290,7 @@ struct DashboardWindow: View {
     }
 
     private var issueDate: String {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "zh_CN")
-        formatter.dateFormat = "yyyy年M月d日 EEEE"
-        return formatter.string(from: Date())
+        Self.issueDateFormatter.string(from: Date())
     }
 
     private var rssMainRegion: some View {
@@ -303,6 +307,11 @@ struct DashboardWindow: View {
                             items: orchestrator.rssItemsMap[source.id] ?? [],
                             state: orchestrator.sourceStates[source.id] ?? .idle,
                             isExpanded: isRSSSourceExpanded(source),
+                            onRefresh: {
+                                Task {
+                                    await orchestrator.refreshRSSSource(source, settings: settings)
+                                }
+                            },
                             onToggleExpansion: { toggleRSSSourceExpansion(source) }
                         )
                     }

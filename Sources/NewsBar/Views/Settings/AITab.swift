@@ -150,16 +150,7 @@ struct AITab: View {
 
             Section {
                 summaryLengthRow(
-                    title: "Popup 摘要长度",
-                    selection: Binding(
-                        get: { settings.aiPopupMaxWords },
-                        set: { settings.aiPopupMaxWords = $0 }
-                    ),
-                    presets: Array(AppSettings.validAIPopupMaxWords).sorted()
-                )
-
-                summaryLengthRow(
-                    title: "Dashboard 摘要长度",
+                    title: "共享摘要长度",
                     selection: Binding(
                         get: { settings.aiDashboardMaxWords },
                         set: { settings.aiDashboardMaxWords = $0 }
@@ -169,7 +160,7 @@ struct AITab: View {
             } header: {
                 Text("摘要长度")
             } footer: {
-                Text("Popup 用于菜单栏快速阅读，Dashboard 用于更详细的展开阅读。")
+                Text("Popup 和 Dashboard 共用一次生成结果；Popup 每类最多显示 2 条，Dashboard 显示完整简报。")
             }
 
             Section {
@@ -204,26 +195,9 @@ struct AITab: View {
                     )
                     .tint(settings.todayAIRequestCount >= settings.aiDailyCap ? .red : .blue)
 
-                    Divider().opacity(0.3)
-
-                    HStack {
-                        Text("Popup")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        Spacer()
-                        Text(settings.aiPopupUsageText)
-                            .font(.system(size: 11, weight: .medium, design: .monospaced))
-                            .foregroundStyle(settings.todayPopupAIRequestCount >= settings.effectiveDailyCap(for: .popup) ? .red : .primary)
-                    }
-                    HStack {
-                        Text("Dashboard")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        Spacer()
-                        Text(settings.aiDashboardUsageText)
-                            .font(.system(size: 11, weight: .medium, design: .monospaced))
-                            .foregroundStyle(settings.todayDashboardAIRequestCount >= settings.effectiveDailyCap(for: .dashboard) ? .red : .primary)
-                    }
+                    Text("同一份摘要同时服务 Popup 与 Dashboard，不重复计费。")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
                     Text("次日重置")
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
@@ -233,54 +207,24 @@ struct AITab: View {
             }
 
             Section {
-                Picker("预算模式", selection: Binding(
-                    get: { settings.aiBudgetMode },
-                    set: { settings.aiBudgetMode = $0 }
-                )) {
-                    Text("共享上限").tag(AISummaryBudgetMode.shared)
-                    Text("独立上限").tag(AISummaryBudgetMode.independent)
-                }
-                .pickerStyle(.segmented)
-
-                if settings.aiBudgetMode == .shared {
-                    HStack {
-                        Text("每日请求上限")
-                        Spacer()
-                        Picker("", selection: Binding(
-                            get: { settings.aiDailyCap },
-                            set: { settings.aiDailyCap = $0 }
-                        )) {
-                            ForEach(Array(AppSettings.validAICaps).sorted(), id: \.self) { cap in
-                                Text("\(cap) 次").tag(cap)
-                            }
+                HStack {
+                    Text("每日请求上限")
+                    Spacer()
+                    Picker("", selection: Binding(
+                        get: { settings.aiDailyCap },
+                        set: { settings.aiDailyCap = $0 }
+                    )) {
+                        ForEach(Array(AppSettings.validAICaps).sorted(), id: \.self) { cap in
+                            Text("\(cap) 次").tag(cap)
                         }
-                        .labelsHidden()
-                        .frame(width: 90)
                     }
-                } else {
-                    summaryLengthRow(
-                        title: "Popup 上限",
-                        selection: Binding(
-                            get: { settings.aiPopupDailyCap },
-                            set: { settings.aiPopupDailyCap = $0 }
-                        ),
-                        presets: Array(AppSettings.validAICaps).sorted(),
-                        unitLabel: "次"
-                    )
-                    summaryLengthRow(
-                        title: "Dashboard 上限",
-                        selection: Binding(
-                            get: { settings.aiDashboardDailyCap },
-                            set: { settings.aiDashboardDailyCap = $0 }
-                        ),
-                        presets: Array(AppSettings.validAICaps).sorted(),
-                        unitLabel: "次"
-                    )
+                    .labelsHidden()
+                    .frame(width: 90)
                 }
             } header: {
                 Text("限额")
             } footer: {
-                Text("共享上限：Popup 和 Dashboard 共用同一额度；独立上限：各自独立计算。达到上限后当日不再发起 AI 请求，次日自动重置")
+                Text("共享摘要达到上限后当日不再发起 AI 请求，次日自动重置。")
             }
 
             Section {

@@ -318,6 +318,7 @@ struct DashboardRSSSourceCard: View {
     let items: [NewsItem]
     let state: SourceLoadState
     let isExpanded: Bool
+    let onRefresh: () -> Void
     let onToggleExpansion: () -> Void
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -342,6 +343,11 @@ struct DashboardRSSSourceCard: View {
         case .loaded: return .green
         case .failed: return .orange
         }
+    }
+
+    private var isRefreshing: Bool {
+        if case .loading = state { return true }
+        return false
     }
 
     var body: some View {
@@ -392,6 +398,22 @@ struct DashboardRSSSourceCard: View {
             }
 
             Spacer(minLength: 8)
+
+            Button(action: onRefresh) {
+                if isRefreshing {
+                    ProgressView()
+                        .controlSize(.small)
+                        .frame(width: 13, height: 13)
+                } else {
+                    Image(systemName: "arrow.clockwise")
+                }
+            }
+            .buttonStyle(EditorialActionButtonStyle(compact: true))
+            .controlSize(.small)
+            .tint(sourceTint)
+            .disabled(isRefreshing)
+            .help("刷新 \(source.displayName)")
+            .accessibilityLabel("刷新 \(source.displayName)")
 
             Button {
                 toggleExpansion()
@@ -752,29 +774,12 @@ private struct DashboardRSSMasonryCard: View {
 
     private var footerMeta: some View {
         HStack(alignment: .center, spacing: 6) {
-            HStack(spacing: 4) {
-                EditorialSourceBadge(
-                    mark: sourceMark,
-                    fallbackTint: sourceTint,
-                    size: 16
-                )
-                Text(item.source.displayName)
-                    .font(.system(size: 10, weight: isRetro ? .black : .medium, design: isRetro ? .serif : .default))
-            }
-                .foregroundStyle(sourceTint)
-                .lineLimit(1)
-                .truncationMode(.tail)
-                .padding(.horizontal, 6)
-                .padding(.vertical, 2)
-                .background(sourceTint.opacity(0.12))
-                .editorialClipShape(cornerRadius: 20)
-
-            if let host = URL(string: item.url)?.host, !host.isEmpty {
-                Text(host)
-                    .font(.system(size: 10))
+            if hasRemoteImage {
+                Text("阅读原文")
+                    .font(.system(size: 10, weight: .medium))
                     .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
+            } else {
+                sourceBadge
             }
 
             Spacer(minLength: 0)

@@ -29,12 +29,19 @@ struct PopoverContent: View {
         static let headerTextSize: CGFloat = 13
     }
 
+    private static let issueDateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "zh_CN")
+        formatter.dateFormat = "yyyy年M月d日 EEEE"
+        return formatter
+    }()
+
     var body: some View {
         VStack(spacing: 0) {
             headerView
 
             ScrollView(.vertical, showsIndicators: false) {
-                VStack(spacing: 0) {
+                LazyVStack(spacing: 0) {
                     if let error = allSourcesFailureMessage {
                         errorBanner(error)
                     }
@@ -49,6 +56,7 @@ struct PopoverContent: View {
                             isExpanded: $aiSummaryExpanded,
                             allItems: orchestrator.aiSummaryItems,
                             parsedSummary: orchestrator.aiParsedSummary,
+                            maxSectionsPerCategory: 2,
                             isRegenerating: orchestrator.aiSummaryState == .fetching || orchestrator.aiSummaryState == .summarizing,
                             regenerationCooldownRemaining: AISummaryService.regenerationCooldownRemaining(),
                             onRegenerate: {
@@ -303,10 +311,7 @@ struct PopoverContent: View {
     }
 
     private var issueDate: String {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "zh_CN")
-        formatter.dateFormat = "yyyy年M月d日 EEEE"
-        return formatter.string(from: Date())
+        Self.issueDateFormatter.string(from: Date())
     }
 
     private func errorBanner(_ message: String) -> some View {
