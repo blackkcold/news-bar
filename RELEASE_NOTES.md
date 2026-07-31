@@ -3,6 +3,33 @@
 ### Added
 -
 
+## [v2.2.1] - 2026-07-31
+
+### ✨ 新功能
+- **共享 AI 摘要**：Popup 与 Dashboard 复用同一份详细 AI 简报，不再各自独立生成。Popup 每类最多显示 2 条，Dashboard 显示完整结果，消除重复 AI 请求。
+- **Dashboard AI 独立刷新**：AI 简报面板新增独立刷新按钮，支持 60s 冷却保护，不依赖全局刷新。
+- **RSS 单源刷新**：Dashboard 每个 RSS 源卡片增加独立刷新按钮，带加载状态反馈，不影响其他源。
+
+### ⚡ 性能优化
+- **Popup 实例复用**：首次打开后复用 NSPopover 实例，消除重复创建 SwiftUI 树的开销。
+- **启动缓存预热**：App 启动时异步预加载缓存数据，减少首次打开 popup/Dashboard 的等待时间。
+- **图片缩略解码**：ImageCache 新增 CGImageSource 缩略图解码（最大 480px），避免 SwiftUI 渲染时解码原始大图。
+- **图片请求合并**：相同 URL 的并发请求自动合并，减少重复网络开销。
+- **Popup 外层懒加载**：ScrollView 内 VStack 改为 LazyVStack，延迟非可见区域视图创建。
+- **日期格式器复用**：Popup 与 Dashboard 的 DateFormatter 提升为静态常量，避免每次 body 重建。
+
+### 🎨 UI 优化
+- **RSS 卡片元信息精简**：移除图文卡片底部重复的来源徽章和网址，仅保留顶部来源徽章，底部改为「阅读原文」提示。
+- **RSS 文本行精简**：移除来源名称右侧的网址显示，减少信息冗余。
+- **AI 设置页简化**：移除独立的 Popup/Dashboard 摘要长度和预算模式选择器，统一为共享摘要长度和共享额度。
+
+### ✅ 测试
+- **新增测试**：`AISummaryParser.limited` 摘要裁剪、`ImageCache.decodeThumbnail` 缩略解码、共享摘要目标常量。
+- **测试适配**：截断哈希、连续截断计数、clearCache 等测试从双目标改为共享单目标。
+- **全量测试**：`swift test` 306/306 通过。
+
+---
+
 ## [v2.2.0] - 2026-07-30
 
 ### ✨ 新功能
