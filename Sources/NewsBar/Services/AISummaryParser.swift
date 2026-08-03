@@ -13,6 +13,25 @@ struct ParsedSummary {
 
 enum AISummaryParser {
 
+    private static let citationRegex = try? NSRegularExpression(pattern: "\\[#(\\d+)\\]")
+    private static let stripCitationRegex = try? NSRegularExpression(pattern: "(?:引用：)?\\[#\\d+\\]")
+    private static let markdownTitleRegex = try? NSRegularExpression(pattern: "^#{1,6}\\s*")
+    private static let markdownRules: [(regex: NSRegularExpression, replacement: String)] = [
+        ("\\*\\*\\*(.*?)\\*\\*\\*", "$1"),
+        ("\\*\\*(.*?)\\*\\*", "$1"),
+        ("(?<!\\*)\\*(?!\\*)(.*?)(?<!\\*)\\*(?!\\*)", "$1"),
+        ("`(.*?)`", "$1"),
+        ("(?m)^#{1,6}\\s+", ""),
+        ("(?m)^[-*+]\\s+", ""),
+        ("(?m)^>\\s+", ""),
+        ("\\[#\\d+\\]", ""),
+        ("【[^】]*】", ""),
+        ("(?m)^引用：.*$\\n?", ""),
+    ].compactMap { pattern, replacement in
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return nil }
+        return (regex, replacement)
+    }
+
     /// Returns the same parsed summary with each category capped for compact surfaces.
     static func limited(_ summary: ParsedSummary, maxSectionsPerCategory: Int?) -> ParsedSummary {
         guard let maxSectionsPerCategory else { return summary }
@@ -138,26 +157,20 @@ enum AISummaryParser {
 
     static func stripMarkdown(_ text: String) -> String {
         var result = text
-        result = result.replacingOccurrences(of: "\\*\\*\\*(.*?)\\*\\*\\*", with: "$1", options: .regularExpression)
-        result = result.replacingOccurrences(of: "\\*\\*(.*?)\\*\\*", with: "$1", options: .regularExpression)
-        result = result.replacingOccurrences(of: "(?<!\\*)\\*(?!\\*)(.*?)(?<!\\*)\\*(?!\\*)", with: "$1", options: .regularExpression)
-        result = result.replacingOccurrences(of: "`(.*?)`", with: "$1", options: .regularExpression)
-        result = result.replacingOccurrences(of: "(?m)^#{1,6}\\s+", with: "", options: .regularExpression)
-        result = result.replacingOccurrences(of: "(?m)^[-*+]\\s+", with: "", options: .regularExpression)
-        result = result.replacingOccurrences(of: "(?m)^>\\s+", with: "", options: .regularExpression)
-        result = result.replacingOccurrences(of: "\\[#\\d+\\]", with: "", options: .regularExpression)
-        result = result.replacingOccurrences(of: "【[^】]*】", with: "", options: .regularExpression)
-        result = result.replacingOccurrences(of: "(?m)^引用：.*$\\n?", with: "", options: .regularExpression)
+        for rule in markdownRules {
+            result = replacingMatches(rule.regex, in: result, with: rule.replacement)
+        }
         return result
     }
 
     static func stripCitations(_ text: String) -> String {
-        text.replacingOccurrences(of: "(?:引用：)?\\[#\\d+\\]", with: "", options: .regularExpression)
+        guard let stripCitationRegex else { return text.trimmingCharacters(in: .whitespaces) }
+        return replacingMatches(stripCitationRegex, in: text, with: "")
             .trimmingCharacters(in: .whitespaces)
     }
 
     static func parseCitationNumbers(_ line: String, itemCount: Int) -> [Int] {
-        guard let regex = try? NSRegularExpression(pattern: "\\[#(\\d+)\\]") else { return [] }
+        guard let regex = citationRegex else { return [] }
         let range = NSRange(line.startIndex..., in: line)
         return regex.matches(in: line, range: range).compactMap { match in
             guard match.numberOfRanges > 1,
@@ -182,7 +195,17 @@ enum AISummaryParser {
     }
 
     private static func extractMarkdownTitle(_ line: String) -> String {
-        line.replacingOccurrences(of: "^#{1,6}\\s*", with: "", options: .regularExpression)
+        guard let markdownTitleRegex else { return line.trimmingCharacters(in: .whitespaces) }
+        return replacingMatches(markdownTitleRegex, in: line, with: "")
             .trimmingCharacters(in: .whitespaces)
+    }
+
+    private static func replacingMatches(
+        _ regex: NSRegularExpression,
+        in text: String,
+        with replacement: String
+    ) -> String {
+        let range = NSRange(text.startIndex..., in: text)
+        return regex.stringByReplacingMatches(in: text, range: range, withTemplate: replacement)
     }
 }

@@ -3,14 +3,13 @@ import AppKit
 
 struct PopoverContent: View {
     @Environment(AppSettings.self) private var settings
-    @ObservedObject var orchestrator: NewsOrchestrator
+    let orchestrator: NewsOrchestrator
     @ObservedObject var updateChecker: UpdateChecker
 
     var onOpenSettings: () -> Void
     var onOpenDashboard: () -> Void
     var onConfigureKey: (() -> Void)?
 
-    @State private var aiSummaryExpanded = true
     @State private var expandedRSSSourceIDs: Set<String> = []
     @State private var rssLoadedCounts: [String: Int] = [:]
     @State private var showQuitConfirmation = false
@@ -50,24 +49,10 @@ struct PopoverContent: View {
                         warningBanner(warning)
                     }
 
-                    if settings.aiSummaryEnabled, orchestrator.aiSummaryState != .idle {
-                        AISummaryCard(
-                            state: orchestrator.aiSummaryState,
-                            isExpanded: $aiSummaryExpanded,
-                            allItems: orchestrator.aiSummaryItems,
-                            parsedSummary: orchestrator.aiParsedSummary,
-                            maxSectionsPerCategory: 2,
-                            isRegenerating: orchestrator.aiSummaryState == .fetching || orchestrator.aiSummaryState == .summarizing,
-                            regenerationCooldownRemaining: AISummaryService.regenerationCooldownRemaining(),
-                            onRegenerate: {
-                                Task {
-                                    await orchestrator.regenerateAISummary(settings: settings)
-                                }
-                            },
-                            onConfigureKey: onConfigureKey
-                        )
-                        Divider().padding(.horizontal, Metrics.sectionDividerInset)
-                    }
+                    PopoverAISummarySection(
+                        orchestrator: orchestrator,
+                        onConfigureKey: onConfigureKey
+                    )
 
                     EditorialSectionHeading(
                         index: "01",
@@ -346,5 +331,33 @@ struct PopoverContent: View {
         .editorialClipShape(cornerRadius: 6)
         .padding(.horizontal, Metrics.sectionDividerInset)
         .padding(.bottom, Metrics.bannerBottomSpacing)
+    }
+}
+
+private struct PopoverAISummarySection: View {
+    @Environment(AppSettings.self) private var settings
+    let orchestrator: NewsOrchestrator
+    let onConfigureKey: (() -> Void)?
+    @State private var isExpanded = true
+
+    var body: some View {
+        if settings.aiSummaryEnabled, orchestrator.aiSummaryState != .idle {
+            AISummaryCard(
+                state: orchestrator.aiSummaryState,
+                isExpanded: $isExpanded,
+                allItems: orchestrator.aiSummaryItems,
+                parsedSummary: orchestrator.aiParsedSummary,
+                maxSectionsPerCategory: 2,
+                isRegenerating: orchestrator.aiSummaryState == .fetching || orchestrator.aiSummaryState == .summarizing,
+                regenerationCooldownRemaining: AISummaryService.regenerationCooldownRemaining(),
+                onRegenerate: {
+                    Task {
+                        await orchestrator.regenerateAISummary(settings: settings)
+                    }
+                },
+                onConfigureKey: onConfigureKey
+            )
+            Divider().padding(.horizontal, 10)
+        }
     }
 }

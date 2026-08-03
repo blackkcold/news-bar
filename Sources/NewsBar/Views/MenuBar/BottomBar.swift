@@ -4,7 +4,7 @@ struct BottomBar: View {
     @Environment(AppSettings.self) private var settings
 
     let isRefreshing: Bool
-    var batchProgress: (completed: Int, total: Int) = (0, 0)
+    var batchProgress: BatchProgress = .zero
     let onRefresh: () -> Void
     let onOpenSettings: () -> Void
     let onOpenDashboard: () -> Void

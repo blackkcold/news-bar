@@ -2,7 +2,7 @@ import SwiftUI
 
 struct DashboardWindow: View {
     @Environment(AppSettings.self) private var settings
-    @ObservedObject var orchestrator: NewsOrchestrator
+    let orchestrator: NewsOrchestrator
     @State private var collapsedRSSSourceIDs: Set<NewsSource.ID> = []
 
     var onOpenSettings: () -> Void = {}

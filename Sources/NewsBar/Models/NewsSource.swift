@@ -1,6 +1,6 @@
 import Foundation
 
-enum NewsSource: Identifiable, Hashable, Codable {
+enum NewsSource: Identifiable, Hashable, Codable, Sendable {
     case weibo
     case bilibili
     case rss(name: String, url: String)

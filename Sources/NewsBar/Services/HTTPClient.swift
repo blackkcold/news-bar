@@ -70,10 +70,18 @@ enum HTTPClient {
         return true
     }
 
-    static func data(for url: URL, config: Config) async throws -> (Data, HTTPURLResponse) {
+    static func data(
+        for url: URL,
+        config: Config,
+        additionalHeaders: [String: String] = [:],
+        allowsNotModified: Bool = false
+    ) async throws -> (Data, HTTPURLResponse) {
         var request = URLRequest(url: url)
         request.setValue(config.userAgent, forHTTPHeaderField: "User-Agent")
         for (key, value) in config.extraHeaders {
+            request.setValue(value, forHTTPHeaderField: key)
+        }
+        for (key, value) in additionalHeaders {
             request.setValue(value, forHTTPHeaderField: key)
         }
         request.timeoutInterval = config.timeout
@@ -82,8 +90,14 @@ enum HTTPClient {
         guard let httpResponse = response as? HTTPURLResponse else {
             throw NewsBarError.requestFailed
         }
-        guard (200...299).contains(httpResponse.statusCode) else {
+        let isAccepted = (200...299).contains(httpResponse.statusCode)
+            || (allowsNotModified && httpResponse.statusCode == 304)
+        guard isAccepted else {
             throw NewsBarError.requestFailed
+        }
+
+        if httpResponse.statusCode == 304 {
+            return (data, httpResponse)
         }
 
         let declaredLength: Int? = {

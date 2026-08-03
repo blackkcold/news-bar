@@ -43,6 +43,20 @@ actor CacheManager {
         return newHash != existing.contentHash
     }
 
+    func markValidated(
+        for source: NewsSource,
+        at date: Date = Date(),
+        eTag: String? = nil,
+        lastModified: String? = nil
+    ) -> CacheEntry? {
+        guard var existing = load(for: source) else { return nil }
+        existing.lastValidatedAt = date
+        if let eTag { existing.eTag = eTag }
+        if let lastModified { existing.lastModified = lastModified }
+        save(existing, for: source)
+        return existing
+    }
+
     func clear() {
         if let files = try? FileManager.default.contentsOfDirectory(
             at: cacheDirectory, includingPropertiesForKeys: nil

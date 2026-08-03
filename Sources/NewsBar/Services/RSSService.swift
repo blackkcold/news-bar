@@ -1,15 +1,42 @@
 import Foundation
 
+enum RSSFetchResult: Sendable {
+    case modified(items: [NewsItem], eTag: String?, lastModified: String?)
+    case notModified(eTag: String?, lastModified: String?)
+}
+
 enum RSSService {
 
     static func fetch(url rssURL: String, sourceName: String) async throws -> [NewsItem] {
+        let result = try await fetchConditional(url: rssURL, sourceName: sourceName)
+        switch result {
+        case .modified(let items, _, _):
+            return items
+        case .notModified:
+            throw NewsBarError.requestFailed
+        }
+    }
+
+    static func fetchConditional(
+        url rssURL: String,
+        sourceName: String,
+        eTag: String? = nil,
+        lastModified: String? = nil
+    ) async throws -> RSSFetchResult {
         guard let url = URL(string: rssURL) else {
             throw NewsBarError.invalidURL
         }
 
-        let (data, _) = try await withThrowingTaskGroup(of: (Data, URLResponse).self) { group in
+        let headers = conditionalHeaders(eTag: eTag, lastModified: lastModified)
+
+        let (data, response) = try await withThrowingTaskGroup(of: (Data, HTTPURLResponse).self) { group in
             group.addTask {
-                try await HTTPClient.data(for: url, config: .rss)
+                try await HTTPClient.data(
+                    for: url,
+                    config: .rss,
+                    additionalHeaders: headers,
+                    allowsNotModified: true
+                )
             }
             group.addTask {
                 try await Task.sleep(nanoseconds: 10_000_000_000)
@@ -22,7 +49,17 @@ enum RSSService {
             return result
         }
 
-        return try parseRSSFeed(data: data, sourceName: sourceName, sourceURL: rssURL)
+        let responseETag = response.value(forHTTPHeaderField: "ETag") ?? eTag
+        let responseLastModified = response.value(forHTTPHeaderField: "Last-Modified") ?? lastModified
+        if response.statusCode == 304 {
+            return .notModified(eTag: responseETag, lastModified: responseLastModified)
+        }
+
+        return .modified(
+            items: try parseRSSFeed(data: data, sourceName: sourceName, sourceURL: rssURL),
+            eTag: responseETag,
+            lastModified: responseLastModified
+        )
     }
 
     static func validate(_ urlString: String) async throws -> Bool {
@@ -36,6 +73,17 @@ enum RSSService {
         let (data, _) = try await HTTPClient.data(for: url, config: .rss)
 
         return isRSSOrAtom(data: data)
+    }
+
+    static func conditionalHeaders(eTag: String?, lastModified: String?) -> [String: String] {
+        var headers: [String: String] = [:]
+        if let eTag, !eTag.isEmpty {
+            headers["If-None-Match"] = eTag
+        }
+        if let lastModified, !lastModified.isEmpty {
+            headers["If-Modified-Since"] = lastModified
+        }
+        return headers
     }
 
     private static func isRSSOrAtom(data: Data) -> Bool {

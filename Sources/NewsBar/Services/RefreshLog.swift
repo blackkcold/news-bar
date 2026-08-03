@@ -23,7 +23,9 @@ actor RefreshLog {
 
     enum Trigger: String, Codable, CaseIterable {
         case startup      // 启动 2s 自动刷新
-        case timer1h      // 每小时定时器触发
+        case timer1h      // 旧版每小时定时器触发，保留用于兼容历史日志
+        case scheduled    // 分层调度器触发
+        case wake         // 系统唤醒后检查刷新
         case manual       // 用户手动点击刷新
         case popoverOpen  // 打开弹窗时 loadCached
     }
