@@ -12,6 +12,8 @@ struct AISummaryCard: View {
     var onConfigureKey: (() -> Void)?
 
     @State private var displayText = ""
+    @State private var animationTargetText = ""
+    @State private var cachedGroups: [SummarySectionGroup] = []
     @State private var animationTask: Task<Void, Never>?
     @Environment(AppSettings.self) private var settings
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -49,7 +51,8 @@ struct AISummaryCard: View {
         .onAppear {
             switch state {
             case .done(let text), .truncated(let text):
-                displayText = revealSourceText(for: text)
+                prepareRenderModel(for: text)
+                displayText = animationTargetText
             default: break
             }
         }
@@ -57,12 +60,20 @@ struct AISummaryCard: View {
             switch newState {
             case .done(let text), .truncated(let text):
                 animationTask?.cancel()
-                animationTask = Task { await animateText(revealSourceText(for: text)) }
+                prepareRenderModel(for: text)
+                let target = animationTargetText
+                animationTask = Task { await animateText(target) }
             default:
                 animationTask?.cancel()
                 animationTask = nil
                 displayText = ""
+                animationTargetText = ""
+                cachedGroups = []
             }
+        }
+        .onDisappear {
+            animationTask?.cancel()
+            animationTask = nil
         }
     }
 
@@ -227,7 +238,7 @@ struct AISummaryCard: View {
         }()
 
         VStack(alignment: .leading, spacing: 8) {
-            let fullyVisible = displayText == revealSourceText(for: fullText)
+            let fullyVisible = displayText == animationTargetText
             sectionRenderedView(fullText, visibleText: fullyVisible ? nil : displayText)
 
             if case .truncated = state {
@@ -260,7 +271,7 @@ struct AISummaryCard: View {
 
     @ViewBuilder
     private func sectionRenderedView(_ fullText: String, visibleText: String? = nil) -> some View {
-        let groups = revealedSectionGroups(for: fullText, visibleText: visibleText)
+        let groups = revealedSectionGroups(cachedGroups, visibleText: visibleText)
         if groups.allSatisfy({ $0.sections.isEmpty }) {
             let fallbackText = visibleText ?? AISummaryParser.stripCitations(fullText)
             Text((try? AttributedString(markdown: fallbackText)) ?? AttributedString(fallbackText))
@@ -309,6 +320,7 @@ struct AISummaryCard: View {
     private struct SummarySection {
         let title: String
         let body: String
+        let revealCharacters: [Character]
         let visibleBody: String?
         let primaryIndex: Int?
     }
@@ -329,19 +341,21 @@ struct AISummaryCard: View {
         return [SummarySectionGroup(title: "", sections: sections.map(summarySection))]
     }
 
-    private func revealedSectionGroups(for fullText: String, visibleText: String?) -> [SummarySectionGroup] {
-        let groups = resolvedSectionGroups(for: fullText)
+    private func revealedSectionGroups(
+        _ groups: [SummarySectionGroup],
+        visibleText: String?
+    ) -> [SummarySectionGroup] {
         guard let visibleText else { return groups }
 
-        var remainingCharacters = Array(visibleText).count
+        var remainingCharacters = visibleText.count
         return groups.map { group in
             let sections = group.sections.map { section in
-                let bodyText = renderedBodyText(section.body)
-                let visibleBody = String(bodyText.prefix(remainingCharacters))
-                remainingCharacters = max(0, remainingCharacters - Array(bodyText).count)
+                let visibleBody = String(section.revealCharacters.prefix(remainingCharacters))
+                remainingCharacters = max(0, remainingCharacters - section.revealCharacters.count)
                 return SummarySection(
                     title: section.title,
                     body: section.body,
+                    revealCharacters: section.revealCharacters,
                     visibleBody: visibleBody,
                     primaryIndex: section.primaryIndex
                 )
@@ -351,19 +365,28 @@ struct AISummaryCard: View {
     }
 
     private func summarySection(_ section: (title: String, body: String, primaryIndex: Int?)) -> SummarySection {
-        SummarySection(title: section.title, body: section.body, visibleBody: nil, primaryIndex: section.primaryIndex)
+        SummarySection(
+            title: section.title,
+            body: section.body,
+            revealCharacters: Array(renderedBodyText(section.body)),
+            visibleBody: nil,
+            primaryIndex: section.primaryIndex
+        )
     }
 
-    private func revealSourceText(for fullText: String) -> String {
+    @MainActor
+    private func prepareRenderModel(for fullText: String) {
         let groups = resolvedSectionGroups(for: fullText)
-        guard !groups.allSatisfy({ $0.sections.isEmpty }) else {
-            return AISummaryParser.stripMarkdown(fullText)
+        cachedGroups = groups
+        if groups.allSatisfy({ $0.sections.isEmpty }) {
+            animationTargetText = AISummaryParser.stripMarkdown(fullText)
+        } else {
+            animationTargetText = groups
+                .flatMap(\.sections)
+                .flatMap(\.revealCharacters)
+                .map(String.init)
+                .joined()
         }
-
-        return groups
-            .flatMap { $0.sections }
-            .map { renderedBodyText($0.body) }
-            .joined()
     }
 
     private func renderedBodyText(_ text: String) -> String {

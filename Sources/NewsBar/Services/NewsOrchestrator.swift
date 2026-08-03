@@ -1,4 +1,5 @@
 import Foundation
+import Observation
 
 enum AISummaryState: Equatable, Sendable {
     case idle
@@ -38,35 +39,47 @@ enum NewsBarError: LocalizedError {
 }
 
 @MainActor
-final class NewsOrchestrator: ObservableObject {
+@Observable
+final class NewsOrchestrator {
 
     // MARK: - Published State
 
-    @Published var weiboItems: [NewsItem] = []
-    @Published var bilibiliItems: [NewsItem] = []
-    @Published var rssItemsMap: [String: [NewsItem]] = [:]
+    var weiboItems: [NewsItem] = []
+    var bilibiliItems: [NewsItem] = []
+    var rssItemsMap: [String: [NewsItem]] = [:]
 
     // Shared summary context — Popup and Dashboard render the same generated result.
-    @Published var aiSummaryState = AISummaryState.idle
-    @Published var aiSummaryItems: [NewsItem] = []
-    @Published var aiParsedSummary: ParsedSummary?
+    var aiSummaryState = AISummaryState.idle
+    var aiSummaryItems: [NewsItem] = []
+    var aiParsedSummary: ParsedSummary?
 
-    @Published var isRefreshing = false
-    @Published var sourceStates: [String: SourceLoadState] = [:]
-    @Published var manualRefreshWarning: String?
-    @Published var batchProgress: (completed: Int, total: Int) = (0, 0)
+    var isRefreshing = false
+    var sourceStates: [String: SourceLoadState] = [:]
+    var manualRefreshWarning: String?
+    var batchProgress = BatchProgress.zero
 
     // MARK: - Private State
 
     private let cacheManager = CacheManager()
+    private let aiSummaryCacheStore = AISummaryCacheStore()
+    private let trendHistoryStore = TrendHistoryStore.shared
     private let rateLimiter = RateLimiter()
     private var isLoadingCachedState = false
+    private var refreshWaiters: [CheckedContinuation<Void, Never>] = []
+    private var pendingManualRefresh = false
     var sharedSummaryLastHash: String?
     /// 截断内容哈希：防止对同一截断内容重复生成，成功生成后清除。
     var sharedSummaryLastTruncatedHash: String?
     var sharedSummaryConsecutiveTruncationCount = 0
     let maxConsecutiveTruncations = 3
+    private var lastHotRefresh: Date?
     private var lastSourceRefresh: [String: Date] = [:]
+    private var rssUnchangedRefreshCounts: [String: Int] = [:]
+    private var rssLastChangedAt: [String: Date] = [:]
+    private var rssFailureCounts: [String: Int] = [:]
+    private var lastSummaryGeneratedAt: Date?
+    private var lastHourlyPushAt: Date?
+    private var latestTrendSummary = TrendChangeSummary.none
     /// The shared result uses the detailed Dashboard prompt. Popup limits rows at render time.
     static let sharedSummaryTarget: SummaryTarget = .dashboard
 
@@ -92,6 +105,27 @@ final class NewsOrchestrator: ObservableObject {
         parsed.trendOverview.isEmpty && parsed.dailyEssentials.isEmpty
     }
 
+    internal static func shouldGenerateSummary(
+        hasCachedSummary: Bool,
+        hasNewContent: Bool,
+        isManualRefresh: Bool,
+        hotChanged: Bool,
+        rssChanged: Bool,
+        trendIsSignificant: Bool,
+        elapsedSinceSummary: TimeInterval,
+        shouldRecover: Bool
+    ) -> Bool {
+        !hasCachedSummary
+            || (isManualRefresh && hasNewContent)
+            || (hotChanged && trendIsSignificant
+                && hasNewContent
+                && elapsedSinceSummary >= RefreshPolicy.trendSummaryMinimumInterval)
+            || (rssChanged
+                && hasNewContent
+                && elapsedSinceSummary >= RefreshPolicy.dailySummaryMinimumInterval)
+            || (hasNewContent && shouldRecover)
+    }
+
     // MARK: - Public API
 
     func loadCached(settings: AppSettings) async {
@@ -112,11 +146,13 @@ final class NewsOrchestrator: ObservableObject {
         // 内存优先: 若已有数据则不覆盖 (避免 stale 缓存清空自动刷新填入的新数据)
         if weiboItems.isEmpty {
             if let cached = await cacheManager.load(for: .weibo) {
+                weiboItems = cached.items
+                let validatedAt = cached.lastValidatedAt ?? cached.timestamp
+                lastHotRefresh = max(lastHotRefresh ?? .distantPast, validatedAt)
                 if cached.isStale {
                     sourceStates[NewsSource.weibo.id] = .idle
                     sourceResults[NewsSource.weibo.displayName] = "cacheStale"
                 } else {
-                    weiboItems = cached.items
                     applyCachedState(.loaded, for: .weibo)
                     sourceResults[NewsSource.weibo.displayName] = "cache/\(cached.items.count)"
                 }
@@ -131,11 +167,13 @@ final class NewsOrchestrator: ObservableObject {
         }
         if bilibiliItems.isEmpty {
             if let cached = await cacheManager.load(for: .bilibili) {
+                bilibiliItems = cached.items
+                let validatedAt = cached.lastValidatedAt ?? cached.timestamp
+                lastHotRefresh = max(lastHotRefresh ?? .distantPast, validatedAt)
                 if cached.isStale {
                     sourceStates[NewsSource.bilibili.id] = .idle
                     sourceResults[NewsSource.bilibili.displayName] = "cacheStale"
                 } else {
-                    bilibiliItems = cached.items
                     applyCachedState(.loaded, for: .bilibili)
                     sourceResults[NewsSource.bilibili.displayName] = "cache/\(cached.items.count)"
                 }
@@ -152,11 +190,12 @@ final class NewsOrchestrator: ObservableObject {
         for source in settings.activeSources where !source.isBuiltIn {
             if rssItemsMap[source.id, default: []].isEmpty {
                 if let entry = await cacheManager.load(for: source) {
+                    rssItemsMap[source.id] = entry.items
+                    lastSourceRefresh[source.id] = entry.lastValidatedAt ?? entry.timestamp
                     if entry.isStale {
                         sourceStates[source.id] = .idle
                         sourceResults[source.displayName] = "cacheStale"
                     } else {
-                        rssItemsMap[source.id] = entry.items
                         applyCachedState(.loaded, for: source)
                         sourceResults[source.displayName] = "cache/\(entry.items.count)"
                     }
@@ -172,6 +211,8 @@ final class NewsOrchestrator: ObservableObject {
             }
         }
 
+        await restoreCachedSummaryIfPossible(settings: settings)
+
         if let logTrigger {
             await RefreshLog.shared.record(
                 trigger: logTrigger,
@@ -183,19 +224,114 @@ final class NewsOrchestrator: ObservableObject {
     }
 
     func refreshIfNeeded(settings: AppSettings, trigger: RefreshLog.Trigger = .startup) async {
-        await doRefresh(settings: settings, trigger: trigger, isManual: false)
+        await enqueueRefresh(
+            settings: settings,
+            trigger: trigger,
+            isManual: false,
+            refreshHot: true,
+            rssSources: settings.activeSources.filter { !$0.isBuiltIn }
+        )
     }
 
     func manualRefresh(settings: AppSettings) async {
-        await doRefresh(settings: settings, trigger: .manual, isManual: true)
+        await enqueueRefresh(
+            settings: settings,
+            trigger: .manual,
+            isManual: true,
+            refreshHot: true,
+            rssSources: settings.activeSources.filter { !$0.isBuiltIn }
+        )
     }
 
-    private func doRefresh(
+    func refreshScheduled(
+        settings: AppSettings,
+        visibility: RefreshVisibility,
+        trigger: RefreshLog.Trigger = .scheduled,
+        now: Date = Date()
+    ) async {
+        let hotDue = RefreshPolicy.isDue(
+            lastRefresh: lastHotRefresh,
+            interval: RefreshPolicy.hotInterval(for: visibility),
+            key: "hot",
+            now: now
+        )
+        let rssSources = settings.activeSources.filter { source in
+            guard !source.isBuiltIn else { return false }
+            let failureCount = rssFailureCounts[source.id, default: 0]
+            let interval = failureCount > 0
+                ? RefreshPolicy.rssFailureRetryInterval(failureCount: failureCount)
+                : RefreshPolicy.rssInterval(
+                    unchangedRefreshCount: rssUnchangedRefreshCounts[source.id, default: 0],
+                    changedRecently: now.timeIntervalSince(rssLastChangedAt[source.id] ?? .distantPast)
+                        < 6 * 60 * 60,
+                    visibility: visibility
+                )
+            return RefreshPolicy.isDue(
+                lastRefresh: lastSourceRefresh[source.id],
+                interval: interval,
+                key: source.id,
+                now: now
+            )
+        }
+
+        guard hotDue || !rssSources.isEmpty else { return }
+        await enqueueRefresh(
+            settings: settings,
+            trigger: trigger,
+            isManual: false,
+            refreshHot: hotDue,
+            rssSources: rssSources
+        )
+    }
+
+    private func enqueueRefresh(
         settings: AppSettings,
         trigger: RefreshLog.Trigger,
-        isManual: Bool
+        isManual: Bool,
+        refreshHot: Bool,
+        rssSources: [NewsSource]
     ) async {
-        guard !isRefreshing else { return }
+        if isRefreshing {
+            if isManual { pendingManualRefresh = true }
+            await withCheckedContinuation { continuation in
+                refreshWaiters.append(continuation)
+            }
+            return
+        }
+
+        isRefreshing = true
+        await runRefreshCycle(
+            settings: settings,
+            trigger: trigger,
+            isManual: isManual,
+            refreshHot: refreshHot,
+            rssSources: rssSources
+        )
+
+        if pendingManualRefresh {
+            pendingManualRefresh = false
+            await runRefreshCycle(
+                settings: settings,
+                trigger: .manual,
+                isManual: true,
+                refreshHot: true,
+                rssSources: settings.activeSources.filter { !$0.isBuiltIn }
+            )
+        }
+
+        isRefreshing = false
+        let waiters = refreshWaiters
+        refreshWaiters.removeAll(keepingCapacity: true)
+        waiters.forEach { $0.resume() }
+    }
+
+    private func runRefreshCycle(
+        settings: AppSettings,
+        trigger: RefreshLog.Trigger,
+        isManual: Bool,
+        refreshHot: Bool,
+        rssSources: [NewsSource]
+    ) async {
 
         let aiBefore = logStateLabel(aiSummaryState)
         if isManual {
@@ -203,9 +339,12 @@ final class NewsOrchestrator: ObservableObject {
         }
 
         settings.recordRefresh()
-        isRefreshing = true
-        markSources(settings.activeSources, as: .loading)
-        defer { isRefreshing = false }
+        var sourcesToLoad = rssSources
+        if refreshHot {
+            sourcesToLoad.insert(.bilibili, at: 0)
+            sourcesToLoad.insert(.weibo, at: 0)
+        }
+        markSources(sourcesToLoad, as: .loading)
 
         let previousSummaryState = aiSummaryState
         let apiKey: String
@@ -221,34 +360,40 @@ final class NewsOrchestrator: ObservableObject {
                 apiKey = ""
             }
         }
-        if settings.aiSummaryEnabled {
-            aiSummaryState = apiKey.isEmpty ? .noKey : .fetching
+        var hotChanged = false
+        var trendSummary = latestTrendSummary
+        if refreshHot {
+            await withTaskGroup(of: Bool.self) { group in
+                group.addTask { await self.fetchWeibo(useCacheFallback: !isManual) }
+                group.addTask { await self.fetchBilibili(useCacheFallback: !isManual) }
+                for await changed in group {
+                    hotChanged = hotChanged || changed
+                }
+            }
+            lastHotRefresh = Date()
+            if !weiboItems.isEmpty || !bilibiliItems.isEmpty {
+                trendSummary = await trendHistoryStore.record(
+                    weibo: weiboItems,
+                    bilibili: bilibiliItems
+                )
+                latestTrendSummary = trendSummary
+            }
         }
 
-        await withTaskGroup(of: Void.self) { group in
-            group.addTask { await self.fetchWeibo(useCacheFallback: !isManual) }
-            group.addTask { await self.fetchBilibili(useCacheFallback: !isManual) }
-        }
-
-        let now = Date()
-        let rssSources = settings.activeSources.filter { source in
-            !source.isBuiltIn && (
-                isManual ||
-                sourceStates[source.id] != .loaded ||
-                (now.timeIntervalSince(lastSourceRefresh[source.id] ?? .distantPast) > 900)
-            )
-        }
-
+        var rssChanged = false
         if !rssSources.isEmpty {
             let batchSize = 6
-            batchProgress = (0, rssSources.count)
+            batchProgress = BatchProgress(completed: 0, total: rssSources.count)
 
             for batchStart in stride(from: 0, to: rssSources.count, by: batchSize) {
                 let batch = Array(rssSources[batchStart..<min(batchStart + batchSize, rssSources.count)])
 
-                await withTaskGroup(of: Void.self) { group in
+                await withTaskGroup(of: Bool.self) { group in
                     for source in batch {
                         group.addTask { await self.fetchRSS(source: source, useCacheFallback: !isManual, settings: settings) }
+                    }
+                    for await changed in group {
+                        rssChanged = rssChanged || changed
                     }
                 }
 
@@ -258,7 +403,7 @@ final class NewsOrchestrator: ObservableObject {
                     lastSourceRefresh[source.id] = Date()
                 }
             }
-            batchProgress = (0, 0)
+            batchProgress = .zero
         }
 
         if isManual {
@@ -270,13 +415,19 @@ final class NewsOrchestrator: ObservableObject {
             settings: settings,
             apiKey: apiKey,
             previousState: previousSummaryState,
-            skipHashDedup: isManual
+            isManualRefresh: isManual,
+            hotChanged: hotChanged,
+            rssChanged: rssChanged,
+            trendSummary: trendSummary
         )
 
         let allItems = allActiveItems(settings: settings)
         if !isManual {
-            if settings.hourlyPushEnabled {
+            let now = Date()
+            if settings.hourlyPushEnabled,
+               trigger == .startup || now.timeIntervalSince(lastHourlyPushAt ?? .distantPast) >= 60 * 60 {
                 await NotificationService.sendHourlyPush(items: allItems, count: settings.pushCount)
+                lastHourlyPushAt = now
             }
             if settings.dailyPushEnabled {
                 NotificationService.rescheduleDailyPush(
@@ -291,46 +442,98 @@ final class NewsOrchestrator: ObservableObject {
         await recordRefreshLog(settings: settings, trigger: trigger, aiBefore: aiBefore)
     }
 
-    private func fetchWeibo(useCacheFallback: Bool) async {
-        if let items = await fetchAndCache(
+    private func fetchWeibo(useCacheFallback: Bool) async -> Bool {
+        if let result = await fetchAndCache(
             for: .weibo,
             fetcher: { try await WeiboHotService.fetch() }
         ) {
-            weiboItems = items
+            weiboItems = result.items
+            return result.changed
         } else if useCacheFallback, weiboItems.isEmpty,
                   let cached = await cacheManager.load(for: .weibo) {
             weiboItems = cached.items
         }
+        return false
     }
 
-    private func fetchBilibili(useCacheFallback: Bool) async {
-        if let items = await fetchAndCache(
+    private func fetchBilibili(useCacheFallback: Bool) async -> Bool {
+        if let result = await fetchAndCache(
             for: .bilibili,
             fetcher: { try await BilibiliHotService.fetch() }
         ) {
-            bilibiliItems = items
+            bilibiliItems = result.items
+            return result.changed
         } else if useCacheFallback, bilibiliItems.isEmpty,
                   let cached = await cacheManager.load(for: .bilibili) {
             bilibiliItems = cached.items
         }
+        return false
     }
 
-    private func fetchRSS(source: NewsSource, useCacheFallback: Bool, settings: AppSettings) async {
+    private func fetchRSS(source: NewsSource, useCacheFallback: Bool, settings: AppSettings) async -> Bool {
+        let existing = await cacheManager.load(for: source)
         let fetchedItems: [NewsItem]?
-        if let items = await fetchAndCache(
-            for: source,
-            fetcher: {
-                try await RSSService.fetch(url: source.id, sourceName: source.displayName)
+        let changed: Bool
+
+        do {
+            let result = try await RSSService.fetchConditional(
+                url: source.id,
+                sourceName: source.displayName,
+                eTag: existing?.eTag,
+                lastModified: existing?.lastModified
+            )
+            switch result {
+            case .notModified(let eTag, let lastModified):
+                guard let validated = await cacheManager.markValidated(
+                    for: source,
+                    eTag: eTag,
+                    lastModified: lastModified
+                ) else {
+                    throw NewsBarError.requestFailed
+                }
+                rssItemsMap[source.id] = validated.items
+                fetchedItems = validated.items
+                changed = false
+                rssUnchangedRefreshCounts[source.id, default: 0] += 1
+
+            case .modified(let items, let eTag, let lastModified):
+                guard !items.isEmpty else {
+                    throw NewsBarError.parseFailed
+                }
+                let now = Date()
+                let contentHash = CacheEntry.contentIdentifier(for: items)
+                changed = existing?.contentHash != contentHash
+                let entry = CacheEntry(
+                    items: items,
+                    timestamp: changed ? now : (existing?.timestamp ?? now),
+                    contentHash: contentHash,
+                    lastValidatedAt: now,
+                    eTag: eTag,
+                    lastModified: lastModified
+                )
+                await cacheManager.save(entry, for: source)
+                rssItemsMap[source.id] = items
+                fetchedItems = items
+                if changed {
+                    rssUnchangedRefreshCounts[source.id] = 0
+                    rssLastChangedAt[source.id] = now
+                } else {
+                    rssUnchangedRefreshCounts[source.id, default: 0] += 1
+                }
             }
-        ) {
-            rssItemsMap[source.id] = items
-            fetchedItems = items
-        } else if useCacheFallback, rssItemsMap[source.id, default: []].isEmpty,
-                  let cached = await cacheManager.load(for: source) {
-            rssItemsMap[source.id] = cached.items
-            fetchedItems = cached.items
-        } else {
-            fetchedItems = nil
+            sourceStates[source.id] = .loaded
+            rssFailureCounts[source.id] = 0
+        } catch {
+            NSLog("[NewsOrchestrator] 获取 \(source.displayName) 失败: \(error.localizedDescription)")
+            sourceStates[source.id] = .failed(sourceErrorMessage(error))
+            rssFailureCounts[source.id, default: 0] += 1
+            changed = false
+            if useCacheFallback, rssItemsMap[source.id, default: []].isEmpty, let existing {
+                rssItemsMap[source.id] = existing.items
+                fetchedItems = existing.items
+            } else {
+                fetchedItems = nil
+            }
         }
 
         // Detect image availability and auto-correct displayMode (only on actual fetch, not empty results)
@@ -346,6 +549,7 @@ final class NewsOrchestrator: ObservableObject {
                 }
             }
         }
+        return changed
     }
 
     // MARK: - Shared Summary (generated on refresh)
@@ -354,7 +558,10 @@ final class NewsOrchestrator: ObservableObject {
         settings: AppSettings,
         apiKey: String,
         previousState: AISummaryState,
-        skipHashDedup: Bool
+        isManualRefresh: Bool,
+        hotChanged: Bool,
+        rssChanged: Bool,
+        trendSummary: TrendChangeSummary
     ) async {
         guard settings.aiSummaryEnabled else { return }
 
@@ -378,11 +585,22 @@ final class NewsOrchestrator: ObservableObject {
         defer { AISummaryService.releaseGenerationLock(for: Self.sharedSummaryTarget) }
 
         let newHash = CacheEntry.contentIdentifier(for: allItems)
-        let shouldGenerate = skipHashDedup
-            || (newHash != sharedSummaryLastHash && newHash != sharedSummaryLastTruncatedHash)
-            || shouldRecoverAISummary(from: previousState)
+        let hasNewContent = newHash != sharedSummaryLastHash
+            && newHash != sharedSummaryLastTruncatedHash
+        let elapsed = Date().timeIntervalSince(lastSummaryGeneratedAt ?? .distantPast)
+        let shouldGenerate = Self.shouldGenerateSummary(
+            hasCachedSummary: sharedSummaryLastHash != nil,
+            hasNewContent: hasNewContent,
+            isManualRefresh: isManualRefresh,
+            hotChanged: hotChanged,
+            rssChanged: rssChanged,
+            trendIsSignificant: trendSummary.isSignificant,
+            elapsedSinceSummary: elapsed,
+            shouldRecover: shouldRecoverAISummary(from: previousState)
+        )
 
         if shouldGenerate {
+            aiSummaryState = .fetching
             AISummaryService.initBudget(
                 target: Self.sharedSummaryTarget,
                 mode: .shared,
@@ -396,7 +614,9 @@ final class NewsOrchestrator: ObservableObject {
                 model: settings.aiModel,
                 apiKey: apiKey,
                 provider: settings.currentProvider,
-                settings: settings
+                settings: settings,
+                trendHistoryContext: trendSummary.context,
+                trendHistoryHash: trendSummary.historyHash
             )
             settings.recordAIRequests(requestCount)
         } else {
@@ -446,7 +666,9 @@ final class NewsOrchestrator: ObservableObject {
             model: settings.aiModel,
             apiKey: apiKey,
             provider: settings.currentProvider,
-            settings: settings
+            settings: settings,
+            trendHistoryContext: latestTrendSummary.context,
+            trendHistoryHash: latestTrendSummary.historyHash
         )
         settings.recordAIRequests(requestCount)
     }
@@ -498,17 +720,24 @@ final class NewsOrchestrator: ObservableObject {
             model: settings.aiModel,
             apiKey: apiKey,
             provider: settings.currentProvider,
-            settings: settings
+            settings: settings,
+            trendHistoryContext: latestTrendSummary.context,
+            trendHistoryHash: latestTrendSummary.historyHash
         )
         settings.recordAIRequests(requestCount)
     }
 
     // MARK: - Shared Helpers
 
+    private struct SourceFetchResult {
+        let items: [NewsItem]
+        let changed: Bool
+    }
+
     private func fetchAndCache(
         for source: NewsSource,
         fetcher: () async throws -> [NewsItem]
-    ) async -> [NewsItem]? {
+    ) async -> SourceFetchResult? {
         do {
             let items = try await fetcher()
             guard !items.isEmpty else {
@@ -516,17 +745,21 @@ final class NewsOrchestrator: ObservableObject {
                 return nil
             }
 
-            let hasNew = await cacheManager.hasNewContent(for: source, newItems: items)
-            if hasNew {
-                let entry = CacheEntry(
-                    items: items,
-                    timestamp: Date(),
-                    contentHash: CacheEntry.contentIdentifier(for: items)
-                )
-                await cacheManager.save(entry, for: source)
-            }
+            let now = Date()
+            let existing = await cacheManager.load(for: source)
+            let contentHash = CacheEntry.contentIdentifier(for: items)
+            let hasNew = existing?.contentHash != contentHash
+            let entry = CacheEntry(
+                items: items,
+                timestamp: hasNew ? now : (existing?.timestamp ?? now),
+                contentHash: contentHash,
+                lastValidatedAt: now,
+                eTag: existing?.eTag,
+                lastModified: existing?.lastModified
+            )
+            await cacheManager.save(entry, for: source)
             sourceStates[source.id] = .loaded
-            return items
+            return SourceFetchResult(items: items, changed: hasNew)
         } catch {
             NSLog("[NewsOrchestrator] 获取 \(source.displayName) 失败: \(error.localizedDescription)")
             sourceStates[source.id] = .failed(sourceErrorMessage(error))
@@ -645,6 +878,28 @@ final class NewsOrchestrator: ObservableObject {
         return ""
     }
 
+    private func restoreCachedSummaryIfPossible(settings: AppSettings) async {
+        guard settings.aiSummaryEnabled,
+              sharedSummaryLastHash == nil,
+              let cached = await aiSummaryCacheStore.load() else { return }
+        let currentItems = allActiveItems(settings: settings)
+        guard !currentItems.isEmpty,
+              CacheEntry.contentIdentifier(for: currentItems) == cached.contentHash else { return }
+
+        let trendCount = min(cached.trendItemCount, cached.items.count)
+        aiSummaryItems = cached.items
+        aiParsedSummary = AISummaryParser.parseDualSummary(
+            cached.summary,
+            itemCount: cached.items.count,
+            weiboBilibiliRange: 0..<trendCount
+        )
+        sharedSummaryLastHash = cached.contentHash
+        sharedSummaryLastTruncatedHash = nil
+        sharedSummaryConsecutiveTruncationCount = 0
+        lastSummaryGeneratedAt = cached.generatedAt
+        aiSummaryState = .done(cached.summary)
+    }
+
     @discardableResult
     private func generateSummary(
         items: [NewsItem],
@@ -653,7 +908,9 @@ final class NewsOrchestrator: ObservableObject {
         model: String,
         apiKey: String,
         provider: AIProvider,
-        settings: AppSettings
+        settings: AppSettings,
+        trendHistoryContext: String,
+        trendHistoryHash: String
     ) async -> Int {
         let budgetMode: AISummaryBudgetMode = .shared
         guard !apiKey.isEmpty else {
@@ -677,7 +934,8 @@ final class NewsOrchestrator: ObservableObject {
                 model: model, apiKey: apiKey,
                 target: Self.sharedSummaryTarget,
                 budgetMode: budgetMode,
-                trendTopicCount: trendRange, dailyTopicCount: dailyRange
+                trendTopicCount: trendRange, dailyTopicCount: dailyRange,
+                trendHistoryContext: trendHistoryContext
             )
             let wbRange = 0..<(weiboItems.count + bilibiliItems.count)
 
@@ -702,7 +960,8 @@ final class NewsOrchestrator: ObservableObject {
                         target: Self.sharedSummaryTarget,
                         budgetMode: budgetMode,
                         trendTopicCount: trendRange, dailyTopicCount: dailyRange,
-                        formatEnforcementSuffix: Self.formatEnforcementSuffix
+                        formatEnforcementSuffix: Self.formatEnforcementSuffix,
+                        trendHistoryContext: trendHistoryContext
                     )
                 } else {
                     finalResult = firstResult
@@ -737,7 +996,19 @@ final class NewsOrchestrator: ObservableObject {
                 sharedSummaryLastHash = contentHash
                 sharedSummaryLastTruncatedHash = nil
                 sharedSummaryConsecutiveTruncationCount = 0
+                let generatedAt = Date()
+                lastSummaryGeneratedAt = generatedAt
                 aiSummaryState = .done(finalResult.summary)
+                await aiSummaryCacheStore.save(
+                    AISummaryCacheEntry(
+                        summary: finalResult.summary,
+                        items: items,
+                        contentHash: contentHash,
+                        trendHistoryHash: trendHistoryHash,
+                        generatedAt: generatedAt,
+                        trendItemCount: weiboItems.count + bilibiliItems.count
+                    )
+                )
             }
             return requestCount
         } catch NewsBarError.apiKeyInvalid {
@@ -784,6 +1055,8 @@ final class NewsOrchestrator: ObservableObject {
 
     func clearCache() async {
         await cacheManager.clear()
+        await aiSummaryCacheStore.clear()
+        await trendHistoryStore.clear()
         weiboItems = []
         bilibiliItems = []
         rssItemsMap = [:]
@@ -794,6 +1067,14 @@ final class NewsOrchestrator: ObservableObject {
         sharedSummaryLastHash = nil
         sharedSummaryLastTruncatedHash = nil
         sharedSummaryConsecutiveTruncationCount = 0
+        lastSummaryGeneratedAt = nil
+        lastHotRefresh = nil
+        lastSourceRefresh = [:]
+        rssUnchangedRefreshCounts = [:]
+        rssLastChangedAt = [:]
+        rssFailureCounts = [:]
+        lastHourlyPushAt = nil
+        latestTrendSummary = .none
     }
 
     func refreshRSSSource(url: String, name: String, settings: AppSettings) async {
@@ -806,7 +1087,7 @@ final class NewsOrchestrator: ObservableObject {
         guard sourceStates[source.id] != .loading else { return }
 
         sourceStates[source.id] = .loading
-        await fetchRSS(source: source, useCacheFallback: false, settings: settings)
+        _ = await fetchRSS(source: source, useCacheFallback: false, settings: settings)
         if case .some(.loaded) = sourceStates[source.id] {
             lastSourceRefresh[source.id] = Date()
         }

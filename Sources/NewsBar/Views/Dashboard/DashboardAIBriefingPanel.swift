@@ -2,7 +2,7 @@ import SwiftUI
 
 struct DashboardAIBriefingPanel: View {
     @Environment(AppSettings.self) private var settings
-    @ObservedObject var orchestrator: NewsOrchestrator
+    let orchestrator: NewsOrchestrator
 
     var onConfigureAI: () -> Void
 

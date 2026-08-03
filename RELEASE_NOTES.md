@@ -3,12 +3,17 @@
 ### Added
 -
 
-## [v2.2.1] - 2026-07-31
+## [v2.2.1] - 2026-08-03
 
 ### ✨ 新功能
 - **共享 AI 摘要**：Popup 与 Dashboard 复用同一份详细 AI 简报，不再各自独立生成。Popup 每类最多显示 2 条，Dashboard 显示完整结果，消除重复 AI 请求。
 - **Dashboard AI 独立刷新**：AI 简报面板新增独立刷新按钮，支持 60s 冷却保护，不依赖全局刷新。
 - **RSS 单源刷新**：Dashboard 每个 RSS 源卡片增加独立刷新按钮，带加载状态反馈，不影响其他源。
+- **智能刷新调度**：热搜按可见性自适应刷新（可见 5 分钟/后台 30 分钟/低电量 60 分钟），RSS 按活跃度自适应（30 分钟/60 分钟/3 小时），失败退避（15 分钟 → 30 分钟 → 60 分钟 → 最长 3 小时）。
+- **12/24 小时趋势历史**：新增 TrendHistoryStore，24 小时滚动保留最多 288 个快照，30 分钟 heartbeat，趋势评分与变化摘要，跨启动持久化。
+- **历史感知 AI 总结**：AI 自动总结结合近 12/24 小时趋势历史，仅在显著变化及冷却条件满足时重建（趋势 ≥30 分钟、RSS ≥4 小时），避免重复总结热点。
+- **AI 摘要持久化**：新增 AISummaryCacheStore，持久化摘要内容、内容哈希、趋势哈希、引用快照和生成时间，跨启动恢复。
+- **RSS 条件请求**：支持 ETag/Last-Modified 与 HTTP 304，减少无效网络传输。
 
 ### ⚡ 性能优化
 - **Popup 实例复用**：首次打开后复用 NSPopover 实例，消除重复创建 SwiftUI 树的开销。
@@ -17,16 +22,23 @@
 - **图片请求合并**：相同 URL 的并发请求自动合并，减少重复网络开销。
 - **Popup 外层懒加载**：ScrollView 内 VStack 改为 LazyVStack，延迟非可见区域视图创建。
 - **日期格式器复用**：Popup 与 Dashboard 的 DateFormatter 提升为静态常量，避免每次 body 重建。
+- **缓存 freshness 追踪**：新增 lastValidatedAt 字段，stale-while-revalidate 策略，过期缓存立即显示不阻塞 UI。
+- **AI 逐字动画计算优化**：预计算 RenderModel 和字符数组，30ms/3 字符稳定帧率，AISummaryParser 正则静态缓存。
+- **Observation 子树隔离**：Popup AI 区域拆为独立 Observation 子树，减少无关视图刷新。
+- **稳定 NewsItem ID**：改为 SHA-256 哈希，消除重复条目。
+- **BatchProgress 结构体化**：改为 Equatable struct，减少不必要的 SwiftUI 重绘。
 
 ### 🎨 UI 优化
 - **RSS 卡片元信息精简**：移除图文卡片底部重复的来源徽章和网址，仅保留顶部来源徽章，底部改为「阅读原文」提示。
 - **RSS 文本行精简**：移除来源名称右侧的网址显示，减少信息冗余。
 - **AI 设置页简化**：移除独立的 Popup/Dashboard 摘要长度和预算模式选择器，统一为共享摘要长度和共享额度。
+- **设置页刷新说明**：通用设置新增智能刷新调度说明和日志类型。
 
 ### ✅ 测试
 - **新增测试**：`AISummaryParser.limited` 摘要裁剪、`ImageCache.decodeThumbnail` 缩略解码、共享摘要目标常量。
 - **测试适配**：截断哈希、连续截断计数、clearCache 等测试从双目标改为共享单目标。
-- **全量测试**：`swift test` 306/306 通过。
+- **新增回归测试**：RefreshTrendPerformanceTests 覆盖刷新调度、缓存 freshness、条件请求、趋势历史、AI 持久化、性能回归。
+- **全量测试**：`swift test` 321/321 通过。
 
 ---
 

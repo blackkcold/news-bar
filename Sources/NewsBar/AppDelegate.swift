@@ -11,7 +11,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: - Constants
 
-    private static let autoRefreshInterval: TimeInterval = 3600
+    private static let schedulerTickInterval = RefreshPolicy.schedulerTick
     private static let startupDelay: TimeInterval = 2
     private static let updateCheckDelay: TimeInterval = 10
     private static let popoverSize = NSSize(width: 400, height: 520)
@@ -30,6 +30,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var orchestrator: NewsOrchestrator?
     private var updateChecker: UpdateChecker?
     private var autoRefreshTimer: Timer?
+    private var workspaceObservers: [NSObjectProtocol] = []
+    private var isSystemSleeping = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         orchestrator = NewsOrchestrator()
@@ -40,6 +42,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // 从 Keychain 迁移到加密文件存储（必须在任何读取之前）
         EncryptedKeyStore.migrateFromKeychainIfNeeded()
         settings = AppSettings()
+        setupWorkspaceObservers()
 
         preloadCachedNews()
         loadAPIKeyFromFile()
@@ -62,12 +65,61 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
 
-        autoRefreshTimer = Timer.scheduledTimer(withTimeInterval: Self.autoRefreshInterval, repeats: true) { [weak self] _ in
-            guard let self, self.settings.autoRefreshEnabled else { return }
+        autoRefreshTimer = Timer.scheduledTimer(withTimeInterval: Self.schedulerTickInterval, repeats: true) { [weak self] _ in
+            guard let self,
+                  self.settings.autoRefreshEnabled,
+                  !self.isSystemSleeping else { return }
+            let visibility = self.currentRefreshVisibility
             Task {
-                await self.orchestrator?.refreshIfNeeded(settings: self.settings, trigger: .timer1h)
+                await self.orchestrator?.refreshScheduled(
+                    settings: self.settings,
+                    visibility: visibility,
+                    trigger: .scheduled
+                )
             }
         }
+    }
+
+    private var currentRefreshVisibility: RefreshVisibility {
+        if ProcessInfo.processInfo.isLowPowerModeEnabled {
+            return .lowPower
+        }
+        if popover?.isShown == true || dashboardWindow?.isVisible == true {
+            return .visible
+        }
+        return .background
+    }
+
+    private func setupWorkspaceObservers() {
+        let center = NSWorkspace.shared.notificationCenter
+        workspaceObservers.append(
+            center.addObserver(
+                forName: NSWorkspace.willSleepNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                self?.isSystemSleeping = true
+            }
+        )
+        workspaceObservers.append(
+            center.addObserver(
+                forName: NSWorkspace.didWakeNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                guard let self else { return }
+                self.isSystemSleeping = false
+                guard self.settings.autoRefreshEnabled else { return }
+                let visibility = self.currentRefreshVisibility
+                Task {
+                    await self.orchestrator?.refreshScheduled(
+                        settings: self.settings,
+                        visibility: visibility,
+                        trigger: .wake
+                    )
+                }
+            }
+        )
     }
 
     private func scheduleAutoUpdateCheck() {
@@ -260,6 +312,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         activePopover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+        requestVisibleRefreshIfNeeded()
     }
 
     private func makePopover(
@@ -319,12 +372,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.activate(ignoringOtherApps: true)
     }
 
+    private func requestVisibleRefreshIfNeeded() {
+        guard settings.autoRefreshEnabled else { return }
+        Task {
+            await orchestrator?.refreshScheduled(
+                settings: settings,
+                visibility: currentRefreshVisibility,
+                trigger: .scheduled
+            )
+        }
+    }
+
     func openDashboard() {
         popover?.performClose(nil)
 
         if let existing = dashboardWindow {
             existing.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
+            requestVisibleRefreshIfNeeded()
             return
         }
 
@@ -355,10 +420,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         dashboardWindow = window
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+        requestVisibleRefreshIfNeeded()
     }
 
     func applicationWillTerminate(_ notification: Notification) {
         autoRefreshTimer?.invalidate()
+        let workspaceCenter = NSWorkspace.shared.notificationCenter
+        workspaceObservers.forEach { workspaceCenter.removeObserver($0) }
+        workspaceObservers.removeAll()
         settingsWindow?.close()
         dashboardWindow?.close()
         popover?.close()

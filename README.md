@@ -14,9 +14,9 @@
 - **🔥 Weibo Trending** · 微博热搜 — Real-time Weibo hot topics
 - **📺 Bilibili Trending** · B站热搜 — Bilibili popular content
 - **📡 RSS Feeds** · RSS 订阅 — Custom RSS sources, freely extensible
-- **🤖 AI Summary** · AI 摘要 — One shared dual-category briefing (趋势概览 / 每日精选) serves Popup and Dashboard; cited rows open the original source. Dashboard shows the full briefing while Popup limits each category to two rows. Global refresh and the independent AI refresh action both update the shared result.
+- **🤖 AI Summary** · AI 摘要 — One shared dual-category briefing (趋势概览 / 每日精选) serves Popup and Dashboard; cited rows open the original source. Automatic regeneration is driven by meaningful 12/24-hour trend or RSS changes, while the independent AI action can still force a refresh.
 - **📊 Editorial Dashboard** · 编辑式仪表盘 — Responsive masthead, shared AI briefing, redesigned trend cards and per-source RSS layout with individual source refresh actions
-- **⏱ Auto Refresh** · 定时刷新 — Startup fetch + optional hourly timer
+- **⏱ Adaptive Refresh** · 智能刷新 — Startup fetch + visibility-aware hot-trend polling + adaptive RSS cadence
 - **🔄 Auto Update** · 自动更新 — Check GitHub Releases, one-click download
 - **🔐 Secure Storage** · 安全存储 — API Key encrypted with AES-256-GCM, machine-bound
 - **📰 Retro Editorial Theme** · 复古报刊主题 — Optional 1960s editorial design with paper texture, brick-red accents, square clipping cards and print-style source marks across Dashboard, Popup and Settings
@@ -53,9 +53,9 @@ Settings → AI tab: select a provider and fill in API Key. Supports DeepSeek, M
 
 设置 → AI 标签页：选择 AI 提供商并填入 API Key。支持 DeepSeek、MiniMax、Opencode Go/Zen、Google AI Studio 等。
 
-Popup and Dashboard share one summary length preset (default 360 words) and one daily request cap (default 50, configurable 20/50/100). A global refresh regenerates the shared summary after source updates; the Dashboard AI button regenerates only the summary.
+Popup and Dashboard share one summary length preset (default 360 words) and one daily request cap (default 50, configurable 20/50/100). Automatic summaries use 12/24-hour trend history and only regenerate after meaningful changes and cooldown checks; the Dashboard AI button still forces an independent summary regeneration.
 
-Popup 和 Dashboard 共用一个摘要长度预设（默认 360 字）和每日 AI 调用上限（默认 50，可选 20/50/100）。全局刷新会在新闻源更新后重建共享摘要；Dashboard 的 AI 按钮只刷新摘要。
+Popup 和 Dashboard 共用一个摘要长度预设（默认 360 字）和每日 AI 调用上限（默认 50，可选 20/50/100）。自动总结会结合近 12/24 小时趋势历史，并仅在显著变化及冷却条件满足时重建；Dashboard 的 AI 按钮仍可强制独立刷新摘要。
 
 ## Supported AI Providers · 支持的 AI 提供商
 

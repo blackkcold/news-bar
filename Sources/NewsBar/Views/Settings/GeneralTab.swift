@@ -11,14 +11,14 @@ struct GeneralTab: View {
     var body: some View {
         Form {
             Section {
-                Toggle("定时刷新（每小时自动刷新一次）", isOn: Binding(
+                Toggle("智能定时刷新", isOn: Binding(
                     get: { settings.autoRefreshEnabled },
                     set: { settings.autoRefreshEnabled = $0 }
                 ))
             } header: {
                 Text("刷新设置")
             } footer: {
-                Text("开启后，App 启动 2 秒后自动获取最新新闻，之后每小时刷新一次。")
+                Text("开启后，热搜在界面可见时约每 5 分钟、后台约每 30 分钟检查；RSS 根据更新活跃度在 30 分钟至 3 小时之间自适应。低电量与休眠状态会自动降频。")
             }
 
             Section {
@@ -221,6 +221,8 @@ struct GeneralTab: View {
         switch trigger {
         case .startup:   label = "启动"; color = .blue
         case .timer1h:   label = "定时"; color = .green
+        case .scheduled: label = "智能调度"; color = .green
+        case .wake:      label = "唤醒"; color = .cyan
         case .manual:    label = "手动"; color = .orange
         case .popoverOpen: label = "弹窗"; color = .purple
         }
