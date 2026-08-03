@@ -14,8 +14,8 @@
 - **🔥 Weibo Trending** · 微博热搜 — Real-time Weibo hot topics
 - **📺 Bilibili Trending** · B站热搜 — Bilibili popular content
 - **📡 RSS Feeds** · RSS 订阅 — Custom RSS sources, freely extensible
-- **🤖 AI Summary** · AI 摘要 — Dual-category briefings (趋势概览 / 每日精选) with template-framework; cited rows show a persistent source badge, click to open original. Uncited trend summaries remain visible without a source link. Popup generates a concise summary on refresh; Dashboard lazily generates a detailed summary when opened. Both consume the shared daily AI request cap.
-- **📊 Editorial Dashboard** · 编辑式仪表盘 — Responsive masthead, redesigned trend cards, AI briefing and per-source RSS layout; lazy AI summary generation on open
+- **🤖 AI Summary** · AI 摘要 — One shared dual-category briefing (趋势概览 / 每日精选) serves Popup and Dashboard; cited rows open the original source. Dashboard shows the full briefing while Popup limits each category to two rows. Global refresh and the independent AI refresh action both update the shared result.
+- **📊 Editorial Dashboard** · 编辑式仪表盘 — Responsive masthead, shared AI briefing, redesigned trend cards and per-source RSS layout with individual source refresh actions
 - **⏱ Auto Refresh** · 定时刷新 — Startup fetch + optional hourly timer
 - **🔄 Auto Update** · 自动更新 — Check GitHub Releases, one-click download
 - **🔐 Secure Storage** · 安全存储 — API Key encrypted with AES-256-GCM, machine-bound
@@ -44,8 +44,8 @@ Download the latest DMG from [Releases](../../releases) and drag to Applications
 7. Choose Modern Material or Retro Editorial under Settings → General → Theme · 在「设置 → 通用 → 主题」切换现代材质或复古报刊主题
 8. Quit from the settings panel bottom · 在设置面板底部退出
 
-> Popup AI summary (concise, ~120 words) generates on refresh; Dashboard AI summary (detailed, ~360 words) generates lazily when opened. Both consume the shared daily AI request cap.
-> 弹窗 AI 摘要（精简，约 120 字）在刷新时生成；Dashboard AI 摘要（详细，约 360 字）在打开时惰性生成。两者共享每日 AI 调用上限。
+> Popup and Dashboard reuse one detailed AI briefing generated after global refresh. Popup displays at most two rows per category; Dashboard displays the full result. Dashboard also provides an independent AI refresh button.
+> Popup 与 Dashboard 复用全局刷新后生成的一份详细 AI 简报。Popup 每类最多显示两条，Dashboard 显示完整结果，并提供 AI 独立刷新按钮。
 
 ### Enable AI Summary · 启用 AI 摘要
 
@@ -53,9 +53,9 @@ Settings → AI tab: select a provider and fill in API Key. Supports DeepSeek, M
 
 设置 → AI 标签页：选择 AI 提供商并填入 API Key。支持 DeepSeek、MiniMax、Opencode Go/Zen、Google AI Studio 等。
 
-Popup and Dashboard each have independent word count presets (Popup default 120, Dashboard default 360) with fixed options. Both share the daily AI request cap (default 50, configurable 20/50/100). Dashboard summary is generated lazily when the window opens, not on refresh.
+Popup and Dashboard share one summary length preset (default 360 words) and one daily request cap (default 50, configurable 20/50/100). A global refresh regenerates the shared summary after source updates; the Dashboard AI button regenerates only the summary.
 
-弹窗和 Dashboard 各有独立的字数预设（弹窗默认 120，Dashboard 默认 360），均为固定选项。两者共享每日 AI 调用上限（默认 50，可选 20/50/100）。Dashboard 摘要仅在窗口打开时惰性生成，不在刷新时生成。
+Popup 和 Dashboard 共用一个摘要长度预设（默认 360 字）和每日 AI 调用上限（默认 50，可选 20/50/100）。全局刷新会在新闻源更新后重建共享摘要；Dashboard 的 AI 按钮只刷新摘要。
 
 ## Supported AI Providers · 支持的 AI 提供商
 
@@ -105,7 +105,7 @@ Sources/NewsBar/
 │   ├── CacheEntry.swift        # Cache entry
 │   └── UpdateInfo.swift        # Release/version models
 ├── Services/
-│   ├── NewsOrchestrator.swift  # Core coordinator: refresh, cache, AI state machine
+│   ├── NewsOrchestrator.swift  # Core coordinator: refresh, cache, shared AI state machine, per-source RSS refresh
 │   ├── UpdateChecker.swift     # GitHub update check + DMG download
 │   ├── WeiboHotService.swift   # Weibo trending fetcher
 │   ├── BilibiliHotService.swift# Bilibili trending fetcher
@@ -118,9 +118,9 @@ Sources/NewsBar/
 │   ├── RefreshLog.swift        # Refresh log (actor, ring buffer)
 │   └── SecurityPolicies.swift  # URL/sanitize/XML safety
 ├── Views/
-│   ├── MenuBar/                # Popover components (AISummaryCard, NewsSection, SourceBadge)
+│   ├── MenuBar/                # Reused popover components with compact shared AI briefing
 │   ├── Settings/               # Settings window tabs
-│   ├── Dashboard/              # Dashboard window (DashboardWindow, DashboardVisualComponents, DashboardAIBriefingPanel)
+│   ├── Dashboard/              # Dashboard window, full shared AI briefing and per-source refresh controls
 │   └── Theme/                  # Shared Modern Material / Retro Editorial primitives
 └── Extensions/
     ├── URLOpener.swift          # Safe URL opening

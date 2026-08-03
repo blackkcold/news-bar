@@ -78,6 +78,14 @@ final class ImageCacheTests: XCTestCase {
         XCTAssertEqual(ImageCache.maxCacheCount, 50)
     }
 
+    func testThumbnailMaxPixelSize_IsBoundedForCardRendering() {
+        XCTAssertEqual(ImageCache.thumbnailMaxPixelSize, 480)
+    }
+
+    func testDecodeThumbnail_InvalidData_ReturnsNil() {
+        XCTAssertNil(ImageCache.decodeThumbnail(from: Data([0x00, 0x01, 0x02])))
+    }
+
     // MARK: - Helpers
 
     private func makeResponse(contentType: String?) -> HTTPURLResponse {

@@ -13,6 +13,17 @@ struct ParsedSummary {
 
 enum AISummaryParser {
 
+    /// Returns the same parsed summary with each category capped for compact surfaces.
+    static func limited(_ summary: ParsedSummary, maxSectionsPerCategory: Int?) -> ParsedSummary {
+        guard let maxSectionsPerCategory else { return summary }
+        let limit = max(0, maxSectionsPerCategory)
+        return ParsedSummary(
+            trendOverview: Array(summary.trendOverview.prefix(limit)),
+            dailyEssentials: Array(summary.dailyEssentials.prefix(limit)),
+            isLegacyFallback: summary.isLegacyFallback
+        )
+    }
+
     /// Parse a dual-category summary response.
     ///
     /// Expects the response to contain two labelled sections:

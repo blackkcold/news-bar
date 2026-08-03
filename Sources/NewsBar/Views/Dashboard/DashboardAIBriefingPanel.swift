@@ -8,16 +8,16 @@ struct DashboardAIBriefingPanel: View {
 
     @State private var selectedCategory: DashboardBriefingCategory = .trendOverview
 
-    private var dashboardSummaryState: AISummaryState {
-        orchestrator.dashboardSummaryState
+    private var summaryState: AISummaryState {
+        orchestrator.aiSummaryState
     }
 
-    private var dashboardSummaryItems: [NewsItem] {
-        orchestrator.dashboardSummaryItems
+    private var sharedSummaryItems: [NewsItem] {
+        orchestrator.aiSummaryItems
     }
 
     private var resolvedSummaryText: String? {
-        switch dashboardSummaryState {
+        switch summaryState {
         case .done(let text), .truncated(let text):
             return text
         default:
@@ -28,14 +28,14 @@ struct DashboardAIBriefingPanel: View {
     private var parsedSummary: ParsedSummary? {
         guard hasCitationSnapshot else { return nil }
 
-        if let parsed = orchestrator.dashboardParsedSummary {
+        if let parsed = orchestrator.aiParsedSummary {
             return parsed
         }
 
         guard let text = resolvedSummaryText else { return nil }
         return AISummaryParser.parseDualSummary(
             text,
-            itemCount: dashboardSummaryItems.count,
+            itemCount: sharedSummaryItems.count,
             weiboBilibiliRange: 0..<(orchestrator.weiboItems.count + orchestrator.bilibiliItems.count)
         )
     }
@@ -68,7 +68,7 @@ struct DashboardAIBriefingPanel: View {
     }
 
     private var summaryItems: [NewsItem] {
-        dashboardSummaryItems
+        sharedSummaryItems
     }
 
     private var hasCitationSnapshot: Bool {
@@ -76,7 +76,7 @@ struct DashboardAIBriefingPanel: View {
     }
 
     private var cardStateText: String {
-        switch dashboardSummaryState {
+        switch summaryState {
         case .idle: return "等待 AI 简报"
         case .noKey: return "未配置 API Key"
         case .fetching: return "正在抓取新闻"
@@ -91,7 +91,7 @@ struct DashboardAIBriefingPanel: View {
         VStack(alignment: .leading, spacing: 14) {
             header
 
-            switch dashboardSummaryState {
+            switch summaryState {
             case .idle:
                 emptyState(message: cardStateText, systemImage: "sparkles")
             case .noKey:
@@ -127,7 +127,7 @@ struct DashboardAIBriefingPanel: View {
             if selectedSections.isEmpty {
                 selectedCategory = preferredCategory
             }
-            requestDashboardSummaryIfNeeded()
+            requestSharedSummaryIfNeeded()
         }
         .onChange(of: summarySignature) { _, _ in
             if selectedSections.isEmpty {
@@ -174,6 +174,25 @@ struct DashboardAIBriefingPanel: View {
             }
 
             Spacer(minLength: 0)
+
+            Button {
+                Task {
+                    await orchestrator.regenerateAISummary(settings: settings)
+                }
+            } label: {
+                if isSummaryRefreshing {
+                    ProgressView()
+                        .controlSize(.small)
+                        .frame(width: 14, height: 14)
+                } else {
+                    Image(systemName: "arrow.clockwise")
+                }
+            }
+            .buttonStyle(EditorialActionButtonStyle(compact: true))
+            .controlSize(.small)
+            .disabled(isSummaryRefreshing || AISummaryService.regenerationCooldownRemaining() > 0)
+            .help("独立刷新 AI 简报")
+            .accessibilityLabel("独立刷新 AI 简报")
         }
     }
 
@@ -312,7 +331,7 @@ struct DashboardAIBriefingPanel: View {
     }
 
     private var stateTint: Color {
-        switch dashboardSummaryState {
+        switch summaryState {
         case .idle: return .secondary
         case .noKey: return .orange
         case .fetching: return .blue
@@ -323,8 +342,8 @@ struct DashboardAIBriefingPanel: View {
         }
     }
 
-    private var dashboardSummaryNeedsGeneration: Bool {
-        switch dashboardSummaryState {
+    private var sharedSummaryNeedsGeneration: Bool {
+        switch summaryState {
         case .idle, .error, .truncated:
             return true
         default:
@@ -332,10 +351,14 @@ struct DashboardAIBriefingPanel: View {
         }
     }
 
-    private func requestDashboardSummaryIfNeeded() {
-        guard dashboardSummaryNeedsGeneration else { return }
+    private var isSummaryRefreshing: Bool {
+        summaryState == .fetching || summaryState == .summarizing
+    }
+
+    private func requestSharedSummaryIfNeeded() {
+        guard sharedSummaryNeedsGeneration else { return }
         Task {
-            await orchestrator.generateDashboardSummaryIfNeeded(settings: settings)
+            await orchestrator.generateSharedSummaryIfNeeded(settings: settings)
         }
     }
 

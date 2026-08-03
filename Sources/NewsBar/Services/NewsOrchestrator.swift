@@ -46,15 +46,10 @@ final class NewsOrchestrator: ObservableObject {
     @Published var bilibiliItems: [NewsItem] = []
     @Published var rssItemsMap: [String: [NewsItem]] = [:]
 
-    // Popup summary context
+    // Shared summary context — Popup and Dashboard render the same generated result.
     @Published var aiSummaryState = AISummaryState.idle
     @Published var aiSummaryItems: [NewsItem] = []
     @Published var aiParsedSummary: ParsedSummary?
-
-    // Dashboard summary context
-    @Published var dashboardSummaryState = AISummaryState.idle
-    @Published var dashboardSummaryItems: [NewsItem] = []
-    @Published var dashboardParsedSummary: ParsedSummary?
 
     @Published var isRefreshing = false
     @Published var sourceStates: [String: SourceLoadState] = [:]
@@ -65,92 +60,15 @@ final class NewsOrchestrator: ObservableObject {
 
     private let cacheManager = CacheManager()
     private let rateLimiter = RateLimiter()
-    var popupLastHash: String?
-    var dashboardLastHash: String?
-    /// 截断内容哈希：防止对同一截断内容重复生成，成功生成后清除
-    var popupLastTruncatedHash: String?
-    var dashboardLastTruncatedHash: String?
-    /// 连续截断计数按摘要目标隔离，避免一个视图阻塞另一个视图的恢复。
-    var popupConsecutiveTruncationCount = 0
-    var dashboardConsecutiveTruncationCount = 0
+    private var isLoadingCachedState = false
+    var sharedSummaryLastHash: String?
+    /// 截断内容哈希：防止对同一截断内容重复生成，成功生成后清除。
+    var sharedSummaryLastTruncatedHash: String?
+    var sharedSummaryConsecutiveTruncationCount = 0
     let maxConsecutiveTruncations = 3
     private var lastSourceRefresh: [String: Date] = [:]
-
-    // MARK: - Context-Aware State Helpers
-
-    private func setSummaryState(_ target: SummaryTarget, _ state: AISummaryState) {
-        switch target {
-        case .popup: aiSummaryState = state
-        case .dashboard: dashboardSummaryState = state
-        }
-    }
-
-    private func setSummaryItems(_ target: SummaryTarget, _ items: [NewsItem]) {
-        switch target {
-        case .popup: aiSummaryItems = items
-        case .dashboard: dashboardSummaryItems = items
-        }
-    }
-
-    private func setParsedSummary(_ target: SummaryTarget, _ parsed: ParsedSummary?) {
-        switch target {
-        case .popup: aiParsedSummary = parsed
-        case .dashboard: dashboardParsedSummary = parsed
-        }
-    }
-
-    private func currentHash(for target: SummaryTarget) -> String? {
-        switch target {
-        case .popup: return popupLastHash
-        case .dashboard: return dashboardLastHash
-        }
-    }
-
-    private func setHash(_ hash: String?, for target: SummaryTarget) {
-        switch target {
-        case .popup: popupLastHash = hash
-        case .dashboard: dashboardLastHash = hash
-        }
-    }
-
-    private func currentTruncatedHash(for target: SummaryTarget) -> String? {
-        switch target {
-        case .popup: return popupLastTruncatedHash
-        case .dashboard: return dashboardLastTruncatedHash
-        }
-    }
-
-    private func setTruncatedHash(_ hash: String?, for target: SummaryTarget) {
-        switch target {
-        case .popup: popupLastTruncatedHash = hash
-        case .dashboard: dashboardLastTruncatedHash = hash
-        }
-    }
-
-    private func clearTruncatedHash(for target: SummaryTarget) {
-        setTruncatedHash(nil, for: target)
-    }
-
-    private func truncationCount(for target: SummaryTarget) -> Int {
-        switch target {
-        case .popup: return popupConsecutiveTruncationCount
-        case .dashboard: return dashboardConsecutiveTruncationCount
-        }
-    }
-
-    private func incrementTruncationCount(for target: SummaryTarget) {
-        switch target {
-        case .popup: popupConsecutiveTruncationCount += 1
-        case .dashboard: dashboardConsecutiveTruncationCount += 1
-        }
-    }
-
-    private func resetTruncationCount(for target: SummaryTarget) {
-        switch target {
-        case .popup: popupConsecutiveTruncationCount = 0
-        case .dashboard: dashboardConsecutiveTruncationCount = 0
-        }
-    }
+    /// The shared result uses the detailed Dashboard prompt. Popup limits rows at render time.
+    static let sharedSummaryTarget: SummaryTarget = .dashboard
 
     static func budgetBaseline(settings: AppSettings, target: SummaryTarget) -> Int {
         settings.aiBudgetMode == .shared
@@ -177,6 +95,18 @@ final class NewsOrchestrator: ObservableObject {
     // MARK: - Public API
 
     func loadCached(settings: AppSettings) async {
+        await loadCachedState(settings: settings, logTrigger: .popoverOpen)
+    }
+
+    func preloadCached(settings: AppSettings) async {
+        await loadCachedState(settings: settings, logTrigger: nil)
+    }
+
+    private func loadCachedState(settings: AppSettings, logTrigger: RefreshLog.Trigger?) async {
+        guard !isLoadingCachedState else { return }
+        isLoadingCachedState = true
+        defer { isLoadingCachedState = false }
+
         let aiBefore = logStateLabel(aiSummaryState)
         var sourceResults: [String: String] = [:]
         // 内存优先: 若已有数据则不覆盖 (避免 stale 缓存清空自动刷新填入的新数据)
@@ -242,12 +172,14 @@ final class NewsOrchestrator: ObservableObject {
             }
         }
 
-        await RefreshLog.shared.record(
-            trigger: .popoverOpen,
-            sourceResults: sourceResults,
-            aiBefore: aiBefore,
-            aiAfter: logStateLabel(aiSummaryState)
-        )
+        if let logTrigger {
+            await RefreshLog.shared.record(
+                trigger: logTrigger,
+                sourceResults: sourceResults,
+                aiBefore: aiBefore,
+                aiAfter: logStateLabel(aiSummaryState)
+            )
+        }
     }
 
     func refreshIfNeeded(settings: AppSettings, trigger: RefreshLog.Trigger = .startup) async {
@@ -334,7 +266,7 @@ final class NewsOrchestrator: ObservableObject {
             manualRefreshWarning = await rateLimiter.manualRefreshWarning()
         }
 
-        await handleAISummary(
+        await handleSharedAISummary(
             settings: settings,
             apiKey: apiKey,
             previousState: previousSummaryState,
@@ -416,9 +348,9 @@ final class NewsOrchestrator: ObservableObject {
         }
     }
 
-    // MARK: - Popup Summary (generated on refresh)
+    // MARK: - Shared Summary (generated on refresh)
 
-    private func handleAISummary(
+    private func handleSharedAISummary(
         settings: AppSettings,
         apiKey: String,
         previousState: AISummaryState,
@@ -439,81 +371,75 @@ final class NewsOrchestrator: ObservableObject {
             return
         }
 
-        // Concurrent generation guard (per-target)
-        guard AISummaryService.tryAcquireGenerationLock(for: .popup) else {
+        guard AISummaryService.tryAcquireGenerationLock(for: Self.sharedSummaryTarget) else {
             aiSummaryState = .error("AI 总结正在生成中")
             return
         }
-        defer { AISummaryService.releaseGenerationLock(for: .popup) }
+        defer { AISummaryService.releaseGenerationLock(for: Self.sharedSummaryTarget) }
 
         let newHash = CacheEntry.contentIdentifier(for: allItems)
         let shouldGenerate = skipHashDedup
-            || (newHash != popupLastHash && newHash != popupLastTruncatedHash)
+            || (newHash != sharedSummaryLastHash && newHash != sharedSummaryLastTruncatedHash)
             || shouldRecoverAISummary(from: previousState)
 
         if shouldGenerate {
             AISummaryService.initBudget(
-                target: .popup,
-                mode: settings.aiBudgetMode,
-                baseline: Self.budgetBaseline(settings: settings, target: .popup),
-                cap: settings.effectiveDailyCap(for: .popup)
+                target: Self.sharedSummaryTarget,
+                mode: .shared,
+                baseline: settings.todayAIRequestCount,
+                cap: settings.aiDailyCap
             )
             let requestCount = await generateSummary(
-                target: .popup,
                 items: allItems,
                 contentHash: newHash,
-                maxWords: settings.aiPopupMaxWords,
+                maxWords: settings.aiDashboardMaxWords,
                 model: settings.aiModel,
                 apiKey: apiKey,
                 provider: settings.currentProvider,
                 settings: settings
             )
-            settings.recordAIRequests(requestCount, for: .popup)
+            settings.recordAIRequests(requestCount)
         } else {
             aiSummaryState = previousState
         }
     }
 
-    // MARK: - Dashboard Summary (lazy generation)
+    // MARK: - Shared Summary Recovery
 
-    /// Lazy dashboard summary generation. Safe to call repeatedly; skips if already
-    /// up-to-date. On lock contention (e.g. Popup is generating), returns silently
-    /// without error or budget charge — the view can retry by calling this method again.
-    func generateDashboardSummaryIfNeeded(settings: AppSettings) async {
+    /// Safe to call when either UI opens. It only generates if no current shared result exists.
+    func generateSharedSummaryIfNeeded(settings: AppSettings) async {
         guard settings.aiSummaryEnabled else { return }
 
         let allItems = allActiveItems(settings: settings)
         guard !allItems.isEmpty else {
-            dashboardSummaryState = .idle
+            aiSummaryState = .idle
             return
         }
 
         let apiKey = await resolveAPIKey(settings: settings)
         guard !apiKey.isEmpty else {
-            dashboardSummaryState = .noKey
+            aiSummaryState = .noKey
             return
         }
 
         let newHash = CacheEntry.contentIdentifier(for: allItems)
-        let shouldGenerate = (newHash != dashboardLastHash && newHash != dashboardLastTruncatedHash)
-            || shouldRecoverAISummary(from: dashboardSummaryState)
+        let shouldGenerate = (newHash != sharedSummaryLastHash && newHash != sharedSummaryLastTruncatedHash)
+            || shouldRecoverAISummary(from: aiSummaryState)
 
         guard shouldGenerate else { return }
 
-        // Try per-target lock; if held, return silently — retryable, no error, no budget
-        guard AISummaryService.tryAcquireGenerationLock(for: .dashboard) else {
+        guard AISummaryService.tryAcquireGenerationLock(for: Self.sharedSummaryTarget) else {
             return
         }
-        defer { AISummaryService.releaseGenerationLock(for: .dashboard) }
+        defer { AISummaryService.releaseGenerationLock(for: Self.sharedSummaryTarget) }
 
         AISummaryService.initBudget(
-            target: .dashboard,
-            mode: settings.aiBudgetMode,
-            baseline: Self.budgetBaseline(settings: settings, target: .dashboard),
-            cap: settings.effectiveDailyCap(for: .dashboard)
+            target: Self.sharedSummaryTarget,
+            mode: .shared,
+            baseline: settings.todayAIRequestCount,
+            cap: settings.aiDailyCap
         )
         let requestCount = await generateSummary(
-            target: .dashboard,
             items: allItems,
             contentHash: newHash,
             maxWords: settings.aiDashboardMaxWords,
@@ -522,7 +448,7 @@ final class NewsOrchestrator: ObservableObject {
             provider: settings.currentProvider,
             settings: settings
         )
-        settings.recordAIRequests(requestCount, for: .dashboard)
+        settings.recordAIRequests(requestCount)
     }
 
     // MARK: - Manual Regeneration (Popup context)
@@ -538,10 +464,10 @@ final class NewsOrchestrator: ObservableObject {
         }
 
         // Concurrent generation guard — preserve existing summary on denial
-        guard AISummaryService.tryAcquireGenerationLock(for: .popup) else {
+        guard AISummaryService.tryAcquireGenerationLock(for: Self.sharedSummaryTarget) else {
             return
         }
-        defer { AISummaryService.releaseGenerationLock(for: .popup) }
+        defer { AISummaryService.releaseGenerationLock(for: Self.sharedSummaryTarget) }
 
         let apiKey: String
         if let cached = settings.cachedAPIKey, !cached.isEmpty {
@@ -559,23 +485,22 @@ final class NewsOrchestrator: ObservableObject {
         }
         AISummaryService.recordManualRegeneration()
         AISummaryService.initBudget(
-            target: .popup,
-            mode: settings.aiBudgetMode,
-            baseline: Self.budgetBaseline(settings: settings, target: .popup),
-            cap: settings.effectiveDailyCap(for: .popup)
+            target: Self.sharedSummaryTarget,
+            mode: .shared,
+            baseline: settings.todayAIRequestCount,
+            cap: settings.aiDailyCap
         )
         let newHash = CacheEntry.contentIdentifier(for: allItems)
         let requestCount = await generateSummary(
-            target: .popup,
             items: allItems,
             contentHash: newHash,
-            maxWords: settings.aiPopupMaxWords,
+            maxWords: settings.aiDashboardMaxWords,
             model: settings.aiModel,
             apiKey: apiKey,
             provider: settings.currentProvider,
             settings: settings
         )
-        settings.recordAIRequests(requestCount, for: .popup)
+        settings.recordAIRequests(requestCount)
     }
 
     // MARK: - Shared Helpers
@@ -722,7 +647,6 @@ final class NewsOrchestrator: ObservableObject {
 
     @discardableResult
     private func generateSummary(
-        target: SummaryTarget,
         items: [NewsItem],
         contentHash: String,
         maxWords: Int,
@@ -731,31 +655,27 @@ final class NewsOrchestrator: ObservableObject {
         provider: AIProvider,
         settings: AppSettings
     ) async -> Int {
-        let budgetMode = settings.aiBudgetMode
+        let budgetMode: AISummaryBudgetMode = .shared
         guard !apiKey.isEmpty else {
-            setSummaryState(target, .noKey)
-            return AISummaryService.readGenerationAttempts(target: target, mode: budgetMode)
+            aiSummaryState = .noKey
+            return AISummaryService.readGenerationAttempts(target: Self.sharedSummaryTarget, mode: budgetMode)
         }
 
         // 连续截断保护：超过阈值时停止自动重试
-        guard truncationCount(for: target) < maxConsecutiveTruncations else {
-            setSummaryState(target, .error("AI 连续 \(maxConsecutiveTruncations) 次截断，请检查模型配置或减少新闻条目"))
-            return AISummaryService.readGenerationAttempts(target: target, mode: budgetMode)
+        guard sharedSummaryConsecutiveTruncationCount < maxConsecutiveTruncations else {
+            aiSummaryState = .error("AI 连续 \(maxConsecutiveTruncations) 次截断，请检查模型配置或减少新闻条目")
+            return AISummaryService.readGenerationAttempts(target: Self.sharedSummaryTarget, mode: budgetMode)
         }
 
-        setSummaryState(target, .summarizing)
-
-        let (trendRange, dailyRange): (ClosedRange<Int>, ClosedRange<Int>)
-        switch target {
-        case .popup: (trendRange, dailyRange) = (1...2, 2...3)
-        case .dashboard: (trendRange, dailyRange) = (4...5, 4...5)
-        }
+        aiSummaryState = .summarizing
+        let trendRange = 4...5
+        let dailyRange = 4...5
 
         do {
             let firstResult = try await AISummaryService.summarize(
                 items: items, maxWords: maxWords, provider: provider,
                 model: model, apiKey: apiKey,
-                target: target,
+                target: Self.sharedSummaryTarget,
                 budgetMode: budgetMode,
                 trendTopicCount: trendRange, dailyTopicCount: dailyRange
             )
@@ -779,7 +699,7 @@ final class NewsOrchestrator: ObservableObject {
                     finalResult = try await AISummaryService.summarize(
                         items: items, maxWords: maxWords, provider: provider,
                         model: model, apiKey: apiKey,
-                        target: target,
+                        target: Self.sharedSummaryTarget,
                         budgetMode: budgetMode,
                         trendTopicCount: trendRange, dailyTopicCount: dailyRange,
                         formatEnforcementSuffix: Self.formatEnforcementSuffix
@@ -791,7 +711,7 @@ final class NewsOrchestrator: ObservableObject {
                 finalResult = firstResult
             }
 
-            let requestCount = AISummaryService.readGenerationAttempts(target: target, mode: budgetMode)
+            let requestCount = AISummaryService.readGenerationAttempts(target: Self.sharedSummaryTarget, mode: budgetMode)
             let finalParsed = AISummaryParser.parseDualSummary(
                 finalResult.summary,
                 itemCount: items.count,
@@ -803,51 +723,51 @@ final class NewsOrchestrator: ObservableObject {
             // clear error instead of `.done`, and do not publish the raw text/items
             // so the Popup raw-text fallback cannot render the invalid output.
             if !finalResult.isTruncated, Self.needsFormatRetry(finalParsed) {
-                setSummaryState(target, .error("AI 响应格式异常，未能解析出摘要板块"))
+                aiSummaryState = .error("AI 响应格式异常，未能解析出摘要板块")
                 return requestCount
             }
 
-            setSummaryItems(target, items)
-            setParsedSummary(target, finalParsed)
+            aiSummaryItems = items
+            aiParsedSummary = finalParsed
             if finalResult.isTruncated {
-                setTruncatedHash(contentHash, for: target)
-                incrementTruncationCount(for: target)
-                setSummaryState(target, .truncated(finalResult.summary))
+                sharedSummaryLastTruncatedHash = contentHash
+                sharedSummaryConsecutiveTruncationCount += 1
+                aiSummaryState = .truncated(finalResult.summary)
             } else {
-                setHash(contentHash, for: target)
-                clearTruncatedHash(for: target)
-                resetTruncationCount(for: target)
-                setSummaryState(target, .done(finalResult.summary))
+                sharedSummaryLastHash = contentHash
+                sharedSummaryLastTruncatedHash = nil
+                sharedSummaryConsecutiveTruncationCount = 0
+                aiSummaryState = .done(finalResult.summary)
             }
             return requestCount
         } catch NewsBarError.apiKeyInvalid {
-            setSummaryState(target, .error("API Key 无效"))
+            aiSummaryState = .error("API Key 无效")
         } catch NewsBarError.rateLimited {
-            let count = AISummaryService.readGenerationAttempts(target: target, mode: budgetMode)
-            let cap = AISummaryService.readGenerationCap(target: target, mode: budgetMode)
-            setSummaryState(target, .error("今日 AI 调用次数已达上限（\(count)/\(cap)）"))
+            let count = AISummaryService.readGenerationAttempts(target: Self.sharedSummaryTarget, mode: budgetMode)
+            let cap = AISummaryService.readGenerationCap(target: Self.sharedSummaryTarget, mode: budgetMode)
+            aiSummaryState = .error("今日 AI 调用次数已达上限（\(count)/\(cap)）")
         } catch let error as NewsBarError {
             switch error {
             case .parseFailedWithDetail(let detail):
                 NSLog("[NewsOrchestrator] AI summary retry exhausted: %@", detail)
-                setSummaryState(target, .error("AI 服务暂时不可用（\(detail)）"))
+                aiSummaryState = .error("AI 服务暂时不可用（\(detail)）")
             case .parseFailed:
-                setSummaryState(target, .error("AI 响应格式异常"))
+                aiSummaryState = .error("AI 响应格式异常")
             default:
                 NSLog("[NewsOrchestrator] AI summary NewsBarError: %@", error.localizedDescription)
-                setSummaryState(target, .error("AI 总结生成失败"))
+                aiSummaryState = .error("AI 总结生成失败")
             }
         } catch let error as URLError {
             NSLog("[NewsOrchestrator] AI summary URLError: %@", error.localizedDescription)
-            setSummaryState(target, .error(error.code == .timedOut ? "AI 请求超时" : "网络连接失败"))
+            aiSummaryState = .error(error.code == .timedOut ? "AI 请求超时" : "网络连接失败")
         } catch let error as DecodingError {
             NSLog("[NewsOrchestrator] AI summary DecodingError: %@", error.localizedDescription)
-            setSummaryState(target, .error("AI 响应格式异常"))
+            aiSummaryState = .error("AI 响应格式异常")
         } catch {
             NSLog("[NewsOrchestrator] AI summary failed: %@", error.localizedDescription)
-            setSummaryState(target, .error("AI 总结生成失败"))
+            aiSummaryState = .error("AI 总结生成失败")
         }
-        return AISummaryService.readGenerationAttempts(target: target, mode: budgetMode)
+        return AISummaryService.readGenerationAttempts(target: Self.sharedSummaryTarget, mode: budgetMode)
     }
 
     func allActiveItems(settings: AppSettings) -> [NewsItem] {
@@ -870,28 +790,25 @@ final class NewsOrchestrator: ObservableObject {
         aiSummaryState = .idle
         aiSummaryItems = []
         aiParsedSummary = nil
-        dashboardSummaryState = .idle
-        dashboardSummaryItems = []
-        dashboardParsedSummary = nil
         sourceStates = [:]
-        popupLastHash = nil
-        dashboardLastHash = nil
-        popupLastTruncatedHash = nil
-        dashboardLastTruncatedHash = nil
-        popupConsecutiveTruncationCount = 0
-        dashboardConsecutiveTruncationCount = 0
+        sharedSummaryLastHash = nil
+        sharedSummaryLastTruncatedHash = nil
+        sharedSummaryConsecutiveTruncationCount = 0
     }
 
-    func refreshRSSSource(url: String, name: String) async {
+    func refreshRSSSource(url: String, name: String, settings: AppSettings) async {
         let source = NewsSource.rss(name: name, url: url)
+        await refreshRSSSource(source, settings: settings)
+    }
+
+    func refreshRSSSource(_ source: NewsSource, settings: AppSettings) async {
+        guard !source.isBuiltIn else { return }
+        guard sourceStates[source.id] != .loading else { return }
+
         sourceStates[source.id] = .loading
-        if let items = await fetchAndCache(
-            for: source,
-            fetcher: {
-                try await RSSService.fetch(url: url, sourceName: name)
-            }
-        ) {
-            rssItemsMap[url] = items
+        await fetchRSS(source: source, useCacheFallback: false, settings: settings)
+        if case .some(.loaded) = sourceStates[source.id] {
+            lastSourceRefresh[source.id] = Date()
         }
     }
 }

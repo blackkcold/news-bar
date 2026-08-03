@@ -306,13 +306,6 @@ struct RSSTextRow: View {
                         .background(sourceTint.opacity(0.12))
                         .editorialClipShape(cornerRadius: 20)
 
-                    if let host = URL(string: item.url)?.host, !host.isEmpty {
-                        Text(host)
-                            .font(.system(size: 10))
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                    }
-
                     Spacer(minLength: 0)
 
                     Image(systemName: "arrow.up.forward")
@@ -451,7 +444,7 @@ struct RSSImageCard: View {
                 }
             }
         }
-        .task {
+        .task(id: item.imageURL) {
             guard let urlStr = item.imageURL,
                   let url = URL(string: urlStr) else {
                 imageLoadState = .idle
@@ -513,24 +506,9 @@ struct RSSImageCard: View {
 
     private var footerMeta: some View {
         HStack(alignment: .center, spacing: 4) {
-            HStack(spacing: 4) {
-                EditorialSourceBadge(mark: .rss, fallbackTint: sourceTint, size: 16)
-                Text(item.source.displayName)
-                    .font(.system(size: 10, weight: isRetro ? .black : .medium, design: isRetro ? .serif : .default))
-            }
-                .foregroundStyle(sourceTint)
-                .lineLimit(1)
-                .padding(.horizontal, 6)
-                .padding(.vertical, 2)
-                .background(sourceTint.opacity(0.12))
-                .editorialClipShape(cornerRadius: 20)
-
-            if let host = URL(string: item.url)?.host, !host.isEmpty {
-                Text(host)
-                    .font(.system(size: 10))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
+            Text("阅读原文")
+                .font(.system(size: 10, weight: .medium))
+                .foregroundStyle(.secondary)
 
             Spacer(minLength: 0)
 
