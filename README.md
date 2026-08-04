@@ -1,63 +1,74 @@
 # NewsBar
 
-> A quiet macOS menu bar news aggregator — Weibo trending, Bilibili trending, custom RSS feeds, all at a glance.
-> 安静的 macOS 菜单栏新闻聚合器 — 微博热搜、B站热搜、自定义 RSS，一目了然。
+> A quiet macOS menu bar news aggregator — Weibo trending, Bilibili trending, and custom RSS feeds, all at a glance.
 
-[![Swift](https://img.shields.io/badge/Swift-5.9-orange)](https://swift.org)
-[![macOS](https://img.shields.io/badge/macOS-15.0%2B-blue)](https://apple.com/macos)
-[![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
+<p align="center">
+  <strong>🌐 Languages</strong> ·
+  <a href="#-languages">English</a> ·
+  <a href="README.zh-CN.md">简体中文</a> ·
+  <a href="README.zh-TW.md">繁體中文</a> ·
+  <a href="README.ja.md">日本語</a> ·
+  <a href="README.ko.md">한국어</a>
+</p>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/Swift-5.9-orange" alt="Swift 5.9">
+  <img src="https://img.shields.io/badge/macOS-15.0%2B-blue" alt="macOS 15.0+">
+  <img src="https://img.shields.io/badge/License-MIT-green" alt="MIT License">
+  <img src="https://img.shields.io/badge/Platforms-macOS-lightgrey" alt="Platforms: macOS">
+</p>
+
+**NewsBar** is a **native macOS menu bar / status bar news app** built with SwiftUI. It brings **Weibo trending**, **Bilibili trending**, and your own **RSS feeds** together into one quiet, glanceable menu bar panel. Optional **AI-powered summaries** turn the day's noise into a curated briefing with citations.
+
+Zero dependencies. Pure Swift. Free & open source (MIT).
 
 ---
 
-## Features · 功能
+## ✨ Features
 
-- **🔥 Weibo Trending** · 微博热搜 — Real-time Weibo hot topics
-- **📺 Bilibili Trending** · B站热搜 — Bilibili popular content
-- **📡 RSS Feeds** · RSS 订阅 — Custom RSS sources, freely extensible
-- **🤖 AI Summary** · AI 摘要 — One shared dual-category briefing (趋势概览 / 每日精选) serves Popup and Dashboard; cited rows open the original source. Automatic regeneration is driven by meaningful 12/24-hour trend or RSS changes, while the independent AI action can still force a refresh.
-- **📊 Editorial Dashboard** · 编辑式仪表盘 — Responsive masthead, shared AI briefing, redesigned trend cards and per-source RSS layout with individual source refresh actions
-- **⏱ Adaptive Refresh** · 智能刷新 — Startup fetch + visibility-aware hot-trend polling + adaptive RSS cadence
-- **🔄 Auto Update** · 自动更新 — Check GitHub Releases, one-click download
-- **🔐 Secure Storage** · 安全存储 — API Key encrypted with AES-256-GCM, machine-bound
-- **📰 Retro Editorial Theme** · 复古报刊主题 — Optional 1960s editorial design with paper texture, brick-red accents, square clipping cards and print-style source marks across Dashboard, Popup and Settings
-- **🪟 Modern Material Theme** · 现代材质主题 — Native SwiftUI material appearance with the same clearer editorial page headings
-- **🌓 Dark Mode** · 暗色模式 — Light / Dark / System auto, real-time switching
-- **📦 Zero Dependencies** · 零依赖 — Pure Swift, no third-party libraries
-- **🆓 Free & Open Source** · 免费开源 — MIT License
+- **🔥 Weibo Trending** — Real-time Weibo hot search topics
+- **📺 Bilibili Trending** — Bilibili popular & trending content
+- **📡 Custom RSS Feeds** — Add any RSS/Atom source; fully extensible
+- **🤖 AI Summary** — One shared dual-category briefing (Trend Overview / Daily Essentials) served across Popup and Dashboard; cited rows open the original source. **Two-layer smart triggering**: a regular 1-hour baseline, plus an **immediate trigger when a Weibo "爆" (burst) label appears**, which forces the burst topic into the Trend Overview and prioritises it. Burst summaries are throttled to once per 15 minutes.
+- **📊 Editorial Dashboard** — Responsive masthead, shared AI briefing, redesigned trend cards, and per-source RSS layout with individual refresh actions
+- **⏱ Adaptive Smart Refresh** — Startup fetch + visibility-aware hot-trend polling + adaptive RSS cadence
+- **🔄 Auto Update** — Check GitHub Releases, one-click download
+- **🔐 Secure Storage** — API Key encrypted with AES-256-GCM, machine-bound
+- **📰 Retro Editorial Theme** — Optional 1960s editorial design with paper texture, brick-red accents, square clipping cards, and print-style source marks
+- **🪟 Modern Material Theme** — Native SwiftUI material appearance with clear editorial page headings
+- **🌓 Dark Mode** — Light / Dark / System auto, real-time switching
+- **📦 Zero Dependencies** — Pure Swift, no third-party libraries
 
-## Install · 安装
+---
 
-Download the latest DMG from [Releases](../../releases) and drag to Applications.
+## 📦 Install
 
-从 [Releases](../../releases) 下载最新 DMG，拖入 Applications 即可。
+Download the latest DMG from [Releases](../../releases) and drag it to **Applications**.
 
-> Requires macOS 15.0+ · 要求 macOS 15.0+
+> Requires **macOS 15.0+**
 
-## Usage · 使用
+## 🚀 Usage
 
-1. Click the menu bar icon to expand the news panel · 点击菜单栏图标展开新闻面板
-2. Click any news item to open in browser · 点击任意新闻条目在浏览器中打开
-3. Cited AI summary rows show a persistent source badge; click to open original · 有引用的 AI 摘要行显示常驻来源角标，点击跳转原始新闻
-4. Click "Check Update" at top to manually check for new versions · 点击面板顶部「检查更新」手动检查新版本
-5. Click ⚙️ at bottom to open settings, configure RSS and AI · 点击底部 ⚙️ 进入设置，配置 RSS 源和 AI 摘要
-6. Click 📊 to open Dashboard for full news view: sidebar with hot-trend cards and AI briefing panel, plus per-source RSS card region with fixed two-column grid · 点击 📊 打开 Dashboard：侧边栏热点趋势卡片和 AI 简报面板，右侧按来源分卡的 RSS 固定双列网格区域
-7. Choose Modern Material or Retro Editorial under Settings → General → Theme · 在「设置 → 通用 → 主题」切换现代材质或复古报刊主题
-8. Quit from the settings panel bottom · 在设置面板底部退出
+1. Click the **menu bar icon** to expand the news panel
+2. Click any news item to open it in your browser
+3. **Cited AI summary rows** show a persistent source badge; click to open the original
+4. Click **Check Update** at the top to manually check for new versions
+5. Click ⚙️ at the bottom to open Settings and configure RSS sources and AI
+6. Click 📊 to open the **Dashboard** for the full news view: hot-trend cards, the AI briefing panel, and a per-source RSS region in a fixed two-column grid
+7. Choose **Modern Material** or **Retro Editorial** under Settings → General → Theme
+8. Quit from the bottom of the Settings panel
 
-> Popup and Dashboard reuse one detailed AI briefing generated after global refresh. Popup displays at most two rows per category; Dashboard displays the full result. Dashboard also provides an independent AI refresh button.
-> Popup 与 Dashboard 复用全局刷新后生成的一份详细 AI 简报。Popup 每类最多显示两条，Dashboard 显示完整结果，并提供 AI 独立刷新按钮。
+> Popup and Dashboard reuse one detailed AI briefing generated after a global refresh. Popup shows at most two rows per category; Dashboard shows the full result. The Dashboard also provides an independent AI refresh button.
 
-### Enable AI Summary · 启用 AI 摘要
+---
 
-Settings → AI tab: select a provider and fill in API Key. Supports DeepSeek, MiniMax, Opencode Go/Zen, Google AI Studio, Ollama Cloud, plus user-defined custom providers (endpoint, model IDs, auth header).
+## 🤖 Enable AI Summary
 
-设置 → AI 标签页：选择 AI 提供商并填入 API Key。支持 DeepSeek、MiniMax、Opencode Go/Zen、Google AI Studio、Ollama Cloud 等，并支持自定义提供商（端点、模型 ID、认证头）。
+Settings → **AI** tab: pick a provider and enter your API Key. Supported providers: **DeepSeek**, **MiniMax**, **Opencode Go/Zen**, **Google AI Studio**, **Ollama Cloud**, plus **user-defined custom providers** (endpoint, model IDs, auth header).
 
 Popup and Dashboard share one summary length preset (default 360 words) and one daily request cap (default 50, configurable 20/50/100). Automatic summaries use 12/24-hour trend history and only regenerate after meaningful changes and cooldown checks; the Dashboard AI button still forces an independent summary regeneration.
 
-Popup 和 Dashboard 共用一个摘要长度预设（默认 360 字）和每日 AI 调用上限（默认 50，可选 20/50/100）。自动总结会结合近 12/24 小时趋势历史，并仅在显著变化及冷却条件满足时重建；Dashboard 的 AI 按钮仍可强制独立刷新摘要。
-
-## Supported AI Providers · 支持的 AI 提供商
+### Supported AI Providers
 
 | Provider | Endpoint | Models |
 |---|---|---|
@@ -67,35 +78,39 @@ Popup 和 Dashboard 共用一个摘要长度预设（默认 360 字）和每日 
 | Opencode Zen | open-code-zen.aiizhi.com | deepseek-v4-flash, deepseek-v4-pro |
 | Google AI Studio | generativelanguage.googleapis.com | gemini-3.6-flash, gemini-3.5-flash, gemini-3.5-flash-lite, gemini-3.1-flash-lite, gemini-3.1-pro-preview, gemini-3-flash-preview, gemini-2.5-pro, gemini-2.5-flash, gemini-2.5-flash-lite |
 | Ollama Cloud | ollama.com | deepseek-v4-flash:cloud, deepseek-v4-pro:cloud, gpt-oss:20b-cloud, gpt-oss:120b-cloud, kimi-k3:cloud, minimax-m3:cloud, ... |
-| Custom | 用户自定义 | 自定义端点 / 模型 ID |
+| Custom | Your own | Custom endpoint / model IDs |
 
-> **模型折叠**：默认仅显示各供应商的 DeepSeek 系模型（若有）；在「通用 → 开发者选项」开启「显示全部 AI 模型」可查看并选用该供应商全部官方模型。
+> **Model folding**: by default only DeepSeek-family models are shown for each provider (where available); enable **Show All AI Models** under General → Developer Options to see the full official model list.
 
-## Develop · 开发
+---
+
+## 🛠 Develop
 
 ```bash
-# Build · 构建
+# Build
 swift build -c release --arch arm64
 
-# Or use the official packaging script · 或使用官方打包脚本
+# Or use the official packaging script (builds app + DMG)
 bash scripts/build.sh
 ```
 
-### Release Workflow · 发布流程
+### Release Workflow
 
 ```bash
-# Update version.txt and RELEASE_NOTES.md on release/vX.Y.Z first
-swift test                       # Run the full test suite · 运行全量测试
-bash scripts/build.sh            # Official app + DMG packaging · 官方 App 与 DMG 打包
-# Open a PR to main, wait for required CI, then merge
+# 1. Update version.txt and RELEASE_NOTES.md on release/vX.Y.Z first
+swift test                    # Run the full test suite
+bash scripts/build.sh         # Official app + DMG packaging
+# 2. Open a PR to main, wait for required CI, then merge
 git tag -a vX.Y.Z -m "vX.Y.Z — summary"
 git push origin vX.Y.Z
-bash scripts/release.sh          # GitHub Release + DMG/SHA256 upload
+bash scripts/release.sh       # GitHub Release + DMG/SHA256 upload
 ```
 
 See [docs/release-conventions.md](docs/release-conventions.md) for the complete PR, CI, merge, tagging and verification workflow.
 
-## Project Structure · 项目结构
+---
+
+## 📂 Project Structure
 
 ```text
 Sources/NewsBar/
@@ -103,13 +118,13 @@ Sources/NewsBar/
 ├── AppDelegate.swift       # Status bar, popover, window management
 ├── Models/
 │   ├── AIProvider.swift        # Multi-provider AI definitions
-│   ├── NewsItem.swift          # News item model
+│   ├── NewsItem.swift          # News item model (incl. Weibo hot label)
 │   ├── NewsSource.swift        # Source enum (Weibo/Bilibili/RSS)
 │   ├── AppSettings.swift       # User settings (Observable)
 │   ├── CacheEntry.swift        # Cache entry
 │   └── UpdateInfo.swift        # Release/version models
 ├── Services/
-│   ├── NewsOrchestrator.swift  # Core coordinator: refresh, cache, shared AI state machine, per-source RSS refresh
+│   ├── NewsOrchestrator.swift  # Core coordinator: refresh, cache, shared AI state machine
 │   ├── UpdateChecker.swift     # GitHub update check + DMG download
 │   ├── WeiboHotService.swift   # Weibo trending fetcher
 │   ├── BilibiliHotService.swift# Bilibili trending fetcher
@@ -117,33 +132,39 @@ Sources/NewsBar/
 │   ├── AISummaryService.swift  # AI summary (multi-provider)
 │   ├── CacheManager.swift      # File cache (actor)
 │   ├── KeychainManager.swift   # Deprecated — retained for one-time migration only
-│   ├── EncryptedKeyStore.swift  # AES-256-GCM encrypted file storage (replaces Keychain)
+│   ├── EncryptedKeyStore.swift # AES-256-GCM encrypted file storage
 │   ├── RateLimiter.swift       # Rate limiter (actor)
 │   ├── RefreshLog.swift        # Refresh log (actor, ring buffer)
 │   └── SecurityPolicies.swift  # URL/sanitize/XML safety
 ├── Views/
-│   ├── MenuBar/                # Reused popover components with compact shared AI briefing
+│   ├── MenuBar/                # Popover components with compact shared AI briefing
 │   ├── Settings/               # Settings window tabs
-│   ├── Dashboard/              # Dashboard window, full shared AI briefing and per-source refresh controls
-│   └── Theme/                  # Shared Modern Material / Retro Editorial primitives
+│   ├── Dashboard/              # Dashboard window, full AI briefing + per-source refresh
+│   └── Theme/                  # Modern Material / Retro Editorial primitives
 └── Extensions/
     ├── URLOpener.swift          # Safe URL opening
     └── View+Glass.swift         # Glass effect + adaptive color scheme
 ```
 
-## Tech Stack · 技术栈
+---
+
+## ⚙️ Tech Stack
 
 - **Swift 5.9** + **SwiftUI** (macOS 15.0+)
 - **AppKit**: NSStatusBar, NSPopover
-- **AI APIs**: DeepSeek / MiniMax / Opencode / Google AI Studio / Ollama Cloud / 自定义
-- **Storage**: Encrypted file (AES-256-GCM, CryptoKit), UserDefaults, File-based cache (actor)
-- **Zero external dependencies** · 零外部依赖
+- **AI APIs**: DeepSeek / MiniMax / Opencode / Google AI Studio / Ollama Cloud / Custom
+- **Storage**: Encrypted file (AES-256-GCM, CryptoKit), UserDefaults, file-based cache (actor)
+- **Zero external dependencies**
 
-## Keywords
+---
 
-`macOS menu bar` · `news aggregator` · `SwiftUI` · `AI summary` · `Weibo trending` · `Bilibili trending` · `RSS reader` · `menu bar app` · `status bar` · `DeepSeek` · `Gemini` · `MiniMax` · `Keychain` · `native macOS app` · `open source`
+## 🔍 Keywords
 
-## Related Links · 相关链接
+`macOS menu bar app` · `status bar app` · `menu bar news` · `news aggregator` · `SwiftUI` · `Swift` · `native macOS app` · `AI summary` · `Weibo trending` · `Weibo hot search` · `Bilibili trending` · `RSS reader` · `RSS feed aggregator` · `trending topics` · `DeepSeek` · `Gemini` · `MiniMax` · `Ollama` · `menu bar` · `menubar app` · `open source`
+
+---
+
+## 🔗 Related Links
 
 - [Releases](../../releases)
 - [Weibo Trending API](https://s.weibo.com)
@@ -153,7 +174,19 @@ Sources/NewsBar/
 - [Google AI Studio](https://aistudio.google.com)
 - [Ollama Cloud](https://ollama.com)
 
-## License
+---
+
+## 📄 License
 
 MIT © 2024-2026 [blackkcold](https://github.com/blackkcold) and contributors.
 See [LICENSE](LICENSE) for details.
+
+---
+
+## 🌐 Languages
+
+- **English** — this file
+- [简体中文](README.zh-CN.md)
+- [繁體中文](README.zh-TW.md)
+- [日本語](README.ja.md)
+- [한국어](README.ko.md)
