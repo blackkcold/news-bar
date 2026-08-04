@@ -129,6 +129,14 @@ final class AppSettings {
         didSet { UserDefaults.standard.set(updateDevMode, forKey: "updateDevMode") }
     }
 
+    var showAllAIModels: Bool {
+        didSet { UserDefaults.standard.set(showAllAIModels, forKey: "showAllAIModels") }
+    }
+
+    var customAIProviders: [CustomAIProviderConfig] {
+        didSet { saveCustomAIProviders() }
+    }
+
     var hourlyPushEnabled: Bool {
         didSet { UserDefaults.standard.set(hourlyPushEnabled, forKey: "hourlyPushEnabled") }
     }
@@ -243,6 +251,13 @@ final class AppSettings {
         }
 
         self.updateDevMode = defaults.bool(forKey: "updateDevMode")
+        self.showAllAIModels = defaults.boolIfPresent(forKey: "showAllAIModels") ?? false
+        if let data = defaults.data(forKey: "customAIProviders"),
+           let decoded = try? JSONDecoder().decode([CustomAIProviderConfig].self, from: data) {
+            self.customAIProviders = decoded
+        } else {
+            self.customAIProviders = []
+        }
 
         self.hourlyPushEnabled = defaults.boolIfPresent(forKey: "hourlyPushEnabled") ?? false
         self.dailyPushEnabled = defaults.boolIfPresent(forKey: "dailyPushEnabled") ?? false
@@ -304,6 +319,110 @@ final class AppSettings {
         }
     }
 
+    private func saveCustomAIProviders() {
+        if let data = try? JSONEncoder().encode(customAIProviders) {
+            UserDefaults.standard.set(data, forKey: "customAIProviders")
+        }
+    }
+
+    /// Persisted `aiProvider` uses `custom:<uuid>` to reference a custom provider.
+    var selectedCustomProvider: CustomAIProviderConfig? {
+        guard aiProvider.hasPrefix("custom:"),
+              let uuid = aiProvider.split(separator: ":").last.map(String.init) else { return nil }
+        return customAIProviders.first { $0.id == uuid }
+    }
+
+    var isUsingCustomProvider: Bool {
+        selectedCustomProvider != nil
+    }
+
+    var resolvedAIConnection: ResolvedAIConnection {
+        if let custom = selectedCustomProvider {
+            return custom.resolvedConnection()
+        }
+        return currentProvider.resolvedConnection()
+    }
+
+    var currentAIModels: [String] {
+        if let custom = selectedCustomProvider {
+            return custom.effectiveModels
+        }
+        return currentProvider.models(showAll: showAllAIModels)
+    }
+
+    /// Encrypted-key account for the active provider. Custom providers store
+    /// under `custom:<uuid>`, built-ins under `ai-key-<rawValue>`.
+    var activeAPIKeyAccount: String {
+        isUsingCustomProvider ? aiProvider : currentProvider.apiKeyAccount()
+    }
+
+    /// All selectable provider IDs (built-ins + custom), with display names.
+    /// Built-in id is the raw `AIProvider` value; custom id is `custom:<uuid>`.
+    var providerOptions: [(id: String, name: String)] {
+        var options = AIProvider.allCases.map { ($0.rawValue, $0.displayName) }
+        for custom in customAIProviders {
+            options.append(("custom:\(custom.id)", custom.name))
+        }
+        return options
+    }
+
+    func customProvider(byID id: String) -> CustomAIProviderConfig? {
+        guard id.hasPrefix("custom:") else { return nil }
+        return customAIProviders.first { "custom:\($0.id)" == id }
+    }
+
+    func providerDefaultModel(forID id: String) -> String {
+        if let custom = customProvider(byID: id) {
+            return custom.effectiveModels.first ?? ""
+        }
+        return AIProvider(rawValue: id)?.defaultModel ?? ""
+    }
+
+    func providerModels(forID id: String) -> [String] {
+        if let custom = customProvider(byID: id) {
+            return custom.effectiveModels
+        }
+        return AIProvider(rawValue: id)?.models(showAll: showAllAIModels) ?? []
+    }
+
+    func providerDisplayName(forID id: String) -> String {
+        if let custom = customProvider(byID: id) {
+            return custom.name
+        }
+        return AIProvider(rawValue: id)?.displayName ?? id
+    }
+
+    func providerPricingInfo(forID id: String) -> [(title: String, detail: String)] {
+        if let custom = customProvider(byID: id) {
+            if let note = custom.pricingNote, !note.isEmpty {
+                return [("计费方式", note)]
+            }
+            return [("计费方式", "定价未内置")]
+        }
+        return AIProvider(rawValue: id)?.pricingInfo ?? []
+    }
+
+    func providerApiKeyPlaceholder(forID id: String) -> String {
+        if let custom = customProvider(byID: id) {
+            return "输入 \(custom.name) API Key"
+        }
+        return AIProvider(rawValue: id)?.apiKeyPlaceholder ?? "输入 API Key"
+    }
+
+    func providerKeyRetrievalURL(forID id: String) -> String {
+        if customProvider(byID: id) != nil {
+            return "自定义端点，请在提供商处获取 Key"
+        }
+        return AIProvider(rawValue: id)?.keyRetrievalURL ?? ""
+    }
+
+    func providerOnePasswordHint(forID id: String) -> String {
+        if let custom = customProvider(byID: id) {
+            return "op://Private/\(custom.name.replacingOccurrences(of: " ", with: ""))/credential"
+        }
+        return AIProvider(rawValue: id)?.onePasswordHint ?? "op://Private/Provider/credential"
+    }
+
     var activeSources: [NewsSource] {
         var sources: [NewsSource] = [.weibo, .bilibili]
         for rss in rssSources where selectedRSSSourceIDs.contains(rss.id) {
@@ -313,7 +432,12 @@ final class AppSettings {
     }
 
     var estimatedAICostText: String {
-        currentProvider.estimatedDailyCostText(model: aiModel, requestCount: todayAIRequestCount)
+        guard !isUsingCustomProvider else {
+            return selectedCustomProvider?.pricingNote?.isEmpty == false
+                ? (selectedCustomProvider?.pricingNote ?? "定价未内置")
+                : "定价未内置"
+        }
+        return currentProvider.estimatedDailyCostText(model: aiModel, requestCount: todayAIRequestCount)
     }
 
     var aiUsageText: String {

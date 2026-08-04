@@ -349,7 +349,6 @@ private struct PopoverAISummarySection: View {
                 parsedSummary: orchestrator.aiParsedSummary,
                 maxSectionsPerCategory: 2,
                 isRegenerating: orchestrator.aiSummaryState == .fetching || orchestrator.aiSummaryState == .summarizing,
-                regenerationCooldownRemaining: AISummaryService.regenerationCooldownRemaining(),
                 onRegenerate: {
                     Task {
                         await orchestrator.regenerateAISummary(settings: settings)

@@ -13,7 +13,8 @@ Sources/NewsBar/
 ├── main.swift              # 入口：单实例检测 → NSApp 启动
 ├── AppDelegate.swift        # 生命周期：statusItem、popover、延迟 keychain 读取、通知监听、通知权限请求
 ├── Models/
-│   ├── AIProvider.swift       # 多 AI 提供商枚举（6 providers）
+│   ├── AIProvider.swift       # 多 AI 提供商枚举（7 内置 providers：DeepSeek/MiniMax/Opencode Go/Zen/Google AI Studio/Ollama Cloud）+ 模型折叠规则（默认仅 DeepSeek，开发者开关展开全部）
+│   ├── CustomAIProviderConfig.swift # 自定义提供商配置（端点/模型 ID/认证头/格式，安全解码）+ ResolvedAIConnection 统一连接抽象
 │   ├── NewsItem.swift       # 新闻条目模型 (Identifiable, Codable, + imageURL Optional)
 │   ├── NewsSource.swift     # 数据源枚举 (weibo/bilibili/rss)
 │   ├── AppSettings.swift    # @Observable 全局设置 (UserDefaults 持久化 + resolvedColorScheme + cachedAPIKey + 通知设置 5 字段 + aiDailyCap 白名单 20/50/100 + aiPopupMaxWords 白名单 80/120/160/200 + aiDashboardMaxWords 白名单 240/360/480/600 + RSS 显示计数统一/按源覆盖)
@@ -26,7 +27,7 @@ Sources/NewsBar/
 │   ├── BilibiliHotService.swift # B站热搜 (bilibili.com API)
 │   ├── RSSService.swift        # RSS/Atom Feed 解析 (XMLParser + enclosure/media namespace 图片解析 + 10s 超时)
 │   ├── RSSRecommendations.swift # RSS 推荐源 (6 分类 25 源)
-│   ├── AISummaryService.swift   # AI 总结（多提供商：OpenAI/Anthropic 格式分发；per-dispatch 预算记账含重试；并发生成锁 OSAllocatedUnfairLock；手动再生 60s 冷却；sanitizeTitle 剥离控制字符/【】/ [# 防 prompt 注入；max_tokens 初始 2048/重试 3840；prompt 话题数参数化 trendTopicCount/dailyTopicCount，Popup 2-3/Dashboard 4-5；反幻觉规则）
+│   ├── AISummaryService.swift   # AI 总结（多提供商：ResolvedAIConnection 分发 OpenAI/Anthropic 格式；per-dispatch 预算记账含重试；并发生成锁 OSAllocatedUnfairLock；手动再生 60s 冷却；sanitizeTitle 剥离控制字符/【】/ [# 防 prompt 注入；max_tokens 初始 2048/重试 3840；prompt 话题数参数化 trendTopicCount/dailyTopicCount，Popup 2-3/Dashboard 4-5；反幻觉规则）
 │   ├── AISummaryParser.swift    # AI 摘要解析器：parseDualSummary 双分类解析（趋势概览 / 每日精选），按引用编号过滤趋势源，兼容旧格式回落
 │   ├── OnePasswordService.swift # 1Password CLI 集成 (op read)
 │   ├── KeychainManager.swift   # 已废弃 — 仅保留用于一次性迁移读取旧 Keychain 数据

@@ -64,7 +64,8 @@ enum WeiboHotService {
                 title: title,
                 url: url,
                 source: .weibo,
-                rank: nil
+                rank: nil,
+                hotLabel: hotLabel(from: entry)
             ))
         }
 
@@ -77,9 +78,23 @@ enum WeiboHotService {
                 title: item.title,
                 url: item.url,
                 source: .weibo,
-                rank: index + 1
+                rank: index + 1,
+                hotLabel: item.hotLabel
             )
         }
+    }
+
+    /// Resolve trending status: `label_name` first, then boolean flags, else nil.
+    private static func hotLabel(from entry: [String: Any]) -> String? {
+        if let label = entry["label_name"] as? String,
+           ["爆", "沸", "热", "新"].contains(label) {
+            return label
+        }
+        if entry["is_boom"] as? Bool == true { return "爆" }
+        if entry["is_fei"] as? Bool == true { return "沸" }
+        if entry["is_hot"] as? Bool == true { return "热" }
+        if entry["is_new"] as? Bool == true { return "新" }
+        return nil
     }
 
     // MARK: - Tier 2: s.weibo.com/top/summary (HTML parsing fallback)

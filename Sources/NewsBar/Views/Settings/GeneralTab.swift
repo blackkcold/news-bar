@@ -94,10 +94,15 @@ struct GeneralTab: View {
                     get: { settings.updateDevMode },
                     set: { settings.updateDevMode = $0 }
                 ))
+
+                Toggle("显示全部 AI 模型", isOn: Binding(
+                    get: { settings.showAllAIModels },
+                    set: { settings.showAllAIModels = $0 }
+                ))
             } header: {
                 Text("开发者选项")
             } footer: {
-                Text("仅用于测试更新功能。开启后「检查更新」将直接获取最新 release 版本，不比对本地版本号。")
+                Text("「忽略版本号」仅用于测试更新功能，开启后「检查更新」直接获取最新 release 版本。\n「显示全部 AI 模型」开启后，提供商模型列表不再折叠：有 DeepSeek 模型的供应商也会显示其全部官方模型（如 Ollama Cloud、MiniMax 等），默认仅显示 DeepSeek 系模型。")
             }
         }
         .formStyle(.grouped)

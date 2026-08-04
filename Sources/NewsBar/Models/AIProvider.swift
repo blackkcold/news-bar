@@ -7,6 +7,7 @@ enum AIProvider: String, CaseIterable, Codable {
     case opencodeGo
     case opencodeZen
     case googleAIStudio
+    case ollamaCloud
 
     // MARK: - Display
 
@@ -18,6 +19,7 @@ enum AIProvider: String, CaseIterable, Codable {
         case .opencodeGo:        return "Opencode Go"
         case .opencodeZen:       return "Opencode Zen"
         case .googleAIStudio:    return "Google AI Studio"
+        case .ollamaCloud:       return "Ollama Cloud"
         }
     }
 
@@ -35,17 +37,19 @@ enum AIProvider: String, CaseIterable, Codable {
             return "https://open-code-zen.aiizhi.com/anthropic/v1/messages"
         case .googleAIStudio:
             return "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
+        case .ollamaCloud:
+            return "https://ollama.com/v1/chat/completions"
         }
     }
 
     // MARK: - Response Format
 
-    enum ResponseFormat { case openAI, anthropic }
+    enum ResponseFormat: String, Codable { case openAI, anthropic }
 
     var responseFormat: ResponseFormat {
         switch self {
-        case .deepseek, .googleAIStudio: return .openAI
-        default:                         return .anthropic
+        case .deepseek, .googleAIStudio, .ollamaCloud: return .openAI
+        default:                                       return .anthropic
         }
     }
 
@@ -53,15 +57,15 @@ enum AIProvider: String, CaseIterable, Codable {
 
     var authHeaderName: String {
         switch self {
-        case .deepseek, .googleAIStudio: return "Authorization"
-        default:                         return "x-api-key"
+        case .deepseek, .googleAIStudio, .ollamaCloud: return "Authorization"
+        default:                                       return "x-api-key"
         }
     }
 
     var authHeaderPrefix: String {
         switch self {
-        case .deepseek, .googleAIStudio: return "Bearer "
-        default:                         return ""
+        case .deepseek, .googleAIStudio, .ollamaCloud: return "Bearer "
+        default:                                       return ""
         }
     }
 
@@ -70,22 +74,66 @@ enum AIProvider: String, CaseIterable, Codable {
         responseFormat == .anthropic ? "2023-06-01" : nil
     }
 
-    // MARK: - Models (first is default)
+    // MARK: - Models
 
-    var models: [String] {
+    /// Complete official model list for the provider (used when the developer
+    /// toggle "显示全部模型" is enabled). Sources verified against official docs.
+    var allModels: [String] {
         switch self {
         case .deepseek:
             return ["deepseek-v4-flash", "deepseek-v4-pro"]
         case .minimaxTokenPlan, .minimaxAPI:
-            return ["MiniMax-M3", "MiniMax-M2.7", "MiniMax-M2.7-highspeed", "MiniMax-M2.5", "MiniMax-M2.1"]
+            return [
+                "MiniMax-M3", "MiniMax-M2.7", "MiniMax-M2.7-highspeed",
+                "MiniMax-M2.5", "MiniMax-M2.5-highspeed",
+                "MiniMax-M2.1", "MiniMax-M2.1-highspeed", "MiniMax-M2",
+            ]
         case .opencodeGo, .opencodeZen:
+            // These proxy endpoints serve DeepSeek models.
             return ["deepseek-v4-flash", "deepseek-v4-pro"]
         case .googleAIStudio:
-            return ["gemini-3.6-flash", "gemini-2.5-flash", "gemini-2.5-pro", "gemini-3.5-flash", "gemini-3.5-flash-lite"]
+            return [
+                "gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite",
+                "gemini-3.1-flash-lite", "gemini-3.1-pro-preview", "gemini-3-flash-preview",
+                "gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite",
+            ]
+        case .ollamaCloud:
+            return [
+                "deepseek-v4-flash:cloud", "deepseek-v4-pro:cloud",
+                "gpt-oss:20b-cloud", "gpt-oss:120b-cloud",
+                "kimi-k3:cloud", "kimi-k2.7-code:cloud", "kimi-k2.6:cloud",
+                "minimax-m3:cloud", "minimax-m2.7:cloud",
+                "glm-5.2:cloud", "glm-5.1:cloud",
+                "qwen3.5:397b-cloud",
+                "nemotron-3-super:cloud", "nemotron-3-ultra:cloud", "nemotron-3-nano:cloud",
+                "mistral-large-3:cloud",
+            ]
         }
     }
 
+    /// Default collapsed model list: when the provider offers DeepSeek models,
+    /// only those are shown by default; otherwise the full list is shown.
+    var models: [String] {
+        let deepseekModels = allModels.filter { $0.contains("deepseek") }
+        return deepseekModels.isEmpty ? allModels : deepseekModels
+    }
+
+    /// Resolve the model list honouring the developer "显示全部模型" toggle.
+    func models(showAll: Bool) -> [String] {
+        showAll ? allModels : models
+    }
+
     var defaultModel: String { models.first ?? "" }
+
+    func resolvedConnection() -> ResolvedAIConnection {
+        ResolvedAIConnection(
+            baseURL: baseURL,
+            responseFormat: responseFormat,
+            authHeaderName: authHeaderName,
+            authHeaderPrefix: authHeaderPrefix,
+            apiVersion: apiVersion
+        )
+    }
 
     // MARK: - Keychain Account
 
@@ -102,6 +150,7 @@ enum AIProvider: String, CaseIterable, Codable {
         case .opencodeGo:     return "输入 Opencode Go API Key"
         case .opencodeZen:    return "输入 Opencode Zen API Key"
         case .googleAIStudio: return "输入 Google AI Studio API Key"
+        case .ollamaCloud:    return "输入 Ollama Cloud API Key"
         }
     }
 
@@ -113,6 +162,7 @@ enum AIProvider: String, CaseIterable, Codable {
         case .opencodeGo:     return "open-code-go.aiizhi.com"
         case .opencodeZen:    return "open-code-zen.aiizhi.com"
         case .googleAIStudio: return "aistudio.google.com → Get API Key"
+        case .ollamaCloud:    return "ollama.com/settings/keys"
         }
     }
 
@@ -124,6 +174,7 @@ enum AIProvider: String, CaseIterable, Codable {
         case .opencodeGo:     return "op://Private/OpencodeGo/credential"
         case .opencodeZen:    return "op://Private/OpencodeZen/credential"
         case .googleAIStudio: return "op://Private/Gemini/credential"
+        case .ollamaCloud:    return "op://Private/OllamaCloud/credential"
         }
     }
 
@@ -158,6 +209,11 @@ enum AIProvider: String, CaseIterable, Codable {
                 ("gemini-2.5-pro",   "免费层：每天 50 次请求"),
                 ("用量参考",          "每次总结约消耗 200-800 tokens"),
             ]
+        case .ollamaCloud:
+            return [
+                ("计费方式", "按量计费，详见 ollama.com/settings/billing"),
+                ("用量参考", "每次总结约消耗 200-800 tokens"),
+            ]
         }
     }
 
@@ -190,6 +246,8 @@ enum AIProvider: String, CaseIterable, Codable {
             return "定价未内置"
         case .opencodeGo, .opencodeZen:
             return "由 Opencode 账户计费"
+        case .ollamaCloud:
+            return "按量计费，详见官网定价"
         }
     }
 }

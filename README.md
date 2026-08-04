@@ -49,9 +49,9 @@ Download the latest DMG from [Releases](../../releases) and drag to Applications
 
 ### Enable AI Summary · 启用 AI 摘要
 
-Settings → AI tab: select a provider and fill in API Key. Supports DeepSeek, MiniMax, Opencode Go/Zen, Google AI Studio.
+Settings → AI tab: select a provider and fill in API Key. Supports DeepSeek, MiniMax, Opencode Go/Zen, Google AI Studio, Ollama Cloud, plus user-defined custom providers (endpoint, model IDs, auth header).
 
-设置 → AI 标签页：选择 AI 提供商并填入 API Key。支持 DeepSeek、MiniMax、Opencode Go/Zen、Google AI Studio 等。
+设置 → AI 标签页：选择 AI 提供商并填入 API Key。支持 DeepSeek、MiniMax、Opencode Go/Zen、Google AI Studio、Ollama Cloud 等，并支持自定义提供商（端点、模型 ID、认证头）。
 
 Popup and Dashboard share one summary length preset (default 360 words) and one daily request cap (default 50, configurable 20/50/100). Automatic summaries use 12/24-hour trend history and only regenerate after meaningful changes and cooldown checks; the Dashboard AI button still forces an independent summary regeneration.
 
@@ -62,10 +62,14 @@ Popup 和 Dashboard 共用一个摘要长度预设（默认 360 字）和每日 
 | Provider | Endpoint | Models |
 |---|---|---|
 | DeepSeek | api.deepseek.com | deepseek-v4-flash, deepseek-v4-pro |
-| MiniMax | api.minimaxi.com | MiniMax-M3, MiniMax-M2.7, MiniMax-M2.7-highspeed, MiniMax-M2.5, MiniMax-M2.1 |
+| MiniMax | api.minimaxi.com | MiniMax-M3, MiniMax-M2.7, MiniMax-M2.7-highspeed, MiniMax-M2.5, MiniMax-M2.5-highspeed, MiniMax-M2.1, MiniMax-M2.1-highspeed, MiniMax-M2 |
 | Opencode Go | open-code-go.aiizhi.com | deepseek-v4-flash, deepseek-v4-pro |
 | Opencode Zen | open-code-zen.aiizhi.com | deepseek-v4-flash, deepseek-v4-pro |
-| Google AI Studio | generativelanguage.googleapis.com | gemini-3.6-flash, gemini-2.5-flash, gemini-2.5-pro, gemini-3.5-flash, gemini-3.5-flash-lite |
+| Google AI Studio | generativelanguage.googleapis.com | gemini-3.6-flash, gemini-3.5-flash, gemini-3.5-flash-lite, gemini-3.1-flash-lite, gemini-3.1-pro-preview, gemini-3-flash-preview, gemini-2.5-pro, gemini-2.5-flash, gemini-2.5-flash-lite |
+| Ollama Cloud | ollama.com | deepseek-v4-flash:cloud, deepseek-v4-pro:cloud, gpt-oss:20b-cloud, gpt-oss:120b-cloud, kimi-k3:cloud, minimax-m3:cloud, ... |
+| Custom | 用户自定义 | 自定义端点 / 模型 ID |
+
+> **模型折叠**：默认仅显示各供应商的 DeepSeek 系模型（若有）；在「通用 → 开发者选项」开启「显示全部 AI 模型」可查看并选用该供应商全部官方模型。
 
 ## Develop · 开发
 
@@ -131,7 +135,7 @@ Sources/NewsBar/
 
 - **Swift 5.9** + **SwiftUI** (macOS 15.0+)
 - **AppKit**: NSStatusBar, NSPopover
-- **AI APIs**: DeepSeek / MiniMax / Opencode / Google AI Studio
+- **AI APIs**: DeepSeek / MiniMax / Opencode / Google AI Studio / Ollama Cloud / 自定义
 - **Storage**: Encrypted file (AES-256-GCM, CryptoKit), UserDefaults, File-based cache (actor)
 - **Zero external dependencies** · 零外部依赖
 
@@ -147,6 +151,7 @@ Sources/NewsBar/
 - [DeepSeek Platform](https://platform.deepseek.com)
 - [MiniMax Platform](https://platform.minimaxi.com)
 - [Google AI Studio](https://aistudio.google.com)
+- [Ollama Cloud](https://ollama.com)
 
 ## License
 
