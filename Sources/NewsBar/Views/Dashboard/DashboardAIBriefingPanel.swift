@@ -7,6 +7,7 @@ struct DashboardAIBriefingPanel: View {
     var onConfigureAI: () -> Void
 
     @State private var selectedCategory: DashboardBriefingCategory = .trendOverview
+    @State private var regenerationCooldownRemaining: TimeInterval = 0
 
     private var summaryState: AISummaryState {
         orchestrator.aiSummaryState
@@ -134,6 +135,15 @@ struct DashboardAIBriefingPanel: View {
                 selectedCategory = preferredCategory
             }
         }
+        .task(id: isSummaryRefreshing) {
+            // Keep the manual-regeneration cooldown ticking so the refresh
+            // button un-disables promptly instead of getting stuck.
+            while regenerationCooldownRemaining > 0 || AISummaryService.regenerationCooldownRemaining() > 0 {
+                regenerationCooldownRemaining = AISummaryService.regenerationCooldownRemaining()
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+            }
+            regenerationCooldownRemaining = 0
+        }
     }
 
     private var header: some View {
@@ -190,7 +200,7 @@ struct DashboardAIBriefingPanel: View {
             }
             .buttonStyle(EditorialActionButtonStyle(compact: true))
             .controlSize(.small)
-            .disabled(isSummaryRefreshing || AISummaryService.regenerationCooldownRemaining() > 0)
+            .disabled(isSummaryRefreshing || regenerationCooldownRemaining > 0)
             .help("独立刷新 AI 简报")
             .accessibilityLabel("独立刷新 AI 简报")
         }

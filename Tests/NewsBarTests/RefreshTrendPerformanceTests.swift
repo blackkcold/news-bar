@@ -191,7 +191,7 @@ final class AISummaryPersistenceAndTriggerTests: XCTestCase {
             elapsedSinceSummary: 10 * 60,
             shouldRecover: false
         ))
-        XCTAssertTrue(NewsOrchestrator.shouldGenerateSummary(
+        XCTAssertFalse(NewsOrchestrator.shouldGenerateSummary(
             hasCachedSummary: true,
             hasNewContent: true,
             isManualRefresh: false,
@@ -201,6 +201,16 @@ final class AISummaryPersistenceAndTriggerTests: XCTestCase {
             elapsedSinceSummary: 30 * 60,
             shouldRecover: false
         ))
+        XCTAssertTrue(NewsOrchestrator.shouldGenerateSummary(
+            hasCachedSummary: true,
+            hasNewContent: true,
+            isManualRefresh: false,
+            hotChanged: true,
+            rssChanged: false,
+            trendIsSignificant: true,
+            elapsedSinceSummary: 60 * 60,
+            shouldRecover: false
+        ))
         XCTAssertFalse(NewsOrchestrator.shouldGenerateSummary(
             hasCachedSummary: true,
             hasNewContent: true,
@@ -208,7 +218,7 @@ final class AISummaryPersistenceAndTriggerTests: XCTestCase {
             hotChanged: false,
             rssChanged: true,
             trendIsSignificant: false,
-            elapsedSinceSummary: 2 * 60 * 60,
+            elapsedSinceSummary: 30 * 60,
             shouldRecover: false
         ))
         XCTAssertTrue(NewsOrchestrator.shouldGenerateSummary(
@@ -218,8 +228,51 @@ final class AISummaryPersistenceAndTriggerTests: XCTestCase {
             hotChanged: false,
             rssChanged: true,
             trendIsSignificant: false,
-            elapsedSinceSummary: 4 * 60 * 60,
+            elapsedSinceSummary: 60 * 60,
             shouldRecover: false
+        ))
+    }
+
+    @MainActor
+    func testBurstWeiboTriggersImmediatelyButThrottled() {
+        // A burst Weibo topic bypasses the 1h baseline even when it just changed.
+        XCTAssertTrue(NewsOrchestrator.shouldGenerateSummary(
+            hasCachedSummary: true,
+            hasNewContent: true,
+            isManualRefresh: false,
+            hotChanged: true,
+            rssChanged: false,
+            trendIsSignificant: true,
+            elapsedSinceSummary: 10 * 60,
+            shouldRecover: false,
+            hasBurstWeibo: true,
+            elapsedSinceBurstSummary: .infinity
+        ))
+        // Repeated burst trigger is suppressed within the 15-minute cooldown.
+        XCTAssertFalse(NewsOrchestrator.shouldGenerateSummary(
+            hasCachedSummary: true,
+            hasNewContent: true,
+            isManualRefresh: false,
+            hotChanged: true,
+            rssChanged: false,
+            trendIsSignificant: true,
+            elapsedSinceSummary: 30 * 60,
+            shouldRecover: false,
+            hasBurstWeibo: true,
+            elapsedSinceBurstSummary: 5 * 60
+        ))
+        // After the burst cooldown elapses, the burst trigger fires again.
+        XCTAssertTrue(NewsOrchestrator.shouldGenerateSummary(
+            hasCachedSummary: true,
+            hasNewContent: true,
+            isManualRefresh: false,
+            hotChanged: true,
+            rssChanged: false,
+            trendIsSignificant: true,
+            elapsedSinceSummary: 30 * 60,
+            shouldRecover: false,
+            hasBurstWeibo: true,
+            elapsedSinceBurstSummary: 15 * 60
         ))
     }
 

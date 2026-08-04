@@ -78,6 +78,8 @@ final class NewsOrchestrator {
     private var rssLastChangedAt: [String: Date] = [:]
     private var rssFailureCounts: [String: Int] = [:]
     private var lastSummaryGeneratedAt: Date?
+    /// Last summary triggered by a Weibo "爆" label, to throttle repeats.
+    private var lastBurstSummaryAt: Date?
     private var lastHourlyPushAt: Date?
     private var latestTrendSummary = TrendChangeSummary.none
     /// The shared result uses the detailed Dashboard prompt. Popup limits rows at render time.
@@ -113,16 +115,23 @@ final class NewsOrchestrator {
         rssChanged: Bool,
         trendIsSignificant: Bool,
         elapsedSinceSummary: TimeInterval,
-        shouldRecover: Bool
+        shouldRecover: Bool,
+        hasBurstWeibo: Bool = false,
+        elapsedSinceBurstSummary: TimeInterval = .infinity
     ) -> Bool {
-        !hasCachedSummary
+        // A Weibo "爆" label triggers an immediate summary, unless a burst
+        // summary was generated very recently (burstSummaryCooldown).
+        if hasBurstWeibo {
+            return elapsedSinceBurstSummary >= RefreshPolicy.burstSummaryCooldown
+        }
+        return !hasCachedSummary
             || (isManualRefresh && hasNewContent)
             || (hotChanged && trendIsSignificant
                 && hasNewContent
-                && elapsedSinceSummary >= RefreshPolicy.trendSummaryMinimumInterval)
+                && elapsedSinceSummary >= RefreshPolicy.autoSummaryInterval)
             || (rssChanged
                 && hasNewContent
-                && elapsedSinceSummary >= RefreshPolicy.dailySummaryMinimumInterval)
+                && elapsedSinceSummary >= RefreshPolicy.autoSummaryInterval)
             || (hasNewContent && shouldRecover)
     }
 
@@ -352,7 +361,7 @@ final class NewsOrchestrator {
             apiKey = cached
         } else {
             let store = EncryptedKeyStore()
-            if let fallback = await store.readAPIKey(account: settings.currentProvider.apiKeyAccount()),
+            if let fallback = await store.readAPIKey(account: settings.activeAPIKeyAccount),
                !fallback.isEmpty {
                 settings.cachedAPIKey = fallback
                 apiKey = fallback
@@ -588,6 +597,8 @@ final class NewsOrchestrator {
         let hasNewContent = newHash != sharedSummaryLastHash
             && newHash != sharedSummaryLastTruncatedHash
         let elapsed = Date().timeIntervalSince(lastSummaryGeneratedAt ?? .distantPast)
+        let hasBurstWeibo = weiboItems.contains { $0.hotLabel == "爆" }
+        let elapsedSinceBurst = Date().timeIntervalSince(lastBurstSummaryAt ?? .distantPast)
         let shouldGenerate = Self.shouldGenerateSummary(
             hasCachedSummary: sharedSummaryLastHash != nil,
             hasNewContent: hasNewContent,
@@ -596,7 +607,9 @@ final class NewsOrchestrator {
             rssChanged: rssChanged,
             trendIsSignificant: trendSummary.isSignificant,
             elapsedSinceSummary: elapsed,
-            shouldRecover: shouldRecoverAISummary(from: previousState)
+            shouldRecover: shouldRecoverAISummary(from: previousState),
+            hasBurstWeibo: hasBurstWeibo,
+            elapsedSinceBurstSummary: elapsedSinceBurst
         )
 
         if shouldGenerate {
@@ -613,10 +626,11 @@ final class NewsOrchestrator {
                 maxWords: settings.aiDashboardMaxWords,
                 model: settings.aiModel,
                 apiKey: apiKey,
-                provider: settings.currentProvider,
+                connection: settings.resolvedAIConnection,
                 settings: settings,
                 trendHistoryContext: trendSummary.context,
-                trendHistoryHash: trendSummary.historyHash
+                trendHistoryHash: trendSummary.historyHash,
+                burstTriggered: hasBurstWeibo
             )
             settings.recordAIRequests(requestCount)
         } else {
@@ -665,7 +679,7 @@ final class NewsOrchestrator {
             maxWords: settings.aiDashboardMaxWords,
             model: settings.aiModel,
             apiKey: apiKey,
-            provider: settings.currentProvider,
+            connection: settings.resolvedAIConnection,
             settings: settings,
             trendHistoryContext: latestTrendSummary.context,
             trendHistoryHash: latestTrendSummary.historyHash
@@ -696,7 +710,8 @@ final class NewsOrchestrator {
             apiKey = cached
         } else {
             let store = EncryptedKeyStore()
-            if let fallback = await store.readAPIKey(account: settings.currentProvider.apiKeyAccount()),
+            let account = settings.activeAPIKeyAccount
+            if let fallback = await store.readAPIKey(account: account),
                !fallback.isEmpty {
                 settings.cachedAPIKey = fallback
                 apiKey = fallback
@@ -719,7 +734,7 @@ final class NewsOrchestrator {
             maxWords: settings.aiDashboardMaxWords,
             model: settings.aiModel,
             apiKey: apiKey,
-            provider: settings.currentProvider,
+            connection: settings.resolvedAIConnection,
             settings: settings,
             trendHistoryContext: latestTrendSummary.context,
             trendHistoryHash: latestTrendSummary.historyHash
@@ -870,7 +885,7 @@ final class NewsOrchestrator {
             return cached
         }
         let store = EncryptedKeyStore()
-        if let fallback = await store.readAPIKey(account: settings.currentProvider.apiKeyAccount()),
+        if let fallback = await store.readAPIKey(account: settings.activeAPIKeyAccount),
            !fallback.isEmpty {
             settings.cachedAPIKey = fallback
             return fallback
@@ -907,10 +922,11 @@ final class NewsOrchestrator {
         maxWords: Int,
         model: String,
         apiKey: String,
-        provider: AIProvider,
+        connection: ResolvedAIConnection,
         settings: AppSettings,
         trendHistoryContext: String,
-        trendHistoryHash: String
+        trendHistoryHash: String,
+        burstTriggered: Bool = false
     ) async -> Int {
         let budgetMode: AISummaryBudgetMode = .shared
         guard !apiKey.isEmpty else {
@@ -930,7 +946,7 @@ final class NewsOrchestrator {
 
         do {
             let firstResult = try await AISummaryService.summarize(
-                items: items, maxWords: maxWords, provider: provider,
+                items: items, maxWords: maxWords, connection: connection,
                 model: model, apiKey: apiKey,
                 target: Self.sharedSummaryTarget,
                 budgetMode: budgetMode,
@@ -955,7 +971,7 @@ final class NewsOrchestrator {
                 if Self.needsFormatRetry(firstParsed) {
                     NSLog("[NewsOrchestrator] AI summary unrenderable (0 sections), retrying once with format enforcement")
                     finalResult = try await AISummaryService.summarize(
-                        items: items, maxWords: maxWords, provider: provider,
+                        items: items, maxWords: maxWords, connection: connection,
                         model: model, apiKey: apiKey,
                         target: Self.sharedSummaryTarget,
                         budgetMode: budgetMode,
@@ -998,6 +1014,9 @@ final class NewsOrchestrator {
                 sharedSummaryConsecutiveTruncationCount = 0
                 let generatedAt = Date()
                 lastSummaryGeneratedAt = generatedAt
+                if burstTriggered {
+                    lastBurstSummaryAt = generatedAt
+                }
                 aiSummaryState = .done(finalResult.summary)
                 await aiSummaryCacheStore.save(
                     AISummaryCacheEntry(

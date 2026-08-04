@@ -154,6 +154,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func currentProviderHasSavedKeyFlag() -> Bool {
+        if settings.isUsingCustomProvider {
+            let accountFlag = "hasAIKey-\(settings.activeAPIKeyAccount)"
+            return UserDefaults.standard.bool(forKey: accountFlag)
+        }
         let provider = settings.currentProvider
         let providerFlag = provider.keyExistsFlag()
         if UserDefaults.standard.bool(forKey: providerFlag) {
@@ -171,7 +175,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func refreshAPIKeyIfNeeded() {
         let ref = settings.onePasswordRef
-        let account = settings.currentProvider.apiKeyAccount()
+        let account = settings.activeAPIKeyAccount
         guard currentProviderHasSavedKeyFlag(),
               !ref.isEmpty else { return }
         Task { [weak self] in
@@ -199,7 +203,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func loadAPIKeyFromFile() {
         guard settings.aiSummaryEnabled, settings.cachedAPIKey == nil else { return }
         guard currentProviderHasSavedKeyFlag() else { return }
-        let account = settings.currentProvider.apiKeyAccount()
+        let account = settings.activeAPIKeyAccount
         Task { [weak self] in
             guard let self else { return }
             let store = EncryptedKeyStore()
@@ -218,7 +222,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             Task { @MainActor in orchestrator?.aiSummaryState = .noKey }
             return
         }
-        let account = settings.currentProvider.apiKeyAccount()
+        let account = settings.activeAPIKeyAccount
 
         Task { @MainActor in orchestrator?.aiSummaryState = .idle }
         Task { [weak self] in
@@ -227,6 +231,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if let key = await store.readAPIKey(account: account), !key.isEmpty {
                 await MainActor.run {
                     UserDefaults.standard.set(true, forKey: self.settings.currentProvider.keyExistsFlag())
+                    UserDefaults.standard.set(true, forKey: "hasAIKey-\(self.settings.activeAPIKeyAccount)")
                     self.settings.cachedAPIKey = key
                     Task {
                         await self.orchestrator?.manualRefresh(settings: self.settings)

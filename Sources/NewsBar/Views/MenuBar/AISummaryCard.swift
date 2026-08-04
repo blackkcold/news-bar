@@ -7,7 +7,6 @@ struct AISummaryCard: View {
     var parsedSummary: ParsedSummary?
     var maxSectionsPerCategory: Int?
     var isRegenerating = false
-    var regenerationCooldownRemaining: TimeInterval = 0
     var onRegenerate: (() -> Void)?
     var onConfigureKey: (() -> Void)?
 
@@ -15,6 +14,7 @@ struct AISummaryCard: View {
     @State private var animationTargetText = ""
     @State private var cachedGroups: [SummarySectionGroup] = []
     @State private var animationTask: Task<Void, Never>?
+    @State private var regenerationCooldownRemaining: TimeInterval = 0
     @Environment(AppSettings.self) private var settings
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -74,6 +74,15 @@ struct AISummaryCard: View {
         .onDisappear {
             animationTask?.cancel()
             animationTask = nil
+        }
+        .task(id: isRegenerating) {
+            // Keep the manual-regeneration cooldown ticking every second so the
+            // button un-disables promptly instead of getting stuck.
+            while regenerationCooldownRemaining > 0 || AISummaryService.regenerationCooldownRemaining() > 0 {
+                regenerationCooldownRemaining = AISummaryService.regenerationCooldownRemaining()
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+            }
+            regenerationCooldownRemaining = 0
         }
     }
 

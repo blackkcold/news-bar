@@ -25,6 +25,11 @@ enum RefreshPolicy {
     static let trendSummaryMinimumInterval: TimeInterval = 30 * 60
     static let dailySummaryMinimumInterval: TimeInterval = 4 * 60 * 60
 
+    /// Regular baseline before an automatic summary may regenerate (1 hour).
+    static let autoSummaryInterval: TimeInterval = 60 * 60
+    /// Minimum gap before the same "爆" (burst) Weibo topic retriggers an immediate summary.
+    static let burstSummaryCooldown: TimeInterval = 15 * 60
+
     static func rssFailureRetryInterval(failureCount: Int) -> TimeInterval {
         guard failureCount > 0 else { return normalRSSInterval }
         let exponent = min(failureCount - 1, 4)

@@ -3,7 +3,7 @@ import SwiftUI
 struct AITab: View {
     @Environment(AppSettings.self) private var settings
 
-    @State private var selectedProvider: AIProvider
+    @State private var selectedProviderID: String
     @State private var apiKeyInput = ""
     @State private var onePasswordRef = ""
     @State private var testResult: String?
@@ -12,11 +12,13 @@ struct AITab: View {
     @State private var saveResult: String?
     @State private var onePasswordResult: String?
     @State private var isLoadingFrom1Password = false
+    @State private var showCustomEditor = false
+    @State private var editingCustom: CustomAIProviderConfig?
+    @State private var pendingCustomDeletion: CustomAIProviderConfig?
 
     init() {
-        let provider = AIProvider(rawValue: UserDefaults.standard.string(forKey: "aiProvider") ?? "deepseek")
-            ?? .deepseek
-        _selectedProvider = State(initialValue: provider)
+        let saved = UserDefaults.standard.string(forKey: "aiProvider") ?? AIProvider.deepseek.rawValue
+        _selectedProviderID = State(initialValue: saved)
     }
 
     var body: some View {
@@ -32,29 +34,69 @@ struct AITab: View {
 
             Section {
                 Picker("提供商", selection: Binding(
-                    get: { selectedProvider },
+                    get: { selectedProviderID },
                     set: { newProvider in
-                        selectedProvider = newProvider
-                        settings.aiProvider = newProvider.rawValue
-                        settings.aiModel = newProvider.defaultModel
+                        selectedProviderID = newProvider
+                        settings.aiProvider = newProvider
+                        settings.aiModel = settings.providerDefaultModel(forID: newProvider)
+                        settings.cachedAPIKey = nil
                         apiKeyInput = ""
                         testResult = nil
                         saveResult = nil
                     }
                 )) {
-                    ForEach(AIProvider.allCases, id: \.self) { provider in
-                        Text(provider.displayName).tag(provider)
+                    ForEach(settings.providerOptions, id: \.id) { option in
+                        Text(option.name).tag(option.id)
+                    }
+                }
+
+                HStack {
+                    Button {
+                        editingCustom = nil
+                        showCustomEditor = true
+                    } label: {
+                        Label("添加自定义提供商", systemImage: "plus.circle")
+                    }
+                    .font(.caption)
+                    .buttonStyle(EditorialActionButtonStyle(compact: true))
+                    .controlSize(.small)
+
+                    Spacer()
+
+                    if settings.isUsingCustomProvider, let custom = settings.selectedCustomProvider {
+                        Button {
+                            editingCustom = custom
+                            showCustomEditor = true
+                        } label: {
+                            Text("编辑 \(custom.name)")
+                        }
+                        .font(.caption)
+                        .buttonStyle(EditorialActionButtonStyle(compact: true))
+                        .controlSize(.small)
+
+                        Button {
+                            pendingCustomDeletion = custom
+                        } label: {
+                            Text("删除")
+                        }
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                        .controlSize(.small)
                     }
                 }
             } header: {
                 Text("AI 提供商")
+            } footer: {
+                if settings.isUsingCustomProvider {
+                    Text("当前为自定义提供商，可在上方编辑或删除。")
+                }
             }
 
             Section {
-                SecureField(selectedProvider.apiKeyPlaceholder, text: $apiKeyInput)
+                SecureField(settings.providerApiKeyPlaceholder(forID: selectedProviderID), text: $apiKeyInput)
                     .textFieldStyle(.roundedBorder)
                     .font(.system(size: 12, design: .monospaced))
-                    .onChange(of: selectedProvider) { _, _ in
+                    .onChange(of: selectedProviderID) { _, _ in
                         apiKeyInput = ""
                     }
 
@@ -92,12 +134,12 @@ struct AITab: View {
             } header: {
                 Text("API Key")
             } footer: {
-                Text("API Key 使用 AES-256-GCM 加密存储，绑定本机硬件。获取 Key: \(selectedProvider.keyRetrievalURL)")
+                Text("API Key 使用 AES-256-GCM 加密存储，绑定本机硬件。获取 Key: \(settings.providerKeyRetrievalURL(forID: selectedProviderID))")
             }
 
             Section {
                 VStack(alignment: .leading, spacing: 6) {
-                    TextField(selectedProvider.onePasswordHint, text: $onePasswordRef)
+                    TextField(settings.providerOnePasswordHint(forID: selectedProviderID), text: $onePasswordRef)
                         .textFieldStyle(.roundedBorder)
                         .font(.system(size: 12, design: .monospaced))
                         .onAppear {
@@ -105,7 +147,7 @@ struct AITab: View {
                                 onePasswordRef = settings.onePasswordRef
                             }
                         }
-                        .onChange(of: selectedProvider) { _, _ in
+                        .onChange(of: selectedProviderID) { _, _ in
                             onePasswordRef = settings.onePasswordRef
                         }
 
@@ -140,12 +182,16 @@ struct AITab: View {
                     get: { settings.aiModel },
                     set: { settings.aiModel = $0 }
                 )) {
-                    ForEach(selectedProvider.models, id: \.self) { model in
+                    ForEach(settings.providerModels(forID: selectedProviderID), id: \.self) { model in
                         Text(model).tag(model)
                     }
                 }
             } header: {
                 Text("模型设置")
+            } footer: {
+                if !settings.isUsingCustomProvider && !settings.showAllAIModels {
+                    Text("默认折叠为 DeepSeek 系模型；可在「通用 → 开发者选项」开启「显示全部 AI 模型」查看供应商全部模型。")
+                }
             }
 
             Section {
@@ -168,7 +214,7 @@ struct AITab: View {
                     Text("费用说明")
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                    ForEach(selectedProvider.pricingInfo, id: \.title) { item in
+                    ForEach(settings.providerPricingInfo(forID: selectedProviderID), id: \.title) { item in
                         Text("\(item.title): \(item.detail)")
                             .font(.caption2)
                             .foregroundStyle(.tertiary)
@@ -245,13 +291,57 @@ struct AITab: View {
         }
         .formStyle(.grouped)
         .scrollContentBackground(.hidden)
+        .sheet(isPresented: $showCustomEditor) {
+            CustomAIProviderEditor(provider: editingCustom) { saved in
+                editingCustom = nil
+                showCustomEditor = false
+                if let saved, !saved.id.isEmpty {
+                    let customID = "custom:\(saved.id)"
+                    selectedProviderID = customID
+                    settings.aiProvider = customID
+                    settings.aiModel = settings.providerDefaultModel(forID: customID)
+                    settings.cachedAPIKey = nil
+                    apiKeyInput = ""
+                    testResult = nil
+                    saveResult = nil
+                }
+            }
+            .environment(settings)
+            .frame(minWidth: 460, minHeight: 460)
+        }
+        .confirmationDialog(
+            "删除自定义提供商？",
+            isPresented: Binding(
+                get: { pendingCustomDeletion != nil },
+                set: { if !$0 { pendingCustomDeletion = nil } }
+            ),
+            presenting: pendingCustomDeletion
+        ) { custom in
+            Button("删除 \(custom.name)", role: .destructive) {
+                deleteCustomProvider(custom)
+            }
+            Button("取消", role: .cancel) { }
+        } message: { custom in
+            Text("将从列表中移除“\(custom.name)”及其 API Key。此操作不可恢复。")
+        }
+    }
+
+    private func deleteCustomProvider(_ custom: CustomAIProviderConfig) {
+        settings.customAIProviders.removeAll { $0.id == custom.id }
+        pendingCustomDeletion = nil
+        if settings.isUsingCustomProvider == false, settings.aiProvider == "custom:\(custom.id)" {
+            settings.aiProvider = AIProvider.deepseek.rawValue
+            selectedProviderID = AIProvider.deepseek.rawValue
+            settings.aiModel = settings.providerDefaultModel(forID: selectedProviderID)
+            settings.cachedAPIKey = nil
+        }
     }
 
     private func saveAPIKey() {
         isSaving = true
         saveResult = nil
         let sanitized = SecurityPolicies.sanitizeUserInput(apiKeyInput)
-        let account = selectedProvider.apiKeyAccount()
+        let account = settings.activeAPIKeyAccount
         Task {
             let store = EncryptedKeyStore()
             let success = await store.saveAPIKey(sanitized, account: account)
@@ -261,6 +351,7 @@ struct AITab: View {
                     settings.onePasswordRef = onePasswordRef
                     apiKeyInput = ""
                     saveResult = "已保存"
+                    UserDefaults.standard.set(true, forKey: "hasAIKey-\(account)")
                     NotificationCenter.default.post(name: .apiKeyConfigured, object: nil)
                 } else {
                     saveResult = "保存失败，请重试"
@@ -284,7 +375,7 @@ struct AITab: View {
         Task {
             do {
                 let key = try await OnePasswordService.readSecretAsync(reference: onePasswordRef)
-                let account = selectedProvider.apiKeyAccount()
+                let account = settings.activeAPIKeyAccount
                 let store = EncryptedKeyStore()
                 let success = await store.saveAPIKey(key, account: account)
                 await MainActor.run {
@@ -360,7 +451,7 @@ struct AITab: View {
                 let result = try await AISummaryService.summarize(
                     items: testItems,
                     maxWords: 30,
-                    provider: selectedProvider,
+                    connection: settings.resolvedAIConnection,
                     model: settings.aiModel,
                     apiKey: apiKey,
                     target: .popup,
@@ -394,7 +485,7 @@ struct AITab: View {
                 case .notConnectedToInternet:
                     testResult = "无网络连接"
                 case .cannotFindHost:
-                    testResult = "无法解析服务器：\(selectedProvider.baseURL)"
+                    testResult = "无法解析服务器：\(settings.resolvedAIConnection.baseURL)"
                 case .networkConnectionLost:
                     testResult = "网络连接中断"
                 default:
@@ -423,5 +514,147 @@ struct AITab: View {
             .labelsHidden()
             .frame(width: 92)
         }
+    }
+}
+
+private struct CustomAIProviderEditor: View {
+    @Environment(AppSettings.self) private var settings
+    let provider: CustomAIProviderConfig?
+    let onSaved: (CustomAIProviderConfig?) -> Void
+
+    @State private var name: String
+    @State private var baseURL: String
+    @State private var modelsText: String
+    @State private var defaultModel: String
+    @State private var isAnthropicFormat = false
+    @State private var authHeaderName: String
+    @State private var authHeaderPrefix: String
+    @State private var apiVersion: String
+    @State private var pricingNote: String
+    @State private var errorMessage: String?
+
+    init(provider: CustomAIProviderConfig?, onSaved: @escaping (CustomAIProviderConfig?) -> Void) {
+        self.provider = provider
+        self.onSaved = onSaved
+        _name = State(initialValue: provider?.name ?? "")
+        _baseURL = State(initialValue: provider?.baseURL ?? "")
+        _modelsText = State(initialValue: (provider?.models ?? []).joined(separator: "\n"))
+        _defaultModel = State(initialValue: provider?.defaultModel ?? "")
+        _isAnthropicFormat = State(initialValue: provider?.responseFormat == .anthropic)
+        _authHeaderName = State(initialValue: provider?.authHeaderName ?? "Authorization")
+        _authHeaderPrefix = State(initialValue: provider?.authHeaderPrefix ?? "Bearer ")
+        _apiVersion = State(initialValue: provider?.apiVersion ?? "")
+        _pricingNote = State(initialValue: provider?.pricingNote ?? "")
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text(provider == nil ? "添加自定义提供商" : "编辑提供商")
+                .font(.system(size: 15, weight: .semibold))
+
+            TextField("昵称", text: $name)
+                .textFieldStyle(.roundedBorder)
+
+            TextField("端点 URL", text: $baseURL)
+                .textFieldStyle(.roundedBorder)
+                .font(.system(size: 12, design: .monospaced))
+
+            TextField("默认模型", text: $defaultModel)
+                .textFieldStyle(.roundedBorder)
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text("模型列表（每行一个 model id）")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                TextEditor(text: $modelsText)
+                    .font(.system(size: 12, design: .monospaced))
+                    .frame(minHeight: 80)
+                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.secondary.opacity(0.2)))
+            }
+
+            Toggle("Anthropic 兼容格式", isOn: $isAnthropicFormat)
+
+            if isAnthropicFormat {
+                TextField("认证头名称（默认 x-api-key）", text: $authHeaderName)
+                    .textFieldStyle(.roundedBorder)
+                TextField("认证前缀（默认空）", text: $authHeaderPrefix)
+                    .textFieldStyle(.roundedBorder)
+                TextField("API 版本（默认 2023-06-01）", text: $apiVersion)
+                    .textFieldStyle(.roundedBorder)
+            } else {
+                TextField("认证头名称（默认 Authorization）", text: $authHeaderName)
+                    .textFieldStyle(.roundedBorder)
+                TextField("认证前缀（默认 Bearer ）", text: $authHeaderPrefix)
+                    .textFieldStyle(.roundedBorder)
+            }
+
+            TextField("计费说明（可选）", text: $pricingNote)
+                .textFieldStyle(.roundedBorder)
+
+            if let errorMessage {
+                Text(errorMessage)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
+
+            HStack {
+                Button("取消") {
+                    onSaved(nil)
+                }
+                .buttonStyle(EditorialActionButtonStyle(compact: true))
+
+                Spacer()
+
+                Button("保存") {
+                    save()
+                }
+                .buttonStyle(EditorialActionButtonStyle(tone: .primary, compact: true))
+                .disabled(name.isEmpty || baseURL.isEmpty || modelsText.isEmpty)
+            }
+        }
+        .padding(20)
+        .adaptiveColorScheme()
+        .appThemeSurface()
+    }
+
+    private func save() {
+        guard !name.isEmpty, !baseURL.isEmpty else { return }
+        let models = modelsText
+            .split(whereSeparator: \.isNewline)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        guard !models.isEmpty else {
+            errorMessage = "请至少填写一个模型"
+            return
+        }
+
+        var normalizedURL = baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        if URL(string: normalizedURL)?.scheme == nil {
+            normalizedURL = "https://" + normalizedURL
+        }
+        guard URL(string: normalizedURL) != nil else {
+            errorMessage = "端点 URL 无效"
+            return
+        }
+
+        let config = CustomAIProviderConfig(
+            id: provider?.id ?? UUID().uuidString,
+            name: SecurityPolicies.sanitizeUserInput(name),
+            baseURL: normalizedURL,
+            models: models,
+            defaultModel: defaultModel.trimmingCharacters(in: .whitespacesAndNewlines),
+            responseFormat: isAnthropicFormat ? .anthropic : .openAI,
+            authHeaderName: authHeaderName.isEmpty ? (isAnthropicFormat ? "x-api-key" : "Authorization") : authHeaderName,
+            authHeaderPrefix: authHeaderPrefix,
+            apiVersion: apiVersion.isEmpty ? nil : apiVersion,
+            pricingNote: pricingNote.trimmingCharacters(in: .whitespacesAndNewlines)
+        )
+
+        if let existing = provider, let idx = settings.customAIProviders.firstIndex(where: { $0.id == existing.id }) {
+            settings.customAIProviders[idx] = config
+        } else {
+            settings.customAIProviders.append(config)
+        }
+        onSaved(config)
     }
 }

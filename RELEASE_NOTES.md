@@ -3,6 +3,24 @@
 ### Added
 -
 
+## [v2.2.3] - 2026-08-04
+
+### ✨ 新功能
+- **AI 两层判断 + 爆标签即时触发**：AI 摘要新增两层判断。常态下统一按「距上次总结 ≥ 1 小时」作为自动生成基准；当识别到微博热搜出现「爆」标签话题时，立即触发一次总结，并强制将带爆标签的微博热搜纳入【趋势概览】优先展示。爆标签成功总结后 15 分钟内不重复触发。
+- **微博状态标签识别**：新增解析微博热搜 `label_name`（爆/沸/热/新）及 `is_boom`/`is_fei`/`is_hot`/`is_new` 布尔兜底标记，作为 AI 即时触发的依据。
+- **Ollama Cloud 提供商**：新增 Ollama Cloud 内置提供商，支持 deepseek-v4-flash:cloud、deepseek-v4-pro:cloud、gpt-oss、kimi-k3、minimax-m3 等云模型。
+- **自定义 AI 提供商**：支持用户自定义端点、模型 ID 与认证头，灵活接入任意兼容 OpenAI 的服务。
+- **AI 模型折叠**：默认仅显示各供应商的 DeepSeek 系模型；在「通用 → 开发者选项」开启「显示全部 AI 模型」可查看全部官方模型。
+
+### 🐛 稳定性修复
+- **AI 冷却倒计时假死修复**：Popup 与 Dashboard 的「重新生成/独立刷新」按钮冷却倒计时由静态快照改为每秒实时刷新，倒计时结束后自动解除禁用，不再出现按钮无法点击的假死问题。
+
+### ✅ 测试
+- **新增测试**：`testBurstWeiboTriggersImmediatelyButThrottled` 覆盖爆标签即时触发与 15 分钟去抖；`testAutomaticSummaryRespectsTrendAndRSSMinimumIntervals` 更新为 1 小时基准。
+- **全量测试**：`swift test` 322/322 通过。
+
+---
+
 ## [v2.2.2] - 2026-08-03
 
 ### ✨ 新功能
