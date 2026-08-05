@@ -102,14 +102,14 @@ struct AISummaryCard: View {
 
                 VStack(alignment: .leading, spacing: 2) {
                     HStack(spacing: 6) {
-                        Text("AI 总结")
+                        Text("aiCard.title".localized)
                             .editorialHeading(size: Metrics.headerTitleSize)
                             .foregroundStyle(.primary)
 
                         stateHeaderBadge
                     }
 
-                    Text("趋势概览 / 每日精选 · 有引用显示来源徽章，点击打开原文")
+                    Text("aiCard.subtitle".localized)
                         .font(.system(size: Metrics.helperTextSize))
                         .foregroundStyle(.secondary)
                 }
@@ -123,7 +123,7 @@ struct AISummaryCard: View {
             }
         }
         .buttonStyle(.plain)
-        .accessibilityHint(isExpanded ? "收起AI总结" : "展开AI总结")
+        .accessibilityHint(isExpanded ? "aiCard.collapseHint".localized : "aiCard.expandHint".localized)
     }
 
     @ViewBuilder
@@ -156,19 +156,19 @@ struct AISummaryCard: View {
     private var stateHeaderBadge: some View {
         switch state {
         case .noKey:
-            EditorialTag(text: "未配置", fallbackTint: .orange)
+            EditorialTag(text: "aiCard.noKey".localized, fallbackTint: .orange)
         case .fetching:
-            EditorialTag(text: "获取中", fallbackTint: .blue)
+            EditorialTag(text: "aiCard.fetching".localized, fallbackTint: .blue)
         case .summarizing:
-            EditorialTag(text: "思考中", fallbackTint: .purple)
+            EditorialTag(text: "aiCard.summarizing".localized, fallbackTint: .purple)
         case .error:
-            EditorialTag(text: "失败", fallbackTint: .red)
+            EditorialTag(text: "aiCard.failed".localized, fallbackTint: .red)
         case .done:
-            EditorialTag(text: "已完成", fallbackTint: .green)
+            EditorialTag(text: "aiCard.done".localized, fallbackTint: .green)
         case .truncated:
-            EditorialTag(text: "不完整", fallbackTint: .orange)
+            EditorialTag(text: "aiCard.truncated".localized, fallbackTint: .orange)
         case .idle:
-            EditorialTag(text: "等待", fallbackTint: .secondary)
+            EditorialTag(text: "aiCard.idle".localized, fallbackTint: .secondary)
         }
     }
 
@@ -181,9 +181,9 @@ struct AISummaryCard: View {
             case .noKey:
                 noKeyContent
             case .fetching:
-                statusContent(message: "获取新闻数据...")
+                statusContent(message: "aiCard.fetchingData".localized)
             case .summarizing:
-                statusContent(message: "AI 思考中...")
+                statusContent(message: "aiCard.thinking".localized)
             case .done, .truncated:
                 summaryContent
             case .error(let msg):
@@ -202,10 +202,10 @@ struct AISummaryCard: View {
 
     private var noKeyContent: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("API Key 未配置")
+            Text("aiCard.noKeyTitle".localized)
                 .font(.system(size: 11, weight: .medium))
                 .foregroundStyle(.orange)
-            Text("需要配置 AI API Key 才能使用 AI 总结功能")
+            Text("aiCard.noKeyBody".localized)
                 .font(.system(size: 10))
                 .foregroundStyle(.secondary)
             if let onConfigureKey {
@@ -215,7 +215,7 @@ struct AISummaryCard: View {
                     HStack(spacing: 4) {
                         Image(systemName: "gearshape")
                             .font(.system(size: 9))
-                        Text("配置 Key")
+                        Text("aiCard.configureKey".localized)
                             .font(.system(size: 10))
                     }
                 }
@@ -248,14 +248,18 @@ struct AISummaryCard: View {
 
         VStack(alignment: .leading, spacing: 8) {
             let fullyVisible = displayText == animationTargetText
-            sectionRenderedView(fullText, visibleText: fullyVisible ? nil : displayText)
+            sectionRenderedView(
+                fullText,
+                visibleText: fullyVisible ? nil : displayText,
+                useMarkdown: fullyVisible
+            )
 
             if case .truncated = state {
                 HStack(spacing: 6) {
                     Image(systemName: "exclamationmark.triangle.fill")
                         .font(.system(size: 9))
                         .foregroundStyle(.orange)
-            Text("摘要可能不完整")
+            Text("aiCard.maybeIncomplete".localized)
                         .font(.system(size: 10))
                         .foregroundStyle(.orange)
                     Spacer()
@@ -279,16 +283,27 @@ struct AISummaryCard: View {
     // MARK: - Section Rendering
 
     @ViewBuilder
-    private func sectionRenderedView(_ fullText: String, visibleText: String? = nil) -> some View {
+    private func sectionRenderedView(
+        _ fullText: String,
+        visibleText: String? = nil,
+        useMarkdown: Bool = true
+    ) -> some View {
         let groups = revealedSectionGroups(cachedGroups, visibleText: visibleText)
         if groups.allSatisfy({ $0.sections.isEmpty }) {
             let fallbackText = visibleText ?? AISummaryParser.stripCitations(fullText)
-            Text((try? AttributedString(markdown: fallbackText)) ?? AttributedString(fallbackText))
-                .font(.system(size: 11.5))
-                .foregroundStyle(.primary)
-                .lineSpacing(3)
-                .contentTransition(.opacity)
-                .animation(reduceMotion ? nil : .smooth(duration: Metrics.revealAnimationDuration), value: fallbackText)
+            if useMarkdown {
+                Text((try? AttributedString(markdown: fallbackText)) ?? AttributedString(fallbackText))
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(.primary)
+                    .lineSpacing(3)
+                    .contentTransition(.opacity)
+                    .animation(reduceMotion ? nil : .smooth(duration: Metrics.revealAnimationDuration), value: fallbackText)
+            } else {
+                Text(fallbackText)
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(.primary)
+                    .lineSpacing(3)
+            }
         } else {
             ForEach(Array(groups.enumerated()), id: \.offset) { groupIndex, group in
                 if !group.sections.isEmpty {
@@ -304,6 +319,7 @@ struct AISummaryCard: View {
                             title: section.title,
                             content: section.body,
                             visibleContent: section.visibleBody,
+                            useMarkdown: useMarkdown,
                             matchedItem: section.primaryIndex.flatMap {
                                 allItems.indices.contains($0) ? allItems[$0] : nil
                             }
@@ -341,8 +357,8 @@ struct AISummaryCard: View {
                 maxSectionsPerCategory: maxSectionsPerCategory
             )
             return [
-                SummarySectionGroup(title: "趋势概览", sections: visibleSummary.trendOverview.map(summarySection)),
-                SummarySectionGroup(title: "每日精选", sections: visibleSummary.dailyEssentials.map(summarySection))
+                SummarySectionGroup(title: "aiCard.trendOverview".localized, sections: visibleSummary.trendOverview.map(summarySection)),
+                SummarySectionGroup(title: "aiCard.dailyEssentials".localized, sections: visibleSummary.dailyEssentials.map(summarySection))
             ].filter { !$0.sections.isEmpty }
         }
 
@@ -443,13 +459,13 @@ struct AISummaryCard: View {
         .controlSize(.small)
         .disabled(isRegenerating || isCoolingDown)
         .accessibilityLabel(regenerateButtonTitle(cooldownSeconds: cooldownSeconds))
-        .accessibilityHint(isCoolingDown ? "请等待冷却结束后再重新生成。" : "重新生成 Popup 与 Dashboard 共用的 AI 总结。")
+        .accessibilityHint(isCoolingDown ? "aiCard.cooldownHint".localized : "aiCard.regenerateHint".localized)
     }
 
     private func regenerateButtonTitle(cooldownSeconds: Int) -> String {
-        if isRegenerating { return "生成中..." }
-        if cooldownSeconds > 0 { return "冷却中 \(cooldownSeconds)秒" }
-        return "重新生成"
+        if isRegenerating { return "aiCard.regenerating".localized }
+        if cooldownSeconds > 0 { return L10n.string("aiCard.cooldown", cooldownSeconds) }
+        return "aiCard.regenerate".localized
     }
 
     // MARK: - Animation
@@ -465,9 +481,12 @@ struct AISummaryCard: View {
         guard !chars.isEmpty else { return }
         let chunkSize = 3
         var index = 0
+        var accumulated = ""
         while index < chars.count {
-            index = min(index + chunkSize, chars.count)
-            displayText = String(chars.prefix(index))
+            let endIndex = min(index + chunkSize, chars.count)
+            accumulated.append(contentsOf: chars[index..<endIndex])
+            index = endIndex
+            displayText = accumulated
             guard index < chars.count else { break }
             do {
                 try await Task.sleep(nanoseconds: 30_000_000)
@@ -519,6 +538,7 @@ struct SectionRow: View {
     let title: String
     let content: String
     var visibleContent: String? = nil
+    var useMarkdown: Bool = true
     let matchedItem: NewsItem?
 
     @State private var isHovered = false
@@ -543,13 +563,21 @@ struct SectionRow: View {
 
     private var accessibilityHintText: String {
         if matchedItem != nil {
-            return "可使用来源按钮打开原文。"
+            return "aiCard.sourceHint".localized
         }
-        return "这是只读摘要内容。"
+        return "aiCard.readonly".localized
     }
 
     private var displayContent: String {
         visibleContent ?? content
+    }
+
+    /// Parse markdown only when fully visible; the reveal prefix stays plain.
+    private func makeBodyText(_ text: String) -> AttributedString {
+        if useMarkdown, let attributed = try? AttributedString(markdown: text) {
+            return attributed
+        }
+        return AttributedString(text)
     }
 
     var body: some View {
@@ -561,7 +589,7 @@ struct SectionRow: View {
                         .foregroundStyle(.primary)
                 }
 
-                Text((try? AttributedString(markdown: displayContent)) ?? AttributedString(displayContent))
+                Text(makeBodyText(displayContent))
                     .font(.system(size: 11.5))
                     .foregroundStyle(.primary)
                     .lineSpacing(3)
@@ -570,7 +598,7 @@ struct SectionRow: View {
             }
             .accessibilityElement(children: .ignore)
             .accessibilityLabel(accessibilityLabelText)
-            .accessibilityValue(matchedItem?.source.displayName ?? "无可用来源")
+            .accessibilityValue(matchedItem?.source.displayName ?? "aiCard.noSource".localized)
             .accessibilityHint(accessibilityHintText)
 
             Spacer(minLength: 4)
@@ -647,8 +675,8 @@ private struct SourceBadge: View {
             .editorialClipShape(cornerRadius: 20)
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("打开 \(sourceName) 原文")
-        .accessibilityHint("在浏览器中打开")
+        .accessibilityLabel(L10n.string("aiCard.openSource", sourceName))
+        .accessibilityHint("aiCard.openInBrowser".localized)
         .scaleEffect(reduceMotion ? 1.0 : (isBadgeHovered ? 1.08 : 1.0))
         .animation(reduceMotion ? nil : .spring(response: 0.25, dampingFraction: 0.7), value: isBadgeHovered)
         .onHover { isBadgeHovered = $0 }

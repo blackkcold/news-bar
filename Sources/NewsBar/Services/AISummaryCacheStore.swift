@@ -7,12 +7,46 @@ struct AISummaryCacheEntry: Codable, Sendable {
     let trendHistoryHash: String
     let generatedAt: Date
     let trendItemCount: Int
+    let language: AppLanguage
+
+    init(
+        summary: String,
+        items: [NewsItem],
+        contentHash: String,
+        trendHistoryHash: String,
+        generatedAt: Date,
+        trendItemCount: Int,
+        language: AppLanguage = .zh
+    ) {
+        self.summary = summary
+        self.items = items
+        self.contentHash = contentHash
+        self.trendHistoryHash = trendHistoryHash
+        self.generatedAt = generatedAt
+        self.trendItemCount = trendItemCount
+        self.language = language
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case summary, items, contentHash, trendHistoryHash, generatedAt, trendItemCount, language
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        summary = try c.decode(String.self, forKey: .summary)
+        items = try c.decode([NewsItem].self, forKey: .items)
+        contentHash = try c.decode(String.self, forKey: .contentHash)
+        trendHistoryHash = try c.decode(String.self, forKey: .trendHistoryHash)
+        generatedAt = try c.decode(Date.self, forKey: .generatedAt)
+        trendItemCount = try c.decode(Int.self, forKey: .trendItemCount)
+        language = (try? c.decodeIfPresent(AppLanguage.self, forKey: .language)) ?? .zh
+    }
 }
 
 actor AISummaryCacheStore {
     private let fileURL: URL
 
-    init(fileURL: URL? = nil) {
+    init(fileURL: URL? = nil, language: AppLanguage = .zh) {
         if let fileURL {
             self.fileURL = fileURL
         } else {
@@ -21,7 +55,7 @@ actor AISummaryCacheStore {
             let bundleID = Bundle.main.bundleIdentifier ?? "com.newsbar"
             self.fileURL = caches
                 .appendingPathComponent(bundleID)
-                .appendingPathComponent("ai-summary.json")
+                .appendingPathComponent("ai-summary-\(language.rawValue).json")
         }
     }
 

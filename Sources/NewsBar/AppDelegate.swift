@@ -247,11 +247,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if defaults.bool(forKey: "hasShownAIKeySetupPrompt") { return }
 
         let alert = NSAlert()
-        alert.messageText = "未配置 API Key"
-        alert.informativeText = "AI 总结功能需要配置 API Key 才能使用。\n是否前往设置进行配置？"
+        alert.messageText = "app.alert.noKeyTitle".localized
+        alert.informativeText = "app.alert.noKeyBody".localized
         alert.alertStyle = .informational
-        alert.addButton(withTitle: "前往设置")
-        alert.addButton(withTitle: "稍后再说")
+        alert.addButton(withTitle: "app.alert.goToSettings".localized)
+        alert.addButton(withTitle: "app.alert.later".localized)
 
         let response = alert.runModal()
         if response == .alertFirstButtonReturn {

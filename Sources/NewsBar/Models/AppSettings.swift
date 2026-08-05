@@ -31,6 +31,27 @@ enum AppTheme: String, Sendable, CaseIterable, Identifiable {
     }
 }
 
+enum AppLanguage: String, Sendable, Codable, CaseIterable, Identifiable {
+    case zh
+    case en
+
+    var id: String { rawValue }
+
+    var bcp47: String {
+        switch self {
+        case .zh: return "zh-CN"
+        case .en: return "en"
+        }
+    }
+
+    var displayName: String {
+        switch self {
+        case .zh: return "中文"
+        case .en: return "English"
+        }
+    }
+}
+
 @Observable
 final class AppSettings {
     var autoRefreshEnabled: Bool {
@@ -44,6 +65,15 @@ final class AppSettings {
     }
     var appTheme: AppTheme {
         didSet { UserDefaults.standard.set(appTheme.rawValue, forKey: "appTheme") }
+    }
+    var appLanguage: AppLanguage {
+        didSet {
+            UserDefaults.standard.set(appLanguage.rawValue, forKey: "appLanguage")
+            L10n.currentLanguage = appLanguage
+        }
+    }
+    var rssTitleTranslationEnabled: Bool {
+        didSet { UserDefaults.standard.set(rssTitleTranslationEnabled, forKey: "rssTitleTranslationEnabled") }
     }
     @ObservationIgnored var resolvedColorScheme: ColorScheme? {
         if appTheme == .retroEditorial { return .light }
@@ -74,6 +104,11 @@ final class AppSettings {
     }
     var aiBudgetMode: AISummaryBudgetMode {
         didSet { UserDefaults.standard.set(aiBudgetMode.rawValue, forKey: "aiBudgetMode") }
+    }
+    /// When true, DeepSeek V4's thinking mode is disabled for faster,
+    /// non-truncated summaries. Exposed in Settings → AI.
+    var aiDisableDeepSeekThinking: Bool {
+        didSet { UserDefaults.standard.set(aiDisableDeepSeekThinking, forKey: "aiDisableDeepSeekThinking") }
     }
     var aiPopupDailyCap: Int {
         didSet { UserDefaults.standard.set(aiPopupDailyCap, forKey: "aiPopupDailyCap") }
@@ -181,6 +216,10 @@ final class AppSettings {
         self.launchAtLogin = defaults.boolIfPresent(forKey: "launchAtLogin") ?? false
         self.colorScheme = defaults.stringIfPresent(forKey: "colorScheme") ?? "system"
         self.appTheme = AppTheme(rawValue: defaults.stringIfPresent(forKey: "appTheme") ?? "") ?? .modern
+        let language = AppLanguage(rawValue: defaults.stringIfPresent(forKey: "appLanguage") ?? "") ?? .zh
+        self.appLanguage = language
+        L10n.currentLanguage = language
+        self.rssTitleTranslationEnabled = defaults.boolIfPresent(forKey: "rssTitleTranslationEnabled") ?? false
         self.aiSummaryEnabled = defaults.boolIfPresent(forKey: "aiSummaryEnabled") ?? false
         self.aiProvider = defaults.stringIfPresent(forKey: "aiProvider") ?? "deepseek"
 
@@ -202,6 +241,7 @@ final class AppSettings {
         self.aiDailyCap = Self.validAICaps.contains(rawCap) ? rawCap : 50
         let rawBudgetMode = defaults.stringIfPresent(forKey: "aiBudgetMode") ?? AISummaryBudgetMode.shared.rawValue
         self.aiBudgetMode = AISummaryBudgetMode(rawValue: rawBudgetMode) ?? .shared
+        self.aiDisableDeepSeekThinking = defaults.boolIfPresent(forKey: "aiDisableDeepSeekThinking") ?? true
         let rawPopupCap = defaults.integerIfPresent(forKey: "aiPopupDailyCap") ?? 50
         self.aiPopupDailyCap = Self.validAICaps.contains(rawPopupCap) ? rawPopupCap : 50
         let rawDashboardCap = defaults.integerIfPresent(forKey: "aiDashboardDailyCap") ?? 50

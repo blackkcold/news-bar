@@ -15,8 +15,8 @@ enum NewsSource: Identifiable, Hashable, Codable, Sendable {
 
     var displayName: String {
         switch self {
-        case .weibo: return "微博热搜"
-        case .bilibili: return "B站热搜"
+        case .weibo: return L10n.string("source.weibo")
+        case .bilibili: return L10n.string("source.bilibili")
         case let .rss(name, _): return name
         }
     }

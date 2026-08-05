@@ -10,7 +10,7 @@ struct UpdateBadge: View {
         HStack(spacing: 4) {
             switch checker.state {
             case .idle:
-                actionButton(label: isRetro ? "更新" : (settings.updateDevMode ? "检查更新(dev)" : "检查更新"), icon: "arrow.down.circle") {
+                actionButton(label: isRetro ? "update.update".localized : (settings.updateDevMode ? "update.checkDev".localized : "update.check".localized), icon: "arrow.down.circle") {
                     manualCheck()
                 }
 
@@ -18,10 +18,10 @@ struct UpdateBadge: View {
                 checkingLabel
 
             case .upToDate(let version):
-                statusLabel(icon: "checkmark.circle.fill", text: "已是最新 \(version)", color: .green)
+                statusLabel(icon: "checkmark.circle.fill", text: L10n.string("update.upToDate", version), color: .green)
 
             case .updateAvailable:
-                actionButton(label: "更新", icon: "arrow.down.circle.fill") {
+                actionButton(label: "update.update".localized, icon: "arrow.down.circle.fill") {
                     checker.downloadUpdate()
                 }
                 dismissButton
@@ -30,7 +30,7 @@ struct UpdateBadge: View {
                 downloadingButton(progress: progress)
 
             case .downloadComplete:
-                actionButton(label: "打开安装包", icon: "checkmark.circle.fill") {
+                actionButton(label: "update.openInstaller".localized, icon: "checkmark.circle.fill") {
                     checker.openDownloadedDMG()
                 }
 
@@ -41,7 +41,7 @@ struct UpdateBadge: View {
                     errorLabel(message: message)
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel("更新失败，重新检查")
+                .accessibilityLabel("update.failedRetry".localized)
                 .accessibilityValue(message)
             }
         }
@@ -61,13 +61,13 @@ struct UpdateBadge: View {
     private var checkingLabel: some View {
         Group {
             if isRetro {
-                EditorialTag(text: "检查中", fallbackTint: .secondary)
+                EditorialTag(text: "update.checking".localized, fallbackTint: .secondary)
             } else {
                 HStack(spacing: 4) {
                     ProgressView()
                         .scaleEffect(0.55)
                         .frame(width: 10, height: 10)
-                    Text("检查中")
+                    Text("update.checking".localized)
                         .font(.system(size: 10, weight: .medium))
                 }
                 .foregroundStyle(.secondary)
@@ -103,7 +103,7 @@ struct UpdateBadge: View {
         Button {
             checker.dismissUpdate()
         } label: {
-            Text("稍后")
+            Text("update.later".localized)
                 .font(.system(size: 9))
                 .foregroundStyle(.tertiary)
                 .padding(.horizontal, 4)
@@ -116,14 +116,14 @@ struct UpdateBadge: View {
         Group {
             if isRetro {
                 EditorialTag(
-                    text: "更新 \(Int((progress * 100).rounded()))%",
+                    text: L10n.string("update.downloadingPercent", Int((progress * 100).rounded())),
                     fallbackTint: RetroEditorialTokens.brick
                 )
             } else {
                 HStack(spacing: 3) {
                     Image(systemName: "arrow.down.circle.fill")
                         .font(.system(size: 9, weight: .medium))
-                    Text("更新中")
+                    Text("update.downloading".localized)
                         .font(.system(size: 10, weight: .medium))
                 }
                 .foregroundStyle(.blue)
@@ -147,7 +147,7 @@ struct UpdateBadge: View {
     private func errorLabel(message: String) -> some View {
         Group {
             if isRetro {
-                EditorialTag(text: "更新失败", fallbackTint: .orange)
+                EditorialTag(text: "update.failed".localized, fallbackTint: .orange)
             } else {
                 HStack(spacing: 3) {
                     Image(systemName: "exclamationmark.triangle.fill")

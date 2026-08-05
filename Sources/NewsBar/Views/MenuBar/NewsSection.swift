@@ -102,11 +102,11 @@ struct NewsSection: View {
                         .lineLimit(1)
                         .foregroundStyle(.primary)
 
-                    EditorialTag(text: "\(items.count) 条", fallbackTint: color)
+                    EditorialTag(text: L10n.string("news.count", items.count), fallbackTint: color)
                 }
 
                 if showHeaderHelperText {
-                    Text("点击打开浏览器")
+                    Text("news.clickToOpen".localized)
                         .font(.system(size: helperTextSize))
                         .foregroundStyle(.secondary)
                 }
@@ -115,9 +115,9 @@ struct NewsSection: View {
             Spacer()
 
             if case .loading = state {
-                statusPill(text: "加载中", tint: .secondary)
+                statusPill(text: "news.loading".localized, tint: .secondary)
             } else if case .failed = state {
-                statusPill(text: "加载失败", tint: .orange)
+                statusPill(text: "news.loadFailed".localized, tint: .orange)
             }
 
             if hiddenCount > 0 {
@@ -134,14 +134,14 @@ struct NewsSection: View {
                 ProgressView()
                     .scaleEffect(0.52)
                     .frame(width: 12, height: 12)
-                Text("加载中...")
+                Text("news.loadingDots".localized)
                     .font(.system(size: 11))
                     .foregroundStyle(.tertiary)
             case .failed(let message):
                 Image(systemName: "exclamationmark.triangle.fill")
                     .font(.system(size: 9))
                     .foregroundStyle(.orange)
-                Text("加载失败")
+                Text("news.loadFailed".localized)
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
                 Text(message)
@@ -149,7 +149,7 @@ struct NewsSection: View {
                     .foregroundStyle(.tertiary)
                     .lineLimit(1)
             case .idle, .loaded:
-                Text("暂无数据")
+                Text("news.noData".localized)
                     .font(.system(size: 11))
                     .foregroundStyle(.tertiary)
             }
@@ -162,7 +162,7 @@ struct NewsSection: View {
         HStack(spacing: 5) {
             Image(systemName: "exclamationmark.triangle.fill")
                 .font(.system(size: 8, weight: .semibold))
-            Text("更新失败，显示缓存")
+            Text("news.staleCache".localized)
                 .font(.system(size: 9.5, weight: .medium))
             Text(message)
                 .font(.system(size: 9.5))
@@ -199,8 +199,8 @@ struct NewsSection: View {
             .buttonStyle(.plain)
             .controlSize(.small)
             .tint(color)
-            .accessibilityLabel(isExpanded ? "收起 \(hiddenCount) 条" : "展开 \(hiddenCount) 条")
-            .help(isExpanded ? "收起" : "展开 \(hiddenCount) 条")
+            .accessibilityLabel(isExpanded ? L10n.string("news.collapseCount", hiddenCount) : L10n.string("news.expand", hiddenCount))
+            .help(isExpanded ? "news.collapse".localized : L10n.string("news.expand", hiddenCount))
         } else {
             Button {
                 toggleExpansion()
@@ -208,7 +208,7 @@ struct NewsSection: View {
                 HStack(spacing: 4) {
                     Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
                         .font(.system(size: expandButtonIconSize, weight: .semibold))
-                    Text(isExpanded ? "收起" : "展开 \(hiddenCount) 条")
+                    Text(isExpanded ? "news.collapse".localized : L10n.string("news.expand", hiddenCount))
                         .font(.system(size: rowButtonTextSize, weight: .medium))
                 }
                 .frame(minWidth: 0)
@@ -218,8 +218,8 @@ struct NewsSection: View {
             .buttonStyle(EditorialActionButtonStyle(compact: true))
             .controlSize(.small)
             .tint(color)
-            .accessibilityLabel(isExpanded ? "收起 \(hiddenCount) 条" : "展开 \(hiddenCount) 条")
-            .help(isExpanded ? "收起" : "展开 \(hiddenCount) 条")
+            .accessibilityLabel(isExpanded ? L10n.string("news.collapseCount", hiddenCount) : L10n.string("news.expand", hiddenCount))
+            .help(isExpanded ? "news.collapse".localized : L10n.string("news.expand", hiddenCount))
         }
     }
 

@@ -28,12 +28,12 @@ enum NewsBarError: LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .invalidURL: return "无效的 URL"
-        case .requestFailed: return "网络请求失败"
-        case .parseFailed: return "数据解析失败"
-        case .parseFailedWithDetail(let detail): return "XML 解析失败: \(detail)"
-        case .apiKeyInvalid: return "API Key 无效"
-        case .rateLimited: return "刷新频率限制"
+        case .invalidURL: return "error.invalidURL".localized
+        case .requestFailed: return "error.requestFailed".localized
+        case .parseFailed: return "error.parseFailed".localized
+        case .parseFailedWithDetail(let detail): return L10n.string("error.parseFailedDetail", detail)
+        case .apiKeyInvalid: return "error.apiKeyInvalid".localized
+        case .rateLimited: return "error.rateLimited".localized
         }
     }
 }
@@ -61,11 +61,14 @@ final class NewsOrchestrator {
     // MARK: - Private State
 
     private let cacheManager = CacheManager()
-    private let aiSummaryCacheStore = AISummaryCacheStore()
+    private let translationCacheStore = TranslationCacheStore()
     private let trendHistoryStore = TrendHistoryStore.shared
     private let rateLimiter = RateLimiter()
+    private var aiSummaryCacheStore: AISummaryCacheStore {
+        AISummaryCacheStore(language: L10n.currentLanguage)
+    }
     private var isLoadingCachedState = false
-    private var refreshWaiters: [CheckedContinuation<Void, Never>] = []
+    private var refreshWaiters: [RefreshWaiter] = []
     private var pendingManualRefresh = false
     var sharedSummaryLastHash: String?
     /// 截断内容哈希：防止对同一截断内容重复生成，成功生成后清除。
@@ -105,6 +108,11 @@ final class NewsOrchestrator {
     /// parsed result has zero sections in both categories.
     internal static func needsFormatRetry(_ parsed: ParsedSummary) -> Bool {
         parsed.trendOverview.isEmpty && parsed.dailyEssentials.isEmpty
+    }
+
+    /// True when the parsed result has real content in both categories.
+    internal static func hasBothSections(_ parsed: ParsedSummary) -> Bool {
+        !parsed.trendOverview.isEmpty && !parsed.dailyEssentials.isEmpty
     }
 
     internal static func shouldGenerateSummary(
@@ -302,8 +310,15 @@ final class NewsOrchestrator {
     ) async {
         if isRefreshing {
             if isManual { pendingManualRefresh = true }
-            await withCheckedContinuation { continuation in
-                refreshWaiters.append(continuation)
+            let waiter = RefreshWaiter()
+            refreshWaiters.append(waiter)
+            await withTaskCancellationHandler {
+                await waiter.awaitResume()
+            } onCancel: {
+                Task { @MainActor in
+                    refreshWaiters.removeAll { $0 === waiter }
+                    waiter.resumeOnce()
+                }
             }
             return
         }
@@ -331,7 +346,7 @@ final class NewsOrchestrator {
         isRefreshing = false
         let waiters = refreshWaiters
         refreshWaiters.removeAll(keepingCapacity: true)
-        waiters.forEach { $0.resume() }
+        waiters.forEach { $0.resumeOnce() }
     }
 
     private func runRefreshCycle(
@@ -509,11 +524,12 @@ final class NewsOrchestrator {
                 guard !items.isEmpty else {
                     throw NewsBarError.parseFailed
                 }
+                let translatedItems = await translateRSSItemsIfNeeded(items, settings: settings)
                 let now = Date()
-                let contentHash = CacheEntry.contentIdentifier(for: items)
+                let contentHash = CacheEntry.contentIdentifier(for: translatedItems)
                 changed = existing?.contentHash != contentHash
                 let entry = CacheEntry(
-                    items: items,
+                    items: translatedItems,
                     timestamp: changed ? now : (existing?.timestamp ?? now),
                     contentHash: contentHash,
                     lastValidatedAt: now,
@@ -521,8 +537,8 @@ final class NewsOrchestrator {
                     lastModified: lastModified
                 )
                 await cacheManager.save(entry, for: source)
-                rssItemsMap[source.id] = items
-                fetchedItems = items
+                rssItemsMap[source.id] = translatedItems
+                fetchedItems = translatedItems
                 if changed {
                     rssUnchangedRefreshCounts[source.id] = 0
                     rssLastChangedAt[source.id] = now
@@ -561,6 +577,33 @@ final class NewsOrchestrator {
         return changed
     }
 
+    // MARK: - RSS Title Translation
+
+    /// Translate RSS titles when English UI + translation are enabled.
+    /// Uses the file cache to avoid re-translating and hitting the free API rate limit.
+    /// Falls back to the original title on any failure.
+    private func translateRSSItemsIfNeeded(_ items: [NewsItem], settings: AppSettings) async -> [NewsItem] {
+        guard settings.rssTitleTranslationEnabled, settings.appLanguage == .en else {
+            return items
+        }
+        let targetLang = settings.appLanguage.bcp47
+        var translated: [NewsItem] = []
+        for item in items {
+            if let cached = await translationCacheStore.cachedTranslation(for: item.title, targetLang: targetLang) {
+                translated.append(item.withTranslatedTitle(cached))
+            } else {
+                let result = await TranslationService.translate(item.title, from: "zh-CN", to: targetLang)
+                if result != item.title {
+                    await translationCacheStore.saveTranslation(result, for: item.title, targetLang: targetLang)
+                    translated.append(item.withTranslatedTitle(result))
+                } else {
+                    translated.append(item)
+                }
+            }
+        }
+        return translated
+    }
+
     // MARK: - Shared Summary (generated on refresh)
 
     private func handleSharedAISummary(
@@ -588,7 +631,7 @@ final class NewsOrchestrator {
         }
 
         guard AISummaryService.tryAcquireGenerationLock(for: Self.sharedSummaryTarget) else {
-            aiSummaryState = .error("AI 总结正在生成中")
+            aiSummaryState = .error("error.aiGenerating".localized)
             return
         }
         defer { AISummaryService.releaseGenerationLock(for: Self.sharedSummaryTarget) }
@@ -630,7 +673,8 @@ final class NewsOrchestrator {
                 settings: settings,
                 trendHistoryContext: trendSummary.context,
                 trendHistoryHash: trendSummary.historyHash,
-                burstTriggered: hasBurstWeibo
+                burstTriggered: hasBurstWeibo,
+                summaryLanguage: settings.appLanguage
             )
             settings.recordAIRequests(requestCount)
         } else {
@@ -682,7 +726,8 @@ final class NewsOrchestrator {
             connection: settings.resolvedAIConnection,
             settings: settings,
             trendHistoryContext: latestTrendSummary.context,
-            trendHistoryHash: latestTrendSummary.historyHash
+            trendHistoryHash: latestTrendSummary.historyHash,
+            summaryLanguage: settings.appLanguage
         )
         settings.recordAIRequests(requestCount)
     }
@@ -737,7 +782,8 @@ final class NewsOrchestrator {
             connection: settings.resolvedAIConnection,
             settings: settings,
             trendHistoryContext: latestTrendSummary.context,
-            trendHistoryHash: latestTrendSummary.historyHash
+            trendHistoryHash: latestTrendSummary.historyHash,
+            summaryLanguage: settings.appLanguage
         )
         settings.recordAIRequests(requestCount)
     }
@@ -756,7 +802,7 @@ final class NewsOrchestrator {
         do {
             let items = try await fetcher()
             guard !items.isEmpty else {
-                sourceStates[source.id] = .failed("未返回内容")
+                sourceStates[source.id] = .failed("error.noContent".localized)
                 return nil
             }
 
@@ -854,11 +900,11 @@ final class NewsOrchestrator {
         if let urlError = error as? URLError {
             switch urlError.code {
             case .timedOut:
-                return "请求超时"
+                return "error.timeout".localized
             case .notConnectedToInternet, .networkConnectionLost:
-                return "网络连接失败"
+                return "error.noNetwork".localized
             default:
-                return "网络请求失败"
+                return "error.requestFailed".localized
             }
         }
 
@@ -867,7 +913,7 @@ final class NewsOrchestrator {
             return description
         }
 
-        return "加载失败"
+        return "error.loadFailed".localized
     }
 
     private func shouldRecoverAISummary(from state: AISummaryState) -> Bool {
@@ -926,7 +972,8 @@ final class NewsOrchestrator {
         settings: AppSettings,
         trendHistoryContext: String,
         trendHistoryHash: String,
-        burstTriggered: Bool = false
+        burstTriggered: Bool = false,
+        summaryLanguage: AppLanguage = .zh
     ) async -> Int {
         let budgetMode: AISummaryBudgetMode = .shared
         guard !apiKey.isEmpty else {
@@ -936,7 +983,7 @@ final class NewsOrchestrator {
 
         // 连续截断保护：超过阈值时停止自动重试
         guard sharedSummaryConsecutiveTruncationCount < maxConsecutiveTruncations else {
-            aiSummaryState = .error("AI 连续 \(maxConsecutiveTruncations) 次截断，请检查模型配置或减少新闻条目")
+            aiSummaryState = .error(L10n.string("error.aiTruncated", maxConsecutiveTruncations))
             return AISummaryService.readGenerationAttempts(target: Self.sharedSummaryTarget, mode: budgetMode)
         }
 
@@ -951,7 +998,9 @@ final class NewsOrchestrator {
                 target: Self.sharedSummaryTarget,
                 budgetMode: budgetMode,
                 trendTopicCount: trendRange, dailyTopicCount: dailyRange,
-                trendHistoryContext: trendHistoryContext
+                trendHistoryContext: trendHistoryContext,
+                summaryLanguage: summaryLanguage,
+                disableDeepSeekThinking: settings.aiDisableDeepSeekThinking
             )
             let wbRange = 0..<(weiboItems.count + bilibiliItems.count)
 
@@ -977,7 +1026,9 @@ final class NewsOrchestrator {
                         budgetMode: budgetMode,
                         trendTopicCount: trendRange, dailyTopicCount: dailyRange,
                         formatEnforcementSuffix: Self.formatEnforcementSuffix,
-                        trendHistoryContext: trendHistoryContext
+                        trendHistoryContext: trendHistoryContext,
+                        summaryLanguage: summaryLanguage,
+                        disableDeepSeekThinking: settings.aiDisableDeepSeekThinking
                     )
                 } else {
                     finalResult = firstResult
@@ -998,13 +1049,16 @@ final class NewsOrchestrator {
             // clear error instead of `.done`, and do not publish the raw text/items
             // so the Popup raw-text fallback cannot render the invalid output.
             if !finalResult.isTruncated, Self.needsFormatRetry(finalParsed) {
-                aiSummaryState = .error("AI 响应格式异常，未能解析出摘要板块")
+                aiSummaryState = .error("error.aiFormat".localized)
                 return requestCount
             }
 
             aiSummaryItems = items
             aiParsedSummary = finalParsed
-            if finalResult.isTruncated {
+            // A `length`-truncated response that still yields both sections with
+            // real content is treated as complete: the truncation only clipped
+            // trailing prose, not the substance users see.
+            if finalResult.isTruncated, !Self.hasBothSections(finalParsed) {
                 sharedSummaryLastTruncatedHash = contentHash
                 sharedSummaryConsecutiveTruncationCount += 1
                 aiSummaryState = .truncated(finalResult.summary)
@@ -1025,37 +1079,38 @@ final class NewsOrchestrator {
                         contentHash: contentHash,
                         trendHistoryHash: trendHistoryHash,
                         generatedAt: generatedAt,
-                        trendItemCount: weiboItems.count + bilibiliItems.count
+                        trendItemCount: weiboItems.count + bilibiliItems.count,
+                        language: summaryLanguage
                     )
                 )
             }
             return requestCount
         } catch NewsBarError.apiKeyInvalid {
-            aiSummaryState = .error("API Key 无效")
+            aiSummaryState = .error("error.aiKeyInvalid".localized)
         } catch NewsBarError.rateLimited {
             let count = AISummaryService.readGenerationAttempts(target: Self.sharedSummaryTarget, mode: budgetMode)
             let cap = AISummaryService.readGenerationCap(target: Self.sharedSummaryTarget, mode: budgetMode)
-            aiSummaryState = .error("今日 AI 调用次数已达上限（\(count)/\(cap)）")
+            aiSummaryState = .error(L10n.string("error.aiCapReached", count, cap))
         } catch let error as NewsBarError {
             switch error {
             case .parseFailedWithDetail(let detail):
                 NSLog("[NewsOrchestrator] AI summary retry exhausted: %@", detail)
-                aiSummaryState = .error("AI 服务暂时不可用（\(detail)）")
+                aiSummaryState = .error(L10n.string("error.aiUnavailable", detail))
             case .parseFailed:
-                aiSummaryState = .error("AI 响应格式异常")
+                aiSummaryState = .error("error.aiBadFormat".localized)
             default:
                 NSLog("[NewsOrchestrator] AI summary NewsBarError: %@", error.localizedDescription)
-                aiSummaryState = .error("AI 总结生成失败")
+                aiSummaryState = .error("error.aiFailed".localized)
             }
         } catch let error as URLError {
             NSLog("[NewsOrchestrator] AI summary URLError: %@", error.localizedDescription)
-            aiSummaryState = .error(error.code == .timedOut ? "AI 请求超时" : "网络连接失败")
+            aiSummaryState = .error(error.code == .timedOut ? "error.aiTimeout".localized : "error.aiNoNetwork".localized)
         } catch let error as DecodingError {
             NSLog("[NewsOrchestrator] AI summary DecodingError: %@", error.localizedDescription)
-            aiSummaryState = .error("AI 响应格式异常")
+            aiSummaryState = .error("error.aiBadFormat".localized)
         } catch {
             NSLog("[NewsOrchestrator] AI summary failed: %@", error.localizedDescription)
-            aiSummaryState = .error("AI 总结生成失败")
+            aiSummaryState = .error("error.aiFailed".localized)
         }
         return AISummaryService.readGenerationAttempts(target: Self.sharedSummaryTarget, mode: budgetMode)
     }
@@ -1110,5 +1165,30 @@ final class NewsOrchestrator {
         if case .some(.loaded) = sourceStates[source.id] {
             lastSourceRefresh[source.id] = Date()
         }
+    }
+}
+
+/// Waits for an in-flight refresh and resumes exactly once, even when the
+/// waiting task is cancelled. A continuation may be resumed at most once, so
+/// this boxes it to prevent a cancelled waiter from double-resuming.
+@MainActor
+private final class RefreshWaiter {
+    private var continuation: CheckedContinuation<Void, Never>?
+    private var isResumed = false
+
+    func awaitResume() async {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            self.continuation = continuation
+            if isResumed {
+                continuation.resume()
+            }
+        }
+    }
+
+    func resumeOnce() {
+        guard !isResumed else { return }
+        isResumed = true
+        continuation?.resume()
+        continuation = nil
     }
 }

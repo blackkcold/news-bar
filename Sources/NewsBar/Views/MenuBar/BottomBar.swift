@@ -67,16 +67,16 @@ struct BottomBar: View {
             Spacer(minLength: 4)
 
             Button(action: onOpenDashboard) {
-                Label("总览", systemImage: "rectangle.split.2x1")
+                Label("bottom.overview".localized, systemImage: "rectangle.split.2x1")
             }
             .buttonStyle(EditorialActionButtonStyle(compact: true))
-            .accessibilityLabel("打开 Dashboard")
+            .accessibilityLabel("bottom.openDashboard".localized)
 
             Button(action: onOpenSettings) {
-                Label("设置", systemImage: "gearshape")
+                Label("settings.badge".localized, systemImage: "gearshape")
             }
             .buttonStyle(EditorialActionButtonStyle(compact: true))
-            .accessibilityLabel("打开设置")
+            .accessibilityLabel("bottom.openSettings".localized)
         }
         .padding(.horizontal, 12)
         .padding(.top, 8)
@@ -110,13 +110,13 @@ struct BottomBar: View {
             .clipShape(Capsule())
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("刷新")
+        .accessibilityLabel("bottom.refresh".localized)
         .disabled(isRefreshing)
     }
 
     private var refreshLabel: String {
-        if isRefreshing { return "刷新中..." }
-        return "刷新"
+        if isRefreshing { return "bottom.refreshing".localized }
+        return "bottom.refresh".localized
     }
 
     private var dashboardButton: some View {
@@ -127,8 +127,8 @@ struct BottomBar: View {
                 .padding(5)
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("打开Dashboard")
-        .help("打开 Dashboard")
+        .accessibilityLabel("bottom.openDashboard".localized)
+        .help("bottom.openDashboard".localized)
     }
 
     private var settingsButton: some View {
@@ -139,7 +139,7 @@ struct BottomBar: View {
                 .padding(5)
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("打开设置")
-        .help("打开设置")
+        .accessibilityLabel("bottom.openSettings".localized)
+        .help("bottom.openSettings".localized)
     }
 }

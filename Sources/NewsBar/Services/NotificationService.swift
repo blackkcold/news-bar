@@ -22,9 +22,9 @@ enum NotificationService {
 
         let topItems = Array(items.prefix(count))
         let content = UNMutableNotificationContent()
-        content.title = "NewsBar 更新"
+        content.title = L10n.string("notif.hourlyTitle", language: L10n.currentLanguage)
         let bodyText = topItems
-            .map { SecurityPolicies.sanitizeHTMLContent($0.title) }
+            .map { SecurityPolicies.sanitizeHTMLContent($0.displayTitle) }
             .joined(separator: "\n• ")
         content.body = "• " + bodyText
         content.sound = nil
@@ -45,9 +45,9 @@ enum NotificationService {
 
         let topItems = Array(items.prefix(count))
         let content = UNMutableNotificationContent()
-        content.title = "NewsBar 每日摘要"
+        content.title = L10n.string("notif.dailyTitle", language: L10n.currentLanguage)
         content.body = topItems
-            .map { SecurityPolicies.sanitizeHTMLContent($0.title) }
+            .map { SecurityPolicies.sanitizeHTMLContent($0.displayTitle) }
             .joined(separator: "\n• ")
         content.sound = nil
         content.userInfo = ["type": "daily"]
@@ -74,8 +74,8 @@ enum NotificationService {
         center.removePendingNotificationRequests(withIdentifiers: ["daily-summary"])
 
         let content = UNMutableNotificationContent()
-        content.title = "NewsBar 每日摘要"
-        content.body = "点击查看今日新闻"
+        content.title = L10n.string("notif.dailyTitle", language: L10n.currentLanguage)
+        content.body = L10n.string("notif.clickToView", language: L10n.currentLanguage)
         content.sound = nil
         content.userInfo = ["type": "daily"]
 

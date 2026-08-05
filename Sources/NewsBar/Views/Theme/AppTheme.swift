@@ -318,23 +318,54 @@ struct AppThemeBackground: View {
 private struct RetroPaperGrain: View {
     var body: some View {
         Canvas { context, size in
-            var seed: UInt64 = 0x1966_0421
-            let dotCount = max(220, Int((size.width * size.height) / 1_600))
-
-            for _ in 0..<dotCount {
-                seed = seed &* 6_364_136_223_846_793_005 &+ 1
-                let x = CGFloat(seed % 10_000) / 10_000 * size.width
-                seed = seed &* 6_364_136_223_846_793_005 &+ 1
-                let y = CGFloat(seed % 10_000) / 10_000 * size.height
-                seed = seed &* 6_364_136_223_846_793_005 &+ 1
-                let diameter = CGFloat(1 + seed % 3) * 0.42
-                let dot = Path(ellipseIn: CGRect(x: x, y: y, width: diameter, height: diameter))
-                context.fill(dot, with: .color(RetroEditorialTokens.ink.opacity(0.075)))
+            if let image = Self.grainImage(for: size) {
+                context.draw(Image(decorative: image, scale: 1), in: CGRect(origin: .zero, size: size))
             }
         }
         .blendMode(.multiply)
         .allowsHitTesting(false)
     }
+
+    /// Rasterise the fixed-seed grain once per size; the 600+ dot loop only
+    /// runs when the canvas size changes instead of on every re-render.
+    private static func grainImage(for size: CGSize) -> CGImage? {
+        let key = "\(Int(size.width))x\(Int(size.height))"
+        if let cached = Self.cache[key] { return cached }
+
+        guard size.width > 0, size.height > 0 else { return nil }
+        let scale: CGFloat = 1
+        let pixelWidth = Int(size.width * scale)
+        let pixelHeight = Int(size.height * scale)
+        guard pixelWidth > 0, pixelHeight > 0,
+              let ctx = CGContext(
+                  data: nil,
+                  width: pixelWidth,
+                  height: pixelHeight,
+                  bitsPerComponent: 8,
+                  bytesPerRow: 0,
+                  space: CGColorSpaceCreateDeviceRGB(),
+                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+              ) else { return nil }
+
+        ctx.setFillColor(RetroEditorialTokens.ink.opacity(0.075).cgColor ?? CGColor(gray: 0, alpha: 1))
+        var seed: UInt64 = 0x1966_0421
+        let dotCount = max(220, Int((size.width * size.height) / 1_600))
+        for _ in 0..<dotCount {
+            seed = seed &* 6_364_136_223_846_793_005 &+ 1
+            let x = CGFloat(seed % 10_000) / 10_000 * size.width
+            seed = seed &* 6_364_136_223_846_793_005 &+ 1
+            let y = CGFloat(seed % 10_000) / 10_000 * size.height
+            seed = seed &* 6_364_136_223_846_793_005 &+ 1
+            let diameter = CGFloat(1 + seed % 3) * 0.42
+            ctx.fillEllipse(in: CGRect(x: x * scale, y: y * scale, width: diameter * scale, height: diameter * scale))
+        }
+
+        guard let image = ctx.makeImage() else { return nil }
+        Self.cache[key] = image
+        return image
+    }
+
+    private static var cache: [String: CGImage] = [:]
 }
 
 private struct AppThemeSurfaceModifier: ViewModifier {

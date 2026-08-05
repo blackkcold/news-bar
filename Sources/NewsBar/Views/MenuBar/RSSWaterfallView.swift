@@ -40,8 +40,7 @@ struct RSSWaterfallView: View {
             return effectiveDisplayMode
         }
         if displayMode == .image, !items.isEmpty {
-            let hasAnyImage = items.contains { $0.imageURL != nil }
-            return hasAnyImage ? .image : .text
+            return items.contains { $0.imageURL != nil } ? .image : .text
         }
         return displayMode
     }
@@ -86,6 +85,16 @@ struct RSSWaterfallView: View {
                 effectiveDisplayMode = resolvedMode
             }
         }
+        .onChange(of: items) { _, newItems in
+            if effectiveDisplayMode == nil, !newItems.isEmpty {
+                effectiveDisplayMode = displayMode == .image && newItems.contains { $0.imageURL != nil } ? .image : .text
+            }
+        }
+        .onChange(of: displayMode) { _, newMode in
+            if effectiveDisplayMode == nil, !items.isEmpty {
+                effectiveDisplayMode = newMode == .image && items.contains { $0.imageURL != nil } ? .image : .text
+            }
+        }
     }
 
     private var sectionHeader: some View {
@@ -106,12 +115,12 @@ struct RSSWaterfallView: View {
                     EditorialTag(text: "\(items.count) 条", fallbackTint: sourceTint)
 
                     EditorialTag(
-                        text: resolvedMode == .image ? "图文" : "纯文本",
+                        text: resolvedMode == .image ? "rss.waterfall.imageMode".localized : "rss.waterfall.textMode".localized,
                         fallbackTint: .secondary
                     )
                 }
 
-                Text("点击打开浏览器")
+                Text("news.clickToOpen".localized)
                     .font(.system(size: 10))
                     .foregroundStyle(.secondary)
             }
@@ -119,9 +128,9 @@ struct RSSWaterfallView: View {
             Spacer(minLength: 8)
 
             if case .loading = state {
-                statusPill(text: "加载中", tint: .secondary)
+                statusPill(text: "news.loading".localized, tint: .secondary)
             } else if case .failed = state {
-                statusPill(text: "加载失败", tint: .orange)
+                statusPill(text: "news.loadFailed".localized, tint: .orange)
             }
 
             if items.count > pageSize {
@@ -134,7 +143,7 @@ struct RSSWaterfallView: View {
                         }
                     }
                 } label: {
-                    Label(isExpanded ? "收起" : "展开 \(items.count - pageSize) 条", systemImage: isExpanded ? "chevron.up" : "chevron.down")
+                    Label(isExpanded ? "news.collapse".localized : L10n.string("news.expand", items.count - pageSize), systemImage: isExpanded ? "chevron.up" : "chevron.down")
                         .font(.system(size: 11, weight: .medium))
                 }
                 .buttonStyle(EditorialActionButtonStyle(compact: true))
@@ -192,14 +201,14 @@ struct RSSWaterfallView: View {
                 ProgressView()
                     .scaleEffect(0.55)
                     .frame(width: 14, height: 14)
-                Text("加载中...")
+                Text("news.loadingDots".localized)
                     .font(.system(size: 12))
                     .foregroundStyle(.tertiary)
             case .failed(let message):
                 Image(systemName: "exclamationmark.triangle.fill")
                     .font(.system(size: 10))
                     .foregroundStyle(.orange)
-                Text("加载失败")
+                Text("news.loadFailed".localized)
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
                 Text(message)
@@ -207,7 +216,7 @@ struct RSSWaterfallView: View {
                     .foregroundStyle(.tertiary)
                     .lineLimit(1)
             case .idle, .loaded:
-                Text("暂无数据")
+                Text("news.noData".localized)
                     .font(.system(size: 12))
                     .foregroundStyle(.tertiary)
             }
@@ -220,7 +229,7 @@ struct RSSWaterfallView: View {
         HStack(spacing: 4) {
             Image(systemName: "exclamationmark.triangle.fill")
                 .font(.system(size: 8, weight: .semibold))
-            Text("更新失败，显示缓存")
+            Text("news.staleCache".localized)
                 .font(.system(size: 10, weight: .medium))
             Text(message)
                 .font(.system(size: 10))
@@ -288,7 +297,7 @@ struct RSSTextRow: View {
             URLOpener.open(item.url)
         } label: {
             VStack(alignment: .leading, spacing: 4) {
-                Text(item.title)
+                Text(item.displayTitle)
                     .font(.system(size: 12.5, weight: .medium))
                     .foregroundStyle(.primary)
                     .lineLimit(2)
@@ -322,8 +331,8 @@ struct RSSTextRow: View {
             .contentShape(cardShape)
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("\(sourceName)，\(item.title)")
-        .accessibilityHint("在浏览器中打开")
+        .accessibilityLabel(L10n.string("rss.waterfall.accessibility", sourceName, item.displayTitle))
+        .accessibilityHint("news.openInBrowser".localized)
         .onHover { hovering in
             if reduceMotion {
                 isHovering = hovering
@@ -420,7 +429,7 @@ struct RSSImageCard: View {
                 .clipped()
 
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(item.title)
+                    Text(item.displayTitle)
                         .font(.system(size: 11.5, weight: .medium))
                         .foregroundStyle(.primary)
                         .lineLimit(2)
@@ -433,8 +442,8 @@ struct RSSImageCard: View {
             .newsCardSurface(cornerRadius: 16, rotation: 0.16, isHovering: isHovering)
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("\(item.title) - \(sourceName)")
-        .accessibilityHint("在浏览器中打开")
+        .accessibilityLabel(L10n.string("rss.waterfall.accessibilityDash", item.displayTitle, sourceName))
+        .accessibilityHint("news.openInBrowser".localized)
         .onHover { hovering in
             if reduceMotion {
                 isHovering = hovering
@@ -481,7 +490,7 @@ struct RSSImageCard: View {
                     Image(systemName: "photo")
                         .font(.system(size: 18, weight: .semibold))
                         .foregroundStyle(sourceTint)
-                    Text("RSS 图像")
+                    Text("rss.waterfall.imagePlaceholder".localized)
                         .font(.system(size: 11, weight: .medium))
                         .foregroundStyle(.secondary)
                 }
@@ -506,7 +515,7 @@ struct RSSImageCard: View {
 
     private var footerMeta: some View {
         HStack(alignment: .center, spacing: 4) {
-            Text("阅读原文")
+            Text("rss.readOriginal".localized)
                 .font(.system(size: 10, weight: .medium))
                 .foregroundStyle(.secondary)
 

@@ -74,10 +74,10 @@ struct DashboardHotTrendCard: View {
                         .lineLimit(1)
                         .truncationMode(.tail)
 
-                    EditorialTag(text: "\(items.count) 条", fallbackTint: presentation.accent)
+                    EditorialTag(text: L10n.string("news.count", items.count), fallbackTint: presentation.accent)
                 }
 
-                Text("原生热点卡片 · 点击打开浏览器")
+                Text("dash.trendCardSubtitle".localized)
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -90,13 +90,13 @@ struct DashboardHotTrendCard: View {
                 Button {
                     toggleExpansion()
                 } label: {
-                    Label(isExpanded ? "收起" : "展开 \(hiddenCount) 条", systemImage: isExpanded ? "chevron.up" : "chevron.down")
+                    Label(isExpanded ? "news.collapse".localized : L10n.string("news.expand", hiddenCount), systemImage: isExpanded ? "chevron.up" : "chevron.down")
                         .font(.system(size: 11, weight: .medium))
                 }
                 .buttonStyle(EditorialActionButtonStyle(compact: true))
                 .controlSize(.small)
                 .tint(presentation.accent)
-                .accessibilityLabel(isExpanded ? "收起 \(presentation.title)" : "展开更多 \(presentation.title)")
+                .accessibilityLabel(isExpanded ? L10n.string("dash.collapseCard", presentation.title) : L10n.string("dash.expandCard", presentation.title))
             }
         }
         .padding(.bottom, 10)
@@ -109,7 +109,7 @@ struct DashboardHotTrendCard: View {
             HStack(spacing: 4) {
                 Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
                     .font(.system(size: 8, weight: .semibold))
-                Text(isExpanded ? "收起" : "展开全部")
+                Text(isExpanded ? "news.collapse".localized : "dash.expandAll".localized)
                     .font(.system(size: 11, weight: .medium))
             }
             .frame(maxWidth: .infinity)
@@ -125,13 +125,13 @@ struct DashboardHotTrendCard: View {
             Image(systemName: "exclamationmark.triangle.fill")
                 .font(.system(size: 10))
                 .foregroundStyle(.secondary)
-            Text("暂无趋势数据")
+            Text("dash.noTrendData".localized)
                 .font(.system(size: 11))
                 .foregroundStyle(.secondary)
             Spacer()
         }
         .padding(.vertical, 10)
-        .accessibilityLabel("暂无趋势数据")
+        .accessibilityLabel("dash.noTrendData".localized)
     }
 
     private var cardShape: RoundedRectangle {
@@ -215,7 +215,7 @@ private struct DashboardTrendRow: View {
         .buttonStyle(.plain)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(accessibilityLabel)
-        .accessibilityHint("在浏览器中打开")
+        .accessibilityHint("news.openInBrowser".localized)
         .accessibilityValue(sourceLabel)
         .onHover { hovering in
             if reduceMotion {
@@ -272,9 +272,9 @@ private struct DashboardTrendRow: View {
 
     private var accessibilityLabel: String {
         if let rank = item.rank {
-            return "\(sourceLabel) 第\(rank)位，\(item.title)"
+            return L10n.string("dash.trendRankAccessibility", sourceLabel, rank, item.displayTitle)
         }
-        return "\(sourceLabel)，\(item.title)"
+        return "\(sourceLabel)，\(item.displayTitle)"
     }
 
     private func rankColor(_ rank: Int) -> Color {
@@ -298,11 +298,11 @@ private struct DashboardTrendPresentation {
     init(for source: NewsSource) {
         switch source {
         case .weibo:
-            title = "微博热搜"
+            title = "source.weibo".localized
             mark = .weibo
             accent = .orange
         case .bilibili:
-            title = "B站热搜"
+            title = "source.bilibili".localized
             mark = .bilibili
             accent = .pink
         case let .rss(name, _):
@@ -329,10 +329,10 @@ struct DashboardRSSSourceCard: View {
 
     private var stateLabel: String {
         switch state {
-        case .idle: return "空闲"
-        case .loading: return "加载中"
-        case .loaded: return "已加载"
-        case .failed: return "失败"
+        case .idle: return "dash.source.idle".localized
+        case .loading: return "dash.source.loading".localized
+        case .loaded: return "dash.source.loaded".localized
+        case .failed: return "dash.source.failed".localized
         }
     }
 
@@ -385,12 +385,12 @@ struct DashboardRSSSourceCard: View {
                         .lineLimit(1)
                         .truncationMode(.tail)
 
-                    EditorialTag(text: "\(items.count) 条", fallbackTint: sourceTint)
+                    EditorialTag(text: L10n.string("news.count", items.count), fallbackTint: sourceTint)
 
                     EditorialTag(text: stateLabel, fallbackTint: stateTint)
                 }
 
-                Text("自适应瀑布流 · 点击在浏览器中打开")
+                Text("dash.waterfallSubtitle".localized)
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -460,6 +460,7 @@ struct DashboardAdaptiveRSSMasonryFeed: View {
     var showsHeader: Bool = true
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var cachedSourceSummaries: [(name: String, count: Int)] = []
 
     private let columns = [
         GridItem(.flexible(), spacing: 12),
@@ -467,28 +468,17 @@ struct DashboardAdaptiveRSSMasonryFeed: View {
     ]
 
     private var sourceSummaries: [(name: String, count: Int)] {
-        var order: [String] = []
-        var counts: [String: Int] = [:]
-
-        for item in items {
-            let name = item.source.displayName
-            if counts[name] == nil {
-                order.append(name)
-            }
-            counts[name, default: 0] += 1
-        }
-
-        return order.map { ($0, counts[$0, default: 0]) }
+        cachedSourceSummaries
     }
 
     private var statusMessage: String? {
         switch state {
         case .idle:
-            return items.isEmpty ? "暂无 RSS 内容" : nil
+            return items.isEmpty ? "dash.noRSSContent".localized : nil
         case .loading:
-            return items.isEmpty ? "RSS 源加载中…" : "RSS 源加载中，当前显示缓存内容"
+            return items.isEmpty ? "dash.rssLoading".localized : "dash.rssLoadingCache".localized
         case .loaded:
-            return items.isEmpty ? "暂无 RSS 内容" : nil
+            return items.isEmpty ? "dash.noRSSContent".localized : nil
         case .failed(let message):
             return items.isEmpty ? message : nil
         }
@@ -521,7 +511,7 @@ struct DashboardAdaptiveRSSMasonryFeed: View {
                 emptyState
             } else {
                 if case .loading = state {
-                    banner(message: "RSS 源加载中，当前显示缓存内容", symbol: "arrow.triangle.2.circlepath", tint: .blue)
+                    banner(message: "dash.rssLoadingCache".localized, symbol: "arrow.triangle.2.circlepath", tint: .blue)
                 } else if case .failed(let message) = state {
                     banner(message: message, symbol: "exclamationmark.triangle.fill", tint: .orange)
                 }
@@ -534,6 +524,25 @@ struct DashboardAdaptiveRSSMasonryFeed: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+        .onAppear { refreshCachedSourceSummaries() }
+        .onChange(of: items) { _, newItems in
+            refreshCachedSourceSummaries()
+        }
+    }
+
+    private func refreshCachedSourceSummaries() {
+        var order: [String] = []
+        var counts: [String: Int] = [:]
+
+        for item in items {
+            let name = item.source.displayName
+            if counts[name] == nil {
+                order.append(name)
+            }
+            counts[name, default: 0] += 1
+        }
+
+        cachedSourceSummaries = order.map { ($0, counts[$0, default: 0]) }
     }
 
     private var header: some View {
@@ -579,7 +588,7 @@ struct DashboardAdaptiveRSSMasonryFeed: View {
 
     private var emptyState: some View {
         banner(
-            message: statusMessage ?? "暂无 RSS 内容",
+            message: statusMessage ?? "dash.noRSSContent".localized,
             symbol: statusSymbol,
             tint: statusTint
         )
@@ -640,9 +649,9 @@ private struct DashboardRSSMasonryCard: View {
         }
         .buttonStyle(.plain)
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(item.title)
+        .accessibilityLabel(item.displayTitle)
         .accessibilityValue(item.source.displayName)
-        .accessibilityHint("在浏览器中打开")
+        .accessibilityHint("news.openInBrowser".localized)
         .onHover { hovering in
             if effectiveReduceMotion {
                 isHovering = hovering
@@ -668,7 +677,7 @@ private struct DashboardRSSMasonryCard: View {
             imageHeader
 
             VStack(alignment: .leading, spacing: 8) {
-                Text(item.title)
+                Text(item.displayTitle)
                     .font(.system(size: 13, weight: .medium))
                     .foregroundStyle(.primary)
                     .lineLimit(3)
@@ -685,7 +694,7 @@ private struct DashboardRSSMasonryCard: View {
 
     private var textCardContent: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text(item.title)
+            Text(item.displayTitle)
                 .font(.system(size: 13, weight: .medium))
                 .foregroundStyle(.primary)
                 .lineLimit(4)

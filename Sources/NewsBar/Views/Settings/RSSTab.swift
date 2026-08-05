@@ -74,22 +74,22 @@ struct RSSTab: View {
 
     private var recommendationValidationActionTitle: String {
         if hasRecommendationValidationHistory, recommendationValidationRetryableOutcomeCount > 0 {
-            return "重试失败/已取消"
+            return "rss.retryFailed".localized
         }
         if hasRecommendationValidationHistory {
-            return "继续测试未完成"
+            return "rss.continueTesting".localized
         }
-        return "测试全部未添加"
+        return "rss.testAll".localized
     }
 
     private var recommendationValidationActionHint: String {
         if hasRecommendationValidationHistory, recommendationValidationRetryableOutcomeCount > 0 {
-            return "仅重新验证失败、已取消或尚未完成的推荐，成功项保持不变。"
+            return "rss.testHint.retry".localized
         }
         if hasRecommendationValidationHistory {
-            return "继续验证上次未完成的推荐，已通过项不会重复测试。"
+            return "rss.testHint.continue".localized
         }
-        return "按顺序验证所有未添加推荐，测试过程不会更改订阅列表。"
+        return "rss.testHint.all".localized
     }
 
     private var recommendationValidationIsRunning: Bool {
@@ -125,14 +125,14 @@ struct RSSTab: View {
     var body: some View {
         List {
             Section {
-                Toggle("统一展示数量", isOn: Binding(
+                Toggle("rss.unifiedCount".localized, isOn: Binding(
                     get: { settings.rssUnifiedDisplayCount },
                     set: { settings.rssUnifiedDisplayCount = $0 }
                 ))
 
                 if settings.rssUnifiedDisplayCount {
                     rssDisplayCountRow(
-                        title: "文本流",
+                        title: "rss.textFlow".localized,
                         selection: Binding(
                             get: { settings.rssDefaultTextCount },
                             set: { settings.rssDefaultTextCount = $0 }
@@ -141,7 +141,7 @@ struct RSSTab: View {
                     )
 
                     rssDisplayCountRow(
-                        title: "图片流",
+                        title: "rss.imageFlow".localized,
                         selection: Binding(
                             get: { settings.rssDefaultImageCount },
                             set: { settings.rssDefaultImageCount = $0 }
@@ -150,9 +150,9 @@ struct RSSTab: View {
                     )
                 }
             } header: {
-                Text("展示数量")
+                Text("rss.displayCount".localized)
             } footer: {
-                Text(settings.rssUnifiedDisplayCount ? "开启后，所有 RSS 源共用同一组文本/图片展示数量。" : "关闭后，可在每个 RSS 源行中按当前展示模式单独设置数量；右键可重置为全局默认值。")
+                Text(settings.rssUnifiedDisplayCount ? "rss.displayCount.footer.unified".localized : "rss.displayCount.footer.perSource".localized)
             }
 
             Section {
@@ -168,18 +168,18 @@ struct RSSTab: View {
                 }
             } header: {
                 HStack {
-                    Text("已订阅 RSS 源 (\(subscribedRSSSources.count))")
+                    Text(L10n.string("rss.subscribed", subscribedRSSSources.count))
                     Spacer()
                     Button {
                         withAnimation { showRecommendations.toggle() }
                     } label: {
-                        Text(showRecommendations ? "隐藏推荐" : "推荐列表")
+                        Text(showRecommendations ? "rss.hideRecommendations".localized : "rss.showRecommendations".localized)
                             .font(.caption)
                     }
                 }
             } footer: {
                 if !subscribedRSSSources.isEmpty {
-                    Text("拖拽已订阅源可调整展示顺序；文本流/图片流设置会保留。")
+                    Text("rss.subscribed.footer".localized)
                 }
             }
 
@@ -189,7 +189,7 @@ struct RSSTab: View {
                         unsubscribedRSSSourceRow(rss)
                     }
                 } header: {
-                    Text("未订阅 RSS 源 (\(unsubscribedRSSSources.count))")
+                    Text(L10n.string("rss.unsubscribed", unsubscribedRSSSources.count))
                 }
             }
 
@@ -197,9 +197,9 @@ struct RSSTab: View {
                 Section {
                     recommendationTestingPanel
                 } header: {
-                    Text("推荐验证")
+                    Text("rss.recommendationValidation".localized)
                 } footer: {
-                    Text("只测试未添加推荐源；测试不会修改订阅、排序或通知。")
+                    Text("rss.recommendationValidation.footer".localized)
                 }
 
                 ForEach(RSSRecommendation.Category.allCases, id: \.self) { category in
@@ -216,7 +216,7 @@ struct RSSTab: View {
             Section {
                 addRSSForm
             } header: {
-                Text("添加 RSS 源")
+                Text("rss.addSource".localized)
             }
         }
         .listStyle(.inset)
@@ -225,7 +225,7 @@ struct RSSTab: View {
             cancelRecommendationValidation(clearHandleOnly: true)
         }
         .confirmationDialog(
-            "删除 RSS 源？",
+            "rss.delete.title".localized,
             isPresented: Binding(
                 get: { pendingRSSDeletion != nil },
                 set: { isPresented in
@@ -234,12 +234,12 @@ struct RSSTab: View {
             ),
             presenting: pendingRSSDeletion
         ) { rss in
-            Button("删除 \(rss.name)", role: .destructive) {
+            Button(L10n.string("rss.delete.confirm", rss.name), role: .destructive) {
                 deleteRSSSource(rss)
             }
-            Button("取消", role: .cancel) { }
+            Button("rss.delete.cancel".localized, role: .cancel) { }
         } message: { rss in
-            Text("将从订阅和未订阅列表中移除“\(rss.name)”。此操作不会删除本地缓存文件，但需要重新添加才能恢复。")
+            Text(L10n.string("rss.delete.message", rss.name))
         }
     }
 
@@ -248,7 +248,7 @@ struct RSSTab: View {
             Spacer()
             VStack(spacing: 6) {
                 EditorialSourceBadge(mark: .rss, fallbackTint: .secondary, size: 28)
-                Text("暂无 RSS 源，点击下方推荐列表或手动添加")
+                Text("rss.empty".localized)
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -264,7 +264,7 @@ struct RSSTab: View {
                 Image(systemName: "checklist.unchecked")
                     .font(.title2)
                     .foregroundStyle(.tertiary)
-                Text("暂无已订阅 RSS 源，可在未订阅列表中勾选")
+                Text("rss.emptySubscribed".localized)
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -302,8 +302,8 @@ struct RSSTab: View {
                             .foregroundStyle(rss.displayMode == .text ? Color.accentColor : Color.secondary)
                     }
                     .buttonStyle(.plain)
-                    .accessibilityLabel("\(rss.name) 切换为文本流")
-                    .help("文本流")
+                    .accessibilityLabel(L10n.string("rss.switchToText", rss.name))
+                    .help("rss.textMode".localized)
 
                     Button {
                         if let idx = settings.rssSources.firstIndex(where: { $0.id == rss.id }) {
@@ -319,8 +319,8 @@ struct RSSTab: View {
                     }
                     .buttonStyle(.plain)
                     .disabled(!rss.supportsImage)
-                    .accessibilityLabel(rss.supportsImage ? "\(rss.name) 切换为图片流" : "\(rss.name) 图片流不可用")
-                    .help(rss.supportsImage ? "图片流" : "此源暂无图片")
+                    .accessibilityLabel(rss.supportsImage ? L10n.string("rss.switchToImage", rss.name) : L10n.string("rss.imageUnavailable", rss.name))
+                    .help(rss.supportsImage ? "rss.imageMode".localized : "rss.noImages".localized)
                 }
 
                 Button {
@@ -336,8 +336,8 @@ struct RSSTab: View {
                 }
                 .buttonStyle(.plain)
                 .disabled(idx == 0)
-                .accessibilityLabel("将 \(rss.name) 上移")
-                .help("上移")
+                .accessibilityLabel(L10n.string("rss.moveUp", rss.name))
+                .help("rss.up".localized)
 
                 Button {
                     guard idx < subscribedRSSSources.count - 1 else { return }
@@ -352,8 +352,8 @@ struct RSSTab: View {
                 }
                 .buttonStyle(.plain)
                 .disabled(idx == subscribedRSSSources.count - 1)
-                .accessibilityLabel("将 \(rss.name) 下移")
-                .help("下移")
+                .accessibilityLabel(L10n.string("rss.moveDown", rss.name))
+                .help("rss.down".localized)
 
                 deleteButton(for: rss)
             }
@@ -406,8 +406,8 @@ struct RSSTab: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .accessibilityLabel(isSelected ? "取消订阅 \(rss.name)" : "订阅 \(rss.name)")
-        .help(isSelected ? "取消订阅" : "订阅")
+        .accessibilityLabel(isSelected ? L10n.string("rss.unsubscribe", rss.name) : L10n.string("rss.subscribe", rss.name))
+        .help(isSelected ? "rss.unsubscribe.short".localized : "rss.subscribe.short".localized)
     }
 
     private func rssSourceSummary(_ rss: RSSSourceConfig) -> some View {
@@ -462,13 +462,13 @@ struct RSSTab: View {
             .controlSize(.small)
             .frame(width: rssCountPickerWidth(for: candidates))
             .contextMenu {
-                Button("重置为全局默认") {
+                Button("rss.resetToGlobal".localized) {
                     resetRSSCountOverride(for: rss.id, mode: mode)
                 }
             }
-            .accessibilityLabel("\(rss.name) \(rssCountTitle(for: mode))展示数量")
-            .accessibilityHint("按住或右键可重置为全局默认展示数量。")
-            .accessibilityAction(named: Text("重置\(rssCountTitle(for: mode))展示数量")) {
+            .accessibilityLabel(L10n.string("rss.countAccessibility", rss.name, rssCountTitle(for: mode)))
+            .accessibilityHint("rss.countHint".localized)
+            .accessibilityAction(named: Text(L10n.string("rss.resetCount", rssCountTitle(for: mode)))) {
                 resetRSSCountOverride(for: rss.id, mode: mode)
             }
 
@@ -485,8 +485,8 @@ struct RSSTab: View {
 
     private func rssCountTitle(for mode: RSSSourceConfig.DisplayMode) -> String {
         switch mode {
-        case .text: return "文本流"
-        case .image: return "图片流"
+        case .text: return "rss.textFlow".localized
+        case .image: return "rss.imageFlow".localized
         }
     }
 
@@ -541,9 +541,9 @@ struct RSSTab: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("删除 \(rss.name)")
-        .accessibilityHint("需要确认后才会移除此 RSS 源。")
-        .help("删除")
+        .accessibilityLabel(L10n.string("rss.delete", rss.name))
+        .accessibilityHint("rss.deleteHint".localized)
+        .help("rss.delete.short".localized)
     }
 
     private func deleteRSSSource(_ rss: RSSSourceConfig) {
@@ -559,9 +559,9 @@ struct RSSTab: View {
             .frame(width: 32, height: 28)
             .contentShape(Rectangle())
             .draggable(rss.id)
-            .accessibilityLabel("拖拽排序 \(rss.name)")
-            .accessibilityHint("按住并拖动以调整已订阅 RSS 源顺序")
-            .help("拖拽排序")
+            .accessibilityLabel(L10n.string("rss.dragReorder", rss.name))
+            .accessibilityHint("rss.dragHint".localized)
+            .help("rss.dragReorderShort".localized)
     }
 
     private func toggleSelection(_ id: String) {
@@ -666,14 +666,14 @@ struct RSSTab: View {
             recommendationValidationBadge(for: rec, isAdded: isAdded)
 
             if !isAdded {
-                Button("添加") {
+                Button("rss.add".localized) {
                     addRecommended(rec)
                 }
                 .font(.caption)
                 .buttonStyle(EditorialActionButtonStyle(tone: .primary, compact: true))
                 .controlSize(.small)
-                .accessibilityLabel("添加 \(rec.name)")
-                .accessibilityHint("添加前会先通过安全策略验证。")
+                .accessibilityLabel(L10n.string("rss.addNamed", rec.name))
+                .accessibilityHint("rss.addHint".localized)
             }
         }
     }
@@ -683,18 +683,18 @@ struct RSSTab: View {
         let sanitizedURL = SecurityPolicies.sanitizeUserInput(rec.url)
 
         guard !settings.rssSources.contains(where: { $0.url == sanitizedURL }) else {
-            addWarning = "该推荐已存在，无需重复添加"
+            addWarning = "rss.alreadyExists".localized
             addError = nil
             return
         }
 
         switch SecurityPolicies.validateRSSURL(sanitizedURL) {
         case .blocked(let reason):
-            addError = "推荐源已拦截：\(localizedSecurityReason(reason))"
+            addError = L10n.string("rss.blocked", localizedSecurityReason(reason))
             addWarning = nil
             return
         case .warning(let reason):
-            addWarning = "推荐源存在安全警告：\(localizedSecurityReason(reason))"
+            addWarning = L10n.string("rss.warning", localizedSecurityReason(reason))
             addError = nil
         case .valid:
             addError = nil
@@ -732,13 +732,13 @@ struct RSSTab: View {
                 .accessibilityHint(recommendationValidationActionHint)
 
                 if recommendationValidationIsRunning {
-                    Button("取消") {
+                    Button("rss.cancel".localized) {
                         cancelRecommendationValidation()
                     }
                     .buttonStyle(EditorialActionButtonStyle(compact: true))
                     .controlSize(.small)
-                    .accessibilityLabel("取消推荐验证")
-                    .accessibilityHint("停止后续尚未开始的推荐；当前正在处理的源会在可取消点结束。")
+                    .accessibilityLabel("rss.cancelValidation".localized)
+                    .accessibilityHint("rss.cancelValidationHint".localized)
                 }
 
                 Spacer()
@@ -755,16 +755,16 @@ struct RSSTab: View {
                         value: Double(recommendationValidationCompletedCount),
                         total: Double(max(1, recommendationValidationTotalCount))
                     )
-                    .accessibilityLabel("推荐验证进度")
+                    .accessibilityLabel("rss.validationProgress".localized)
                     .accessibilityValue("\(recommendationValidationCompletedCount) / \(recommendationValidationTotalCount)")
-                    .accessibilityHint("串行验证当前推荐；取消后会停止后续源。")
+                    .accessibilityHint("rss.cancelValidationHint".localized)
 
                     HStack {
-                        Text("进度 \(recommendationValidationCompletedCount)/\(recommendationValidationTotalCount)")
+                        Text(L10n.string("rss.progress", recommendationValidationCompletedCount, recommendationValidationTotalCount))
                             .font(.caption2)
                             .foregroundStyle(.secondary)
                         Spacer()
-                        Text("当前：\(recommendationValidationCurrentActiveName ?? "等待下一项")")
+                        Text(L10n.string("rss.current", recommendationValidationCurrentActiveName ?? "rss.waitingNext".localized))
                             .font(.caption2)
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
@@ -778,7 +778,7 @@ struct RSSTab: View {
     private var recommendationValidationCurrentSummaryText: String {
         if recommendationValidationIsRunning {
             if recommendationValidationSummary.isEmpty {
-                return "测试中"
+                return "rss.testing".localized
             }
             return recommendationValidationSummary
         }
@@ -786,9 +786,9 @@ struct RSSTab: View {
             return recommendationValidationSummary
         }
         if unaddedRecommendations.isEmpty {
-            return "暂无可测试的推荐"
+            return "rss.noTestable".localized
         }
-        return "仅测试未添加推荐"
+        return "rss.testOnlyUnadded".localized
     }
 
     private func recommendationValidationBadge(for rec: RSSRecommendation, isAdded: Bool) -> some View {
@@ -812,9 +812,9 @@ struct RSSTab: View {
         if isAdded {
             return RecommendationValidationBadge(
                 symbol: "checkmark.circle.fill",
-                title: "已添加",
+                title: "rss.added".localized,
                 tint: .secondary,
-                hint: "推荐源已加入订阅列表。"
+                hint: "rss.addedHint".localized
             )
         }
 
@@ -823,18 +823,18 @@ struct RSSTab: View {
         if recommendationValidationActiveURL == rec.url, isCurrentCandidate {
             return RecommendationValidationBadge(
                 symbol: "clock.arrow.circlepath",
-                title: "测试中",
+                title: "rss.testingBadge".localized,
                 tint: .accentColor,
-                hint: "正在串行验证此推荐。"
+                hint: "rss.testingBadgeHint".localized
             )
         }
 
         guard let outcome = recommendationValidationResults[rec.url] else {
             return RecommendationValidationBadge(
                 symbol: "circle",
-                title: "待测",
+                title: "rss.pending".localized,
                 tint: .secondary,
-                hint: "尚未开始验证。"
+                hint: "rss.pendingHint".localized
             )
         }
 
@@ -842,44 +842,44 @@ struct RSSTab: View {
         case .blocked(let reason):
             return RecommendationValidationBadge(
                 symbol: "shield.slash.fill",
-                title: "已拦截",
+                title: "rss.blockedBadge".localized,
                 tint: .red,
-                hint: "安全策略拦截：\(localizedSecurityReason(reason))"
+                hint: L10n.string("rss.blockedBadgeHint", localizedSecurityReason(reason))
             )
         case .invalidURL:
             return RecommendationValidationBadge(
                 symbol: "exclamationmark.triangle.fill",
-                title: "URL 无效",
+                title: "rss.invalidURL".localized,
                 tint: .orange,
-                hint: "地址格式无效。"
+                hint: "rss.invalidURLHint".localized
             )
         case .cancelled:
             return RecommendationValidationBadge(
                 symbol: "pause.circle.fill",
-                title: "已取消",
+                title: "rss.cancelled".localized,
                 tint: .secondary,
-                hint: "验证已停止，后续推荐未继续。"
+                hint: "rss.cancelledHint".localized
             )
         case .networkError(let summary):
             return RecommendationValidationBadge(
                 symbol: "wifi.exclamationmark",
-                title: "网络失败",
+                title: "rss.networkFailed".localized,
                 tint: .orange,
-                hint: localizedNetworkSummary(summary)
+                hint: L10n.string("rss.networkFailedHint", localizedNetworkSummary(summary))
             )
         case .notRSSFeed:
             return RecommendationValidationBadge(
                 symbol: "doc.text.magnifyingglass",
-                title: "非 RSS",
+                title: "rss.notRSS".localized,
                 tint: .orange,
-                hint: "返回内容不是 RSS 或 Atom。"
+                hint: "rss.notRSSHint".localized
             )
         case .success(let itemCount):
             return RecommendationValidationBadge(
                 symbol: "checkmark.circle.fill",
-                title: "通过",
+                title: "rss.passed".localized,
                 tint: .green,
-                hint: "验证通过，约 \(itemCount) 项内容。"
+                hint: L10n.string("rss.passedHint", itemCount)
             )
         }
     }
@@ -889,7 +889,7 @@ struct RSSTab: View {
 
         let candidates = recommendationValidationPendingCandidates
         guard !candidates.isEmpty else {
-            recommendationValidationSummary = hasRecommendationValidationHistory ? "暂无可重试的推荐" : "暂无可测试的推荐"
+            recommendationValidationSummary = hasRecommendationValidationHistory ? "rss.noRetryable".localized : "rss.noTestable".localized
             return
         }
 
@@ -903,7 +903,7 @@ struct RSSTab: View {
         recommendationValidationFailureCount = 0
         recommendationValidationCancelledCount = 0
         recommendationValidationActiveURL = candidates.first?.url
-        recommendationValidationSummary = isRetryRun ? "重试中 \(candidates.count) 项" : "测试中 \(candidates.count) 项"
+        recommendationValidationSummary = isRetryRun ? L10n.string("rss.retrying", candidates.count) : L10n.string("rss.testingCount", candidates.count)
 
         let candidateSnapshot = candidates
 
@@ -928,7 +928,7 @@ struct RSSTab: View {
         if clearHandleOnly {
             return
         }
-        recommendationValidationSummary = "已取消，后续推荐已停止"
+        recommendationValidationSummary = "rss.cancelledStop".localized
     }
 
     @MainActor
@@ -950,9 +950,9 @@ struct RSSTab: View {
         recommendationValidationActiveURL = recommendationValidationCandidates.indices.contains(nextIndex) ? recommendationValidationCandidates[nextIndex].url : nil
 
         if recommendationValidationTask?.isCancelled == true {
-            recommendationValidationSummary = "已取消，后续推荐已停止"
+            recommendationValidationSummary = "rss.cancelledStop".localized
         } else {
-            recommendationValidationSummary = "测试中 \(recommendationValidationCompletedCount)/\(recommendationValidationTotalCount)"
+            recommendationValidationSummary = L10n.string("rss.testingProgress", recommendationValidationCompletedCount, recommendationValidationTotalCount)
         }
     }
 
@@ -996,20 +996,19 @@ struct RSSTab: View {
         wasCancelled: Bool
     ) -> String {
         var parts: [String] = []
-        if successCount > 0 { parts.append("\(successCount) 通过") }
-        if failedCount > 0 { parts.append("\(failedCount) 失败") }
+        if successCount > 0 { parts.append(L10n.string("rss.passedCount", successCount)) }
+        if failedCount > 0 { parts.append(L10n.string("rss.failedCount", failedCount)) }
 
-        let prefix = retryRun ? "重试完成" : "测试完成"
-        let body = parts.isEmpty ? "无结果" : parts.joined(separator: "，")
+        let body = parts.isEmpty ? "rss.noResult".localized : parts.joined(separator: "，")
 
         if wasCancelled {
             if parts.isEmpty {
-                return "已取消：\(cancelledCount) 项停止"
+                return L10n.string("rss.cancelledResult", cancelledCount)
             }
-            let stopText = cancelledCount > 0 ? "；\(cancelledCount) 项停止" : ""
-            return "已取消：\(body)\(stopText)"
+            return L10n.string("rss.cancelledWithBody", body, cancelledCount)
         }
 
+        let prefix = retryRun ? "rss.retryDone".localized : "rss.testDone".localized
         return "\(prefix)：\(body)"
     }
 
@@ -1021,13 +1020,13 @@ struct RSSTab: View {
     private func localizedSecurityReason(_ reason: String) -> String {
         switch reason {
         case "Invalid URL or scheme":
-            return "URL 或协议无效"
+            return "rss.security.invalidURL".localized
         default:
             if reason.hasPrefix("Blocked host: ") {
-                return "已拦截主机：" + reason.replacingOccurrences(of: "Blocked host: ", with: "")
+                return L10n.string("rss.security.blockedHost", reason.replacingOccurrences(of: "Blocked host: ", with: ""))
             }
             if reason.hasPrefix("Private IP range: ") {
-                return "私有网段：" + reason.replacingOccurrences(of: "Private IP range: ", with: "")
+                return L10n.string("rss.security.privateIP", reason.replacingOccurrences(of: "Private IP range: ", with: ""))
             }
             return reason
         }
@@ -1036,23 +1035,23 @@ struct RSSTab: View {
     private func localizedNetworkSummary(_ summary: String) -> String {
         switch summary {
         case "Request timed out":
-            return "请求超时"
+            return "rss.network.timedOut".localized
         case "Cannot connect to server":
-            return "无法连接服务器"
+            return "rss.network.cannotConnect".localized
         case "No internet connection":
-            return "没有网络连接"
+            return "rss.network.noInternet".localized
         case "Server not found":
-            return "未找到服务器"
+            return "rss.network.serverNotFound".localized
         case "Invalid server response":
-            return "服务器响应无效"
+            return "rss.network.invalidResponse".localized
         case "Server returned an error":
-            return "服务器返回错误"
+            return "rss.network.serverError".localized
         case "Feed parse failed":
-            return "订阅内容解析失败"
+            return "rss.network.parseFailed".localized
         case "Unexpected error":
-            return "发生未知错误"
+            return "rss.network.unexpected".localized
         case "Network error":
-            return "网络错误"
+            return "rss.network.generic".localized
         default:
             return summary
         }
@@ -1061,10 +1060,10 @@ struct RSSTab: View {
     private var addRSSForm: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
-                TextField("源名称", text: $newName)
+                TextField("rss.sourceName".localized, text: $newName)
                     .textFieldStyle(.roundedBorder)
                     .frame(width: 120)
-                TextField("RSS URL", text: $newURL)
+                TextField("rss.url".localized, text: $newURL)
                     .textFieldStyle(.roundedBorder)
             }
 
@@ -1085,7 +1084,7 @@ struct RSSTab: View {
                         if isTesting {
                             ProgressView().scaleEffect(0.6)
                         }
-                        Text("添加并验证")
+                        Text("rss.addAndValidate".localized)
                     }
                 }
                 .disabled(newName.isEmpty || newURL.isEmpty || isTesting)
@@ -1100,7 +1099,7 @@ struct RSSTab: View {
         let sanitizedName = SecurityPolicies.sanitizeUserInput(newName)
 
         guard !sanitizedURL.isEmpty else {
-            addError = "请输入 RSS URL"
+            addError = "rss.needURL".localized
             return
         }
 
@@ -1142,10 +1141,10 @@ struct RSSTab: View {
                         userInfo: ["url": normalizedURL, "name": sanitizedName]
                     )
                 } else {
-                    addError = "该地址不是有效的 RSS/Atom Feed"
+                    addError = "rss.notValidFeed".localized
                 }
             } catch {
-                addError = "无法连接到该地址"
+                addError = "rss.cannotConnect".localized
             }
             isTesting = false
         }
