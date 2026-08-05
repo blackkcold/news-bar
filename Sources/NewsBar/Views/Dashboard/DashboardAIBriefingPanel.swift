@@ -78,13 +78,13 @@ struct DashboardAIBriefingPanel: View {
 
     private var cardStateText: String {
         switch summaryState {
-        case .idle: return "等待 AI 简报"
-        case .noKey: return "未配置 API Key"
-        case .fetching: return "正在抓取新闻"
-        case .summarizing: return "AI 正在生成简报"
-        case .done: return "AI 简报已完成"
-        case .truncated: return "AI 简报已完成但内容被截断"
-        case .error: return "AI 简报生成失败"
+        case .idle: return "dash.state.idle".localized
+        case .noKey: return "dash.state.noKey".localized
+        case .fetching: return "dash.state.fetching".localized
+        case .summarizing: return "dash.state.summarizing".localized
+        case .done: return "dash.state.done".localized
+        case .truncated: return "dash.state.truncated".localized
+        case .error: return "dash.state.error".localized
         }
     }
 
@@ -96,7 +96,7 @@ struct DashboardAIBriefingPanel: View {
             case .idle:
                 emptyState(message: cardStateText, systemImage: "sparkles")
             case .noKey:
-                emptyState(message: cardStateText, systemImage: "key.fill", actionTitle: "配置 AI Key") {
+                emptyState(message: cardStateText, systemImage: "key.fill", actionTitle: "dash.configureKey".localized) {
                     onConfigureAI()
                 }
             case .fetching:
@@ -113,10 +113,10 @@ struct DashboardAIBriefingPanel: View {
                         text,
                         note: hasCitationSnapshot
                             ? nil
-                            : "当前没有引用快照，源链接需要重新刷新后才能恢复。"
+                            : "dash.fallbackNote".localized
                     )
                 } else {
-                    emptyState(message: "暂无可展示的 AI 简报", systemImage: "sparkles")
+                    emptyState(message: "dash.noBriefing".localized, systemImage: "sparkles")
                 }
             }
         }
@@ -161,7 +161,7 @@ struct DashboardAIBriefingPanel: View {
                         briefingTitle
                         EditorialTag(text: cardStateText, fallbackTint: stateTint)
                         if parsedSummary?.isLegacyFallback == true {
-                            EditorialTag(text: "兼容格式", fallbackTint: .secondary)
+                            EditorialTag(text: "dash.compatFormat".localized, fallbackTint: .secondary)
                         }
                     }
 
@@ -170,13 +170,13 @@ struct DashboardAIBriefingPanel: View {
                         HStack(spacing: 5) {
                             EditorialTag(text: cardStateText, fallbackTint: stateTint)
                             if parsedSummary?.isLegacyFallback == true {
-                                EditorialTag(text: "兼容格式", fallbackTint: .secondary)
+                                EditorialTag(text: "dash.compatFormat".localized, fallbackTint: .secondary)
                             }
                         }
                     }
                 }
 
-                Text("趋势概览 / 每日精选 · 有引用显示来源徽章，点击打开原文")
+                Text("dash.briefing.subtitle".localized)
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -201,13 +201,13 @@ struct DashboardAIBriefingPanel: View {
             .buttonStyle(EditorialActionButtonStyle(compact: true))
             .controlSize(.small)
             .disabled(isSummaryRefreshing || regenerationCooldownRemaining > 0)
-            .help("独立刷新 AI 简报")
-            .accessibilityLabel("独立刷新 AI 简报")
+            .help("dash.refresh".localized)
+            .accessibilityLabel("dash.refresh".localized)
         }
     }
 
     private var briefingTitle: some View {
-        Text("AI Briefing")
+        Text("dash.briefing".localized)
             .editorialHeading(size: 14)
             .foregroundStyle(.primary)
             .lineLimit(1)
@@ -218,9 +218,9 @@ struct DashboardAIBriefingPanel: View {
     private func briefingContent(parsedSummary: ParsedSummary) -> some View {
         VStack(alignment: .leading, spacing: 12) {
             Picker("AI Briefing 主题", selection: $selectedCategory) {
-                Text("趋势概览 \(trendSections.count)")
+                Text(L10n.string("dash.trendOverview", trendSections.count))
                     .tag(DashboardBriefingCategory.trendOverview)
-                Text("每日精选 \(dailySections.count)")
+                Text(L10n.string("dash.dailyEssentials", dailySections.count))
                     .tag(DashboardBriefingCategory.dailyEssentials)
             }
             .pickerStyle(.segmented)
@@ -246,7 +246,7 @@ struct DashboardAIBriefingPanel: View {
             }
 
             if parsedSummary.isLegacyFallback {
-                Text("当前摘要使用兼容解析：仍保留引用快照，且可继续切换查看两类内容。")
+                Text("dash.legacyNote".localized)
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
             }
@@ -255,7 +255,7 @@ struct DashboardAIBriefingPanel: View {
 
     private func fallbackSummary(_ text: String, note: String? = nil) -> some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("摘要内容可用，但尚未解析为双分类结构。")
+            Text("dash.fallbackTitle".localized)
                 .font(.system(size: 12, weight: .medium))
                 .foregroundStyle(.secondary)
 
@@ -297,7 +297,7 @@ struct DashboardAIBriefingPanel: View {
                 Spacer()
             }
 
-            Button("重新打开设置") {
+            Button("dash.openSettings".localized) {
                 onConfigureAI()
             }
             .buttonStyle(EditorialActionButtonStyle(compact: true))
@@ -332,7 +332,7 @@ struct DashboardAIBriefingPanel: View {
             Image(systemName: "tray")
                 .font(.system(size: 11))
                 .foregroundStyle(.secondary)
-            Text("当前分类暂无内容")
+            Text("dash.emptyCategory".localized)
                 .font(.system(size: 12))
                 .foregroundStyle(.secondary)
             Spacer()

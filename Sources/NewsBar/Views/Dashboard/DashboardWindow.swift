@@ -71,7 +71,7 @@ struct DashboardWindow: View {
                     .tint(.blue)
 
                     VStack(alignment: .leading, spacing: 1) {
-                        Text("RSS 批量刷新中")
+                        Text("dash.rssBatchRefreshing".localized)
                             .font(.system(size: 12, weight: .medium))
                         Text("\(orchestrator.batchProgress.completed)/\(orchestrator.batchProgress.total)")
                             .font(.system(size: 11))

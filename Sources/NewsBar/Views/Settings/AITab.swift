@@ -24,16 +24,16 @@ struct AITab: View {
     var body: some View {
         Form {
             Section {
-                Toggle("启用 AI 总结", isOn: Binding(
+                Toggle("ai.enable".localized, isOn: Binding(
                     get: { settings.aiSummaryEnabled },
                     set: { settings.aiSummaryEnabled = $0 }
                 ))
             } header: {
-                Text("功能开关")
+                Text("ai.feature".localized)
             }
 
             Section {
-                Picker("提供商", selection: Binding(
+                Picker("ai.provider".localized, selection: Binding(
                     get: { selectedProviderID },
                     set: { newProvider in
                         selectedProviderID = newProvider
@@ -55,7 +55,7 @@ struct AITab: View {
                         editingCustom = nil
                         showCustomEditor = true
                     } label: {
-                        Label("添加自定义提供商", systemImage: "plus.circle")
+                        Label("ai.addCustomProvider".localized, systemImage: "plus.circle")
                     }
                     .font(.caption)
                     .buttonStyle(EditorialActionButtonStyle(compact: true))
@@ -68,7 +68,7 @@ struct AITab: View {
                             editingCustom = custom
                             showCustomEditor = true
                         } label: {
-                            Text("编辑 \(custom.name)")
+                            Text(L10n.string("ai.editProvider", custom.name))
                         }
                         .font(.caption)
                         .buttonStyle(EditorialActionButtonStyle(compact: true))
@@ -77,7 +77,7 @@ struct AITab: View {
                         Button {
                             pendingCustomDeletion = custom
                         } label: {
-                            Text("删除")
+                            Text("ai.delete".localized)
                         }
                         .font(.caption)
                         .foregroundStyle(.red)
@@ -85,10 +85,10 @@ struct AITab: View {
                     }
                 }
             } header: {
-                Text("AI 提供商")
+                Text("ai.provider".localized)
             } footer: {
                 if settings.isUsingCustomProvider {
-                    Text("当前为自定义提供商，可在上方编辑或删除。")
+                    Text("ai.provider.footer.custom".localized)
                 }
             }
 
@@ -104,7 +104,7 @@ struct AITab: View {
                     Button {
                         saveAPIKey()
                     } label: {
-                        Text(isSaving ? "保存中..." : "保存")
+                        Text(isSaving ? "ai.saving".localized : "ai.save".localized)
                     }
                     .disabled(apiKeyInput.isEmpty || isSaving)
                     .buttonStyle(EditorialActionButtonStyle(tone: .primary, compact: true))
@@ -113,7 +113,7 @@ struct AITab: View {
                     Button {
                         testConnection()
                     } label: {
-                        Text(isTesting ? "测试中..." : "测试连接")
+                        Text(isTesting ? "ai.testing".localized : "ai.test".localized)
                     }
                     .disabled((apiKeyInput.isEmpty && (settings.cachedAPIKey?.isEmpty ?? true)) || isTesting)
                     .buttonStyle(EditorialActionButtonStyle(compact: true))
@@ -123,18 +123,18 @@ struct AITab: View {
                 if let result = saveResult {
                     Text(result)
                         .font(.caption)
-                        .foregroundStyle(result.contains("成功") ? .green : .red)
+                        .foregroundStyle(result.contains("ai.saved".localized) ? .green : .red)
                 }
 
                 if let result = testResult {
                     Text(result)
                         .font(.caption)
-                        .foregroundStyle(result.contains("成功") ? .green : .red)
+                        .foregroundStyle(result.contains("ai.test.success".localized) ? .green : .red)
                 }
             } header: {
-                Text("API Key")
+                Text("ai.apiKey".localized)
             } footer: {
-                Text("API Key 使用 AES-256-GCM 加密存储，绑定本机硬件。获取 Key: \(settings.providerKeyRetrievalURL(forID: selectedProviderID))")
+                Text(L10n.string("ai.apiKey.footer", settings.providerKeyRetrievalURL(forID: selectedProviderID)))
             }
 
             Section {
@@ -157,7 +157,7 @@ struct AITab: View {
                         } label: {
                             HStack(spacing: 4) {
                                 Image(systemName: "key.horizontal")
-                                Text(isLoadingFrom1Password ? "加载中..." : "从 1Password 加载")
+                                Text(isLoadingFrom1Password ? "ai.loading".localized : "ai.loadFrom1Password".localized)
                             }
                         }
                         .disabled(onePasswordRef.isEmpty || isLoadingFrom1Password)
@@ -168,17 +168,17 @@ struct AITab: View {
                     if let result = onePasswordResult {
                         Text(result)
                             .font(.caption)
-                            .foregroundStyle(result.contains("成功") ? .green : .orange)
+                            .foregroundStyle(result.contains("ai.1p.success".localized) ? .green : .orange)
                     }
                 }
             } header: {
-                Text("1Password 集成")
+                Text("ai.1password".localized)
             } footer: {
-                Text("格式: op://Vault/Item/Field。安装 op CLI (brew install 1password-cli) 并开启桌面集成后可使用。密钥加载后缓存 30 天。")
+                Text("ai.1password.footer".localized)
             }
 
             Section {
-                Picker("模型", selection: Binding(
+                Picker("ai.model".localized, selection: Binding(
                     get: { settings.aiModel },
                     set: { settings.aiModel = $0 }
                 )) {
@@ -187,16 +187,25 @@ struct AITab: View {
                     }
                 }
             } header: {
-                Text("模型设置")
+                Text("ai.modelSettings".localized)
             } footer: {
                 if !settings.isUsingCustomProvider && !settings.showAllAIModels {
-                    Text("默认折叠为 DeepSeek 系模型；可在「通用 → 开发者选项」开启「显示全部 AI 模型」查看供应商全部模型。")
+                    Text("ai.model.footer".localized)
                 }
             }
 
             Section {
+                Toggle("ai.disableThinking".localized, isOn: Binding(
+                    get: { settings.aiDisableDeepSeekThinking },
+                    set: { settings.aiDisableDeepSeekThinking = $0 }
+                ))
+            } footer: {
+                Text("ai.disableThinking.footer".localized)
+            }
+
+            Section {
                 summaryLengthRow(
-                    title: "共享摘要长度",
+                    title: "ai.summaryLength".localized,
                     selection: Binding(
                         get: { settings.aiDashboardMaxWords },
                         set: { settings.aiDashboardMaxWords = $0 }
@@ -204,14 +213,14 @@ struct AITab: View {
                     presets: Array(AppSettings.validAIDashboardMaxWords).sorted()
                 )
             } header: {
-                Text("摘要长度")
+                Text("ai.summaryLength".localized)
             } footer: {
-                Text("Popup 和 Dashboard 共用一次生成结果；Popup 每类最多显示 2 条，Dashboard 显示完整简报。")
+                Text("ai.summaryLength.footer".localized)
             }
 
             Section {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("费用说明")
+                    Text("ai.pricing".localized)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     ForEach(settings.providerPricingInfo(forID: selectedProviderID), id: \.title) { item in
@@ -221,13 +230,13 @@ struct AITab: View {
                     }
                 }
             } header: {
-                Text("费用说明")
+                Text("ai.pricing".localized)
             }
 
             Section {
                 VStack(alignment: .leading, spacing: 6) {
                     HStack {
-                        Text("今日已用（总计）")
+                        Text("ai.usage.today".localized)
                             .font(.caption)
                             .foregroundStyle(.secondary)
                         Spacer()
@@ -241,36 +250,36 @@ struct AITab: View {
                     )
                     .tint(settings.todayAIRequestCount >= settings.aiDailyCap ? .red : .blue)
 
-                    Text("同一份摘要同时服务 Popup 与 Dashboard，不重复计费。")
+                    Text("ai.usage.shared".localized)
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
-                    Text("次日重置")
+                    Text("ai.usage.reset".localized)
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
                 }
             } header: {
-                Text("用量")
+                Text("ai.usage".localized)
             }
 
             Section {
                 HStack {
-                    Text("每日请求上限")
+                    Text("ai.dailyCap".localized)
                     Spacer()
                     Picker("", selection: Binding(
                         get: { settings.aiDailyCap },
                         set: { settings.aiDailyCap = $0 }
                     )) {
                         ForEach(Array(AppSettings.validAICaps).sorted(), id: \.self) { cap in
-                            Text("\(cap) 次").tag(cap)
+                            Text(L10n.string("ai.capTimes", cap)).tag(cap)
                         }
                     }
                     .labelsHidden()
                     .frame(width: 90)
                 }
             } header: {
-                Text("限额")
+                Text("ai.limit".localized)
             } footer: {
-                Text("共享摘要达到上限后当日不再发起 AI 请求，次日自动重置。")
+                Text("ai.limit.footer".localized)
             }
 
             Section {
@@ -279,14 +288,14 @@ struct AITab: View {
                         Image(systemName: "hand.raised.fill")
                             .font(.system(size: 12))
                             .foregroundStyle(.secondary)
-                        Text("AI 总结功能会将当前新闻标题发送至您选择的 AI 提供商进行处理。我们不会记录您的原始标题内容或提示词。API Key 使用 AES-256-GCM 加密存储，绑定本机硬件。")
+                        Text("ai.privacy.body".localized)
                             .font(.caption2)
                             .foregroundStyle(.secondary)
                             .lineSpacing(3)
                     }
                 }
             } header: {
-                Text("隐私说明")
+                Text("ai.privacy".localized)
             }
         }
         .formStyle(.grouped)
@@ -310,19 +319,19 @@ struct AITab: View {
             .frame(minWidth: 460, minHeight: 460)
         }
         .confirmationDialog(
-            "删除自定义提供商？",
+            "ai.deleteCustom.title".localized,
             isPresented: Binding(
                 get: { pendingCustomDeletion != nil },
                 set: { if !$0 { pendingCustomDeletion = nil } }
             ),
             presenting: pendingCustomDeletion
         ) { custom in
-            Button("删除 \(custom.name)", role: .destructive) {
+            Button(L10n.string("ai.deleteCustom.confirm", custom.name), role: .destructive) {
                 deleteCustomProvider(custom)
             }
-            Button("取消", role: .cancel) { }
+            Button("ai.cancel".localized, role: .cancel) { }
         } message: { custom in
-            Text("将从列表中移除“\(custom.name)”及其 API Key。此操作不可恢复。")
+            Text(L10n.string("ai.deleteCustom.message", custom.name))
         }
     }
 
@@ -350,11 +359,11 @@ struct AITab: View {
                     settings.cachedAPIKey = sanitized
                     settings.onePasswordRef = onePasswordRef
                     apiKeyInput = ""
-                    saveResult = "已保存"
+                    saveResult = "ai.saved".localized
                     UserDefaults.standard.set(true, forKey: "hasAIKey-\(account)")
                     NotificationCenter.default.post(name: .apiKeyConfigured, object: nil)
                 } else {
-                    saveResult = "保存失败，请重试"
+                    saveResult = "ai.saveFailed".localized
                 }
                 isSaving = false
             }
@@ -364,7 +373,7 @@ struct AITab: View {
     private func loadFrom1Password() {
         guard !onePasswordRef.isEmpty else { return }
         guard OnePasswordService.isValidReference(onePasswordRef) else {
-            onePasswordResult = "格式错误：应以 op:// 开头，格式为 op://Vault/Item/Field"
+            onePasswordResult = "ai.1p.invalidRef".localized
             return
         }
 
@@ -384,33 +393,33 @@ struct AITab: View {
                         settings.cachedAPIKey = key
                         NotificationCenter.default.post(name: .apiKeyConfigured, object: nil)
                     }
-                    onePasswordResult = success ? "加载成功，已保存" : "保存失败，请重试"
+                    onePasswordResult = success ? "ai.1p.success".localized : "ai.1p.saveFailed".localized
                     isLoadingFrom1Password = false
                 }
             } catch OnePasswordError.notInstalled {
                 await MainActor.run {
-                    onePasswordResult = "1Password CLI 未安装，请运行: brew install 1password-cli"
+                    onePasswordResult = "ai.1p.notInstalled".localized
                     isLoadingFrom1Password = false
                 }
             } catch OnePasswordError.timeout {
                 await MainActor.run {
-                    onePasswordResult = "超时：请先解锁 1Password 桌面应用"
+                    onePasswordResult = "ai.1p.timeout".localized
                     isLoadingFrom1Password = false
                 }
             } catch OnePasswordError.readFailed {
                 await MainActor.run {
-                    onePasswordResult = "读取失败：请检查引用格式和权限"
+                    onePasswordResult = "ai.1p.readFailed".localized
                     isLoadingFrom1Password = false
                 }
             } catch OnePasswordError.invalidReference {
                 await MainActor.run {
-                    onePasswordResult = "格式错误：应以 op:// 开头，格式为 op://Vault/Item/Field"
+                    onePasswordResult = "ai.1p.invalidRef".localized
                     isLoadingFrom1Password = false
                 }
             } catch {
                 NSLog("[AITab] loadFrom1Password failed: %@", error.localizedDescription)
                 await MainActor.run {
-                    onePasswordResult = "未知错误"
+                    onePasswordResult = "ai.1p.unknown".localized
                     isLoadingFrom1Password = false
                 }
             }
@@ -433,12 +442,12 @@ struct AITab: View {
                 } else if let cachedAPIKey = settings.cachedAPIKey, !cachedAPIKey.isEmpty {
                     apiKey = cachedAPIKey
                 } else {
-                    testResult = "请先输入或保存 API Key"
+                    testResult = "ai.test.noKey".localized
                     isTesting = false
                     return
                 }
                 guard !apiKey.isEmpty else {
-                    testResult = "API Key 不能为空"
+                    testResult = "ai.test.emptyKey".localized
                     isTesting = false
                     return
                 }
@@ -458,45 +467,45 @@ struct AITab: View {
                     budgetMode: settings.aiBudgetMode
                 )
                 if !result.summary.isEmpty {
-                    testResult = "连接成功"
+                    testResult = "ai.test.success".localized
                 } else {
-                    testResult = "返回为空"
+                    testResult = "ai.test.empty".localized
                 }
             } catch NewsBarError.apiKeyInvalid {
-                testResult = "API Key 无效 (401)"
+                testResult = "ai.test.invalidKey".localized
             } catch let error as NewsBarError {
                 switch error {
                 case .requestFailed:
-                    testResult = "请求失败，请检查网络或模型名"
+                    testResult = "ai.test.requestFailed".localized
                 case .invalidURL:
-                    testResult = "内部错误：URL 无效"
+                    testResult = "ai.test.invalidURL".localized
                 case .parseFailed:
-                    testResult = "响应解析失败，模型可能不可用"
+                    testResult = "ai.test.parseFailed".localized
                 case .parseFailedWithDetail(let detail):
-                    testResult = "响应解析失败：\(detail)"
+                    testResult = L10n.string("ai.test.parseFailedDetail", detail)
                 default:
-                    testResult = "未知错误"
+                    testResult = "ai.test.unknown".localized
                 }
             } catch let error as URLError {
                 NSLog("[AITab] testConnection URLError: %@", error.localizedDescription)
                 switch error.code {
                 case .timedOut:
-                    testResult = "连接超时（30s），请检查网络或代理"
+                    testResult = "ai.test.timeout".localized
                 case .notConnectedToInternet:
-                    testResult = "无网络连接"
+                    testResult = "ai.test.noNetwork".localized
                 case .cannotFindHost:
-                    testResult = "无法解析服务器：\(settings.resolvedAIConnection.baseURL)"
+                    testResult = L10n.string("ai.test.cannotFindHost", settings.resolvedAIConnection.baseURL)
                 case .networkConnectionLost:
-                    testResult = "网络连接中断"
+                    testResult = "ai.test.networkLost".localized
                 default:
-                    testResult = "网络错误：\(error.localizedDescription)"
+                    testResult = L10n.string("ai.test.networkError", error.localizedDescription)
                 }
             } catch let error as DecodingError {
                 NSLog("[AITab] testConnection DecodingError: %@", error.localizedDescription)
-                testResult = "服务器返回格式异常，请检查模型是否可用"
+                testResult = "ai.test.badResponse".localized
             } catch {
                 NSLog("[AITab] testConnection failed: %@", error.localizedDescription)
-                testResult = "连接失败：\(error.localizedDescription)"
+                testResult = L10n.string("ai.test.failed", error.localizedDescription)
             }
             isTesting = false
         }
@@ -549,21 +558,21 @@ private struct CustomAIProviderEditor: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text(provider == nil ? "添加自定义提供商" : "编辑提供商")
+            Text(provider == nil ? "ai.custom.title.add".localized : "ai.custom.title.edit".localized)
                 .font(.system(size: 15, weight: .semibold))
 
-            TextField("昵称", text: $name)
+            TextField("ai.custom.name".localized, text: $name)
                 .textFieldStyle(.roundedBorder)
 
-            TextField("端点 URL", text: $baseURL)
+            TextField("ai.custom.endpoint".localized, text: $baseURL)
                 .textFieldStyle(.roundedBorder)
                 .font(.system(size: 12, design: .monospaced))
 
-            TextField("默认模型", text: $defaultModel)
+            TextField("ai.custom.defaultModel".localized, text: $defaultModel)
                 .textFieldStyle(.roundedBorder)
 
             VStack(alignment: .leading, spacing: 4) {
-                Text("模型列表（每行一个 model id）")
+                Text("ai.custom.models".localized)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 TextEditor(text: $modelsText)
@@ -572,23 +581,23 @@ private struct CustomAIProviderEditor: View {
                     .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.secondary.opacity(0.2)))
             }
 
-            Toggle("Anthropic 兼容格式", isOn: $isAnthropicFormat)
+            Toggle("ai.custom.anthropic".localized, isOn: $isAnthropicFormat)
 
             if isAnthropicFormat {
-                TextField("认证头名称（默认 x-api-key）", text: $authHeaderName)
+                TextField("ai.custom.authHeaderName".localized, text: $authHeaderName)
                     .textFieldStyle(.roundedBorder)
-                TextField("认证前缀（默认空）", text: $authHeaderPrefix)
+                TextField("ai.custom.authPrefix".localized, text: $authHeaderPrefix)
                     .textFieldStyle(.roundedBorder)
-                TextField("API 版本（默认 2023-06-01）", text: $apiVersion)
+                TextField("ai.custom.apiVersion".localized, text: $apiVersion)
                     .textFieldStyle(.roundedBorder)
             } else {
-                TextField("认证头名称（默认 Authorization）", text: $authHeaderName)
+                TextField("ai.custom.authHeaderNameOpenAI".localized, text: $authHeaderName)
                     .textFieldStyle(.roundedBorder)
-                TextField("认证前缀（默认 Bearer ）", text: $authHeaderPrefix)
+                TextField("ai.custom.authPrefixOpenAI".localized, text: $authHeaderPrefix)
                     .textFieldStyle(.roundedBorder)
             }
 
-            TextField("计费说明（可选）", text: $pricingNote)
+            TextField("ai.custom.pricing".localized, text: $pricingNote)
                 .textFieldStyle(.roundedBorder)
 
             if let errorMessage {
@@ -598,14 +607,14 @@ private struct CustomAIProviderEditor: View {
             }
 
             HStack {
-                Button("取消") {
+                Button("ai.custom.cancel".localized) {
                     onSaved(nil)
                 }
                 .buttonStyle(EditorialActionButtonStyle(compact: true))
 
                 Spacer()
 
-                Button("保存") {
+                Button("ai.custom.save".localized) {
                     save()
                 }
                 .buttonStyle(EditorialActionButtonStyle(tone: .primary, compact: true))
@@ -624,7 +633,7 @@ private struct CustomAIProviderEditor: View {
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
         guard !models.isEmpty else {
-            errorMessage = "请至少填写一个模型"
+            errorMessage = "ai.custom.needModel".localized
             return
         }
 
@@ -633,7 +642,7 @@ private struct CustomAIProviderEditor: View {
             normalizedURL = "https://" + normalizedURL
         }
         guard URL(string: normalizedURL) != nil else {
-            errorMessage = "端点 URL 无效"
+            errorMessage = "ai.custom.invalidURL".localized
             return
         }
 

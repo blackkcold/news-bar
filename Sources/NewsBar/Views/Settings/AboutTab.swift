@@ -31,7 +31,7 @@ struct AboutTab: View {
                         VStack(alignment: .leading, spacing: 2) {
                             Text("NewsBar")
                                 .editorialHeading(size: 17)
-                            Text("版本 \(version) (\(build))")
+                            Text(L10n.string("about.versionText", version, build))
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
@@ -56,46 +56,46 @@ struct AboutTab: View {
 
             Section {
                 VStack(alignment: .leading, spacing: 4) {
-                    dataSourceRow("微博热搜", "s.weibo.com")
-                    dataSourceRow("B站热搜", "bilibili.com")
-                    dataSourceRow("RSS 源", "用户自定义")
+                    dataSourceRow("about.weibo".localized, "s.weibo.com")
+                    dataSourceRow("about.bilibili".localized, "bilibili.com")
+                    dataSourceRow("about.rss".localized, "about.rssCustom".localized)
                 }
             } header: {
-                Text("数据来源")
+                Text("about.dataSources".localized)
             }
 
             Section {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("DeepSeek · MiniMax · Opencode Go/Zen · Google AI Studio")
                         .font(.caption)
-                    Text("支持多种 AI API，可自由选择模型")
+                    Text("about.aiModels".localized)
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
                 }
             } header: {
-                Text("AI 提供商")
+                Text("about.aiProviders".localized)
             }
 
             Section {
-                Button("清除所有缓存") {
+                Button("about.clearCache".localized) {
                     showCacheClearConfirmation = true
                 }
                 .foregroundStyle(.red)
             } header: {
-                Text("数据管理")
+                Text("about.dataManagement".localized)
             }
 
             Section {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("NewsBar 不会收集任何个人信息。")
-                    Text("API Key 仅以机器绑定的加密文件保存在本地。")
-                    Text("缓存数据仅保存新闻标题，不包含用户数据。")
-                    Text("所有网络请求通过 HTTPS 加密传输。")
+                    Text("about.privacy1".localized)
+                    Text("about.privacy2".localized)
+                    Text("about.privacy3".localized)
+                    Text("about.privacy4".localized)
                 }
                 .font(.caption)
                 .foregroundStyle(.secondary)
             } header: {
-                Text("隐私说明")
+                Text("about.privacyTitle".localized)
             }
 
             Section {
@@ -103,23 +103,23 @@ struct AboutTab: View {
                     Text("© 2024-2026 blackkcold & contributors")
                     Text("MIT License — Free & Open Source")
                     Text("Swift 5.9 · SwiftUI · macOS 15.0+")
-                    Text("关键词: macOS 菜单栏·新闻聚合·AI 摘要·微博热搜·B站热搜·RSS 阅读器")
+                    Text("about.keywords".localized)
                 }
                 .font(.caption2)
                 .foregroundStyle(.tertiary)
             } header: {
-                Text("许可与信息")
+                Text("about.licenseTitle".localized)
             }
         }
         .formStyle(.grouped)
         .scrollContentBackground(.hidden)
-        .confirmationDialog("清除所有缓存？", isPresented: $showCacheClearConfirmation) {
-            Button("清除所有缓存", role: .destructive) {
+        .confirmationDialog("about.clearCache.title".localized, isPresented: $showCacheClearConfirmation) {
+            Button("about.clearCache".localized, role: .destructive) {
                 cacheClearAction?()
             }
-            Button("取消", role: .cancel) { }
+            Button("about.cancel".localized, role: .cancel) { }
         } message: {
-            Text("将清除本地新闻缓存。下次打开或刷新时需要重新加载内容。")
+            Text("about.clearCache.message".localized)
         }
     }
 

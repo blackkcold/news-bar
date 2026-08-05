@@ -56,15 +56,15 @@ struct PopoverContent: View {
 
                     EditorialSectionHeading(
                         index: "01",
-                        title: "即时热榜",
-                        subtitle: "微博与 B 站正在发生的头条"
+                        title: "popover.trending".localized,
+                        subtitle: "popover.trending.subtitle".localized
                     )
                     .padding(.horizontal, 14)
                     .padding(.vertical, 10)
 
                     HStack(alignment: .top, spacing: 8) {
                         NewsSection(
-                            title: "微博热搜",
+                            title: "popover.weibo".localized,
                             sourceMark: .weibo,
                             color: .orange,
                             items: orchestrator.weiboItems,
@@ -76,7 +76,7 @@ struct PopoverContent: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
 
                         NewsSection(
-                            title: "B站热搜",
+                            title: "popover.bilibili".localized,
                             sourceMark: .bilibili,
                             color: .pink,
                             items: orchestrator.bilibiliItems,
@@ -94,7 +94,7 @@ struct PopoverContent: View {
                         EditorialSectionHeading(
                             index: "02",
                             title: source.displayName,
-                            subtitle: "订阅源 · 编辑精选"
+                            subtitle: "popover.rss.subtitle".localized
                         )
                         .padding(.horizontal, 14)
                         .padding(.top, 14)
@@ -158,7 +158,7 @@ struct PopoverContent: View {
                             expandedRSSSourceIDs.remove(rss.id)
                             rssLoadedCounts.removeValue(forKey: rss.id)
                             } label: {
-                                Label("\(rss.name) · 收起", systemImage: "chevron.up")
+                                Label(L10n.string("popover.collapse", rss.name), systemImage: "chevron.up")
                                     .font(.system(size: 10))
                             }
                             .buttonStyle(.plain)
@@ -202,18 +202,18 @@ struct PopoverContent: View {
             return false
         }
 
-        return allFailed ? "所有新闻源更新失败，请稍后重试" : nil
+        return allFailed ? "popover.allFailed".localized : nil
     }
 
     private var headerView: some View {
         publicationHeaderView
-        .confirmationDialog("退出 NewsBar？", isPresented: $showQuitConfirmation) {
-            Button("退出 NewsBar", role: .destructive) {
+        .confirmationDialog("popover.quit.title".localized, isPresented: $showQuitConfirmation) {
+            Button("popover.quit.confirm".localized, role: .destructive) {
                 NSApplication.shared.terminate(nil)
             }
-            Button("取消", role: .cancel) { }
+            Button("popover.quit.cancel".localized, role: .cancel) { }
         } message: {
-            Text("NewsBar 将停止刷新新闻和发送通知。")
+            Text("popover.quit.message".localized)
         }
     }
 
@@ -256,8 +256,8 @@ struct PopoverContent: View {
                         .font(.system(size: 10, weight: .black))
                 }
                 .buttonStyle(EditorialActionButtonStyle(tone: .destructive, compact: true))
-                .help("退出 NewsBar")
-                .accessibilityLabel("退出 NewsBar")
+                .help("popover.quit.help".localized)
+                .accessibilityLabel("popover.quit.help".localized)
             }
             .padding(.horizontal, 12)
             .padding(.top, 9)
@@ -269,7 +269,7 @@ struct PopoverContent: View {
                 Rectangle()
                     .fill(isRetro ? RetroEditorialTokens.ink : Color(nsColor: .separatorColor))
                     .frame(height: 1)
-                Text("SHANGHAI EDITION")
+                Text("popover.issueDate".localized)
                     .font(.system(size: 8, weight: .black, design: isRetro ? .monospaced : .default))
                     .tracking(isRetro ? 0.7 : 0.25)
                     .foregroundStyle(isRetro ? RetroEditorialTokens.brick : .secondary)
@@ -292,7 +292,7 @@ struct PopoverContent: View {
 
     private var issueNumber: String {
         let day = Calendar.current.component(.day, from: Date())
-        return "NO. \(String(format: "%02d", day))"
+        return L10n.string("popover.issueNumber", String(format: "%02d", day))
     }
 
     private var issueDate: String {

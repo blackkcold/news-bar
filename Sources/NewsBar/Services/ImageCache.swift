@@ -41,7 +41,7 @@ actor ImageCache {
                 let (data, response) = try await session.data(from: url)
                 guard let httpResponse = response as? HTTPURLResponse else { return nil }
                 guard Self.isAcceptableResponse(httpResponse: httpResponse, data: data) else { return nil }
-                return Self.decodeThumbnail(from: data)
+                return await Self.decodeThumbnailAsync(from: data)
             } catch {
                 return nil
             }
@@ -92,6 +92,14 @@ actor ImageCache {
             cgImage: image,
             size: NSSize(width: image.width, height: image.height)
         )
+    }
+
+    /// Decode on a background thread so the actor executor stays free.
+    static func decodeThumbnailAsync(from data: Data, maxPixelSize: Int = thumbnailMaxPixelSize) async -> NSImage? {
+        let decoded = Task.detached(priority: .userInitiated) {
+            decodeThumbnail(from: data, maxPixelSize: maxPixelSize)
+        }
+        return await decoded.value
     }
 
     private func imageCost(_ image: NSImage) -> Int {

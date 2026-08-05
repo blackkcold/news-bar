@@ -42,7 +42,7 @@ struct NewsItemRow: View, Equatable {
                 }
 
                 VStack(alignment: .leading, spacing: titleSpacing) {
-                    Text(item.title)
+                    Text(item.displayTitle)
                         .font(.system(size: titleFontSize, weight: .medium))
                         .foregroundStyle(.primary)
                         .lineLimit(titleLineLimit)
@@ -79,7 +79,7 @@ struct NewsItemRow: View, Equatable {
         .buttonStyle(.plain)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(accessibilityLabel)
-        .accessibilityHint("在浏览器中打开")
+        .accessibilityHint("news.openInBrowser".localized)
         .onHover { hovering in
             if reduceMotion {
                 isHovering = hovering
@@ -93,9 +93,9 @@ struct NewsItemRow: View, Equatable {
 
     private var accessibilityLabel: String {
         if let rank = item.rank, showRank {
-            return "第\(rank)位，\(item.title)，\(item.source.displayName)"
+            return L10n.string("news.rank", rank, item.displayTitle, item.source.displayName)
         }
-        return "\(item.title)，\(item.source.displayName)"
+        return "\(item.displayTitle)，\(item.source.displayName)"
     }
 
     private func rankBadge(_ rank: Int) -> some View {
@@ -105,7 +105,7 @@ struct NewsItemRow: View, Equatable {
             .frame(width: rankBadgeSize, height: rankBadgeSize)
             .background(rank <= 3 ? rankColor(rank) : accent.opacity(0.12))
             .editorialClipShape(cornerRadius: rankBadgeSize / 2)
-            .accessibilityLabel("排名第\(rank)")
+            .accessibilityLabel(L10n.string("news.rankBadge", rank))
     }
 
     private var sourcePill: some View {

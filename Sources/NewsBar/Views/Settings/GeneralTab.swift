@@ -11,71 +11,94 @@ struct GeneralTab: View {
     var body: some View {
         Form {
             Section {
-                Toggle("智能定时刷新", isOn: Binding(
+                Picker("settings.language".localized, selection: Binding(
+                    get: { settings.appLanguage },
+                    set: { settings.appLanguage = $0 }
+                )) {
+                    ForEach(AppLanguage.allCases) { lang in
+                        Text(lang.displayName).tag(lang)
+                    }
+                }
+
+                Toggle("settings.rssTranslation".localized, isOn: Binding(
+                    get: { settings.rssTitleTranslationEnabled },
+                    set: { settings.rssTitleTranslationEnabled = $0 }
+                ))
+                .disabled(settings.appLanguage == .zh)
+            } header: {
+                Text("settings.language".localized)
+            } footer: {
+                Text(settings.appLanguage == .zh
+                     ? "settings.language.footer".localized
+                     : "settings.rssTranslation.footer".localized)
+            }
+
+            Section {
+                Toggle("general.autoRefresh".localized, isOn: Binding(
                     get: { settings.autoRefreshEnabled },
                     set: { settings.autoRefreshEnabled = $0 }
                 ))
             } header: {
-                Text("刷新设置")
+                Text("general.refresh".localized)
             } footer: {
-                Text("开启后，热搜在界面可见时约每 5 分钟、后台约每 30 分钟检查；RSS 根据更新活跃度在 30 分钟至 3 小时之间自适应。低电量与休眠状态会自动降频。")
+                Text("general.autoRefresh.footer".localized)
             }
 
             Section {
-                statRow(title: "今日刷新次数", value: "\(settings.todayRefreshCount) 次")
-                statRow(title: "今日 AI 调用", value: "\(settings.todayAIRequestCount) 次")
-                statRow(title: "预估 AI 花费", value: settings.estimatedAICostText)
+                statRow(title: "general.todayRefreshCount".localized, value: "\(settings.todayRefreshCount) \("unit.times".localized)")
+                statRow(title: "general.todayAICount".localized, value: "\(settings.todayAIRequestCount) \("unit.times".localized)")
+                statRow(title: "general.estimatedAICost".localized, value: settings.estimatedAICostText)
                 if settings.lastRefreshTimestamp > 0 {
-                    statRow(title: "最后刷新", value: formattedLastRefresh)
+                    statRow(title: "general.lastRefresh".localized, value: formattedLastRefresh)
                 }
             } header: {
-                Text("刷新状态")
+                Text("general.status".localized)
             } footer: {
-                Text("含启动、定时和手动刷新；AI 花费仅估算 AI 总结请求，不包含微博、B站或 RSS。")
+                Text("general.status.footer".localized)
             }
 
             Section {
-                Toggle("开机自启", isOn: Binding(
+                Toggle("general.launchAtLogin".localized, isOn: Binding(
                     get: { settings.launchAtLogin },
                     set: { settings.launchAtLogin = $0 }
                 ))
             } header: {
-                Text("启动")
+                Text("general.launch".localized)
             }
 
             Section {
-                Toggle("启用复古报刊编辑风", isOn: Binding(
+                Toggle("general.retroTheme".localized, isOn: Binding(
                     get: { settings.appTheme == .retroEditorial },
                     set: { settings.appTheme = $0 ? .retroEditorial : .modern }
                 ))
 
                 HStack(spacing: 8) {
-                    themeSwatch(RetroEditorialTokens.paper, label: "米白")
-                    themeSwatch(RetroEditorialTokens.brick, label: "砖红")
-                    themeSwatch(RetroEditorialTokens.ink, label: "墨黑")
+                    themeSwatch(RetroEditorialTokens.paper, label: "general.theme.paper".localized)
+                    themeSwatch(RetroEditorialTokens.brick, label: "general.theme.brick".localized)
+                    themeSwatch(RetroEditorialTokens.ink, label: "general.theme.ink".localized)
                     Spacer()
                     Text(settings.appTheme.displayName)
                         .font(.system(size: 11, weight: .bold, design: .serif))
                         .foregroundStyle(settings.appTheme == .retroEditorial ? RetroEditorialTokens.brick : .secondary)
                 }
 
-                Picker("明暗外观", selection: Binding(
+                Picker("general.appearance".localized, selection: Binding(
                     get: { settings.colorScheme },
                     set: { settings.colorScheme = $0 }
                 )) {
-                    Text("跟随系统").tag("system")
-                    Text("浅色").tag("light")
-                    Text("深色").tag("dark")
+                    Text("general.appearance.system".localized).tag("system")
+                    Text("general.appearance.light".localized).tag("light")
+                    Text("general.appearance.dark".localized).tag("dark")
                 }
                 .pickerStyle(.segmented)
                 .labelsHidden()
                 .disabled(settings.appTheme == .retroEditorial)
             } header: {
-                Text("主题设置")
+                Text("general.theme".localized)
             } footer: {
                 Text(settings.appTheme == .retroEditorial
-                     ? "复古报刊主题固定使用米白纸张基底；关闭后恢复现代主题及明暗外观选择。"
-                     : "现代主题支持跟随系统、浅色或深色；复古报刊主题使用 1960 年代编辑设计语言。")
+                     ? "general.theme.footer.retro".localized
+                     : "general.theme.footer.modern".localized)
             }
 
             Section {
@@ -84,25 +107,25 @@ struct GeneralTab: View {
                     logContent
                 }
             } header: {
-                Text("诊断")
+                Text("general.diagnostics".localized)
             } footer: {
-                Text("记录最近 10 次刷新行为，仅保留诊断信息（不含 Key、密码等敏感数据）。")
+                Text("general.diagnostics.footer".localized)
             }
 
             Section {
-                Toggle("忽略版本号，强制下载最新版", isOn: Binding(
+                Toggle("general.forceLatest".localized, isOn: Binding(
                     get: { settings.updateDevMode },
                     set: { settings.updateDevMode = $0 }
                 ))
 
-                Toggle("显示全部 AI 模型", isOn: Binding(
+                Toggle("general.showAllModels".localized, isOn: Binding(
                     get: { settings.showAllAIModels },
                     set: { settings.showAllAIModels = $0 }
                 ))
             } header: {
-                Text("开发者选项")
+                Text("general.developer".localized)
             } footer: {
-                Text("「忽略版本号」仅用于测试更新功能，开启后「检查更新」直接获取最新 release 版本。\n「显示全部 AI 模型」开启后，提供商模型列表不再折叠：有 DeepSeek 模型的供应商也会显示其全部官方模型（如 Ollama Cloud、MiniMax 等），默认仅显示 DeepSeek 系模型。")
+                Text("general.developer.footer".localized)
             }
         }
         .formStyle(.grouped)
@@ -129,7 +152,7 @@ struct GeneralTab: View {
             }
         } label: {
             HStack {
-                Text("刷新日志 (\(logEntries.count))")
+                Text("general.refreshLog".localized + " (\(logEntries.count))")
                     .foregroundStyle(.primary)
                 Spacer()
                 Image(systemName: "chevron.down")
@@ -144,7 +167,7 @@ struct GeneralTab: View {
     @ViewBuilder
     private var logContent: some View {
         if logEntries.isEmpty {
-            Text("暂无刷新记录")
+            Text("general.noLogs".localized)
                 .font(.system(size: 11))
                 .foregroundStyle(.tertiary)
                 .padding(.vertical, 4)
@@ -167,7 +190,7 @@ struct GeneralTab: View {
                     HStack(spacing: 4) {
                         Image(systemName: copyFeedback ? "checkmark" : "doc.on.doc")
                             .font(.system(size: 10))
-                        Text(copyFeedback ? "已复制" : "复制最近 10 次日志")
+                        Text(copyFeedback ? "general.copied".localized : "general.copyLogs".localized)
                             .font(.system(size: 11))
                     }
                 }
@@ -180,7 +203,7 @@ struct GeneralTab: View {
                         logEntries = []
                     }
                 } label: {
-                    Text("清空日志")
+                    Text("general.clearLogs".localized)
                         .font(.system(size: 11))
                 }
                 .buttonStyle(EditorialActionButtonStyle(compact: true))
@@ -224,12 +247,12 @@ struct GeneralTab: View {
         let label: String
         let color: Color
         switch trigger {
-        case .startup:   label = "启动"; color = .blue
-        case .timer1h:   label = "定时"; color = .green
-        case .scheduled: label = "智能调度"; color = .green
-        case .wake:      label = "唤醒"; color = .cyan
-        case .manual:    label = "手动"; color = .orange
-        case .popoverOpen: label = "弹窗"; color = .purple
+        case .startup:   label = "general.log.trigger.startup".localized; color = .blue
+        case .timer1h:   label = "general.log.trigger.timer1h".localized; color = .green
+        case .scheduled: label = "general.log.trigger.scheduled".localized; color = .green
+        case .wake:      label = "general.log.trigger.wake".localized; color = .cyan
+        case .manual:    label = "general.log.trigger.manual".localized; color = .orange
+        case .popoverOpen: label = "general.log.trigger.popoverOpen".localized; color = .purple
         }
         return Text(label)
             .font(.system(size: 8, weight: .medium))
@@ -287,6 +310,6 @@ struct GeneralTab: View {
                 .foregroundStyle(.secondary)
         }
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("主题色 (label)")
+        .accessibilityLabel(L10n.string("general.themeSwatchAccessibility", label))
     }
 }

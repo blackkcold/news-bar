@@ -12,11 +12,11 @@ struct NotificationTab: View {
                 HStack {
                     Image(systemName: authorized ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
                         .foregroundStyle(authorized ? .green : .orange)
-                    Text(authorized ? "通知权限已开启" : "通知权限未开启")
+                    Text(authorized ? "notif.grantedTitle".localized : "notif.notGrantedTitle".localized)
                         .font(.system(size: 12))
                     Spacer()
                     if !authorized {
-                        Button("前往系统设置") {
+                        Button("notif.openSystemSettings".localized) {
                             if let url = URL(string: "x-apple.systempreferences:com.apple.preference.notifications") {
                                 NSWorkspace.shared.open(url)
                             }
@@ -27,21 +27,21 @@ struct NotificationTab: View {
                     }
                 }
             } header: {
-                Text("权限状态")
+                Text("notif.permissionStatus".localized)
             }
 
             Section {
-                Toggle("每小时推送最新新闻", isOn: Binding(
+                Toggle("notif.hourlyPushNews".localized, isOn: Binding(
                     get: { settings.hourlyPushEnabled },
                     set: { settings.hourlyPushEnabled = $0 }
                 ))
                 .disabled(!authorized)
             } header: {
-                Text("定时推送")
+                Text("notif.scheduled".localized)
             }
 
             Section {
-                Toggle("每日摘要推送", isOn: Binding(
+                Toggle("notif.dailyDigest".localized, isOn: Binding(
                     get: { settings.dailyPushEnabled },
                     set: { newValue in
                         settings.dailyPushEnabled = newValue
@@ -60,7 +60,7 @@ struct NotificationTab: View {
 
                 if settings.dailyPushEnabled {
                     HStack {
-                        Text("推送时间")
+                        Text("notif.pushTime".localized)
                         Spacer()
                         DatePicker("", selection: Binding(
                             get: {
@@ -83,19 +83,19 @@ struct NotificationTab: View {
                     }
                 }
             } header: {
-                Text("每日推送")
+                Text("notif.dailyPush".localized)
             }
 
             Section {
-                Stepper("每次推送条数: \(settings.pushCount)", value: Binding(
+                Stepper(L10n.string("notif.pushCountLabel", settings.pushCount), value: Binding(
                     get: { settings.pushCount },
                     set: { settings.pushCount = max(1, min(3, $0)) }
                 ), in: 1...3)
                 .disabled(!authorized)
             } header: {
-                Text("推送数量")
+                Text("notif.pushQuantity".localized)
             } footer: {
-                Text("每小时推送在每次自动刷新后发送最新内容；每日推送在指定时间发送，内容为最近一次刷新结果。")
+                Text("notif.pushCount.footer".localized)
             }
         }
         .formStyle(.grouped)

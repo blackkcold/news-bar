@@ -15,31 +15,31 @@ struct SettingsWindow: View {
             TabView(selection: $selectedTab) {
                 GeneralTab()
                     .tabItem {
-                        Label("通用", systemImage: "gearshape")
+                        Label("settings.tab.general".localized, systemImage: "gearshape")
                     }
                     .tag(0)
 
                 RSSTab()
                     .tabItem {
-                        Label("RSS", systemImage: "antenna.radiowaves.left.and.right")
+                        Label("settings.tab.rss".localized, systemImage: "antenna.radiowaves.left.and.right")
                     }
                     .tag(1)
 
                 AITab()
                     .tabItem {
-                        Label("AI", systemImage: "sparkles")
+                        Label("settings.tab.ai".localized, systemImage: "sparkles")
                     }
                     .tag(2)
 
                 NotificationTab()
                     .tabItem {
-                        Label("通知", systemImage: "bell.fill")
+                        Label("settings.tab.notifications".localized, systemImage: "bell.fill")
                     }
                     .tag(4)
 
                 AboutTab()
                     .tabItem {
-                        Label("关于", systemImage: "info.circle")
+                        Label("settings.tab.about".localized, systemImage: "info.circle")
                     }
                     .tag(3)
             }
@@ -54,7 +54,7 @@ struct SettingsWindow: View {
                 Button {
                     NSApplication.shared.terminate(nil)
                 } label: {
-                    Text("退出 NewsBar")
+                    Text("settings.quit".localized)
                         .font(.system(size: 12))
                 }
                 .buttonStyle(EditorialActionButtonStyle(tone: .destructive, compact: true))
@@ -94,7 +94,7 @@ struct SettingsWindow: View {
 
             Spacer(minLength: 8)
 
-            EditorialTag(text: "设置", fallbackTint: .secondary, filled: settings.appTheme == .retroEditorial)
+            EditorialTag(text: "settings.badge".localized, fallbackTint: .secondary, filled: settings.appTheme == .retroEditorial)
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 9)
@@ -104,21 +104,21 @@ struct SettingsWindow: View {
 
     private var selectedTabTitle: String {
         switch selectedTab {
-        case 1: return "RSS 新闻源"
-        case 2: return "AI 编辑部"
-        case 3: return "关于 NewsBar"
-        case 4: return "通知中心"
-        default: return "通用设置"
+        case 1: return "settings.rss".localized
+        case 2: return "settings.ai".localized
+        case 3: return "settings.about".localized
+        case 4: return "settings.notifications".localized
+        default: return "settings.general".localized
         }
     }
 
     private var selectedTabSubtitle: String {
         switch selectedTab {
-        case 1: return "订阅、排序与展示方式"
-        case 2: return "提供商、模型与用量控制"
-        case 3: return "版本、数据来源与隐私"
-        case 4: return "权限、频率与每日摘要"
-        default: return "刷新、外观与诊断"
+        case 1: return "settings.rss.subtitle".localized
+        case 2: return "settings.ai.subtitle".localized
+        case 3: return "settings.about.subtitle".localized
+        case 4: return "settings.notifications.subtitle".localized
+        default: return "settings.general.subtitle".localized
         }
     }
 
