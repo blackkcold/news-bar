@@ -96,6 +96,29 @@ enum NotificationService {
         }
     }
 
+    /// Sends a single notification for a Weibo "爆" (burst) topic. The research
+    /// `summary` becomes the body; `userInfo` carries the event identity so the
+    /// notification delegate can route a click to the burst research window.
+    static func sendBurstNotification(title: String, summary: String, eventID: String) {
+        let content = UNMutableNotificationContent()
+        content.title = title
+        content.body = SecurityPolicies.sanitizeHTMLContent(summary)
+        content.sound = .default
+        content.userInfo = ["type": "burst", "eventID": eventID]
+        content.categoryIdentifier = "burst"
+
+        let request = UNNotificationRequest(
+            identifier: "burst-\(eventID)",
+            content: content,
+            trigger: nil
+        )
+        UNUserNotificationCenter.current().add(request) { error in
+            if let error = error {
+                NSLog("[NotificationService] sendBurstNotification failed: %@", error.localizedDescription)
+            }
+        }
+    }
+
     static func clearAllPending() {
         UNUserNotificationCenter.current().removeAllPendingNotificationRequests()
     }

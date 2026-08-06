@@ -188,6 +188,52 @@ final class AppSettings {
         didSet { UserDefaults.standard.set(dailyPushMinute, forKey: "dailyPushMinute") }
     }
 
+    /// Master toggle for the Weibo "爆" burst-topic realtime push + research.
+    var burstPushEnabled: Bool {
+        didSet { UserDefaults.standard.set(burstPushEnabled, forKey: "burstPushEnabled") }
+    }
+    /// Enables the developer test-mode toggle that fires a fake burst push.
+    var burstTestMode: Bool {
+        didSet { UserDefaults.standard.set(burstTestMode, forKey: "burstTestMode") }
+    }
+    /// The user-entered hot-search title used by the burst test push.
+    var burstTestTopic: String {
+        didSet { UserDefaults.standard.set(burstTestTopic, forKey: "burstTestTopic") }
+    }
+    /// Developer-only toggle controlling whether the simulated burst push runs
+    /// web search. Independent from `webSearchEnabled` so the test pipeline can
+    /// be exercised with search even when the realtime burst search is off.
+    var burstTestWebSearchEnabled: Bool {
+        didSet { UserDefaults.standard.set(burstTestWebSearchEnabled, forKey: "burstTestWebSearchEnabled") }
+    }
+    /// Optional web search for burst research. Off ⇒ pure-AI fallback.
+    var webSearchEnabled: Bool {
+        didSet { UserDefaults.standard.set(webSearchEnabled, forKey: "webSearchEnabled") }
+    }
+    /// Optional Firecrawl API key. Empty ⇒ keyless free tier.
+    var firecrawlAPIKey: String {
+        didSet { UserDefaults.standard.set(firecrawlAPIKey, forKey: "firecrawlAPIKey") }
+    }
+    /// Independent daily cap for burst research AI requests.
+    var burstDailyCap: Int {
+        didSet { UserDefaults.standard.set(burstDailyCap, forKey: "burstDailyCap") }
+    }
+    var todayBurstResearchCount: Int {
+        didSet { UserDefaults.standard.set(todayBurstResearchCount, forKey: "todayBurstResearchCount") }
+    }
+
+    /// Master toggle for custom-keyword realtime push + research.
+    var keywordTrackingEnabled: Bool {
+        didSet { UserDefaults.standard.set(keywordTrackingEnabled, forKey: "keywordTrackingEnabled") }
+    }
+    /// User-entered keywords; a news item whose title contains any keyword
+    /// (case-insensitive) triggers a research push.
+    var keywordList: [String] {
+        didSet {
+            UserDefaults.standard.set(keywordList, forKey: "keywordList")
+        }
+    }
+
     var rssUnifiedDisplayCount: Bool {
         didSet { UserDefaults.standard.set(rssUnifiedDisplayCount, forKey: "rssUnifiedDisplayCount") }
     }
@@ -304,6 +350,19 @@ final class AppSettings {
         self.pushCount = defaults.integerIfPresent(forKey: "pushCount") ?? 3
         self.dailyPushHour = defaults.integerIfPresent(forKey: "dailyPushHour") ?? 9
         self.dailyPushMinute = defaults.integerIfPresent(forKey: "dailyPushMinute") ?? 0
+
+        self.burstPushEnabled = defaults.boolIfPresent(forKey: "burstPushEnabled") ?? false
+        self.burstTestMode = defaults.boolIfPresent(forKey: "burstTestMode") ?? false
+        self.burstTestTopic = defaults.stringIfPresent(forKey: "burstTestTopic") ?? ""
+        self.burstTestWebSearchEnabled = defaults.boolIfPresent(forKey: "burstTestWebSearchEnabled") ?? false
+        self.webSearchEnabled = defaults.boolIfPresent(forKey: "webSearchEnabled") ?? false
+        self.firecrawlAPIKey = defaults.stringIfPresent(forKey: "firecrawlAPIKey") ?? ""
+        let rawBurstCap = defaults.integerIfPresent(forKey: "burstDailyCap") ?? 20
+        self.burstDailyCap = Self.validBurstCaps.contains(rawBurstCap) ? rawBurstCap : 20
+        self.todayBurstResearchCount = defaults.integerIfPresent(forKey: "todayBurstResearchCount") ?? 0
+
+        self.keywordTrackingEnabled = defaults.boolIfPresent(forKey: "keywordTrackingEnabled") ?? false
+        self.keywordList = defaults.stringArray(forKey: "keywordList") ?? []
 
         self.isInitializing = false
         resetDailyStatsIfNeeded()
@@ -471,6 +530,28 @@ final class AppSettings {
         return sources
     }
 
+    /// Non-empty trimmed keywords, in a stable order.
+    var activeKeywords: [String] {
+        keywordList
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+    }
+
+    /// Returns true when the given title contains any active keyword.
+    /// Matching is case-insensitive and diacritic-insensitive.
+    func keywordMatches(_ title: String) -> Bool {
+        let active = activeKeywords
+        guard !active.isEmpty else { return false }
+        let foldedTitle = title.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+        for keyword in active {
+            let folded = keyword.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+            if foldedTitle.range(of: folded, options: [.caseInsensitive]) != nil {
+                return true
+            }
+        }
+        return false
+    }
+
     var estimatedAICostText: String {
         guard !isUsingCustomProvider else {
             return selectedCustomProvider?.pricingNote?.isEmpty == false
@@ -516,6 +597,8 @@ final class AppSettings {
 
     /// Whitelisted daily AI request caps. Any value outside this set is rejected.
     static let validAICaps: Set<Int> = [20, 50, 100]
+    /// Whitelisted burst-research daily caps. Any value outside this set is rejected.
+    static let validBurstCaps: Set<Int> = [10, 20, 50]
     /// Whitelisted Popup AI summary lengths. Any value outside this set is rejected.
     static let validAIPopupMaxWords: Set<Int> = [80, 120, 160, 200]
     /// Whitelisted Dashboard AI summary lengths. Any value outside this set is rejected.
@@ -531,6 +614,7 @@ final class AppSettings {
         todayAIRequestCount = 0
         todayPopupAIRequestCount = 0
         todayDashboardAIRequestCount = 0
+        todayBurstResearchCount = 0
         statsDayTimestamp = today.timeIntervalSince1970
     }
 
@@ -555,6 +639,13 @@ final class AppSettings {
         case .popup:     todayPopupAIRequestCount += count
         case .dashboard: todayDashboardAIRequestCount += count
         }
+    }
+
+    /// Stores the cumulative burst-research request count from the service's
+    /// independent budget (kept separate from the shared AI-summary quota).
+    func recordBurstResearchRequests(_ total: Int) {
+        resetDailyStatsIfNeeded()
+        todayBurstResearchCount = max(todayBurstResearchCount, total)
     }
 
     // MARK: - RSS display-count resolution

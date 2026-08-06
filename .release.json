@@ -10,7 +10,7 @@
   "release_branch": true,
   "auto_merge": false,
   "release_note_style": "structured-cn",
-  "summary": "复古报刊编辑风主题与 Dashboard、Popup 全局视觉重制",
-  "summary_en": "Retro Editorial theme with a comprehensive Dashboard and Popup visual redesign",
-  "validation": "swift test 321/321 + scripts/build.sh + codesign verify + hdiutil verify 通过"
+  "summary": "爆款联网搜索增强、自定义关键词监控、Dashboard 搜索筛选与设置页 7 页签重制",
+  "summary_en": "Enhanced burst web search, custom keyword tracking, Dashboard search & filter, and a 7-tab settings redesign",
+  "validation": "swift test 349/349 + scripts/build.sh + codesign verify + hdiutil verify 通过"
 }
