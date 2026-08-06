@@ -315,6 +315,29 @@ struct AppThemeBackground: View {
     }
 }
 
+private struct GlassSettingsSurfaceModifier: ViewModifier {
+    @Environment(AppSettings.self) private var settings
+    let cornerRadius: CGFloat
+    let interactive: Bool
+
+    func body(content: Content) -> some View {
+        if settings.appTheme == .retroEditorial {
+            content
+        } else if #available(macOS 26, *) {
+            if interactive {
+                content.glassEffect(.regular.interactive(), in: .rect(cornerRadius: cornerRadius))
+            } else {
+                content.glassEffect(.regular, in: .rect(cornerRadius: cornerRadius))
+            }
+        } else {
+            content.background(
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .fill(.quaternary.opacity(0.4))
+            )
+        }
+    }
+}
+
 private struct RetroPaperGrain: View {
     var body: some View {
         Canvas { context, size in
@@ -485,6 +508,13 @@ private struct EditorialClipShapeModifier: ViewModifier {
 extension View {
     func appThemeSurface() -> some View {
         modifier(AppThemeSurfaceModifier())
+    }
+
+    /// Applies Liquid Glass on macOS 26+ (standard theme), falling back to a
+    /// translucent material on older macOS. The retro editorial theme is left
+    /// untouched so its paper surface stays intact.
+    func glassSettingsSurface(cornerRadius: CGFloat, interactive: Bool = false) -> some View {
+        modifier(GlassSettingsSurfaceModifier(cornerRadius: cornerRadius, interactive: interactive))
     }
 
     func newsCardSurface(

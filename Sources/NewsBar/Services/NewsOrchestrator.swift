@@ -84,6 +84,10 @@ final class NewsOrchestrator {
     /// Last summary triggered by a Weibo "爆" label, to throttle repeats.
     private var lastBurstSummaryAt: Date?
     private var lastHourlyPushAt: Date?
+    /// Titles of Weibo "爆" topics already pushed, to avoid re-notifying the same one.
+    private var notifiedBurstTopics: Set<String> = []
+    /// Latest research keyed by burst topic title, cached for the detail window.
+    private var burstResearchCache: [String: BurstResearch] = [:]
     private var latestTrendSummary = TrendChangeSummary.none
     /// The shared result uses the detailed Dashboard prompt. Popup limits rows at render time.
     static let sharedSummaryTarget: SummaryTarget = .dashboard
@@ -445,6 +449,9 @@ final class NewsOrchestrator {
             trendSummary: trendSummary
         )
 
+        await handleBurstTopics(settings: settings, apiKey: apiKey)
+        await handleKeywordTopics(settings: settings, apiKey: apiKey)
+
         let allItems = allActiveItems(settings: settings)
         if !isManual {
             let now = Date()
@@ -602,6 +609,250 @@ final class NewsOrchestrator {
             }
         }
         return translated
+    }
+
+    /// Titles currently being researched (avoids duplicate work when the detail
+    /// window opens while a fake push is still researching in the background).
+    private var burstResearchInFlight: Set<String> = []
+
+    /// Builds the burst research search config, honoring the given `forceSearch`
+    /// flag (used by the developer test to always run web search) or the user's
+    /// realtime `webSearchEnabled` toggle.
+    private func makeSearchConfig(settings: AppSettings, forceSearch: Bool) -> WebSearchService.Config? {
+        let enabled = forceSearch || settings.webSearchEnabled
+        guard enabled else { return nil }
+        return WebSearchService.Config(
+            provider: .firecrawl,
+            apiKey: settings.firecrawlAPIKey,
+            maxResults: 6
+        )
+    }
+
+    // MARK: - Burst (爆) topic push
+
+    /// Detects new Weibo "爆" topics and pushes a single notification each with
+    /// AI research pre-generated. De-duplicates by title and respects a cooldown.
+    private func handleBurstTopics(settings: AppSettings, apiKey: String) async {
+        guard settings.burstPushEnabled else { return }
+        guard !apiKey.isEmpty else { return }
+        let now = Date()
+        let cooldown = now.timeIntervalSince(lastBurstSummaryAt ?? .distantPast)
+        guard cooldown >= RefreshPolicy.burstSummaryCooldown else { return }
+
+        let newBursts = weiboItems
+            .filter { $0.hotLabel == "爆" && !notifiedBurstTopics.contains($0.title) }
+        guard !newBursts.isEmpty else { return }
+        lastBurstSummaryAt = now
+
+        let trendContext = latestTrendSummary.context
+        for burst in newBursts.prefix(2) {
+            notifiedBurstTopics.insert(burst.title)
+            let research = await BurstResearchService.research(
+                BurstResearchService.ResearchInput(
+                    item: burst,
+                    trendContext: trendContext,
+                    apiKey: apiKey,
+                    connection: settings.resolvedAIConnection,
+                    model: settings.aiModel,
+                    summaryLanguage: settings.appLanguage,
+                    disableDeepSeekThinking: settings.aiDisableDeepSeekThinking,
+                    searchConfig: makeSearchConfig(settings: settings, forceSearch: false),
+                    dailyCap: settings.burstDailyCap,
+                    maxRefetchURLs: 3
+                )
+            )
+            settings.recordBurstResearchRequests(BurstResearchService.readDailyCount())
+            if !research.summary.isEmpty {
+                burstResearchCache[burst.title] = research
+                let title = L10n.string("notif.burstTitle", language: settings.appLanguage)
+                    + " \(burst.title)"
+                NotificationService.sendBurstNotification(
+                    title: title,
+                    summary: research.summary,
+                    eventID: burst.title
+                )
+            }
+            await RefreshLog.shared.recordBurst(
+                topic: burst.title,
+                searchStatus: research.searchStatus.rawValue,
+                requestCount: BurstResearchService.readDailyCount()
+            )
+        }
+    }
+
+    /// Returns cached research for a burst topic, or nil when none was pre-generated.
+    func cachedBurstResearch(for title: String) -> BurstResearch? {
+        burstResearchCache[title]
+    }
+
+    /// True while a research pass for the title is still in progress.
+    func isBurstResearchInFlight(for title: String) -> Bool {
+        burstResearchInFlight.contains(title)
+    }
+
+    /// Force-recomputes research for a burst topic (used by the detail window's
+    /// retry action). Returns a freshly generated research value.
+    func regenerateBurstResearch(for burst: NewsItem, settings: AppSettings) async -> BurstResearch {
+        let apiKey = await resolveAPIKey(settings: settings)
+        guard !apiKey.isEmpty else { return BurstResearch() }
+        let research = await BurstResearchService.research(
+            BurstResearchService.ResearchInput(
+                item: burst,
+                trendContext: latestTrendSummary.context,
+                apiKey: apiKey,
+                connection: settings.resolvedAIConnection,
+                model: settings.aiModel,
+                summaryLanguage: settings.appLanguage,
+                disableDeepSeekThinking: settings.aiDisableDeepSeekThinking,
+                searchConfig: makeSearchConfig(settings: settings, forceSearch: false),
+                dailyCap: settings.burstDailyCap,
+                maxRefetchURLs: 3
+            )
+        )
+        burstResearchCache[burst.title] = research
+        return research
+    }
+
+    // MARK: - Custom keyword topic push
+
+    /// Tracks which (keyword,title) pairs have already been researched to avoid
+    /// re-notifying the same match across refreshes.
+    private var notifiedKeywordPairs: Set<String> = []
+
+    /// Detects news items whose titles match a user keyword and pushes a single
+    /// notification with AI research pre-generated, reusing the burst pipeline.
+    /// Scans Weibo + Bilibili + all enabled RSS. De-duplicates by
+    /// (keyword,title) and applies a global research cooldown.
+    private func handleKeywordTopics(settings: AppSettings, apiKey: String) async {
+        guard settings.keywordTrackingEnabled else { return }
+        guard !apiKey.isEmpty else { return }
+        let active = settings.activeKeywords
+        guard !active.isEmpty else { return }
+
+        let now = Date()
+        let cooldown = now.timeIntervalSince(lastBurstSummaryAt ?? .distantPast)
+        guard cooldown >= RefreshPolicy.burstSummaryCooldown else { return }
+
+        var matches: [(keyword: String, item: NewsItem)] = []
+        for item in allActiveItems(settings: settings) {
+            guard settings.keywordMatches(item.title) else { continue }
+            let foldedTitle = item.title.folding(options: [.caseInsensitive], locale: .current)
+            guard let keyword = active.first(where: { kw in
+                foldedTitle.contains(kw.folding(options: [.caseInsensitive], locale: .current))
+            }) else { continue }
+            let pair = "\(keyword)\n\(item.title)"
+            guard !notifiedKeywordPairs.contains(pair) else { continue }
+            matches.append((keyword, item))
+        }
+        guard !matches.isEmpty else { return }
+        lastBurstSummaryAt = now
+
+        let trendContext = latestTrendSummary.context
+        for match in matches.prefix(2) {
+            let pair = "\(match.keyword)\n\(match.item.title)"
+            notifiedKeywordPairs.insert(pair)
+            let research = await BurstResearchService.research(
+                BurstResearchService.ResearchInput(
+                    item: match.item,
+                    trendContext: trendContext,
+                    apiKey: apiKey,
+                    connection: settings.resolvedAIConnection,
+                    model: settings.aiModel,
+                    summaryLanguage: settings.appLanguage,
+                    disableDeepSeekThinking: settings.aiDisableDeepSeekThinking,
+                    searchConfig: makeSearchConfig(settings: settings, forceSearch: false),
+                    dailyCap: settings.burstDailyCap,
+                    maxRefetchURLs: 3
+                )
+            )
+            settings.recordBurstResearchRequests(BurstResearchService.readDailyCount())
+            if !research.summary.isEmpty {
+                burstResearchCache[match.item.title] = research
+                let title = L10n.string("notif.keywordTitle", language: settings.appLanguage)
+                    + " \(match.keyword) · \(match.item.title)"
+                NotificationService.sendBurstNotification(
+                    title: title,
+                    summary: research.summary,
+                    eventID: match.item.title
+                )
+            }
+            await RefreshLog.shared.recordBurst(
+                topic: match.item.title,
+                searchStatus: research.searchStatus.rawValue,
+                requestCount: BurstResearchService.readDailyCount()
+            )
+        }
+    }
+
+    // MARK: - Developer test: fake burst push
+
+    /// Fires a fake Weibo "爆" push (developer test mode). Opens the detail
+    /// window immediately (showing its loading state), then runs the research
+    /// pipeline in the background, fills the cache, and posts the notification.
+    /// The developer toggle always forces web search so the full pipeline is
+    /// exercised; the window polls for the result via `isBurstResearchInFlight`.
+    func fireFakeBurstPush(settings: AppSettings) async {
+        guard settings.burstTestMode else { return }
+        let trimmedTopic = settings.burstTestTopic.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedTopic.isEmpty else { return }
+        let fake = NewsItem(
+            title: trimmedTopic,
+            url: "https://s.weibo.com",
+            source: .weibo,
+            rank: 1,
+            hotLabel: "爆"
+        )
+        let apiKey = await resolveAPIKey(settings: settings)
+        guard !apiKey.isEmpty else { return }
+
+        // 1) Open the detail window right away so the user sees the loading state.
+        openBurstDetail(title: trimmedTopic)
+
+        // 2) Mark in-flight so the window's load() waits instead of re-researching.
+        burstResearchInFlight.insert(trimmedTopic)
+        defer { burstResearchInFlight.remove(trimmedTopic) }
+
+        let research = await BurstResearchService.research(
+            BurstResearchService.ResearchInput(
+                item: fake,
+                trendContext: latestTrendSummary.context,
+                apiKey: apiKey,
+                connection: settings.resolvedAIConnection,
+                model: settings.aiModel,
+                summaryLanguage: settings.appLanguage,
+                disableDeepSeekThinking: settings.aiDisableDeepSeekThinking,
+                searchConfig: makeSearchConfig(settings: settings, forceSearch: true),
+                dailyCap: settings.burstDailyCap,
+                maxRefetchURLs: 3
+            )
+        )
+        settings.recordBurstResearchRequests(BurstResearchService.readDailyCount())
+        burstResearchCache[trimmedTopic] = research
+        let notifTitle = L10n.string("notif.burstTitle", language: settings.appLanguage) + " \(trimmedTopic)"
+        NotificationService.sendBurstNotification(
+            title: notifTitle,
+            summary: research.summary.isEmpty ? "burst.noSummary".localized : research.summary,
+            eventID: trimmedTopic
+        )
+        await RefreshLog.shared.recordBurst(
+            topic: trimmedTopic,
+            searchStatus: research.searchStatus.rawValue,
+            requestCount: BurstResearchService.readDailyCount()
+        )
+    }
+
+    /// Fills the test-mode topic field with the current Weibo #1 hot search title.
+    func fillBurstTestWithTopTrend() async -> String {
+        guard let top = weiboItems.first else { return "" }
+        return top.title
+    }
+
+    private func openBurstDetail(title: String) {
+        NotificationCenter.default.post(
+            name: .burstDetailRequest,
+            object: nil,
+            userInfo: ["title": title]
+        )
     }
 
     // MARK: - Shared Summary (generated on refresh)
@@ -1149,6 +1400,9 @@ final class NewsOrchestrator {
         rssFailureCounts = [:]
         lastHourlyPushAt = nil
         latestTrendSummary = .none
+        notifiedBurstTopics = []
+        notifiedKeywordPairs = []
+        burstResearchCache = [:]
     }
 
     func refreshRSSSource(url: String, name: String, settings: AppSettings) async {

@@ -28,6 +28,7 @@ actor RefreshLog {
         case wake         // 系统唤醒后检查刷新
         case manual       // 用户手动点击刷新
         case popoverOpen  // 打开弹窗时 loadCached
+        case burst        // 爆款调研（真实/模拟推送）
     }
 
     enum SourceResult: Codable {
@@ -90,6 +91,24 @@ actor RefreshLog {
 
     func snapshot() -> [Entry] {
         entries
+    }
+
+    /// Records a burst-research diagnostic event (real or simulated push).
+    /// `searchStatus` and `topic` are folded into `errorSummary`/`sourceResults`
+    /// so the existing log schema and UI require no structural changes.
+    func recordBurst(topic: String, searchStatus: String, requestCount: Int) {
+        let entry = Entry(
+            trigger: .burst,
+            sourceResults: ["爆款调研": "\(searchStatus) req=\(requestCount)"],
+            aiBefore: "",
+            aiAfter: "",
+            errorSummary: "topic=\(topic)"
+        )
+        entries.append(entry)
+        if entries.count > maxEntries {
+            entries = Array(entries.suffix(maxEntries))
+        }
+        persistToDisk()
     }
 
     func snapshotString() -> String {

@@ -1,13 +1,17 @@
 import AppKit
 import SwiftUI
+import UserNotifications
 
 extension Notification.Name {
     static let rssSourceAdded = Notification.Name("rssSourceAdded")
     static let switchToAITab = Notification.Name("switchToAITab")
     static let apiKeyConfigured = Notification.Name("apiKeyConfigured")
+    static let fireFakeBurstPush = Notification.Name("fireFakeBurstPush")
+    static let burstDetailRequest = Notification.Name("burstDetailRequest")
+    static let fillBurstTestTopic = Notification.Name("fillBurstTestTopic")
 }
 
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
 
     // MARK: - Constants
 
@@ -18,6 +22,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private static let settingsSize = NSSize(width: 560, height: 420)
     private static let dashboardSize = NSSize(width: 1180, height: 860)
     private static let dashboardMinimumSize = NSSize(width: 960, height: 720)
+    private static let burstWindowSize = NSSize(width: 640, height: 720)
 
     // MARK: - Properties
 
@@ -25,6 +30,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var popover: NSPopover?
     private var settingsWindow: NSWindow?
     private var dashboardWindow: NSWindow?
+    private var burstWindow: NSWindow?
 
     private var settings: AppSettings!
     private var orchestrator: NewsOrchestrator?
@@ -52,6 +58,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         scheduleAutoUpdateCheck()
 
         Task { _ = await NotificationService.requestAuthorization() }
+        UNUserNotificationCenter.current().delegate = self
         if settings.dailyPushEnabled {
             NotificationService.scheduleDailyPush(hour: settings.dailyPushHour, minute: settings.dailyPushMinute)
         }
@@ -142,6 +149,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                   let name = notification.userInfo?["name"] as? String else { return }
             Task {
                 await self.orchestrator?.refreshRSSSource(url: url, name: name, settings: self.settings)
+            }
+        }
+
+        NotificationCenter.default.addObserver(
+            forName: .fireFakeBurstPush,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            guard let self, let orchestrator = self.orchestrator else { return }
+            Task { @MainActor in
+                await orchestrator.fireFakeBurstPush(settings: self.settings)
+            }
+        }
+
+        NotificationCenter.default.addObserver(
+            forName: .burstDetailRequest,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            guard let self,
+                  let title = notification.userInfo?["title"] as? String else { return }
+            self.openBurstWindow(title: title)
+        }
+
+        NotificationCenter.default.addObserver(
+            forName: .fillBurstTestTopic,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            guard let self, let orchestrator = self.orchestrator else { return }
+            Task { @MainActor in
+                let top = await orchestrator.fillBurstTestWithTopTrend()
+                if !top.isEmpty {
+                    self.settings.burstTestTopic = top
+                }
             }
         }
     }
@@ -352,7 +394,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
-        let initialTab = toAITab ? 2 : 0
+        let initialTab = toAITab ? 3 : 0
 
         let window = NSWindow(
             contentRect: NSRect(origin: .zero, size: Self.settingsSize),
@@ -435,7 +477,68 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         workspaceObservers.removeAll()
         settingsWindow?.close()
         dashboardWindow?.close()
+        burstWindow?.close()
         popover?.close()
         NotificationService.clearAllPending()
+    }
+
+    // MARK: - Burst research window
+
+    /// Opens the burst-topic detail window for the given Weibo topic title.
+    @MainActor
+    func openBurstWindow(title: String) {
+        guard let orchestrator else { return }
+        let item = orchestrator.weiboItems.first { $0.title == title }
+            ?? NewsItem(title: title, url: "https://s.weibo.com", source: .weibo)
+
+        if let existing = burstWindow {
+            existing.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
+
+        let window = NSWindow(
+            contentRect: NSRect(origin: .zero, size: Self.burstWindowSize),
+            styleMask: [.titled, .closable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = "NewsBar — \(title)"
+        window.minSize = NSSize(width: 520, height: 520)
+        window.center()
+        window.contentViewController = NSHostingController(
+            rootView: BurstDetailView(orchestrator: orchestrator, burst: item)
+                .environment(settings)
+        )
+        window.isReleasedWhenClosed = false
+
+        burstWindow = window
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    // MARK: - UNUserNotificationCenterDelegate
+
+    func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        didReceive response: UNNotificationResponse,
+        withCompletionHandler completionHandler: @escaping () -> Void
+    ) {
+        let userInfo = response.notification.request.content.userInfo
+        if let type = userInfo["type"] as? String, type == "burst",
+           let eventID = userInfo["eventID"] as? String {
+            Task { @MainActor [weak self] in
+                self?.openBurstWindow(title: eventID)
+            }
+        }
+        completionHandler()
+    }
+
+    func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        willPresent notification: UNNotification,
+        withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
+    ) {
+        completionHandler([.banner, .sound])
     }
 }

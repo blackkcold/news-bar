@@ -4,12 +4,37 @@ struct DashboardWindow: View {
     @Environment(AppSettings.self) private var settings
     let orchestrator: NewsOrchestrator
     @State private var collapsedRSSSourceIDs: Set<NewsSource.ID> = []
+    @State private var searchText = ""
+    @State private var sourceFilter: DashboardSourceFilter = .all
 
     var onOpenSettings: () -> Void = {}
     var onConfigureAI: (() -> Void)? = nil
 
     private let layoutBreakpoint: CGFloat = 960
     private let sidebarWidth: CGFloat = 336
+
+    enum DashboardSourceFilter: String, CaseIterable, Identifiable {
+        case all, weibo, bilibili, rss
+        var id: String { rawValue }
+
+        var displayName: String {
+            switch self {
+            case .all: return "dash.filter.all".localized
+            case .weibo: return "source.weibo".localized
+            case .bilibili: return "source.bilibili".localized
+            case .rss: return "dash.filter.rss".localized
+            }
+        }
+
+        func matches(_ source: NewsSource) -> Bool {
+            switch self {
+            case .all: return true
+            case .weibo: return source == .weibo
+            case .bilibili: return source == .bilibili
+            case .rss: return source != .weibo && source != .bilibili
+            }
+        }
+    }
 
     private static let issueDateFormatter: DateFormatter = {
         let formatter = DateFormatter()
@@ -32,6 +57,31 @@ struct DashboardWindow: View {
 
     private var hasStatusFeedback: Bool {
         orchestrator.manualRefreshWarning != nil || orchestrator.batchProgress.total > 0
+    }
+
+    private var isSearchActive: Bool {
+        !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private func matchesSearch(_ item: NewsItem) -> Bool {
+        guard isSearchActive else { return true }
+        let q = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        return item.displayTitle.folding(options: [.caseInsensitive], locale: .current)
+            .contains(q.folding(options: [.caseInsensitive], locale: .current))
+    }
+
+    private func filteredTrendItems(_ source: NewsSource, _ items: [NewsItem]) -> [NewsItem] {
+        guard sourceFilter.matches(source) else { return [] }
+        return items.filter(matchesSearch)
+    }
+
+    private func filteredRSSItems(_ source: NewsSource) -> [NewsItem] {
+        guard sourceFilter.matches(source) else { return [] }
+        return (orchestrator.rssItemsMap[source.id] ?? []).filter(matchesSearch)
+    }
+
+    private var hasAnyFilter: Bool {
+        isSearchActive || sourceFilter != .all
     }
 
     private func isRSSSourceExpanded(_ source: NewsSource) -> Bool {
@@ -100,6 +150,8 @@ struct DashboardWindow: View {
                 ScrollView(.vertical, showsIndicators: true) {
                     VStack(alignment: .leading, spacing: 22) {
                         dashboardMasthead
+
+                        dashboardFilterBar
 
                         contentLayout(isWideLayout: isWideLayout)
                     }
@@ -179,6 +231,99 @@ struct DashboardWindow: View {
         .lineLimit(1)
         .accessibilityElement(children: .combine)
         .accessibilityLabel("Dashboard")
+    }
+
+    private var dashboardFilterBar: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 10) {
+                Image(systemName: "magnifyingglass")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(.secondary)
+
+                TextField("dash.searchPlaceholder".localized, text: $searchText)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 13))
+
+                if isSearchActive {
+                    Button {
+                        searchText = ""
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.system(size: 12))
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("dash.searchClear".localized)
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 9)
+            .background {
+                if settings.appTheme == .retroEditorial {
+                    Rectangle().fill(RetroEditorialTokens.raisedPaper)
+                }
+            }
+            .glassSettingsSurface(cornerRadius: 12)
+            .overlay {
+                if settings.appTheme == .retroEditorial {
+                    Rectangle().strokeBorder(RetroEditorialTokens.ink, lineWidth: 1.4)
+                }
+            }
+
+            HStack(spacing: 6) {
+                ForEach(DashboardSourceFilter.allCases) { filter in
+                    filterChip(filter)
+                }
+
+                Spacer(minLength: 0)
+
+                if hasAnyFilter {
+                    Text(filteredResultLabel)
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+            }
+        }
+    }
+
+    private var filteredResultLabel: String {
+        var count = 0
+        count += filteredTrendItems(.weibo, orchestrator.weiboItems).count
+        count += filteredTrendItems(.bilibili, orchestrator.bilibiliItems).count
+        for source in selectedRSSSources {
+            count += filteredRSSItems(source).count
+        }
+        return L10n.string("dash.filterCount", count)
+    }
+
+    private func filterChip(_ filter: DashboardSourceFilter) -> some View {
+        let isSelected = sourceFilter == filter
+        return Button {
+            sourceFilter = filter
+        } label: {
+            Text(filter.displayName)
+                .font(.system(size: 11, weight: .medium))
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+                .background {
+                    if settings.appTheme == .retroEditorial {
+                        Rectangle().fill(isSelected ? RetroEditorialTokens.brick : RetroEditorialTokens.raisedPaper)
+                    }
+                }
+                .glassSettingsSurface(cornerRadius: 40, interactive: true)
+                .overlay {
+                    if settings.appTheme == .retroEditorial {
+                        Rectangle().strokeBorder(RetroEditorialTokens.ink, lineWidth: 1)
+                    }
+                }
+                .foregroundStyle(
+                    isSelected
+                        ? (settings.appTheme == .retroEditorial ? RetroEditorialTokens.raisedPaper : Color.accentColor)
+                        : .primary
+                )
+        }
+        .buttonStyle(.plain)
     }
 
     private var dashboardMasthead: some View {
@@ -302,18 +447,21 @@ struct DashboardWindow: View {
             } else {
                 LazyVStack(alignment: .leading, spacing: 16) {
                     ForEach(selectedRSSSources) { source in
-                        DashboardRSSSourceCard(
-                            source: source,
-                            items: orchestrator.rssItemsMap[source.id] ?? [],
-                            state: orchestrator.sourceStates[source.id] ?? .idle,
-                            isExpanded: isRSSSourceExpanded(source),
-                            onRefresh: {
-                                Task {
-                                    await orchestrator.refreshRSSSource(source, settings: settings)
-                                }
-                            },
-                            onToggleExpansion: { toggleRSSSourceExpansion(source) }
-                        )
+                        let filteredItems = filteredRSSItems(source)
+                        if sourceFilter.matches(source) && (!filteredItems.isEmpty || !hasAnyFilter) {
+                            DashboardRSSSourceCard(
+                                source: source,
+                                items: filteredItems,
+                                state: orchestrator.sourceStates[source.id] ?? .idle,
+                                isExpanded: isRSSSourceExpanded(source),
+                                onRefresh: {
+                                    Task {
+                                        await orchestrator.refreshRSSSource(source, settings: settings)
+                                    }
+                                },
+                                onToggleExpansion: { toggleRSSSourceExpansion(source) }
+                            )
+                        }
                     }
                 }
             }
@@ -377,9 +525,12 @@ struct DashboardWindow: View {
                 subtitle: "社交平台正在发生"
             )
 
-            DashboardHotTrendCard(source: .weibo, items: orchestrator.weiboItems)
-
-            DashboardHotTrendCard(source: .bilibili, items: orchestrator.bilibiliItems)
+            if sourceFilter.matches(.weibo) || !isSearchActive {
+                DashboardHotTrendCard(source: .weibo, items: filteredTrendItems(.weibo, orchestrator.weiboItems))
+            }
+            if sourceFilter.matches(.bilibili) || !isSearchActive {
+                DashboardHotTrendCard(source: .bilibili, items: filteredTrendItems(.bilibili, orchestrator.bilibiliItems))
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }

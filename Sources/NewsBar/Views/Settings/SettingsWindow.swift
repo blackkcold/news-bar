@@ -19,32 +19,44 @@ struct SettingsWindow: View {
                     }
                     .tag(0)
 
+                RefreshDiagnosticsTab()
+                    .tabItem {
+                        Label("settings.tab.refresh".localized, systemImage: "arrow.triangle.2.circlepath")
+                    }
+                    .tag(1)
+
                 RSSTab()
                     .tabItem {
                         Label("settings.tab.rss".localized, systemImage: "antenna.radiowaves.left.and.right")
                     }
-                    .tag(1)
+                    .tag(2)
 
                 AITab()
                     .tabItem {
                         Label("settings.tab.ai".localized, systemImage: "sparkles")
                     }
-                    .tag(2)
+                    .tag(3)
 
-                NotificationTab()
+                ReminderTab()
                     .tabItem {
-                        Label("settings.tab.notifications".localized, systemImage: "bell.fill")
+                        Label("settings.tab.reminder".localized, systemImage: "bell.fill")
                     }
                     .tag(4)
+
+                DeveloperTab()
+                    .tabItem {
+                        Label("settings.tab.developer".localized, systemImage: "hammer")
+                    }
+                    .tag(5)
 
                 AboutTab()
                     .tabItem {
                         Label("settings.tab.about".localized, systemImage: "info.circle")
                     }
-                    .tag(3)
+                    .tag(6)
             }
             .onReceive(NotificationCenter.default.publisher(for: .switchToAITab)) { _ in
-                selectedTab = 2
+                selectedTab = 3
             }
 
             Divider()
@@ -63,7 +75,7 @@ struct SettingsWindow: View {
             .padding(.horizontal, 16)
             .padding(.vertical, 8)
         }
-        .frame(minWidth: 460, minHeight: 380)
+        .frame(minWidth: 560, minHeight: 420)
         .padding(.top, 8)
         .adaptiveColorScheme()
         .appThemeSurface()
@@ -71,7 +83,7 @@ struct SettingsWindow: View {
 
     private var settingsHeader: some View {
         HStack(spacing: 10) {
-            if selectedTab == 1 {
+            if selectedTab == 2 {
                 EditorialSourceBadge(mark: .rss, fallbackTint: .blue, size: 32, rotation: -1)
             } else {
                 EditorialSymbolBadge(
@@ -104,29 +116,36 @@ struct SettingsWindow: View {
 
     private var selectedTabTitle: String {
         switch selectedTab {
-        case 1: return "settings.rss".localized
-        case 2: return "settings.ai".localized
-        case 3: return "settings.about".localized
-        case 4: return "settings.notifications".localized
+        case 1: return "settings.refresh".localized
+        case 2: return "settings.rss".localized
+        case 3: return "settings.ai".localized
+        case 4: return "settings.reminder".localized
+        case 5: return "settings.developer".localized
+        case 6: return "settings.about".localized
         default: return "settings.general".localized
         }
     }
 
     private var selectedTabSubtitle: String {
         switch selectedTab {
-        case 1: return "settings.rss.subtitle".localized
-        case 2: return "settings.ai.subtitle".localized
-        case 3: return "settings.about.subtitle".localized
-        case 4: return "settings.notifications.subtitle".localized
+        case 1: return "settings.refresh.subtitle".localized
+        case 2: return "settings.rss.subtitle".localized
+        case 3: return "settings.ai.subtitle".localized
+        case 4: return "settings.reminder.subtitle".localized
+        case 5: return "settings.developer.subtitle".localized
+        case 6: return "settings.about.subtitle".localized
         default: return "settings.general.subtitle".localized
         }
     }
 
     private var selectedTabSymbol: String {
         switch selectedTab {
-        case 2: return "sparkles"
-        case 3: return "info.circle"
+        case 1: return "arrow.triangle.2.circlepath"
+        case 2: return "antenna.radiowaves.left.and.right"
+        case 3: return "sparkles"
         case 4: return "bell.fill"
+        case 5: return "hammer"
+        case 6: return "info.circle"
         default: return "gearshape"
         }
     }
