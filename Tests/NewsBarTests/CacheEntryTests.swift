@@ -27,4 +27,24 @@ final class CacheEntryTests: XCTestCase {
         let entry = CacheEntry(items: [], timestamp: Date().addingTimeInterval(-16 * 60), contentHash: "test")
         XCTAssertTrue(entry.isStale)
     }
+
+    func testIsExpired_24HoursPlusOneSecond_True() {
+        let now = Date()
+        let entry = CacheEntry(
+            items: [],
+            timestamp: now.addingTimeInterval(-CacheEntry.maxDisplayableAge - 1),
+            contentHash: "test"
+        )
+        XCTAssertTrue(entry.isExpired(at: now))
+    }
+
+    func testIsExpired_Within24Hours_False() {
+        let now = Date()
+        let entry = CacheEntry(
+            items: [],
+            timestamp: now.addingTimeInterval(-CacheEntry.maxDisplayableAge + 1),
+            contentHash: "test"
+        )
+        XCTAssertFalse(entry.isExpired(at: now))
+    }
 }

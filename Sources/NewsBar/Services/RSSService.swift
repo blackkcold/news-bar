@@ -21,33 +21,48 @@ enum RSSService {
         url rssURL: String,
         sourceName: String,
         eTag: String? = nil,
-        lastModified: String? = nil
+        lastModified: String? = nil,
+        allowEmpty: Bool = false
     ) async throws -> RSSFetchResult {
-        guard let url = URL(string: rssURL) else {
+        let canonicalURLString = SecurityPolicies.canonicalRSSURL(rssURL)
+        guard let url = URL(string: canonicalURLString) else {
             throw NewsBarError.invalidURL
         }
 
         let headers = conditionalHeaders(eTag: eTag, lastModified: lastModified)
 
-        let (data, response) = try await withThrowingTaskGroup(of: (Data, HTTPURLResponse).self) { group in
-            group.addTask {
-                try await HTTPClient.data(
+        let firstResponse = try await fetchResponse(
+            for: url,
+            additionalHeaders: headers
+        )
+        let responsePayload: (data: Data, response: HTTPURLResponse)
+
+        if firstResponse.response.statusCode == 304 {
+            responsePayload = firstResponse
+        } else if SecurityPolicies.isLikelyHTMLResponse(firstResponse.data) {
+            let retryHeaders = headers.merging(HTTPClient.Config.rssBrowserHeaders) { _, browserValue in
+                browserValue
+            }
+            do {
+                let retryResponse = try await fetchResponse(
                     for: url,
-                    config: .rss,
-                    additionalHeaders: headers,
-                    allowsNotModified: true
+                    additionalHeaders: retryHeaders
                 )
+                if SecurityPolicies.isLikelyHTMLResponse(retryResponse.data) {
+                    throw nonRSSResponseError(data: retryResponse.data, response: retryResponse.response)
+                }
+                responsePayload = retryResponse
+            } catch let error as NewsBarError {
+                throw error
+            } catch {
+                throw nonRSSResponseError(data: firstResponse.data, response: firstResponse.response)
             }
-            group.addTask {
-                try await Task.sleep(nanoseconds: 10_000_000_000)
-                throw URLError(.timedOut)
-            }
-            guard let result = try await group.next() else {
-                throw URLError(.timedOut)
-            }
-            group.cancelAll()
-            return result
+        } else {
+            responsePayload = firstResponse
         }
+
+        let data = responsePayload.data
+        let response = responsePayload.response
 
         let responseETag = response.value(forHTTPHeaderField: "ETag") ?? eTag
         let responseLastModified = response.value(forHTTPHeaderField: "Last-Modified") ?? lastModified
@@ -56,7 +71,12 @@ enum RSSService {
         }
 
         return .modified(
-            items: try parseRSSFeed(data: data, sourceName: sourceName, sourceURL: rssURL),
+            items: try parseRSSFeed(
+                data: data,
+                sourceName: sourceName,
+                sourceURL: canonicalURLString,
+                allowEmpty: allowEmpty
+            ),
             eTag: responseETag,
             lastModified: responseLastModified
         )
@@ -66,13 +86,16 @@ enum RSSService {
         if case .blocked = SecurityPolicies.validateRSSURL(urlString) {
             return false
         }
-        guard let url = URL(string: urlString) else {
-            return false
+
+        let result = try await fetchConditional(
+            url: urlString,
+            sourceName: "RSS",
+            allowEmpty: true
+        )
+        if case .modified = result {
+            return true
         }
-
-        let (data, _) = try await HTTPClient.data(for: url, config: .rss)
-
-        return isRSSOrAtom(data: data)
+        return false
     }
 
     static func conditionalHeaders(eTag: String?, lastModified: String?) -> [String: String] {
@@ -87,7 +110,8 @@ enum RSSService {
     }
 
     private static func isRSSOrAtom(data: Data) -> Bool {
-        let parser = XMLParser(data: data)
+        let cleanData = SecurityPolicies.sanitizeXMLEntities(data)
+        let parser = XMLParser(data: cleanData)
         SecurityPolicies.configureXMLParser(parser)
         let delegate = RSSRootDetector()
         parser.delegate = delegate
@@ -95,18 +119,36 @@ enum RSSService {
         return delegate.isRSSOrAtom
     }
 
-    private static func parseRSSFeed(data: Data, sourceName: String, sourceURL: String) throws -> [NewsItem] {
-        let cleanData = SecurityPolicies.sanitizeXMLData(data)
+    static func parseRSSFeed(
+        data: Data,
+        sourceName: String,
+        sourceURL: String,
+        allowEmpty: Bool = false
+    ) throws -> [NewsItem] {
+        let cleanData = SecurityPolicies.sanitizeXMLEntities(SecurityPolicies.sanitizeXMLData(data))
+
+        // Some feeds are protected by an anti-bot/WAF page that answers with HTML (Content-Type:
+        // text/html) instead of RSS/Atom XML. Parsing that HTML as XML surfaces a confusing
+        // NSXMLParserErrorDomain error 68 ("xmlParseEntityRef: no name"). Detect the root element
+        // first and reject non-RSS/Atom responses with a readable message.
+        guard isRSSOrAtom(data: cleanData) else {
+            throw NewsBarError.parseFailedWithDetail("error.rssNotXml".localized)
+        }
+
         let parser = XMLParser(data: cleanData)
         SecurityPolicies.configureXMLParser(parser)
 
         let delegate = RSSParserDelegate()
         parser.delegate = delegate
 
-        guard parser.parse(), !delegate.items.isEmpty else {
+        guard parser.parse() else {
             if let parseError = delegate.parseError {
                 throw NewsBarError.parseFailedWithDetail(parseError.localizedDescription)
             }
+            throw NewsBarError.parseFailed
+        }
+
+        guard allowEmpty || !delegate.items.isEmpty else {
             throw NewsBarError.parseFailed
         }
 
@@ -127,6 +169,47 @@ enum RSSService {
                 imageURL: validatedImageURL
             )
         }
+    }
+
+    private static func fetchResponse(
+        for url: URL,
+        additionalHeaders: [String: String]
+    ) async throws -> (data: Data, response: HTTPURLResponse) {
+        try await withThrowingTaskGroup(of: (Data, HTTPURLResponse).self) { group in
+            group.addTask {
+                try await HTTPClient.data(
+                    for: url,
+                    config: .rss,
+                    additionalHeaders: additionalHeaders,
+                    allowsNotModified: true
+                )
+            }
+            group.addTask {
+                try await Task.sleep(nanoseconds: 10_000_000_000)
+                throw URLError(.timedOut)
+            }
+            guard let result = try await group.next() else {
+                throw URLError(.timedOut)
+            }
+            group.cancelAll()
+            return result
+        }
+    }
+
+    private static func nonRSSResponseError(
+        data: Data,
+        response: HTTPURLResponse
+    ) -> NewsBarError {
+        let contentType = response.value(forHTTPHeaderField: "Content-Type") ?? "unknown"
+        let responseKind = SecurityPolicies.isLikelyHTMLResponse(data) ? "HTML" : "non-RSS/XML"
+        let detail = "error.rssNotXml".localized + " " + L10n.string(
+            "error.rssResponseDetail",
+            response.statusCode,
+            contentType,
+            responseKind,
+            data.count
+        )
+        return .parseFailedWithDetail(detail)
     }
 }
 

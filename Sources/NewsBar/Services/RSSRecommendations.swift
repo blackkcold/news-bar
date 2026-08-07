@@ -22,7 +22,7 @@ enum RSSRecommendations {
     // No public proxy, aggregator, third-party bridge, or unreachable feeds.
     static let all: [RSSRecommendation] = [
         // 科技
-        RSSRecommendation(name: "36氪", url: "https://36kr.com/feed", category: .tech),
+        RSSRecommendation(name: "36氪", url: "https://www.36kr.com/feed", category: .tech),
         RSSRecommendation(name: "少数派", url: "https://sspai.com/feed", category: .tech),
         RSSRecommendation(name: "V2EX 创意", url: "https://www.v2ex.com/feed/tab/creative.xml", category: .tech),
         RSSRecommendation(name: "OSCHINA", url: "https://www.oschina.net/news/rss", category: .tech),

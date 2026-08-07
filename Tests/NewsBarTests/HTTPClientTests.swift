@@ -181,6 +181,14 @@ final class HTTPClientTests: XCTestCase {
         XCTAssertTrue(HTTPClient.Config.rss.extraHeaders.isEmpty)
     }
 
+    func testConfig_RSSBrowserHeaders_ContainCompatibilityHeaders() {
+        XCTAssertFalse(HTTPClient.Config.rssBrowserHeaders["User-Agent", default: ""].isEmpty)
+        XCTAssertTrue(
+            HTTPClient.Config.rssBrowserHeaders["Accept", default: ""]
+                .contains("application/rss+xml")
+        )
+    }
+
     func testConfig_AI_EmptyExtraHeaders() {
         XCTAssertTrue(HTTPClient.Config.ai.extraHeaders.isEmpty)
     }

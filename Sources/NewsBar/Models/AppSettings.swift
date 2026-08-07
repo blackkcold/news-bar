@@ -305,7 +305,7 @@ final class AppSettings {
         }
 
         let selectedIDs = defaults.stringArray(forKey: "selectedRSSSourceIDs") ?? []
-        self.selectedRSSSourceIDs = Set(selectedIDs)
+        self.selectedRSSSourceIDs = Set(selectedIDs.map(SecurityPolicies.canonicalRSSURL))
 
         let todayStart = Calendar.current.startOfDay(for: Date()).timeIntervalSince1970
         self.todayRefreshCount = defaults.integerIfPresent(forKey: "todayRefreshCount") ?? 0
@@ -331,7 +331,7 @@ final class AppSettings {
 
         if let data = defaults.data(forKey: "rssSources"),
            let decoded = try? JSONDecoder().decode([RSSSourceConfig].self, from: data) {
-            self.rssSources = decoded
+            self.rssSources = Self.normalizedRSSSources(decoded)
         } else {
             self.rssSources = []
         }
@@ -415,6 +415,16 @@ final class AppSettings {
     private func saveRSSSources() {
         if let data = try? JSONEncoder().encode(rssSources) {
             UserDefaults.standard.set(data, forKey: "rssSources")
+        }
+    }
+
+    static func normalizedRSSSources(_ sources: [RSSSourceConfig]) -> [RSSSourceConfig] {
+        var seen = Set<String>()
+        return sources.compactMap { source in
+            var normalized = source
+            normalized.url = SecurityPolicies.canonicalRSSURL(source.url)
+            guard seen.insert(normalized.id).inserted else { return nil }
+            return normalized
         }
     }
 
