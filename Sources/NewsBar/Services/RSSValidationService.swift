@@ -58,7 +58,8 @@ struct RSSValidationSummary: Equatable {
 /// 2. Distinguish blocked / cancelled / network-error / non-feed / success outcomes.
 /// 3. Support cooperative cancellation between serial entries.
 ///
-/// Does NOT modify `RSSService`, `HTTPClient`, `SecurityPolicies`, or any existing fetch flow.
+/// Reuses `RSSService`'s canonical URL, bounded retry, sanitization, and full parser so
+/// validation has the same acceptance criteria as the production refresh path.
 enum RSSValidationService {
 
     // MARK: - Pure (Deterministic) Functions
@@ -106,12 +107,17 @@ enum RSSValidationService {
             return .networkError(summary: "Empty response")
         }
 
-        if !isRSSOrAtom(data: data) {
+        do {
+            let items = try RSSService.parseRSSFeed(
+                data: data,
+                sourceName: "RSS",
+                sourceURL: urlString,
+                allowEmpty: true
+            )
+            return .success(itemCount: items.count)
+        } catch {
             return .notRSSFeed
         }
-
-        let itemCount = countRSSItems(data: data)
-        return .success(itemCount: itemCount)
     }
 
     // MARK: - Serial Validator (for UI-driven testing)
@@ -159,19 +165,29 @@ enum RSSValidationService {
             break
         }
 
-        guard let url = URL(string: urlString) else {
+        guard URL(string: urlString) != nil else {
             return .invalidURL
         }
 
         do {
-            let (data, _) = try await HTTPClient.data(for: url, config: .rss)
-
-            if !isRSSOrAtom(data: data) {
-                return .notRSSFeed
+            let result = try await RSSService.fetchConditional(
+                url: urlString,
+                sourceName: name,
+                allowEmpty: true
+            )
+            switch result {
+            case .modified(let items, _, _):
+                return .success(itemCount: items.count)
+            case .notModified:
+                return .networkError(summary: "Server returned an error")
             }
-
-            let itemCount = countRSSItems(data: data)
-            return .success(itemCount: itemCount)
+        } catch let error as NewsBarError {
+            switch error {
+            case .parseFailed, .parseFailedWithDetail:
+                return .notRSSFeed
+            default:
+                return classifyNetworkError(error)
+            }
         } catch {
             return classifyNetworkError(error)
         }
@@ -217,54 +233,4 @@ enum RSSValidationService {
         return "Network error"
     }
 
-    // MARK: - RSS Detection & Item Counting (reuses existing conventions)
-
-    /// Lightweight check: does the data contain RSS or Atom root elements?
-    private static func isRSSOrAtom(data: Data) -> Bool {
-        let parser = XMLParser(data: data)
-        SecurityPolicies.configureXMLParser(parser)
-        let delegate = RSSValidationRootDetector()
-        parser.delegate = delegate
-        _ = parser.parse()
-        return delegate.isRSSOrAtom
-    }
-
-    /// Count RSS items without full parsing to avoid duplicate logic.
-    private static func countRSSItems(data: Data) -> Int {
-        let cleanData = SecurityPolicies.sanitizeXMLData(data)
-        let parser = XMLParser(data: cleanData)
-        SecurityPolicies.configureXMLParser(parser)
-        let delegate = RSSItemCounterDelegate()
-        parser.delegate = delegate
-        _ = parser.parse()
-        return delegate.itemCount
-    }
-}
-
-// MARK: - Private XML Delegates (mirrors existing patterns)
-
-private final class RSSValidationRootDetector: NSObject, XMLParserDelegate {
-    var isRSSOrAtom = false
-
-    func parser(_ parser: XMLParser, didStartElement elementName: String,
-                namespaceURI: String?, qualifiedName: String?,
-                attributes: [String: String] = [:]) {
-        if elementName == "rss" || elementName == "feed" || elementName == "rdf:RDF" {
-            isRSSOrAtom = true
-        }
-        parser.abortParsing()
-    }
-}
-
-private final class RSSItemCounterDelegate: NSObject, XMLParserDelegate {
-    var itemCount = 0
-    private var depth = 0
-
-    func parser(_ parser: XMLParser, didStartElement elementName: String,
-                namespaceURI: String?, qualifiedName: String?,
-                attributes: [String: String] = [:]) {
-        if elementName == "item" || elementName == "entry" {
-            itemCount += 1
-        }
-    }
 }

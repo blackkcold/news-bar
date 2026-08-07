@@ -77,6 +77,7 @@ final class NewsOrchestrator {
     let maxConsecutiveTruncations = 3
     private var lastHotRefresh: Date?
     private var lastSourceRefresh: [String: Date] = [:]
+    private var lastSourceAttempt: [String: Date] = [:]
     private var rssUnchangedRefreshCounts: [String: Int] = [:]
     private var rssLastChangedAt: [String: Date] = [:]
     private var rssFailureCounts: [String: Int] = [:]
@@ -211,14 +212,19 @@ final class NewsOrchestrator {
         for source in settings.activeSources where !source.isBuiltIn {
             if rssItemsMap[source.id, default: []].isEmpty {
                 if let entry = await cacheManager.load(for: source) {
-                    rssItemsMap[source.id] = entry.items
                     lastSourceRefresh[source.id] = entry.lastValidatedAt ?? entry.timestamp
-                    if entry.isStale {
+                    if entry.isExpired {
                         sourceStates[source.id] = .idle
-                        sourceResults[source.displayName] = "cacheStale"
+                        sourceResults[source.displayName] = "cacheExpired"
                     } else {
-                        applyCachedState(.loaded, for: source)
-                        sourceResults[source.displayName] = "cache/\(entry.items.count)"
+                        rssItemsMap[source.id] = entry.items
+                        if entry.isStale {
+                            sourceStates[source.id] = .idle
+                            sourceResults[source.displayName] = "cacheStale"
+                        } else {
+                            applyCachedState(.loaded, for: source)
+                            sourceResults[source.displayName] = "cache/\(entry.items.count)"
+                        }
                     }
                 } else {
                     if sourceStates[source.id] == nil {
@@ -288,7 +294,7 @@ final class NewsOrchestrator {
                     visibility: visibility
                 )
             return RefreshPolicy.isDue(
-                lastRefresh: lastSourceRefresh[source.id],
+                lastRefresh: lastSourceAttempt[source.id] ?? lastSourceRefresh[source.id],
                 interval: interval,
                 key: source.id,
                 now: now
@@ -415,6 +421,9 @@ final class NewsOrchestrator {
 
             for batchStart in stride(from: 0, to: rssSources.count, by: batchSize) {
                 let batch = Array(rssSources[batchStart..<min(batchStart + batchSize, rssSources.count)])
+                for source in batch {
+                    lastSourceAttempt[source.id] = Date()
+                }
 
                 await withTaskGroup(of: Bool.self) { group in
                     for source in batch {
@@ -427,9 +436,6 @@ final class NewsOrchestrator {
 
                 batchProgress.completed = min(batchStart + batchSize, rssSources.count)
 
-                for source in batch {
-                    lastSourceRefresh[source.id] = Date()
-                }
             }
             batchProgress = .zero
         }
@@ -555,12 +561,16 @@ final class NewsOrchestrator {
             }
             sourceStates[source.id] = .loaded
             rssFailureCounts[source.id] = 0
+            lastSourceRefresh[source.id] = Date()
         } catch {
             NSLog("[NewsOrchestrator] 获取 \(source.displayName) 失败: \(error.localizedDescription)")
             sourceStates[source.id] = .failed(sourceErrorMessage(error))
             rssFailureCounts[source.id, default: 0] += 1
             changed = false
-            if useCacheFallback, rssItemsMap[source.id, default: []].isEmpty, let existing {
+            if existing?.isExpired == true {
+                rssItemsMap[source.id] = []
+                fetchedItems = nil
+            } else if useCacheFallback, rssItemsMap[source.id, default: []].isEmpty, let existing {
                 rssItemsMap[source.id] = existing.items
                 fetchedItems = existing.items
             } else {

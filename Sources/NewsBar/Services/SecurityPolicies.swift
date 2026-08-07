@@ -64,6 +64,41 @@ enum SecurityPolicies {
         return result.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
+    /// Normalize known publisher feed aliases without routing through a third-party proxy.
+    /// 36kr's apex `/feed` endpoint serves an HTML anti-bot page, while the canonical
+    /// `www` host serves the publisher's RSS feed.
+    static func canonicalRSSURL(_ urlString: String) -> String {
+        let trimmed = urlString.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard var components = URLComponents(string: trimmed),
+              components.scheme?.lowercased() == allowedScheme,
+              components.host?.lowercased() == "36kr.com",
+              components.path == "/feed" || components.path == "/feed/" else {
+            return trimmed
+        }
+
+        components.host = "www.36kr.com"
+        components.path = "/feed"
+        return components.url?.absoluteString ?? trimmed
+    }
+
+    /// Detect an HTML landing/challenge response from a small UTF-8-compatible prefix.
+    /// This is deliberately a body heuristic, not a Content-Type gate: legitimate feeds
+    /// are still accepted when publishers mislabel their XML response.
+    static func isLikelyHTMLResponse(_ data: Data) -> Bool {
+        guard !data.isEmpty else { return false }
+        let prefix = String(decoding: data.prefix(4096), as: UTF8.self)
+        let trimCharacters = CharacterSet.whitespacesAndNewlines
+            .union(CharacterSet(charactersIn: "\u{FEFF}"))
+        let normalized = prefix
+            .trimmingCharacters(in: trimCharacters)
+            .lowercased()
+
+        return normalized.hasPrefix("<!doctype html")
+            || normalized.hasPrefix("<html")
+            || normalized.hasPrefix("<head")
+            || normalized.hasPrefix("<body")
+    }
+
     static func validateURL(_ urlString: String) -> URL? {
         guard let components = URLComponents(string: urlString.trimmingCharacters(in: .whitespacesAndNewlines)),
               let scheme = components.scheme?.lowercased(),
@@ -193,5 +228,227 @@ enum SecurityPolicies {
         return data.filter { byte in
             byte >= 0x20 || byte == 0x09 || byte == 0x0A || byte == 0x0D
         }
+    }
+
+    /// Repairs bare `&` (unescaped ampersands) that are NOT part of a valid XML entity or character
+    /// reference, replacing them with `&amp;`. Ampersands inside CDATA sections, XML comments, and
+    /// processing instructions are left untouched.
+    ///
+    /// This is a **byte-level single-pass state machine**, deliberately encoding-agnostic (matching
+    /// `sanitizeXMLData`). It never converts to `String`, so it is safe for GBK/GB2312/UTF-8 feeds.
+    /// All tokens it keys on (`&`, `<`, `>`, `amp;`, `#`) are ASCII and byte-invariant across encodings.
+    ///
+    /// Some RSS feeds (e.g. ifanr.com) emit a bare `&` — such as a base64 URL ending in `&` before
+    /// `</image>` — which triggers `NSXMLParserErrorDomain` error 68 (`xmlParseEntityRef: no name`)
+    /// and fails the whole parse. This method tolerates that malformed input client-side.
+    ///
+    /// - Returns: The repaired `Data`. If no bare `&` is found, the original `Data` is returned
+    ///   unchanged (zero-copy fast path).
+    static func sanitizeXMLEntities(_ data: Data) -> Data {
+        let bytes = [UInt8](data)
+        guard !bytes.isEmpty else { return data }
+
+        // States for the single-pass scanner.
+        enum State {
+            case text
+            case tag            // inside <...> but not in an attribute value
+            case attributeValue // inside a quoted attribute value
+            case comment        // inside <!-- ... -->
+            case cdata          // inside <![CDATA[ ... ]]>
+            case pi             // inside <? ... ?>
+        }
+
+        var state: State = .text
+        var output = [UInt8]()
+        output.reserveCapacity(bytes.count)
+        var changed = false
+        var i = 0
+        let n = bytes.count
+
+        while i < n {
+            let b = bytes[i]
+
+            switch state {
+            case .text:
+                if b == 0x3C { // '<'
+                    // Detect comment / CDATA / PI / tag start.
+                    if bytes.hasPrefix([0x3C, 0x21, 0x2D, 0x2D], at: i) { // <!--
+                        state = .comment
+                        output.append(contentsOf: bytes[i..<min(i + 4, n)])
+                        i += 4
+                    } else if bytes.hasPrefix([0x3C, 0x21, 0x5B, 0x43, 0x44, 0x41, 0x54, 0x41, 0x5B], at: i) { // <![CDATA[
+                        state = .cdata
+                        output.append(contentsOf: bytes[i..<min(i + 9, n)])
+                        i += 9
+                    } else if bytes.hasPrefix([0x3C, 0x3F], at: i) { // <?
+                        state = .pi
+                        output.append(contentsOf: bytes[i..<min(i + 2, n)])
+                        i += 2
+                    } else {
+                        state = .tag
+                        output.append(b)
+                        i += 1
+                    }
+                } else if b == 0x26 { // '&'
+                    // Try to consume a valid entity. If none, escape it.
+                    if let entityEnd = validEntityEnd(in: bytes, from: i) {
+                        output.append(contentsOf: bytes[i..<entityEnd])
+                        i = entityEnd
+                    } else {
+                        output.append(contentsOf: [0x26, 0x61, 0x6D, 0x70, 0x3B]) // &amp;
+                        changed = true
+                        i += 1
+                    }
+                } else {
+                    output.append(b)
+                    i += 1
+                }
+
+            case .tag:
+                if b == 0x22 || b == 0x27 { // " or '
+                    state = .attributeValue
+                    output.append(b)
+                    i += 1
+                } else if b == 0x3E { // '>'
+                    state = .text
+                    output.append(b)
+                    i += 1
+                } else {
+                    output.append(b)
+                    i += 1
+                }
+
+            case .attributeValue:
+                if b == 0x22 || b == 0x27 { // closing quote
+                    state = .tag
+                    output.append(b)
+                    i += 1
+                } else if b == 0x26 { // '&' inside attribute value must also be escaped
+                    if let entityEnd = validEntityEnd(in: bytes, from: i) {
+                        output.append(contentsOf: bytes[i..<entityEnd])
+                        i = entityEnd
+                    } else {
+                        output.append(contentsOf: [0x26, 0x61, 0x6D, 0x70, 0x3B]) // &amp;
+                        changed = true
+                        i += 1
+                    }
+                } else {
+                    output.append(b)
+                    i += 1
+                }
+
+            case .comment:
+                if bytes.hasPrefix([0x2D, 0x2D, 0x3E], at: i) { // -->
+                    state = .text
+                    output.append(contentsOf: bytes[i..<min(i + 3, n)])
+                    i += 3
+                } else {
+                    output.append(b)
+                    i += 1
+                }
+
+            case .cdata:
+                if bytes.hasPrefix([0x5D, 0x5D, 0x3E], at: i) { // ]]>
+                    state = .text
+                    output.append(contentsOf: bytes[i..<min(i + 3, n)])
+                    i += 3
+                } else {
+                    output.append(b)
+                    i += 1
+                }
+
+            case .pi:
+                if bytes.hasPrefix([0x3F, 0x3E], at: i) { // ?>
+                    state = .text
+                    output.append(contentsOf: bytes[i..<min(i + 2, n)])
+                    i += 2
+                } else {
+                    output.append(b)
+                    i += 1
+                }
+            }
+        }
+
+        return changed ? Data(output) : data
+    }
+
+    /// If `bytes[i]` is `&` and a valid XML entity or character reference follows, returns the index
+    /// just past the terminating `;`. Otherwise returns `nil`.
+    ///
+    /// Handles named entities (`&amp; &lt; &gt; &quot; &apos;` and any `&name;`), decimal character
+    /// references (`&#NNN;`), and hex character references (`&#xNN;`). Consumes the longest valid
+    /// entity so a legitimate `&amp;` is never double-escaped.
+    private static func validEntityEnd(in bytes: [UInt8], from start: Int) -> Int? {
+        let n = bytes.count
+        guard start < n, bytes[start] == 0x26 else { return nil } // '&'
+
+        var j = start + 1
+
+        // Character reference: &#NNN; or &#xNN;
+        if j < n, bytes[j] == 0x23 { // '#'
+            j += 1
+            if j < n, (bytes[j] == 0x78 || bytes[j] == 0x58) { // 'x' or 'X'
+                j += 1
+                var hexCount = 0
+                while j < n, isHexDigit(bytes[j]) {
+                    j += 1
+                    hexCount += 1
+                }
+                guard hexCount > 0, j < n, bytes[j] == 0x3B else { return nil } // ';'
+                return j + 1
+            } else {
+                var decCount = 0
+                while j < n, bytes[j] >= 0x30 && bytes[j] <= 0x39 { // 0-9
+                    j += 1
+                    decCount += 1
+                }
+                guard decCount > 0, j < n, bytes[j] == 0x3B else { return nil } // ';'
+                return j + 1
+            }
+        }
+
+        // Only the five XML 1.0 predefined entities are valid. HTML entities (&nbsp;, &copy;, …)
+        // are not predefined in XML and would fail parsing as undeclared entities if let through;
+        // escaping them to &amp;name; keeps the text loadable (and &nbsp; is later normalized back
+        // to a space in sanitizeHTMLContent).
+        let predefined: Set<[UInt8]> = [
+            [0x61, 0x6D, 0x70],       // amp
+            [0x6C, 0x74],             // lt
+            [0x67, 0x74],             // gt
+            [0x71, 0x75, 0x6F, 0x74], // quot
+            [0x61, 0x70, 0x6F, 0x73]  // apos
+        ]
+        var nameBytes = [UInt8]()
+        while j < n, isNameChar(bytes[j]) {
+            nameBytes.append(bytes[j])
+            j += 1
+        }
+        guard !nameBytes.isEmpty, j < n, bytes[j] == 0x3B else { return nil } // ';'
+        guard predefined.contains(nameBytes) else { return nil }
+        return j + 1
+    }
+
+    private static func isNameChar(_ b: UInt8) -> Bool {
+        (b >= 0x61 && b <= 0x7A) || // a-z
+        (b >= 0x41 && b <= 0x5A) || // A-Z
+        (b >= 0x30 && b <= 0x39) || // 0-9
+        b == 0x5F || b == 0x2D || b == 0x2E // _ - .
+    }
+
+    private static func isHexDigit(_ b: UInt8) -> Bool {
+        (b >= 0x30 && b <= 0x39) || // 0-9
+        (b >= 0x61 && b <= 0x66) || // a-f
+        (b >= 0x41 && b <= 0x46)    // A-F
+    }
+}
+
+private extension Array where Element == UInt8 {
+    /// Returns true if `self[i...]` begins with `prefix`.
+    func hasPrefix(_ prefix: [UInt8], at i: Int) -> Bool {
+        guard i >= 0, i + prefix.count <= count else { return false }
+        for (offset, p) in prefix.enumerated() {
+            if self[i + offset] != p { return false }
+        }
+        return true
     }
 }

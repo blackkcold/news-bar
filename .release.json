@@ -10,7 +10,7 @@
   "release_branch": true,
   "auto_merge": false,
   "release_note_style": "structured-cn",
-  "summary": "爆款联网搜索增强、自定义关键词监控、Dashboard 搜索筛选与设置页 7 页签重制",
-  "summary_en": "Enhanced burst web search, custom keyword tracking, Dashboard search & filter, and a 7-tab settings redesign",
-  "validation": "swift test 349/349 + scripts/build.sh + codesign verify + hdiutil verify 通过"
+  "summary": "修复 36氪 RSS 源、统一 RSS 解析与验证、修正失败调度与过期缓存上限",
+  "summary_en": "Fix the 36kr RSS source, unify RSS parsing and validation, and harden failure retry and stale-cache policy",
+  "validation": "swift test 374/374 + scripts/build.sh + codesign verify + hdiutil verify 通过"
 }

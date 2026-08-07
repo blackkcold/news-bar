@@ -36,6 +36,13 @@ enum HTTPClient {
             maxBodySize: 8 * 1024 * 1024
         )
 
+        /// Compatibility headers used only after an RSS response is identified as an
+        /// HTML landing/challenge page. The default RSS contract remains unchanged.
+        static let rssBrowserHeaders: [String: String] = [
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+            "Accept": "application/rss+xml, application/atom+xml, application/xml, text/xml, */*"
+        ]
+
         static let ai = Config(
             timeout: 30,
             userAgent: "NewsBar/1.0",

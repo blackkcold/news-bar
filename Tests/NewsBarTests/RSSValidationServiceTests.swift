@@ -172,6 +172,30 @@ final class RSSValidationServiceTests: XCTestCase {
         XCTAssertEqual(result, .success(itemCount: 3))
     }
 
+    func testClassifyFetchResult_ValidRSS_WithBareAmpersand_Success() {
+        // A feed containing a bare '&' (unescaped ampersand) must still be counted and classified
+        // as .success after sanitization, instead of failing with XML error 68.
+        let rssData = makeRSSFeedWithBareAmpersand(itemCount: 2)
+        let result = RSSValidationService.classifyFetchResult(
+            urlString: "https://example.com/feed.xml",
+            data: rssData,
+            error: nil
+        )
+        XCTAssertEqual(result, .success(itemCount: 2))
+    }
+
+    func testClassifyFetchResult_ValidRSS_WithBareAmpersandInRootAttribute_Success() {
+        // A bare '&' in the root element's attribute value must not cause isRSSOrAtom to
+        // misclassify the feed as notRSSFeed.
+        let rssData = makeRSSFeedWithBareAmpersandInRootAttribute(itemCount: 1)
+        let result = RSSValidationService.classifyFetchResult(
+            urlString: "https://example.com/feed.xml",
+            data: rssData,
+            error: nil
+        )
+        XCTAssertEqual(result, .success(itemCount: 1))
+    }
+
     func testClassifyFetchResult_ValidRSS_SingleItem() {
         let rssData = makeRSSFeed(itemCount: 1)
         let result = RSSValidationService.classifyFetchResult(
@@ -428,6 +452,48 @@ final class RSSValidationServiceTests: XCTestCase {
         XCTAssertEqual(result, false)
     }
 
+    func testProductionRSSParser_ParsesValidFeed() throws {
+        let items = try RSSService.parseRSSFeed(
+            data: makeRSSFeed(itemCount: 2),
+            sourceName: "Test Feed",
+            sourceURL: "https://example.com/feed"
+        )
+
+        XCTAssertEqual(items.count, 2)
+        XCTAssertEqual(items.first?.source, .rss(name: "Test Feed", url: "https://example.com/feed"))
+    }
+
+    func testProductionRSSParser_RejectsHTMLChallengeWithReadableError() {
+        let html = "<!doctype html><html><body><script>verify()</script></body></html>"
+            .data(using: .utf8)!
+
+        XCTAssertThrowsError(
+            try RSSService.parseRSSFeed(
+                data: html,
+                sourceName: "36氪",
+                sourceURL: "https://www.36kr.com/feed"
+            )
+        ) { error in
+            guard case .parseFailedWithDetail(let detail) = error as? NewsBarError else {
+                XCTFail("Expected a detailed non-RSS error, got \(error)")
+                return
+            }
+            XCTAssertTrue(detail.contains("error.rssNotXml".localized))
+        }
+    }
+
+    func testNormalizedRSSSources_MigratesOld36krURLAndDeduplicates() {
+        let sources = [
+            RSSSourceConfig(name: "36氪旧地址", url: "https://36kr.com/feed", displayMode: .text),
+            RSSSourceConfig(name: "36氪新地址", url: "https://www.36kr.com/feed", displayMode: .text)
+        ]
+
+        let normalized = AppSettings.normalizedRSSSources(sources)
+
+        XCTAssertEqual(normalized.count, 1)
+        XCTAssertEqual(normalized.first?.url, "https://www.36kr.com/feed")
+    }
+
     // MARK: - XML Data Generation Helpers
 
     private func makeRSSFeed(itemCount: Int) -> Data {
@@ -449,6 +515,57 @@ final class RSSValidationServiceTests: XCTestCase {
                 <title>Test Feed</title>
                 <link>https://example.com</link>
                 <description>A test RSS feed</description>
+                \(items)
+            </channel>
+        </rss>
+        """
+        return xml.data(using: .utf8)!
+    }
+
+    private func makeRSSFeedWithBareAmpersand(itemCount: Int) -> Data {
+        var items = ""
+        for i in 0..<itemCount {
+            items += """
+            <item>
+                <title>Item \(i)</title>
+                <link>https://example.com/item/\(i)</link>
+                <description>Description for item \(i)</description>
+                <image>data:image/png;base64,AAAA&</image>
+            </item>
+
+            """
+        }
+        let xml = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <rss version="2.0">
+            <channel>
+                <title>Test Feed</title>
+                <link>https://example.com</link>
+                <description>A test RSS feed</description>
+                \(items)
+            </channel>
+        </rss>
+        """
+        return xml.data(using: .utf8)!
+    }
+
+    private func makeRSSFeedWithBareAmpersandInRootAttribute(itemCount: Int) -> Data {
+        var items = ""
+        for i in 0..<itemCount {
+            items += """
+            <item>
+                <title>Item \(i)</title>
+                <link>https://example.com/item/\(i)</link>
+            </item>
+
+            """
+        }
+        let xml = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom" custom="a&b">
+            <channel>
+                <title>Test Feed</title>
+                <link>https://example.com</link>
                 \(items)
             </channel>
         </rss>

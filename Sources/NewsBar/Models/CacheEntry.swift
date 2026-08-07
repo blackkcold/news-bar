@@ -2,6 +2,8 @@ import CryptoKit
 import Foundation
 
 struct CacheEntry: Codable {
+    static let maxDisplayableAge: TimeInterval = 24 * 60 * 60
+
     let items: [NewsItem]
     /// 内容实际变化的时间，用于展示与内容版本判断。
     let timestamp: Date
@@ -66,6 +68,14 @@ struct CacheEntry: Codable {
     var isStale: Bool {
         let interval = Date().timeIntervalSince(lastValidatedAt ?? timestamp)
         return interval > 15 * 60
+    }
+
+    func isExpired(at date: Date = Date()) -> Bool {
+        date.timeIntervalSince(lastValidatedAt ?? timestamp) > Self.maxDisplayableAge
+    }
+
+    var isExpired: Bool {
+        isExpired(at: Date())
     }
 
     func hasNewContent(comparedTo other: CacheEntry) -> Bool {

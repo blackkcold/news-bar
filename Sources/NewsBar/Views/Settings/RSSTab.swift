@@ -1107,6 +1107,7 @@ struct RSSTab: View {
         if URL(string: normalizedURL)?.scheme == nil {
             normalizedURL = "https://" + normalizedURL
         }
+        normalizedURL = SecurityPolicies.canonicalRSSURL(normalizedURL)
 
         switch SecurityPolicies.validateRSSURL(normalizedURL) {
         case .valid:

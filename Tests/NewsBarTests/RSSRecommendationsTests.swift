@@ -111,6 +111,15 @@ final class RSSRecommendationsTests: XCTestCase {
         )
     }
 
+    func test36krRecommendation_UsesCanonicalWWWHost() {
+        let recommendation = RSSRecommendations.all.first { $0.name == "36氪" }
+        XCTAssertEqual(recommendation?.url, "https://www.36kr.com/feed")
+        XCTAssertEqual(
+            SecurityPolicies.canonicalRSSURL("https://36kr.com/feed"),
+            recommendation?.url
+        )
+    }
+
     // MARK: - Direct-only: feeds are publisher-hosted, not subdomain proxies
 
     func test_eachFeed_usesPublisherDomain() {
