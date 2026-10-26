@@ -169,6 +169,7 @@ Sources/NewsBar/
 
 ## 🔗 Related Links
 
+- [How NewsBar recommends](docs/recommendations-explained.md) — local interests, ranking process and privacy
 - [Releases](../../releases)
 - [Weibo Trending API](https://s.weibo.com)
 - [Bilibili Trending API](https://www.bilibili.com)

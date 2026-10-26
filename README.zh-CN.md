@@ -169,6 +169,7 @@ Sources/NewsBar/
 
 ## 🔗 相关链接
 
+- [推荐原理与我的兴趣](docs/recommendations-explained.zh-CN.md) — 本地兴趣、排序过程与隐私说明
 - [Releases](../../releases)
 - [微博热搜 API](https://s.weibo.com)
 - [B站热搜 API](https://www.bilibili.com)

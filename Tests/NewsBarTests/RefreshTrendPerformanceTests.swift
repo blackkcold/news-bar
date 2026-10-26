@@ -46,6 +46,21 @@ final class RefreshPolicyTests: XCTestCase {
         XCTAssertEqual(RefreshPolicy.rssFailureRetryInterval(failureCount: 3), 60 * 60)
         XCTAssertEqual(RefreshPolicy.rssFailureRetryInterval(failureCount: 9), 3 * 60 * 60)
     }
+
+    func testRSSRefreshBatchesBoundObservableCommits() {
+        XCTAssertTrue(RSSRefreshPlanner.batches(count: 0).isEmpty)
+        XCTAssertEqual(RSSRefreshPlanner.batches(count: 4), [0..<4])
+        XCTAssertEqual(RSSRefreshPlanner.batches(count: 10), [0..<6, 6..<10])
+        XCTAssertEqual(RSSRefreshPlanner.batches(count: 36).count, 6)
+
+        for sourceCount in [1, 4, 6, 7, 10, 36] {
+            let commits = RSSRefreshPlanner.batches(count: sourceCount).count
+            XCTAssertLessThanOrEqual(
+                commits,
+                Int(ceil(Double(sourceCount) / Double(RSSRefreshPlanner.batchSize)))
+            )
+        }
+    }
 }
 
 final class CacheFreshnessCompatibilityTests: XCTestCase {

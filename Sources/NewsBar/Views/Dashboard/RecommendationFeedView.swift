@@ -6,14 +6,34 @@ private enum ExposureClock {
     static let ticks = Timer.publish(every: 1, on: .main, in: .common).autoconnect().share()
 }
 
+/// Whether the compact reader is covering the list. Set by the dashboard from
+/// its own transition phase; the feed never infers this from key-window state.
+private struct DashboardListObscuredKey: EnvironmentKey {
+    static let defaultValue = false
+}
+
+extension EnvironmentValues {
+    var dashboardListObscured: Bool {
+        get { self[DashboardListObscuredKey.self] }
+        set { self[DashboardListObscuredKey.self] = newValue }
+    }
+}
+
 /// One timer and one set of window/session checks for the whole feed. Previously
-/// every visible row performed these system calls on every tick.
+/// every visible row performed these system calls on every tick. Visibility is
+/// based on the feed's own window, not whichever window happens to be key.
 @MainActor
 private final class ExposureEnvironment {
     static let shared = ExposureEnvironment()
 
     private(set) var isActive = false
+    private weak var window: NSWindow?
     private var timer: Timer?
+
+    func attach(_ window: NSWindow?) {
+        self.window = window
+        refresh()
+    }
 
     func start() {
         guard timer == nil else { return }
@@ -26,17 +46,42 @@ private final class ExposureEnvironment {
     func stop() {
         timer?.invalidate()
         timer = nil
+        window = nil
         isActive = false
     }
 
     private func refresh() {
-        let window = NSApp.keyWindow ?? NSApp.mainWindow
         let session = CGSessionCopyCurrentDictionary() as? [String: Any]
         let locked = session?["CGSSessionScreenIsLocked"] as? Bool ?? false
+        // NSWindow can tell us its own visibility/occlusion, not exact
+        // unobstructed screen pixels.
         isActive = NSApp.isActive
-            && window?.isVisible == true
-            && window?.occlusionState.contains(.visible) == true
             && !locked
+            && window?.isVisible == true
+            && window?.isMiniaturized == false
+            && window?.occlusionState.contains(.visible) == true
+    }
+}
+
+private struct ExposureWindowReader: NSViewRepresentable {
+    let onWindow: (NSWindow?) -> Void
+
+    final class ProbeView: NSView {
+        var onWindow: ((NSWindow?) -> Void)?
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            onWindow?(window)
+        }
+    }
+
+    func makeNSView(context: Context) -> ProbeView {
+        let view = ProbeView()
+        view.onWindow = onWindow
+        return view
+    }
+
+    func updateNSView(_ nsView: ProbeView, context: Context) {
+        nsView.onWindow = onWindow
     }
 }
 
@@ -44,21 +89,44 @@ private struct QualifiedImpression: ViewModifier {
     let item: NewsItem
     let sessionID: UUID
     let epoch: UUID
+    let contextID: String
+    let position: Int
+    let policyVersion: String
+    let profileVersion: Int
+    @Environment(\.dashboardListObscured) private var listObscured
     @State private var visible = false
     @State private var exposure = QualifiedExposure()
 
     func body(content: Content) -> some View {
         content
             .onScrollVisibilityChange(threshold: 0.5) { visible = $0 }
+            // The one-shot latch belongs to a consent epoch. Turning learning
+            // off and on again is a new epoch, so the same row may record a new
+            // impression in the same list session instead of staying latched.
+            .onChange(of: epoch) { _, _ in exposure = QualifiedExposure() }
             .onReceive(ExposureClock.ticks) { _ in
-                guard ExposureEnvironment.shared.isActive else { return }
-                guard InterestController.shared.canLearn else { return }
+                // One gate for window/session/reader state, evaluated every tick
+                // so an inactive interval resets continuity instead of pausing it.
+                let active = ExposureEnvironment.shared.isActive
+                    && !listObscured
+                    && InterestController.shared.canLearn
+                let fraction = (active && visible) ? 1.0 : 0.0
                 if exposure.update(
-                    visibleFraction: visible ? 1 : 0,
-                    active: true,
+                    visibleFraction: fraction,
+                    active: active,
                     now: ProcessInfo.processInfo.systemUptime
                 ) {
-                    InterestController.shared.record(item, kind: .impression, epoch: epoch, sessionID: sessionID)
+                    InterestController.shared.record(
+                        item,
+                        kind: .impression,
+                        epoch: epoch,
+                        sessionID: sessionID,
+                        surface: "recommendation",
+                        contextID: contextID,
+                        position: position,
+                        policyVersion: policyVersion,
+                        profileVersion: profileVersion
+                    )
                 }
             }
     }
@@ -73,7 +141,6 @@ struct RecommendationFeedView: View {
     var onShowSources: () -> Void = {}
     @Environment(AppSettings.self) private var settings
     @State private var controller = InterestController.shared
-    @State private var listSession = UUID()
     @State private var lastFeedback: UUID?
     @State private var expandedReason: String?
     @State private var visibleCount = 20
@@ -101,12 +168,15 @@ struct RecommendationFeedView: View {
             }
             if let snapshot = controller.recommendations {
                 LazyVStack(alignment: .leading, spacing: 12) {
-                    ForEach(Array(snapshot.items.filter { matches($0.item) }.prefix(visibleCount))) { row in
+                    ForEach(Array(snapshot.items.enumerated().filter { matches($0.element.item) }.prefix(visibleCount)), id: \.element.id) { position, row in
                         VStack(alignment: .leading, spacing: 9) {
                             HeroOpenButton(
                                 item: row.item,
                                 surface: "recommendation",
-                                contextID: snapshot.id.uuidString
+                                contextID: snapshot.id.uuidString,
+                                policyVersion: "ranking-v\(snapshot.policyVersion)",
+                                profileVersion: snapshot.profileVersion,
+                                position: position
                             ) {
                                 VStack(alignment: .leading, spacing: 6) {
                                     Text(row.item.displayTitle).font(.system(size: 15, weight: .semibold)).foregroundStyle(.primary).multilineTextAlignment(.leading)
@@ -115,7 +185,15 @@ struct RecommendationFeedView: View {
                                 .frame(maxWidth: .infinity, alignment: .leading)
                                 .contentShape(Rectangle())
                             }
-                            .modifier(QualifiedImpression(item: row.item, sessionID: listSession, epoch: controller.state.consentEpoch))
+                            .modifier(QualifiedImpression(
+                                item: row.item,
+                                sessionID: controller.feedSessionID,
+                                epoch: controller.state.consentEpoch,
+                                contextID: snapshot.id.uuidString,
+                                position: position,
+                                policyVersion: "ranking-v\(snapshot.policyVersion)",
+                                profileVersion: snapshot.profileVersion
+                            ))
                             HStack(spacing: 10) {
                                 Button(reason(row)) { expandedReason = expandedReason == row.id ? nil : row.id }
                                     .font(.caption).foregroundStyle(.secondary)
@@ -123,16 +201,20 @@ struct RecommendationFeedView: View {
                                 Menu {
                                     Button(english ? "Bookmark / remove" : "收藏／取消收藏") { lastFeedback = controller.toggleBookmark(row.item) }
                                     Button(english ? "More like this (session)" : "更多同类（本次会话）") { lastFeedback = controller.feedback(row.item, kind: .moreLikeThis) }
+                                        .disabled(!controller.canLearn)
+                                        .help(softFeedbackHelp)
                                     Button(english ? "Not interested: this article" : "不感兴趣：仅这条") { lastFeedback = controller.feedback(row.item, kind: .notInterested) }
                                     Button(english ? "Hide this event" : "不再看这个事件") { lastFeedback = controller.feedback(row.item, kind: .hideEvent) }
                                     if let topic = row.topic {
                                         Button(english ? "Reduce this topic" : "减少这个主题") { lastFeedback = controller.feedback(row.item, kind: .reduceTopic, topic: topic) }
+                                            .disabled(!controller.canLearn)
+                                            .help(softFeedbackHelp)
                                     }
                                     Button(english ? "Mute source" : "屏蔽来源") { lastFeedback = controller.feedback(row.item, kind: .muteSource) }
                                 } label: { Image(systemName: "ellipsis").frame(minWidth: 28, minHeight: 28) }
-                                .disabled(!controller.canLearn)
+                                .disabled(!controller.canManagePreferences)
                                 .accessibilityLabel(english ? "Reading preferences" : "阅读偏好操作")
-                                .help(controller.canLearn ? (english ? "Reading preferences" : "阅读偏好") : (english ? "Enable personalization to give feedback" : "开启个性化后可反馈"))
+                                .help(controller.canManagePreferences ? (english ? "Reading preferences" : "阅读偏好") : (english ? "Local preference storage is unavailable" : "本地偏好存储暂不可用"))
                             }
                             .buttonStyle(.borderless)
                             if expandedReason == row.id {
@@ -175,15 +257,27 @@ struct RecommendationFeedView: View {
             Text(english ? "Ranked on this Mac · original source order is unchanged" : "在本机排序 · 不改变来源原榜顺序")
                 .font(.caption2).foregroundStyle(.secondary)
         }
+        .background {
+            ExposureWindowReader { window in
+                ExposureEnvironment.shared.attach(window)
+            }
+            .frame(width: 0, height: 0)
+        }
         .onAppear { ExposureEnvironment.shared.start() }
         .onDisappear { ExposureEnvironment.shared.stop() }
+    }
+
+    private var softFeedbackHelp: String {
+        controller.canLearn
+            ? (english ? "Uses this session's short-term interest only." : "仅影响本次会话的短期兴趣。")
+            : InterestFeedbackCopy.softFeedbackUnavailable(settings.appLanguage)
     }
 
     private func reason(_ row: ScoredRecommendation) -> String {
         switch row.reason {
         case "interest": return english ? "Related to your interests" : "与你的阅读与关注主题相关"
         case "publicHeat": return english ? "Public chart signal" : "公开榜单热度"
-        case "exploration": return english ? "Explore another topic" : "探索推荐"
+        case "exploration": return english ? "Source rotation" : "来源补位"
         default: return english ? "Recently discovered" : "近期采集内容"
         }
     }

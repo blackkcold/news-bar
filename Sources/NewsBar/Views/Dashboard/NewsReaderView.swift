@@ -60,6 +60,7 @@ final class NewsReaderModel: NSObject, WKNavigationDelegate, WKUIDelegate, WKScr
     var canGoBack = false
     var canGoForward = false
     private var evidence = ReaderEvidence()
+    private var openAttribution = OpenAttribution()
     private var loaded = false
     private var attributed = false
     private var adapted = false
@@ -125,6 +126,10 @@ final class NewsReaderModel: NSObject, WKNavigationDelegate, WKUIDelegate, WKScr
         guard !stopped else { return }
         guard networkContextIsCurrent else { fail(.proxyTrustRequired); return }
         configuration.userContentController.add(self, contentWorld: world, name: "aggregate")
+        // Give the opening transition a chance to paint before WebKit's
+        // synchronous construction and first layout land on the main thread.
+        try? await Task.sleep(for: .milliseconds(50))
+        guard !stopped else { return }
         let web = WKWebView(frame: .zero, configuration: configuration)
         web.navigationDelegate = self
         web.uiDelegate = self
@@ -165,10 +170,6 @@ final class NewsReaderModel: NSObject, WKNavigationDelegate, WKUIDelegate, WKScr
             cookieStore.add(self)
             observingCookieStore = cookieStore
         }
-        guard !stopped, networkContextIsCurrent else { return }
-        // Let the opening transition draw its first frames before WebKit starts
-        // network and render work on the main thread.
-        try? await Task.sleep(for: .milliseconds(80))
         guard !stopped, networkContextIsCurrent else { return }
         installLifecycleObservers()
         timer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
@@ -367,7 +368,18 @@ final class NewsReaderModel: NSObject, WKNavigationDelegate, WKUIDelegate, WKScr
                       visible: visible, unlocked: !suspended, idle: idle)
         // Aggregated evidence only; never persist per-frame trajectories.
         if evidence.shouldEmit(final: final), let kind = evidence.signal(articleAdapted: adapted) {
-            InterestController.shared.record(item, kind: kind, epoch: request.consentEpoch, sessionID: request.id)
+            InterestController.shared.record(
+                item,
+                kind: kind,
+                epoch: request.consentEpoch,
+                sessionID: request.id,
+                surface: request.surface,
+                contextID: request.contextID,
+                position: request.position,
+                readerSessionID: request.id,
+                policyVersion: request.policyVersion,
+                profileVersion: request.profileVersion
+            )
         }
     }
 
@@ -378,7 +390,18 @@ final class NewsReaderModel: NSObject, WKNavigationDelegate, WKUIDelegate, WKScr
         failure = reason
         terminalState = kind == .blocked ? .blocked : .error
         if let item = request.item, !request.privateSession {
-            InterestController.shared.record(item, kind: kind, epoch: request.consentEpoch, sessionID: request.id)
+            InterestController.shared.record(
+                item,
+                kind: kind,
+                epoch: request.consentEpoch,
+                sessionID: request.id,
+                surface: request.surface,
+                contextID: request.contextID,
+                position: request.position,
+                readerSessionID: request.id,
+                policyVersion: request.policyVersion,
+                profileVersion: request.profileVersion
+            )
         }
     }
 
@@ -444,6 +467,7 @@ final class NewsReaderModel: NSObject, WKNavigationDelegate, WKUIDelegate, WKScr
         progress = 0
         loaded = false
         attributed = false
+        openAttribution.beginNavigation()
         adapted = false
         failure = nil
         notice = nil
@@ -465,6 +489,22 @@ final class NewsReaderModel: NSObject, WKNavigationDelegate, WKUIDelegate, WKScr
         }
         let path = webView.url?.path.lowercased() ?? ""
         if ["login", "signin", "account", "passport", "captcha", "challenge"].contains(where: path.contains) { attributed = false }
+        // Only a successfully loaded, attributed document counts as an open.
+        if openAttribution.shouldRecordLoaded(attributed: attributed, privateSession: request.privateSession),
+           let item = request.item {
+            InterestController.shared.record(
+                item,
+                kind: .opened,
+                epoch: request.consentEpoch,
+                sessionID: request.id,
+                surface: request.surface,
+                contextID: request.contextID,
+                position: request.position,
+                readerSessionID: request.id,
+                policyVersion: request.policyVersion,
+                profileVersion: request.profileVersion
+            )
+        }
         guard attributed, InterestController.shared.canLearn, !request.privateSession else { return }
         // Explicit site adapters only. Unknown sites receive weak native-time evidence.
         let host = webView.url?.host?.lowercased() ?? ""
@@ -711,18 +751,22 @@ struct ReaderContentView: View {
                     lastFeedback = controller.toggleBookmark(item)
                     feedbackMessage = isBookmarked ? (english ? "Article bookmarked" : "已收藏文章") : (english ? "Bookmark removed" : "已取消收藏")
                 } label: { Image(systemName: isBookmarked ? "bookmark.fill" : "bookmark").frame(width: 28, height: 28) }
-                .disabled(!controller.canLearn)
+                .disabled(!controller.canManagePreferences)
                 .accessibilityLabel(isBookmarked ? (english ? "Remove bookmark" : "取消收藏") : (english ? "Bookmark article" : "收藏文章"))
-                .help(controller.canLearn ? (isBookmarked ? (english ? "Remove bookmark" : "取消收藏") : (english ? "Bookmark article" : "收藏文章"))
-                      : (english ? "Enable local personalization to bookmark and give feedback" : "开启本地个性化后可收藏和反馈"))
+                .help(controller.canManagePreferences ? (isBookmarked ? (english ? "Remove bookmark" : "取消收藏") : (english ? "Bookmark article" : "收藏文章"))
+                      : (english ? "Local preference storage is unavailable" : "本地偏好存储暂不可用"))
                 Menu {
                     Button(english ? "More like this (session)" : "更多同类（本次会话）") { recordFeedback(item, kind: .moreLikeThis) }
+                        .disabled(!controller.canLearn)
+                        .help(controller.canLearn
+                              ? (english ? "Uses this session's short-term interest only." : "仅影响本次会话的短期兴趣。")
+                              : InterestFeedbackCopy.softFeedbackUnavailable(english ? .en : .zh))
                     Divider()
                     Button(english ? "Not interested: this article" : "不感兴趣：仅这条") { recordFeedback(item, kind: .notInterested) }
                     Button(english ? "Hide this event" : "不再看这个事件") { recordFeedback(item, kind: .hideEvent) }
                     Button(english ? "Mute this source" : "屏蔽这个来源") { recordFeedback(item, kind: .muteSource) }
                 } label: { Image(systemName: "ellipsis.circle").frame(width: 28, height: 28) }
-                .disabled(!controller.canLearn)
+                .disabled(!controller.canManagePreferences)
                 .accessibilityLabel(english ? "Article preferences" : "文章偏好操作")
                 .help(english ? "More reading preferences" : "更多阅读偏好")
             }

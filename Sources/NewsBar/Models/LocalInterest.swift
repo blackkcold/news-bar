@@ -63,7 +63,18 @@ struct InterestEvent: Codable, Identifiable, Sendable {
     let contentID: String
     let kind: InterestEventKind
     let sessionID: UUID
+    /// Event document schema, not a ranking-policy version.
     var schemaVersion = 1
+    // Optional attribution added after schema v1. V1 payloads decode with nil
+    // values; no device identifier, telemetry upload or exact-pixel claim.
+    var surface: String?
+    var contextID: String?
+    /// 0-based position in the original recommendation batch.
+    var position: Int?
+    var readerSessionID: UUID?
+    /// Actual ranking policy that produced the batch, e.g. "ranking-v2".
+    var policyVersion: String?
+    var profileVersion: Int?
 }
 
 struct ProfileSignal: Codable, Sendable {
@@ -101,6 +112,24 @@ struct InterestFeedback: Codable, Identifiable, Sendable {
     let occurredAt: Date
     var topic: String?
     var participatesInProfile = true
+
+    /// Real rule scope: one mute per source, one block per article/event, one
+    /// reduction per topic. Repeating the same explicit action replaces the
+    /// previous rule instead of stacking duplicate ranking penalties.
+    var scopeKey: String {
+        switch kind {
+        case .muteSource:
+            return "source:" + item.source.id
+        case .notInterested, .bookmark:
+            return "content:" + ContentIdentity.id(for: item.url)
+        case .hideEvent:
+            return "cluster:" + ContentIdentity.cluster(for: item)
+        case .reduceTopic, .followTopic:
+            return "topic:" + (topic ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        case .moreLikeThis:
+            return "session-content:" + ContentIdentity.id(for: item.url)
+        }
+    }
 }
 
 struct PersistedResearchState: Codable, Sendable {
@@ -117,6 +146,9 @@ struct LocalInterestState: Codable, Sendable {
     var consentEpoch = UUID()
     var learningEnabled = false
     var learningPaused = false
+    /// Public metadata cache (titles/URLs observed from feeds), not behavioral
+    /// evidence. It is cleared on a personal reset and can be recreated by a
+    /// normal public refresh, which is not a new consent.
     var contents: [String: ContentRecord] = [:]
     var events: [InterestEvent] = []
     var profileSignals: [String: ProfileSignal] = [:]
@@ -151,25 +183,53 @@ struct LocalInterestState: Codable, Sendable {
     }
 
     @discardableResult
-    mutating func record(item: NewsItem, kind: InterestEventKind, epoch: UUID, sessionID: UUID = UUID(), now: Date = Date(), pruneNow: Bool = true) -> Bool {
+    mutating func record(
+        item: NewsItem,
+        kind: InterestEventKind,
+        epoch: UUID,
+        sessionID: UUID = UUID(),
+        now: Date = Date(),
+        pruneNow: Bool = true,
+        surface: String? = nil,
+        contextID: String? = nil,
+        position: Int? = nil,
+        readerSessionID: UUID? = nil,
+        policyVersion: String? = nil,
+        profileVersionAtEvent: Int? = nil
+    ) -> Bool {
         guard learningEnabled, !learningPaused, epoch == consentEpoch else { return false }
         let key = ContentIdentity.id(for: item.url)
-        // One content/day signal, evidence upgrades replace rather than add.
-        if kind.strength > 0,
-           let index = events.lastIndex(where: { $0.contentID == key && $0.kind.strength > 0 && Calendar.current.isDate($0.occurredAt, inSameDayAs: now) }) {
-            guard kind.strength > events[index].kind.strength else { return false }
-            events.remove(at: index)
-        }
-        if kind == .impression, events.contains(where: { $0.contentID == key && $0.sessionID == sessionID && $0.kind == .impression }) { return false }
-        events.append(InterestEvent(occurredAt: now, epoch: epoch, item: item, contentID: key, kind: kind, sessionID: sessionID))
+        // Impressions are the only high-frequency event; dedupe exactly one per
+        // content and list/batch session. Every other funnel event is retained,
+        // so upgrading opened → read never deletes the earlier legitimate event.
+        if kind == .impression,
+           events.contains(where: {
+               $0.contentID == key && $0.sessionID == sessionID && $0.epoch == epoch && $0.kind == .impression
+           }) { return false }
+        events.append(InterestEvent(
+            occurredAt: now,
+            epoch: epoch,
+            item: item,
+            contentID: key,
+            kind: kind,
+            sessionID: sessionID,
+            surface: surface,
+            contextID: contextID,
+            position: position,
+            readerSessionID: readerSessionID,
+            policyVersion: policyVersion,
+            profileVersion: profileVersionAtEvent ?? self.profileVersion
+        ))
         if kind.strength > 0 {
+            // The profile keeps only the strongest same-day signal per content,
+            // independently of the raw event stream above.
             let day = Calendar.current.startOfDay(for: now).timeIntervalSince1970
             let signalKey = "\(key):\(day)"
             if kind.strength > (profileSignals[signalKey]?.strength ?? 0) {
                 profileSignals[signalKey] = ProfileSignal(item: item, occurredAt: now, strength: kind.strength)
+                profileVersion += 1
             }
         }
-        profileVersion += kind.strength > 0 ? 1 : 0
         if pruneNow { prune(now: now) }
         return true
     }
@@ -190,12 +250,39 @@ struct LocalInterestState: Codable, Sendable {
     }
 
     @discardableResult
-    mutating func feedback(item: NewsItem, kind: InterestFeedbackKind, topic: String? = nil, now: Date = Date()) -> UUID {
-        let feedback = InterestFeedback(item: item, kind: kind, occurredAt: now, topic: topic)
-        guard learningEnabled, !learningPaused else { return feedback.id }
-        let key = ContentIdentity.id(for: item.url)
-        feedbacks.removeAll { $0.kind == kind && ContentIdentity.id(for: $0.item.url) == key && $0.topic == topic }
-        feedbacks.append(feedback)
+    mutating func feedback(
+        item: NewsItem,
+        kind: InterestFeedbackKind,
+        topic: String? = nil,
+        now: Date = Date(),
+        participatesInProfile: Bool? = nil
+    ) -> UUID {
+        // Keep the literal spelling: arbitrary keywords form tags such as
+        // `followed:PC2545`. Deduplication below is case-insensitive instead of
+        // rewriting the stored label, which would no longer match that tag.
+        let trimmedTopic = topic.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .flatMap { $0.isEmpty ? nil : $0 }
+        // Explicit rules are user intent, not behavioral learning. They are
+        // stored even while automatic learning is off or paused, but only
+        // participate in the profile when consent was active at that moment.
+        let feedback = InterestFeedback(
+            item: item,
+            kind: kind,
+            occurredAt: now,
+            topic: trimmedTopic,
+            participatesInProfile: participatesInProfile ?? (learningEnabled && !learningPaused)
+        )
+        if let existing = feedbacks.firstIndex(where: { $0.kind == kind && $0.scopeKey == feedback.scopeKey }) {
+            var updated = feedback
+            // Repeat actions replace the rule, but a scoped topic must keep its
+            // original spelling when only case differs.
+            if kind == .reduceTopic || kind == .followTopic {
+                updated.topic = feedbacks[existing].topic ?? trimmedTopic
+            }
+            feedbacks[existing] = updated
+        } else {
+            feedbacks.append(feedback)
+        }
         profileVersion += 1
         prune(now: now)
         return feedback.id
@@ -220,11 +307,20 @@ struct LocalInterestState: Codable, Sendable {
     }
 
     mutating func clearPersonalData(keepBookmarks: Bool) {
+        // A personal reset is a privacy boundary: stop learning by default,
+        // drop behavioral evidence and the public metadata cache, and retain
+        // only explicitly requested bookmarks without granting consent to
+        // rebuild a profile from them.
         consentEpoch = UUID()
+        learningEnabled = false
+        learningPaused = false
         events = []
         profileSignals = [:]
         readingSessions = []
         followedTopics = []
+        contents = [:]
+        archiveStartedAt = nil
+        archiveUpdatedAt = nil
         feedbacks = keepBookmarks ? feedbacks.filter { $0.kind == .bookmark }.map {
             var retained = $0
             retained.participatesInProfile = false
@@ -241,7 +337,9 @@ struct LocalInterestState: Codable, Sendable {
         if profileSignals.count > 20_000 {
             profileSignals = Dictionary(uniqueKeysWithValues: profileSignals.sorted { $0.value.occurredAt > $1.value.occurredAt }.prefix(20_000).map { ($0.key, $0.value) })
         }
-        feedbacks = Array(feedbacks.filter { $0.kind != .moreLikeThis || now.timeIntervalSince($0.occurredAt) < 2 * 3600 }.suffix(2_000))
+        // Only session-scoped "more like this" expires. Long-term rules and
+        // bookmarks are deduped by scope and must not be silently truncated.
+        feedbacks = feedbacks.filter { $0.kind != .moreLikeThis || now.timeIntervalSince($0.occurredAt) < 2 * 3600 }
         let bookmarked = Set(feedbacks.filter { $0.kind == .bookmark }.map { ContentIdentity.id(for: $0.item.url) })
         contents = contents.filter { bookmarked.contains($0.key) || now.timeIntervalSince($0.value.lastSeen) <= 7 * 86400 }
         if contents.count > 5_000 {

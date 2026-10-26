@@ -31,6 +31,23 @@ struct ReaderEvidence {
     }
 }
 
+/// Opening is an attempt; only a successfully loaded, attributed document may
+/// contribute positive "opened" evidence. Keeping this gate in one value type
+/// makes the distinction testable without a network or a real WebKit session.
+struct OpenAttribution {
+    private var recorded = false
+
+    mutating func beginNavigation() {
+        recorded = false
+    }
+
+    mutating func shouldRecordLoaded(attributed: Bool, privateSession: Bool) -> Bool {
+        guard attributed, !privateSession, !recorded else { return false }
+        recorded = true
+        return true
+    }
+}
+
 struct QualifiedExposure {
     private var startedAt: TimeInterval?
     private var recorded = false

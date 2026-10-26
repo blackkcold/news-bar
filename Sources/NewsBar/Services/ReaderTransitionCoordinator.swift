@@ -1,5 +1,4 @@
 import AppKit
-import CoreGraphics
 import Observation
 
 struct ReaderTransitionOrigin {
@@ -14,22 +13,18 @@ enum ReaderPresentationPhase: Equatable {
 }
 
 /// Hands the tapped card's frame to the Dashboard so the reader can morph out of it.
-/// Also captures the list once, before its width changes, so the expensive layout
-/// happens behind a still image instead of inside the animation.
+///
+/// The list used to be rasterized here to hide its width change. The capture
+/// forced a full redraw of the list subtree on the tap's main thread (the most
+/// expensive frame in the app) and the layout still ran behind the bitmap. The
+/// Dashboard now commits the width change in one frame and lets the hero
+/// animation carry the eye, so no snapshot is needed.
 @MainActor
 @Observable
 final class ReaderTransitionCoordinator {
     static let shared = ReaderTransitionCoordinator()
 
     private var pending: ReaderTransitionOrigin?
-
-    /// Registered by DashboardWindow. Must read `listFrame` in the window content
-    /// view's coordinate space and return nil if capture is unavailable.
-    @ObservationIgnored var snapshotProvider: ((CGRect) -> NSImage?)?
-    /// Current visible list region in the Dashboard root coordinate space.
-    @ObservationIgnored var listFrame: CGRect = .zero
-    @ObservationIgnored private var capturedSnapshot: NSImage?
-    @ObservationIgnored private var capturedSnapshotFrame: CGRect = .zero
 
     func register(frame: CGRect, title: String) {
         guard frame.width > 1, frame.height > 1 else { return }
@@ -45,29 +40,7 @@ final class ReaderTransitionCoordinator {
         pending = nil
     }
 
-    /// Call from the tap action, before the selection change causes layout.
-    func captureSnapshot() {
-        capturedSnapshot = nil
-        guard listFrame.width > 1, listFrame.height > 1,
-              let image = snapshotProvider?(listFrame) else { return }
-        capturedSnapshot = image
-        capturedSnapshotFrame = listFrame
-    }
-
-    func takeSnapshot() -> (image: NSImage, frame: CGRect)? {
-        guard let image = capturedSnapshot else { return nil }
-        capturedSnapshot = nil
-        return (image, capturedSnapshotFrame)
-    }
-
-    func discardSnapshot() {
-        capturedSnapshot = nil
-    }
-
-    /// Reader chrome uses this instead of closing directly, so the list can be
-    /// frozen before its width is restored.
     func requestClose() {
-        captureSnapshot()
         NewsNavigationRouter.shared.close()
     }
 }

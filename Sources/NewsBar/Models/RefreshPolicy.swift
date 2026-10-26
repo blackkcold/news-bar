@@ -13,6 +13,21 @@ struct BatchProgress: Equatable, Sendable {
     static let zero = BatchProgress(completed: 0, total: 0)
 }
 
+/// Splits an RSS refresh into commit batches. Each batch publishes its source
+/// states and feeds in one assignment, so the observable commit count stays
+/// bounded by the number of batches instead of the number of sources.
+enum RSSRefreshPlanner {
+    static let batchSize = 6
+
+    static func batches(count: Int, batchSize: Int = RSSRefreshPlanner.batchSize) -> [Range<Int>] {
+        guard count > 0 else { return [] }
+        let size = max(1, batchSize)
+        return stride(from: 0, to: count, by: size).map { start in
+            start..<min(start + size, count)
+        }
+    }
+}
+
 enum RefreshPolicy {
     static let schedulerTick: TimeInterval = 60
     static let visibleHotInterval: TimeInterval = 5 * 60

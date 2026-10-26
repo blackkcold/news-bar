@@ -1,5 +1,7 @@
 # Build artifacts
 .build/
+.context/
+.sisyphus/
 DerivedData/
 # Deprecated ad-hoc package output. Do not use; local bundles go to release/<version>/NewsBar.app.
 output/

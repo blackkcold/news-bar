@@ -1,6 +1,14 @@
 import SwiftUI
 import AppKit
 
+/// One horizontal rhythm for the whole popover. Cards, banners, headings,
+/// dividers and the bottom bar all share the same outer gutter.
+enum PopoverLayout {
+    static let horizontalInset: CGFloat = 12
+    static let sectionTopSpacing: CGFloat = 12
+    static let sectionBottomSpacing: CGFloat = 8
+}
+
 struct PopoverContent: View {
     @Environment(AppSettings.self) private var settings
     let orchestrator: NewsOrchestrator
@@ -16,18 +24,6 @@ struct PopoverContent: View {
 
     private var isRetro: Bool { settings.appTheme == .retroEditorial }
 
-    private enum Metrics {
-        static let horizontalPadding: CGFloat = 12
-        static let verticalPadding: CGFloat = 6
-        static let sectionDividerInset: CGFloat = 10
-        static let bannerHorizontalPadding: CGFloat = 12
-        static let bannerVerticalPadding: CGFloat = 5
-        static let bannerBottomSpacing: CGFloat = 4
-        static let compactTextSize: CGFloat = 10
-        static let headerIconSize: CGFloat = 12
-        static let headerTextSize: CGFloat = 13
-    }
-
     private static let issueDateFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "zh_CN")
@@ -39,141 +35,22 @@ struct PopoverContent: View {
         VStack(spacing: 0) {
             headerView
 
-            ScrollView(.vertical, showsIndicators: false) {
-                LazyVStack(spacing: 0) {
-                    if let error = allSourcesFailureMessage {
-                        errorBanner(error)
-                    }
-
-                    if let warning = orchestrator.manualRefreshWarning {
-                        warningBanner(warning)
-                    }
-
-                    PopoverAISummarySection(
-                        orchestrator: orchestrator,
-                        onConfigureKey: onConfigureKey
-                    )
-
-                    EditorialSectionHeading(
-                        index: "01",
-                        title: "popover.trending".localized,
-                        subtitle: "popover.trending.subtitle".localized
-                    )
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 10)
-
-                    HStack(alignment: .top, spacing: 8) {
-                        NewsSection(
-                            title: "popover.weibo".localized,
-                            sourceMark: .weibo,
-                            color: .orange,
-                            items: orchestrator.weiboItems,
-                            showRank: true,
-                            state: orchestrator.sourceStates[NewsSource.weibo.id] ?? .idle,
-                            maxVisible: 5,
-                            presentation: .compactTrend
-                        )
-                        .frame(maxWidth: .infinity, alignment: .leading)
-
-                        NewsSection(
-                            title: "popover.bilibili".localized,
-                            sourceMark: .bilibili,
-                            color: .pink,
-                            items: orchestrator.bilibiliItems,
-                            showRank: true,
-                            state: orchestrator.sourceStates[NewsSource.bilibili.id] ?? .idle,
-                            maxVisible: 3,
-                            presentation: .compactTrend
-                        )
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 12)
-
-                    ForEach(settings.activeSources.filter { !$0.isBuiltIn }, id: \.id) { source in
-                        EditorialSectionHeading(
-                            index: "02",
-                            title: source.displayName,
-                            subtitle: "popover.rss.subtitle".localized
-                        )
-                        .padding(.horizontal, 14)
-                        .padding(.top, 14)
-                        .padding(.bottom, 8)
-
-                        let rssConfig = settings.rssSources.first { $0.id == source.id }
-                        let displayMode = rssConfig?.displayMode ?? .text
-                        let counts: (text: Int, image: Int) = {
-                            if let rssConfig {
-                                return (
-                                    settings.effectiveTextDisplayCount(for: rssConfig),
-                                    settings.effectiveImageDisplayCount(for: rssConfig)
-                                )
-                            }
-                            return (settings.rssDefaultTextCount, settings.rssDefaultImageCount)
-                        }()
-                        let textCount = counts.text
-                        let imageCount = counts.image
-                        let sourceItems = orchestrator.rssItemsMap[source.id] ?? []
-                        let hasAnyImage = sourceItems.contains { $0.imageURL != nil }
-                        let pageSize = displayMode == .image
-                            ? (hasAnyImage ? imageCount : textCount)
-                            : textCount
-
-                        RSSWaterfallView(
-                            items: sourceItems,
-                            sourceName: source.displayName,
-                            state: orchestrator.sourceStates[source.id] ?? .idle,
-                            displayMode: displayMode,
-                            textCount: textCount,
-                            imageCount: imageCount,
-                            isExpanded: expandedRSSSourceIDs.contains(source.id),
-                            loadedCount: rssLoadedCounts[source.id, default: pageSize],
-                            onToggleExpand: {
-                                if expandedRSSSourceIDs.contains(source.id) {
-                                    expandedRSSSourceIDs.remove(source.id)
-                                    rssLoadedCounts.removeValue(forKey: source.id)
-                                } else {
-                                    expandedRSSSourceIDs.insert(source.id)
-                                    rssLoadedCounts[source.id] = pageSize
-                                }
-                            },
-                            onLoadMore: {
-                                let current = rssLoadedCounts[source.id, default: pageSize]
-                                let total = sourceItems.count
-                                guard current < total else { return }
-                                rssLoadedCounts[source.id] = min(current + pageSize, total)
-                            }
-                        )
-                        .padding(.horizontal, 12)
-                    }
-
-                    Color.clear.frame(height: 6)
-                }
-            }
+            PopoverFeedList(
+                orchestrator: orchestrator,
+                expandedRSSSourceIDs: $expandedRSSSourceIDs,
+                rssLoadedCounts: $rssLoadedCounts,
+                onConfigureKey: onConfigureKey
+            )
 
             if !expandedRSSSourceIDs.isEmpty {
-                HStack(spacing: 8) {
-                    ForEach(settings.rssSources.filter { expandedRSSSourceIDs.contains($0.id) }) { rss in
-                        Button {
-                            expandedRSSSourceIDs.remove(rss.id)
-                            rssLoadedCounts.removeValue(forKey: rss.id)
-                            } label: {
-                                Label(L10n.string("popover.collapse", rss.name), systemImage: "chevron.up")
-                                    .font(.system(size: 10))
-                            }
-                            .buttonStyle(.plain)
-                            .foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                }
-                .padding(.horizontal, 14)
-                .padding(.vertical, 4)
-                .editorialMasthead()
+                PopoverCollapseBar(
+                    expandedRSSSourceIDs: $expandedRSSSourceIDs,
+                    rssLoadedCounts: $rssLoadedCounts
+                )
             }
 
-            BottomBar(
-                isRefreshing: orchestrator.isRefreshing,
-                batchProgress: orchestrator.batchProgress,
+            PopoverBottomBar(
+                orchestrator: orchestrator,
                 onRefresh: {
                     Task {
                         await orchestrator.manualRefresh(settings: settings)
@@ -189,20 +66,6 @@ struct PopoverContent: View {
         .task {
             await orchestrator.loadCached(settings: settings)
         }
-    }
-
-    private var allSourcesFailureMessage: String? {
-        let sources = settings.activeSources
-        guard !sources.isEmpty else { return nil }
-
-        let allFailed = sources.allSatisfy { source in
-            if case .failed = orchestrator.sourceStates[source.id] {
-                return true
-            }
-            return false
-        }
-
-        return allFailed ? "popover.allFailed".localized : nil
     }
 
     private var headerView: some View {
@@ -259,7 +122,7 @@ struct PopoverContent: View {
                 .help("popover.quit.help".localized)
                 .accessibilityLabel("popover.quit.help".localized)
             }
-            .padding(.horizontal, 12)
+            .padding(.horizontal, PopoverLayout.horizontalInset)
             .padding(.top, 9)
             .padding(.bottom, 7)
 
@@ -274,7 +137,7 @@ struct PopoverContent: View {
                     .tracking(isRetro ? 0.7 : 0.25)
                     .foregroundStyle(isRetro ? RetroEditorialTokens.brick : .secondary)
             }
-            .padding(.horizontal, 12)
+            .padding(.horizontal, PopoverLayout.horizontalInset)
             .padding(.bottom, 6)
         }
         .background(isRetro ? AnyShapeStyle(RetroEditorialTokens.raisedPaper) : AnyShapeStyle(.regularMaterial))
@@ -298,39 +161,285 @@ struct PopoverContent: View {
     private var issueDate: String {
         Self.issueDateFormatter.string(from: Date())
     }
+}
 
-    private func errorBanner(_ message: String) -> some View {
-        HStack(spacing: 6) {
-            Image(systemName: "exclamationmark.triangle.fill")
-                .font(.system(size: Metrics.compactTextSize))
-            Text(message)
-                .font(.system(size: Metrics.compactTextSize))
-            Spacer()
+// MARK: - Feed list
+
+/// Owns every read of the orchestrator's collections so a refresh no longer
+/// re-evaluates the popover header, the collapse bar or the bottom bar.
+private struct PopoverFeedList: View {
+    @Environment(AppSettings.self) private var settings
+    let orchestrator: NewsOrchestrator
+    @Binding var expandedRSSSourceIDs: Set<String>
+    @Binding var rssLoadedCounts: [String: Int]
+    let onConfigureKey: (() -> Void)?
+
+    var body: some View {
+        ScrollView(.vertical, showsIndicators: false) {
+            LazyVStack(spacing: 0) {
+                PopoverFailureBanner(orchestrator: orchestrator)
+                PopoverWarningBanner(orchestrator: orchestrator)
+
+                PopoverAISummarySection(
+                    orchestrator: orchestrator,
+                    onConfigureKey: onConfigureKey
+                )
+
+                EditorialSectionHeading(
+                    index: "01",
+                    title: "popover.trending".localized,
+                    subtitle: "popover.trending.subtitle".localized
+                )
+                .padding(.horizontal, PopoverLayout.horizontalInset)
+                .padding(.top, PopoverLayout.sectionTopSpacing)
+                .padding(.bottom, PopoverLayout.sectionBottomSpacing)
+
+                PopoverHotTrendSection(orchestrator: orchestrator)
+
+                ForEach(settings.activeSources.filter { !$0.isBuiltIn }, id: \.id) { source in
+                    PopoverRSSSection(
+                        source: source,
+                        orchestrator: orchestrator,
+                        expandedRSSSourceIDs: $expandedRSSSourceIDs,
+                        rssLoadedCounts: $rssLoadedCounts
+                    )
+                }
+
+                Color.clear.frame(height: 10)
+            }
+            .padding(.top, 10)
         }
-        .foregroundStyle(.orange)
-        .padding(.horizontal, Metrics.bannerHorizontalPadding)
-        .padding(.vertical, Metrics.bannerVerticalPadding)
-        .background(.orange.opacity(0.1))
-        .editorialClipShape(cornerRadius: 6)
-        .padding(.horizontal, Metrics.sectionDividerInset)
-        .padding(.bottom, Metrics.bannerBottomSpacing)
+    }
+}
+
+private struct PopoverWarningBanner: View {
+    let orchestrator: NewsOrchestrator
+
+    var body: some View {
+        if let warning = orchestrator.manualRefreshWarning {
+            PopoverBanner(
+                message: warning,
+                symbol: "info.circle.fill",
+                tint: .yellow
+            )
+        }
+    }
+}
+
+private struct PopoverFailureBanner: View {
+    @Environment(AppSettings.self) private var settings
+    let orchestrator: NewsOrchestrator
+
+    var body: some View {
+        if let message = allSourcesFailureMessage {
+            PopoverBanner(
+                message: message,
+                symbol: "exclamationmark.triangle.fill",
+                tint: .orange
+            )
+        }
     }
 
-    private func warningBanner(_ message: String) -> some View {
+    private var allSourcesFailureMessage: String? {
+        let sources = settings.activeSources
+        guard !sources.isEmpty else { return nil }
+
+        let allFailed = sources.allSatisfy { source in
+            if case .failed = orchestrator.sourceStates[source.id] {
+                return true
+            }
+            return false
+        }
+
+        return allFailed ? "popover.allFailed".localized : nil
+    }
+}
+
+private struct PopoverBanner: View {
+    enum Metrics {
+        static let horizontalPadding: CGFloat = 10
+        static let verticalPadding: CGFloat = 5
+        static let bottomSpacing: CGFloat = 4
+        static let compactTextSize: CGFloat = 10
+    }
+
+    let message: String
+    let symbol: String
+    let tint: Color
+
+    var body: some View {
         HStack(spacing: 6) {
-            Image(systemName: "info.circle.fill")
+            Image(systemName: symbol)
                 .font(.system(size: Metrics.compactTextSize))
             Text(message)
                 .font(.system(size: Metrics.compactTextSize))
             Spacer()
         }
-        .foregroundStyle(.yellow)
-        .padding(.horizontal, Metrics.bannerHorizontalPadding)
-        .padding(.vertical, Metrics.bannerVerticalPadding)
-        .background(.yellow.opacity(0.1))
+        .foregroundStyle(tint)
+        .padding(.horizontal, Metrics.horizontalPadding)
+        .padding(.vertical, Metrics.verticalPadding)
+        .background(tint.opacity(0.1))
         .editorialClipShape(cornerRadius: 6)
-        .padding(.horizontal, Metrics.sectionDividerInset)
-        .padding(.bottom, Metrics.bannerBottomSpacing)
+        .padding(.horizontal, PopoverLayout.horizontalInset)
+        .padding(.bottom, Metrics.bottomSpacing)
+    }
+}
+
+private struct PopoverHotTrendSection: View {
+    let orchestrator: NewsOrchestrator
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 8) {
+            NewsSection(
+                title: "popover.weibo".localized,
+                sourceMark: .weibo,
+                color: .orange,
+                items: orchestrator.weiboItems,
+                showRank: true,
+                state: orchestrator.sourceStates[NewsSource.weibo.id] ?? .idle,
+                maxVisible: 5,
+                presentation: .compactTrend
+            )
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            NewsSection(
+                title: "popover.bilibili".localized,
+                sourceMark: .bilibili,
+                color: .pink,
+                items: orchestrator.bilibiliItems,
+                showRank: true,
+                state: orchestrator.sourceStates[NewsSource.bilibili.id] ?? .idle,
+                maxVisible: 3,
+                presentation: .compactTrend
+            )
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, PopoverLayout.horizontalInset)
+    }
+}
+
+private struct PopoverRSSSection: View {
+    @Environment(AppSettings.self) private var settings
+    let source: NewsSource
+    let orchestrator: NewsOrchestrator
+    @Binding var expandedRSSSourceIDs: Set<String>
+    @Binding var rssLoadedCounts: [String: Int]
+
+    private var rssConfig: RSSSourceConfig? {
+        settings.rssSources.first { $0.id == source.id }
+    }
+
+    private var displayMode: RSSSourceConfig.DisplayMode {
+        rssConfig?.displayMode ?? .text
+    }
+
+    private var counts: (text: Int, image: Int) {
+        if let rssConfig {
+            return (
+                settings.effectiveTextDisplayCount(for: rssConfig),
+                settings.effectiveImageDisplayCount(for: rssConfig)
+            )
+        }
+        return (settings.rssDefaultTextCount, settings.rssDefaultImageCount)
+    }
+
+    private var sourceItems: [NewsItem] {
+        orchestrator.rssItemsMap[source.id] ?? []
+    }
+
+    private var pageSize: Int {
+        let hasAnyImage = sourceItems.contains { $0.imageURL != nil }
+        return displayMode == .image
+            ? (hasAnyImage ? counts.image : counts.text)
+            : counts.text
+    }
+
+    var body: some View {
+        EditorialSectionHeading(
+            index: "02",
+            title: source.displayName,
+            subtitle: "popover.rss.subtitle".localized
+        )
+        .padding(.horizontal, PopoverLayout.horizontalInset)
+        .padding(.top, PopoverLayout.sectionTopSpacing)
+        .padding(.bottom, PopoverLayout.sectionBottomSpacing)
+
+        RSSWaterfallView(
+            items: sourceItems,
+            sourceName: source.displayName,
+            state: orchestrator.sourceStates[source.id] ?? .idle,
+            displayMode: displayMode,
+            textCount: counts.text,
+            imageCount: counts.image,
+            isExpanded: expandedRSSSourceIDs.contains(source.id),
+            loadedCount: rssLoadedCounts[source.id, default: pageSize],
+            onToggleExpand: {
+                if expandedRSSSourceIDs.contains(source.id) {
+                    expandedRSSSourceIDs.remove(source.id)
+                    rssLoadedCounts.removeValue(forKey: source.id)
+                } else {
+                    expandedRSSSourceIDs.insert(source.id)
+                    rssLoadedCounts[source.id] = pageSize
+                }
+            },
+            onLoadMore: {
+                let current = rssLoadedCounts[source.id, default: pageSize]
+                let total = sourceItems.count
+                guard current < total else { return }
+                rssLoadedCounts[source.id] = min(current + pageSize, total)
+            }
+        )
+        .padding(.horizontal, PopoverLayout.horizontalInset)
+    }
+}
+
+private struct PopoverCollapseBar: View {
+    @Environment(AppSettings.self) private var settings
+    @Binding var expandedRSSSourceIDs: Set<String>
+    @Binding var rssLoadedCounts: [String: Int]
+
+    var body: some View {
+        HStack(spacing: 8) {
+            ForEach(settings.rssSources.filter { expandedRSSSourceIDs.contains($0.id) }) { rss in
+                Button {
+                    expandedRSSSourceIDs.remove(rss.id)
+                    rssLoadedCounts.removeValue(forKey: rss.id)
+                } label: {
+                    Label(L10n.string("popover.collapse", rss.name), systemImage: "chevron.up")
+                        .font(.system(size: 10))
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+            }
+            Spacer()
+        }
+        .padding(.horizontal, PopoverLayout.horizontalInset)
+        .padding(.vertical, 4)
+        .editorialMasthead()
+    }
+}
+
+private struct PopoverBottomBar: View {
+    let orchestrator: NewsOrchestrator
+    let onRefresh: () -> Void
+    let onOpenSettings: () -> Void
+    let onOpenDashboard: () -> Void
+
+    var body: some View {
+        BottomBar(
+            isRefreshing: orchestrator.isRefreshing,
+            batchProgress: orchestrator.batchProgress,
+            onRefresh: onRefresh,
+            onOpenSettings: onOpenSettings,
+            onOpenDashboard: onOpenDashboard
+        )
+        .overlay(alignment: .top) {
+            Rectangle()
+                .fill(Color(nsColor: .separatorColor).opacity(0.55))
+                .frame(height: 1)
+                .allowsHitTesting(false)
+        }
     }
 }
 
@@ -357,7 +466,8 @@ private struct PopoverAISummarySection: View {
                 onConfigureKey: onConfigureKey,
                 contextID: orchestrator.aiSummaryManifest?.id.uuidString
             )
-            Divider().padding(.horizontal, 10)
+            .padding(.horizontal, PopoverLayout.horizontalInset)
+            .padding(.bottom, 6)
         }
     }
 }

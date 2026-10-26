@@ -10,7 +10,8 @@ let package = Package(
         .executableTarget(
             name: "NewsBar",
             dependencies: ["CSQLite"],
-            path: "Sources/NewsBar"
+            path: "Sources/NewsBar",
+            resources: [.process("Resources")]
         ),
         .testTarget(
             name: "NewsBarTests",

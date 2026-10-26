@@ -27,6 +27,14 @@ cp .build/release/NewsBar "${BUNDLE_DIR}/Contents/MacOS/"
 cp version.txt "${BUNDLE_DIR}/Contents/Resources/"
 cp Resources/AppIcon.icns "${BUNDLE_DIR}/Contents/Resources/"
 
+BIN_DIR="$(swift build -c release --arch arm64 --show-bin-path)"
+RESOURCE_BUNDLE="${BIN_DIR}/NewsBar_NewsBar.bundle"  # keep in sync with RecommendationGuide.resourceBundleName
+if [ ! -d "${RESOURCE_BUNDLE}" ]; then
+    echo "Missing SwiftPM resource bundle: ${RESOURCE_BUNDLE}" >&2
+    exit 1
+fi
+cp -R "${RESOURCE_BUNDLE}" "${BUNDLE_DIR}/Contents/Resources/"
+
 cat > "${BUNDLE_DIR}/Contents/Info.plist" << PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -115,12 +123,23 @@ hdiutil create -volname "${APP_NAME}" \
     "${DMG_RW}" 2>&1
 hdiutil attach "${DMG_RW}" -nobrowse -quiet
 
+# Finder can race the mount; wait for the volume before styling it.
+for _ in {1..20}; do
+    [ -d "${DMG_MOUNT}" ] && break
+    sleep 0.5
+done
+if [ ! -d "${DMG_MOUNT}" ]; then
+    echo "❌ DMG volume did not mount at ${DMG_MOUNT}" >&2
+    exit 1
+fi
+
 cp Resources/AppIcon.icns "${DMG_MOUNT}/.VolumeIcon.icns"
 SetFile -a C "${DMG_MOUNT}" 2>/dev/null || \
     xattr -wx com.apple.FinderInfo "0000000000000000000400000000000000000000000000000000000000000000" "${DMG_MOUNT}"
 SetFile -a V "${DMG_MOUNT}/.background" 2>/dev/null || true
 
-osascript - "${APP_NAME}" "${APP_NAME}.app" <<'APPLESCRIPT'
+# Cosmetic layout only: a Finder/automation failure must not invalidate the DMG.
+if ! osascript - "${APP_NAME}" "${APP_NAME}.app" <<'APPLESCRIPT'
 on run argv
     set diskName to item 1 of argv
     set appName to item 2 of argv
@@ -144,6 +163,9 @@ on run argv
     end tell
 end run
 APPLESCRIPT
+then
+    echo "⚠️  Finder layout skipped; DMG content remains valid."
+fi
 
 sleep 1
 hdiutil detach "${DMG_MOUNT}" -quiet

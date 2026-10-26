@@ -4,8 +4,6 @@ import SwiftUI
 struct DashboardWindow: View {
     @Environment(AppSettings.self) private var settings
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @Environment(\.colorScheme) private var colorScheme
-    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     let orchestrator: NewsOrchestrator
     @State private var collapsedRSSSourceIDs: Set<NewsSource.ID> = []
     @State private var searchText = ""
@@ -16,12 +14,8 @@ struct DashboardWindow: View {
     @State private var listWidth: CGFloat = 400
     @State private var phase: ReaderPresentationPhase = .idle
     @State private var displayedRequest: NewsReaderRequest?
-    @State private var transitionSnapshot: NSImage?
-    @State private var transitionSnapshotFrame: CGRect = .zero
-    @State private var snapshotVisible = false
     @State private var readerVisible = false
     @State private var hero: ReaderHeroState?
-    @State private var narrowParallax = false
 
     var onOpenSettings: () -> Void = {}
     var onConfigureAI: (() -> Void)? = nil
@@ -55,59 +49,20 @@ struct DashboardWindow: View {
         }
     }
 
-    private static let issueDateFormatter: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "zh_CN")
-        formatter.dateFormat = "yyyy年M月d日 EEEE"
-        return formatter
-    }()
-
-    private var isRetro: Bool { settings.appTheme == .retroEditorial }
-
-    private var selectedRSSSources: [NewsSource] {
-        settings.activeSources.filter { !$0.isBuiltIn }
-    }
-
-    private var totalRSSItemCount: Int {
-        selectedRSSSources.reduce(0) { partial, source in
-            partial + (orchestrator.rssItemsMap[source.id]?.count ?? 0)
-        }
-    }
-
-    private var hasStatusFeedback: Bool {
-        orchestrator.manualRefreshWarning != nil || orchestrator.batchProgress.total > 0
-    }
-
-    private var isSearchActive: Bool {
-        !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-    }
-
     private var normalizedSearchQuery: String? {
-        let query = debouncedSearchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !query.isEmpty else { return nil }
-        return query.folding(options: [.caseInsensitive], locale: .current)
+        DashboardSearch.normalized(debouncedSearchText)
     }
 
     private func matchesSearch(_ item: NewsItem, query: String? = nil) -> Bool {
-        guard let query = query ?? normalizedSearchQuery else { return true }
-        return item.displayTitle.folding(options: [.caseInsensitive], locale: .current)
-            .contains(query)
-    }
-
-    private func filteredTrendItems(_ source: NewsSource, _ items: [NewsItem]) -> [NewsItem] {
-        guard sourceFilter.matches(source) else { return [] }
-        let query = normalizedSearchQuery
-        return items.filter { matchesSearch($0, query: query) }
-    }
-
-    private func filteredRSSItems(_ source: NewsSource) -> [NewsItem] {
-        guard sourceFilter.matches(source) else { return [] }
-        let query = normalizedSearchQuery
-        return (orchestrator.rssItemsMap[source.id] ?? []).filter { matchesSearch($0, query: query) }
+        DashboardSearch.matches(item, query: query ?? normalizedSearchQuery)
     }
 
     private var hasAnyFilter: Bool {
         isSearchActive || sourceFilter != .all
+    }
+
+    private var isSearchActive: Bool {
+        !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     private func isRSSSourceExpanded(_ source: NewsSource) -> Bool {
@@ -122,84 +77,24 @@ struct DashboardWindow: View {
         }
     }
 
-    private var statusFeedback: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            if let warning = orchestrator.manualRefreshWarning {
-                HStack(spacing: 8) {
-                    Image(systemName: "exclamationmark.triangle.fill")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(.orange)
-                    Text(warning)
-                        .font(.system(size: 12))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(2)
-                    Spacer(minLength: 0)
-                }
-            }
-
-            if orchestrator.batchProgress.total > 0 {
-                HStack(spacing: 10) {
-                    ProgressView(
-                        value: Double(orchestrator.batchProgress.completed),
-                        total: Double(orchestrator.batchProgress.total)
-                    )
-                    .controlSize(.small)
-                    .tint(.blue)
-
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text("dash.rssBatchRefreshing".localized)
-                            .font(.system(size: 12, weight: .medium))
-                        Text("\(orchestrator.batchProgress.completed)/\(orchestrator.batchProgress.total)")
-                            .font(.system(size: 11))
-                            .foregroundStyle(.secondary)
-                    }
-
-                    Spacer(minLength: 0)
-                }
-            }
-        }
-        .padding(12)
-        .newsCardSurface(cornerRadius: 14)
-        .padding(.horizontal, 20)
-    }
-
     var body: some View {
         GeometryReader { geometry in
             let selection = NewsNavigationRouter.shared.selection
             let isWide = geometry.size.width >= 1100
             let readerFrame = self.readerFrame(for: geometry.size, isWide: isWide)
-            let listWidthForPhase: CGFloat = phase == .presented ? clampedListWidth : geometry.size.width
+            // Keep the compact column while the reader fades out; expand only
+            // after it is gone so the reflow is never visible under a fade.
+            let listWidthForPhase: CGFloat = (phase == .presented || phase == .dismissing)
+                ? clampedListWidth
+                : geometry.size.width
 
             ZStack(alignment: .topLeading) {
                 browsePane
+                    // Compact reader covers the list; wide split keeps it visible.
+                    .environment(\.dashboardListObscured, phase != .idle && !isWide)
                     .frame(width: listWidthForPhase, height: geometry.size.height, alignment: .topLeading)
                     .allowsHitTesting(!(phase == .presented && !isWide))
                     .zIndex(0)
-
-                if let snapshot = transitionSnapshot {
-                    Image(nsImage: snapshot)
-                        .resizable()
-                        .interpolation(.high)
-                        .frame(
-                            width: transitionSnapshotFrame.width,
-                            height: transitionSnapshotFrame.height
-                        )
-                        .offset(
-                            x: transitionSnapshotFrame.minX + (!isWide && narrowParallax && !reduceMotion ? -18 : 0),
-                            y: transitionSnapshotFrame.minY
-                        )
-                        .scaleEffect(
-                            !isWide && narrowParallax && !reduceMotion ? 0.985 : 1,
-                            anchor: .center
-                        )
-                        .opacity(
-                            snapshotVisible
-                                ? (narrowParallax && !isWide && !reduceMotion ? 0.55 : 1)
-                                : 0
-                        )
-                        .allowsHitTesting(false)
-                        .zIndex(1)
-                }
 
                 if let request = displayedRequest {
                     readerPane(request)
@@ -230,7 +125,6 @@ struct DashboardWindow: View {
             }
             .coordinateSpace(name: "dashboardRoot")
             .onAppear {
-                installSnapshotProvider()
                 if let request = selection, displayedRequest == nil {
                     beginReaderTransition(request: request, size: geometry.size, isWide: isWide)
                 }
@@ -259,7 +153,7 @@ struct DashboardWindow: View {
         .toolbar {
             ToolbarItem(placement: .principal) { toolbarTitle }
             ToolbarItemGroup(placement: .primaryAction) {
-                DashboardToolbarAction(title: settings.appLanguage == .en ? "Refresh" : "刷新", symbol: "arrow.clockwise", isDisabled: orchestrator.isRefreshing) {
+                DashboardRefreshToolbarItem(orchestrator: orchestrator) {
                     Task { await orchestrator.manualRefresh(settings: settings) }
                 }
                 DashboardToolbarAction(title: settings.appLanguage == .en ? "Settings" : "设置", symbol: "gearshape", action: onOpenSettings)
@@ -285,44 +179,23 @@ struct DashboardWindow: View {
         return CGRect(origin: .zero, size: size)
     }
 
-    private func installSnapshotProvider() {
-        ReaderTransitionCoordinator.shared.snapshotProvider = { rect in
-            guard let view = NSApp.keyWindow?.contentView,
-                  let rep = view.bitmapImageRepForCachingDisplay(in: rect) else { return nil }
-            view.cacheDisplay(in: rect, to: rep)
-            let image = NSImage(size: rect.size)
-            image.addRepresentation(rep)
-            return image
-        }
-    }
-
     private func beginReaderTransition(request: NewsReaderRequest, size: CGSize, isWide: Bool) {
         let origin = ReaderTransitionCoordinator.shared.consume()
-        let snapshot = ReaderTransitionCoordinator.shared.takeSnapshot()
 
         // Already split open: swap the article without replaying the open
         // transition. The list stays compact and the reader keeps its frame.
         if phase == .presented, displayedRequest != nil {
             displayedRequest = request
             hero = nil
-            ReaderTransitionCoordinator.shared.discardSnapshot()
             return
         }
 
+        // Commit the layout change outside any animation. The list reflows once
+        // in a single frame; animating it would re-layout every frame of the
+        // transition for no visual gain behind the reader.
         displayedRequest = request
-        if let snapshot {
-            transitionSnapshot = snapshot.image
-            transitionSnapshotFrame = snapshot.frame
-            snapshotVisible = true
-        } else {
-            transitionSnapshot = nil
-            transitionSnapshotFrame = .zero
-            snapshotVisible = false
-        }
-
         phase = .presented
         readerVisible = false
-        narrowParallax = false
 
         if !reduceMotion, let origin, origin.frame.width > 2, origin.frame.height > 2 {
             hero = ReaderHeroState(
@@ -330,109 +203,71 @@ struct DashboardWindow: View {
                 target: readerFrame(for: size, isWide: isWide),
                 title: origin.title.isEmpty ? request.title : origin.title,
                 host: URL(string: request.url)?.host ?? "",
-                isRetro: isRetro
+                isRetro: settings.appTheme == .retroEditorial
             )
         } else {
             hero = nil
         }
 
-        let settleDelay = reduceMotion ? 120 : 320
         Task { @MainActor in
             await Task.yield()
             withAnimation(reduceMotion ? DashboardMotion.reduced : DashboardMotion.structural) {
                 readerVisible = true
-                if !isWide, !reduceMotion { narrowParallax = true }
             }
-            try? await Task.sleep(for: .milliseconds(settleDelay))
-            guard phase == .presented else { return }
-            withAnimation(reduceMotion ? DashboardMotion.reduced : DashboardMotion.reveal) {
-                snapshotVisible = false
-            }
-            try? await Task.sleep(for: .milliseconds(180))
-            guard phase == .presented else { return }
-            transitionSnapshot = nil
-            transitionSnapshotFrame = .zero
         }
     }
 
     private func beginReaderDismissal() {
         guard phase == .presented else { return }
         hero = nil
-        if transitionSnapshot == nil,
-           let snapshot = ReaderTransitionCoordinator.shared.takeSnapshot() {
-            transitionSnapshot = snapshot.image
-            transitionSnapshotFrame = snapshot.frame
-        }
-        snapshotVisible = transitionSnapshot != nil
         phase = .dismissing
         withAnimation(reduceMotion ? DashboardMotion.reduced : DashboardMotion.reveal) {
             readerVisible = false
-            narrowParallax = false
         }
 
-        let fadeDelay = reduceMotion ? 120 : 180
+        let settleDelay = reduceMotion ? 80 : 180
         Task { @MainActor in
-            try? await Task.sleep(for: .milliseconds(fadeDelay))
+            try? await Task.sleep(for: .milliseconds(settleDelay + 120))
             guard phase == .dismissing else { return }
-            withAnimation(reduceMotion ? DashboardMotion.reduced : DashboardMotion.reveal) {
-                snapshotVisible = false
-            }
-            try? await Task.sleep(for: .milliseconds(180))
-            guard phase == .dismissing else { return }
-            transitionSnapshot = nil
-            transitionSnapshotFrame = .zero
             displayedRequest = nil
             phase = .idle
-            ReaderTransitionCoordinator.shared.discardSnapshot()
         }
-    }
-
-    private func cancelReaderTransition() {
-        hero = nil
-        transitionSnapshot = nil
-        transitionSnapshotFrame = .zero
-        snapshotVisible = false
-        readerVisible = false
-        narrowParallax = false
-        displayedRequest = nil
-        phase = .idle
-        ReaderTransitionCoordinator.shared.clear()
-        ReaderTransitionCoordinator.shared.discardSnapshot()
     }
 
     private var browsePane: some View {
         GeometryReader { proxy in
             let isWideLayout = proxy.size.width >= layoutBreakpoint
 
-            VStack(spacing: 0) {
-                if hasStatusFeedback {
-                    statusFeedback
-                        .padding(.top, 12)
+            ScrollView(.vertical, showsIndicators: true) {
+                VStack(alignment: .leading, spacing: 22) {
+                    DashboardMasthead(orchestrator: orchestrator)
+
+                    DashboardFilterBar(
+                        searchText: $searchText,
+                        sourceFilter: $sourceFilter,
+                        forYou: $forYou,
+                        orchestrator: orchestrator,
+                        debouncedQuery: normalizedSearchQuery
+                    )
+
+                    contentLayout(
+                        isWideLayout: isWideLayout,
+                        isReaderCompact: phase == .presented || phase == .dismissing
+                    )
                 }
-
-                ScrollView(.vertical, showsIndicators: true) {
-                    VStack(alignment: .leading, spacing: 22) {
-                        dashboardMasthead
-
-                        dashboardFilterBar
-
-                        contentLayout(
-                            isWideLayout: isWideLayout,
-                            isReaderCompact: phase == .presented
-                        )
-                    }
-                        .padding(20)
-                        .frame(maxWidth: .infinity, alignment: .topLeading)
-                }
-                .scrollPosition($browseScroll)
+                .padding(20)
+                .frame(maxWidth: .infinity, alignment: .topLeading)
             }
+            .scrollPosition($browseScroll)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            .adaptiveColorScheme()
-            .onGeometryChange(for: CGRect.self) { proxy in
-                proxy.frame(in: .named("dashboardRoot"))
-            } action: { frame in
-                ReaderTransitionCoordinator.shared.listFrame = frame
+            .overlay(alignment: .top) {
+                // Floating status keeps the feed from shifting down 40pt every
+                // time a refresh starts or a warning appears.
+                DashboardStatusOverlay(orchestrator: orchestrator)
+                    .padding(.top, 12)
+                    .allowsHitTesting(false)
             }
+            .adaptiveColorScheme()
             .task {
                 await orchestrator.loadCached(settings: settings)
             }
@@ -461,7 +296,14 @@ struct DashboardWindow: View {
                 HStack(alignment: .top, spacing: 20) {
                     recommendationsView()
                         .frame(maxWidth: .infinity, alignment: .leading)
-                    sidebarRegion.frame(width: sidebarWidth, alignment: .leading)
+                    DashboardSidebarRegion(
+                        orchestrator: orchestrator,
+                        sourceFilter: sourceFilter,
+                        searchQuery: normalizedSearchQuery,
+                        isSearchActive: isSearchActive,
+                        onConfigureAI: onConfigureAI ?? onOpenSettings
+                    )
+                    .frame(width: sidebarWidth, alignment: .leading)
                 }
             } else {
                 recommendationsView()
@@ -473,33 +315,60 @@ struct DashboardWindow: View {
                 rssMainRegion
                     .frame(maxWidth: .infinity, alignment: .leading)
 
-                sidebarRegion
-                    .frame(width: sidebarWidth, alignment: .leading)
+                DashboardSidebarRegion(
+                    orchestrator: orchestrator,
+                    sourceFilter: sourceFilter,
+                    searchQuery: normalizedSearchQuery,
+                    isSearchActive: isSearchActive,
+                    onConfigureAI: onConfigureAI ?? onOpenSettings
+                )
+                .frame(width: sidebarWidth, alignment: .leading)
             }
         } else {
             VStack(alignment: .leading, spacing: 20) {
-                sidebarRegion
+                DashboardSidebarRegion(
+                    orchestrator: orchestrator,
+                    sourceFilter: sourceFilter,
+                    searchQuery: normalizedSearchQuery,
+                    isSearchActive: isSearchActive,
+                    onConfigureAI: onConfigureAI ?? onOpenSettings
+                )
                 rssMainRegion
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 
+    private var rssMainRegion: some View {
+        DashboardRSSMainRegion(
+            orchestrator: orchestrator,
+            sourceFilter: sourceFilter,
+            searchQuery: normalizedSearchQuery,
+            hasAnyFilter: hasAnyFilter,
+            collapsedSourceIDs: collapsedRSSSourceIDs,
+            onToggleExpansion: toggleRSSSourceExpansion,
+            onRefresh: { source in
+                Task { await orchestrator.refreshRSSSource(source, settings: settings) }
+            },
+            onOpenSettings: onOpenSettings
+        )
+    }
+
     private var toolbarTitle: some View {
         ViewThatFits(in: .horizontal) {
             HStack(spacing: 6) {
                 Image(systemName: "rectangle.split.2x1")
-                    .font(.system(size: 10, weight: isRetro ? .black : .semibold))
+                    .font(.system(size: 10, weight: settings.appTheme == .retroEditorial ? .black : .semibold))
                 Text("DASHBOARD")
-                    .font(.system(size: 11, weight: isRetro ? .black : .semibold, design: isRetro ? .monospaced : .default))
-                    .tracking(isRetro ? 0.7 : 0)
+                    .font(.system(size: 11, weight: settings.appTheme == .retroEditorial ? .black : .semibold, design: settings.appTheme == .retroEditorial ? .monospaced : .default))
+                    .tracking(settings.appTheme == .retroEditorial ? 0.7 : 0)
                 Text("趋势 · RSS · AI")
                     .font(.system(size: 9))
                     .foregroundStyle(.secondary)
             }
 
             Text("DASHBOARD")
-                .font(.system(size: 10, weight: isRetro ? .black : .semibold, design: isRetro ? .monospaced : .default))
+                .font(.system(size: 10, weight: settings.appTheme == .retroEditorial ? .black : .semibold, design: settings.appTheme == .retroEditorial ? .monospaced : .default))
 
             Image(systemName: "rectangle.split.2x1")
                 .accessibilityLabel("Dashboard")
@@ -508,110 +377,76 @@ struct DashboardWindow: View {
         .accessibilityElement(children: .combine)
         .accessibilityLabel("Dashboard")
     }
+}
 
-    private var dashboardFilterBar: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Picker(settings.appLanguage == .en ? "Browse mode" : "浏览模式", selection: $forYou) {
-                Text(settings.appLanguage == .en ? "For you" : "为你推荐").tag(true)
-                Text(settings.appLanguage == .en ? "By source" : "按源浏览").tag(false)
-            }
-            .pickerStyle(.segmented)
-            HStack(spacing: 10) {
-                Image(systemName: "magnifyingglass")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(.secondary)
+// MARK: - Search
 
-                TextField("dash.searchPlaceholder".localized, text: $searchText)
-                    .textFieldStyle(.plain)
-                    .font(.system(size: 13))
+enum DashboardSearch {
+    static func normalized(_ text: String) -> String? {
+        let query = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return nil }
+        return query.folding(options: [.caseInsensitive], locale: .current)
+    }
 
-                if isSearchActive {
-                    Button {
-                        searchText = ""
-                    } label: {
-                        Image(systemName: "xmark.circle.fill")
-                            .font(.system(size: 12))
-                            .foregroundStyle(.secondary)
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("dash.searchClear".localized)
-                }
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 9)
-            .background {
-                if settings.appTheme == .retroEditorial {
-                    Rectangle().fill(RetroEditorialTokens.raisedPaper)
-                }
-            }
-            .glassSettingsSurface(cornerRadius: 12)
-            .overlay {
-                if settings.appTheme == .retroEditorial {
-                    Rectangle().strokeBorder(RetroEditorialTokens.ink, lineWidth: 1.4)
-                }
-            }
+    static func matches(_ item: NewsItem, query: String?) -> Bool {
+        guard let query else { return true }
+        return item.displayTitle.folding(options: [.caseInsensitive], locale: .current)
+            .contains(query)
+    }
+}
 
-            HStack(spacing: 6) {
-                ForEach(DashboardSourceFilter.allCases) { filter in
-                    filterChip(filter)
-                }
+// MARK: - Masthead
 
-                Spacer(minLength: 0)
+private struct DashboardMasthead: View {
+    @Environment(AppSettings.self) private var settings
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    let orchestrator: NewsOrchestrator
 
-                if hasAnyFilter {
-                    Text(filteredResultLabel)
-                        .font(.system(size: 10))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
-            }
+    private static let issueDateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "zh_CN")
+        formatter.dateFormat = "yyyy年M月d日 EEEE"
+        return formatter
+    }()
+
+    private var isRetro: Bool { settings.appTheme == .retroEditorial }
+
+    private var selectedRSSSources: [NewsSource] {
+        settings.activeSources.filter { !$0.isBuiltIn }
+    }
+
+    private var totalRSSItemCount: Int {
+        selectedRSSSources.reduce(0) { partial, source in
+            partial + (orchestrator.rssItemsMap[source.id]?.count ?? 0)
         }
     }
 
-    private var filteredResultLabel: String {
-        if forYou {
-            let count = InterestController.shared.recommendations?.items.filter { sourceFilter.matches($0.item.source) && matchesSearch($0.item) }.count ?? 0
-            return L10n.string("dash.filterCount", count)
-        }
-        var count = 0
-        count += filteredTrendItems(.weibo, orchestrator.weiboItems).count
-        count += filteredTrendItems(.bilibili, orchestrator.bilibiliItems).count
-        for source in selectedRSSSources {
-            count += filteredRSSItems(source).count
-        }
-        return L10n.string("dash.filterCount", count)
+    private var hotCount: Int {
+        orchestrator.weiboItems.count + orchestrator.bilibiliItems.count
     }
 
-    private func filterChip(_ filter: DashboardSourceFilter) -> some View {
-        let isSelected = sourceFilter == filter
-        return Button {
-            sourceFilter = filter
-        } label: {
-            Text(filter.displayName)
-                .font(.system(size: 11, weight: .medium))
-                .padding(.horizontal, 12)
-                .padding(.vertical, 6)
-                .background {
-                    if settings.appTheme == .retroEditorial {
-                        Rectangle().fill(isSelected ? RetroEditorialTokens.brick : RetroEditorialTokens.raisedPaper)
-                    }
-                }
-                .glassSettingsSurface(cornerRadius: 40, interactive: true)
-                .overlay {
-                    if settings.appTheme == .retroEditorial {
-                        Rectangle().strokeBorder(RetroEditorialTokens.ink, lineWidth: 1)
-                    }
-                }
-                .foregroundStyle(
-                    isSelected
-                        ? (settings.appTheme == .retroEditorial ? RetroEditorialTokens.raisedPaper : Color.accentColor)
-                        : .primary
-                )
-        }
-        .buttonStyle(.plain)
+    private var issueNumber: String {
+        String(format: "%02d", Calendar.current.component(.day, from: Date()))
     }
 
-    private var dashboardMasthead: some View {
+    private var issueDate: String {
+        Self.issueDateFormatter.string(from: Date())
+    }
+
+    private var mastheadInk: Color {
+        isRetro ? RetroEditorialTokens.ink : .primary
+    }
+
+    private var mastheadAccent: Color {
+        isRetro ? RetroEditorialTokens.brick : .accentColor
+    }
+
+    private var mastheadSecondary: Color {
+        isRetro ? RetroEditorialTokens.fadedInk : .secondary
+    }
+
+    var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 10) {
                 Text("VOL. 06 · NO. \(issueNumber)")
@@ -663,7 +498,7 @@ struct DashboardWindow: View {
                     .font(.system(size: 11, weight: .medium, design: isRetro ? .serif : .default))
                     .foregroundStyle(mastheadSecondary)
                 Spacer(minLength: 8)
-                EditorialTag(text: "热榜 \(orchestrator.weiboItems.count + orchestrator.bilibiliItems.count)", fallbackTint: .secondary)
+                EditorialTag(text: "热榜 \(hotCount)", fallbackTint: .secondary)
                 EditorialTag(text: "RSS \(totalRSSItemCount)", fallbackTint: .secondary)
                 EditorialTag(text: "来源 \(selectedRSSSources.count + 2)", fallbackTint: .secondary)
             }
@@ -705,51 +540,300 @@ struct DashboardWindow: View {
         .accessibilityElement(children: .combine)
         .accessibilityLabel("NewsBar 新闻编辑台，\(issueDate)，RSS \(totalRSSItemCount) 条")
     }
+}
 
-    private var mastheadInk: Color {
-        isRetro ? RetroEditorialTokens.ink : .primary
+// MARK: - Filter bar
+
+private struct DashboardFilterBar: View {
+    @Environment(AppSettings.self) private var settings
+    @Binding var searchText: String
+    @Binding var sourceFilter: DashboardWindow.DashboardSourceFilter
+    @Binding var forYou: Bool
+    let orchestrator: NewsOrchestrator
+    let debouncedQuery: String?
+
+    private var isSearchActive: Bool {
+        !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
-    private var mastheadAccent: Color {
-        isRetro ? RetroEditorialTokens.brick : .accentColor
+    private var hasAnyFilter: Bool {
+        isSearchActive || sourceFilter != .all
     }
 
-    private var mastheadSecondary: Color {
-        isRetro ? RetroEditorialTokens.fadedInk : .secondary
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Picker(settings.appLanguage == .en ? "Browse mode" : "浏览模式", selection: $forYou) {
+                Text(settings.appLanguage == .en ? "For you" : "为你推荐").tag(true)
+                Text(settings.appLanguage == .en ? "By source" : "按源浏览").tag(false)
+            }
+            .pickerStyle(.segmented)
+            HStack(spacing: 10) {
+                Image(systemName: "magnifyingglass")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(.secondary)
+
+                TextField("dash.searchPlaceholder".localized, text: $searchText)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 13))
+
+                if isSearchActive {
+                    Button {
+                        searchText = ""
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.system(size: 12))
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("dash.searchClear".localized)
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 9)
+            .background {
+                if settings.appTheme == .retroEditorial {
+                    Rectangle().fill(RetroEditorialTokens.raisedPaper)
+                }
+            }
+            .glassSettingsSurface(cornerRadius: 12)
+            .overlay {
+                if settings.appTheme == .retroEditorial {
+                    Rectangle().strokeBorder(RetroEditorialTokens.ink, lineWidth: 1.4)
+                }
+            }
+
+            HStack(spacing: 6) {
+                ForEach(DashboardWindow.DashboardSourceFilter.allCases) { filter in
+                    filterChip(filter)
+                }
+
+                Spacer(minLength: 0)
+
+                if hasAnyFilter {
+                    DashboardFilterCountLabel(
+                        orchestrator: orchestrator,
+                        sourceFilter: sourceFilter,
+                        query: debouncedQuery,
+                        forYou: forYou
+                    )
+                }
+            }
+        }
     }
 
-    private var issueNumber: String {
-        String(format: "%02d", Calendar.current.component(.day, from: Date()))
+    private func filterChip(_ filter: DashboardWindow.DashboardSourceFilter) -> some View {
+        let isSelected = sourceFilter == filter
+        return Button {
+            sourceFilter = filter
+        } label: {
+            Text(filter.displayName)
+                .font(.system(size: 11, weight: .medium))
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+                .background {
+                    if settings.appTheme == .retroEditorial {
+                        Rectangle().fill(isSelected ? RetroEditorialTokens.brick : RetroEditorialTokens.raisedPaper)
+                    }
+                }
+                .glassSettingsSurface(cornerRadius: 40, interactive: true)
+                .overlay {
+                    if settings.appTheme == .retroEditorial {
+                        Rectangle().strokeBorder(RetroEditorialTokens.ink, lineWidth: 1)
+                    }
+                }
+                .foregroundStyle(
+                    isSelected
+                        ? (settings.appTheme == .retroEditorial ? RetroEditorialTokens.raisedPaper : Color.accentColor)
+                        : .primary
+                )
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+private struct DashboardFilterCountLabel: View {
+    @Environment(AppSettings.self) private var settings
+    let orchestrator: NewsOrchestrator
+    let sourceFilter: DashboardWindow.DashboardSourceFilter
+    let query: String?
+    let forYou: Bool
+
+    private var count: Int {
+        if forYou {
+            return InterestController.shared.recommendations?.items.filter {
+                sourceFilter.matches($0.item.source) && DashboardSearch.matches($0.item, query: query)
+            }.count ?? 0
+        }
+        var result = 0
+        if sourceFilter.matches(.weibo) {
+            result += orchestrator.weiboItems.filter {
+                DashboardSearch.matches($0, query: query)
+            }.count
+        }
+        if sourceFilter.matches(.bilibili) {
+            result += orchestrator.bilibiliItems.filter {
+                DashboardSearch.matches($0, query: query)
+            }.count
+        }
+        for source in settings.activeSources where !source.isBuiltIn {
+            guard sourceFilter.matches(source) else { continue }
+            result += (orchestrator.rssItemsMap[source.id] ?? []).filter {
+                DashboardSearch.matches($0, query: query)
+            }.count
+        }
+        return result
     }
 
-    private var issueDate: String {
-        Self.issueDateFormatter.string(from: Date())
+    var body: some View {
+        Text(L10n.string("dash.filterCount", count))
+            .font(.system(size: 10))
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
+    }
+}
+
+// MARK: - Status overlay
+
+private struct DashboardStatusOverlay: View {
+    let orchestrator: NewsOrchestrator
+
+    var body: some View {
+        if orchestrator.manualRefreshWarning != nil || orchestrator.batchProgress.total > 0 {
+            VStack(alignment: .leading, spacing: 8) {
+                if let warning = orchestrator.manualRefreshWarning {
+                    HStack(spacing: 8) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(.orange)
+                        Text(warning)
+                            .font(.system(size: 12))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(2)
+                        Spacer(minLength: 0)
+                    }
+                }
+
+                if orchestrator.batchProgress.total > 0 {
+                    HStack(spacing: 10) {
+                        ProgressView(
+                            value: Double(orchestrator.batchProgress.completed),
+                            total: Double(orchestrator.batchProgress.total)
+                        )
+                        .controlSize(.small)
+                        .tint(.blue)
+
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text("dash.rssBatchRefreshing".localized)
+                                .font(.system(size: 12, weight: .medium))
+                            Text("\(orchestrator.batchProgress.completed)/\(orchestrator.batchProgress.total)")
+                                .font(.system(size: 11))
+                                .foregroundStyle(.secondary)
+                        }
+
+                        Spacer(minLength: 0)
+                    }
+                }
+            }
+            .padding(12)
+            .newsCardSurface(cornerRadius: 14)
+            .padding(.horizontal, 20)
+            .transition(.move(edge: .top).combined(with: .opacity))
+        }
+    }
+}
+
+// MARK: - Sidebar
+
+private struct DashboardSidebarRegion: View {
+    let orchestrator: NewsOrchestrator
+    let sourceFilter: DashboardWindow.DashboardSourceFilter
+    let searchQuery: String?
+    let isSearchActive: Bool
+    let onConfigureAI: () -> Void
+
+    private func filtered(_ source: NewsSource, _ items: [NewsItem]) -> [NewsItem] {
+        guard sourceFilter.matches(source) else { return [] }
+        return items.filter { DashboardSearch.matches($0, query: searchQuery) }
     }
 
-    private var rssMainRegion: some View {
+    var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            regionHeader
+            EditorialSectionHeading(
+                index: "01",
+                title: "每日简报",
+                subtitle: "AI 编辑部整理的重要线索"
+            )
 
-            if selectedRSSSources.isEmpty {
-                emptyRSSState
+            DashboardAIBriefingPanel(
+                orchestrator: orchestrator,
+                onConfigureAI: onConfigureAI
+            )
+
+            EditorialSectionHeading(
+                index: "02",
+                title: "实时热榜",
+                subtitle: "社交平台正在发生"
+            )
+
+            if sourceFilter.matches(.weibo) || !isSearchActive {
+                DashboardHotTrendCard(source: .weibo, items: filtered(.weibo, orchestrator.weiboItems))
+            }
+            if sourceFilter.matches(.bilibili) || !isSearchActive {
+                DashboardHotTrendCard(source: .bilibili, items: filtered(.bilibili, orchestrator.bilibiliItems))
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+// MARK: - RSS main region
+
+private struct DashboardRSSMainRegion: View {
+    @Environment(AppSettings.self) private var settings
+    let orchestrator: NewsOrchestrator
+    let sourceFilter: DashboardWindow.DashboardSourceFilter
+    let searchQuery: String?
+    let hasAnyFilter: Bool
+    let collapsedSourceIDs: Set<NewsSource.ID>
+    let onToggleExpansion: (NewsSource) -> Void
+    let onRefresh: (NewsSource) -> Void
+    let onOpenSettings: () -> Void
+
+    private var selectedSources: [NewsSource] {
+        settings.activeSources.filter { !$0.isBuiltIn }
+    }
+
+    private var totalItemCount: Int {
+        selectedSources.reduce(0) { partial, source in
+            partial + (orchestrator.rssItemsMap[source.id]?.count ?? 0)
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            EditorialSectionHeading(
+                index: "03",
+                title: "RSS 主版",
+                subtitle: selectedSources.isEmpty
+                    ? "尚未启用 RSS 源"
+                    : "\(selectedSources.count) 个已启用源 · \(totalItemCount) 条内容"
+            )
+
+            if selectedSources.isEmpty {
+                emptyState
             } else {
                 LazyVStack(alignment: .leading, spacing: 16) {
-                    ForEach(selectedRSSSources) { source in
-                        let filteredItems = filteredRSSItems(source)
-                        if sourceFilter.matches(source) && (!filteredItems.isEmpty || !hasAnyFilter) {
-                            DashboardRSSSourceCard(
-                                source: source,
-                                items: filteredItems,
-                                state: orchestrator.sourceStates[source.id] ?? .idle,
-                                isExpanded: isRSSSourceExpanded(source),
-                                onRefresh: {
-                                    Task {
-                                        await orchestrator.refreshRSSSource(source, settings: settings)
-                                    }
-                                },
-                                onToggleExpansion: { toggleRSSSourceExpansion(source) }
-                            )
-                        }
+                    ForEach(selectedSources) { source in
+                        DashboardRSSSourceCard(
+                            source: source,
+                            orchestrator: orchestrator,
+                            sourceFilter: sourceFilter,
+                            searchQuery: searchQuery,
+                            hasAnyFilter: hasAnyFilter,
+                            isExpanded: !collapsedSourceIDs.contains(source.id),
+                            onRefresh: { onRefresh(source) },
+                            onToggleExpansion: { onToggleExpansion(source) }
+                        )
                     }
                 }
             }
@@ -757,17 +841,7 @@ struct DashboardWindow: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    private var regionHeader: some View {
-        EditorialSectionHeading(
-            index: "03",
-            title: "RSS 主版",
-            subtitle: selectedRSSSources.isEmpty
-                ? "尚未启用 RSS 源"
-                : "\(selectedRSSSources.count) 个已启用源 · \(totalRSSItemCount) 条内容"
-        )
-    }
-
-    private var emptyRSSState: some View {
+    private var emptyState: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 8) {
                 Image(systemName: "tray")
@@ -793,34 +867,22 @@ struct DashboardWindow: View {
         .padding(14)
         .newsCardSurface()
     }
+}
 
-    private var sidebarRegion: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            EditorialSectionHeading(
-                index: "01",
-                title: "每日简报",
-                subtitle: "AI 编辑部整理的重要线索"
-            )
+// MARK: - Toolbar
 
-            DashboardAIBriefingPanel(
-                orchestrator: orchestrator,
-                onConfigureAI: onConfigureAI ?? onOpenSettings
-            )
+private struct DashboardRefreshToolbarItem: View {
+    @Environment(AppSettings.self) private var settings
+    let orchestrator: NewsOrchestrator
+    let action: () -> Void
 
-            EditorialSectionHeading(
-                index: "02",
-                title: "实时热榜",
-                subtitle: "社交平台正在发生"
-            )
-
-            if sourceFilter.matches(.weibo) || !isSearchActive {
-                DashboardHotTrendCard(source: .weibo, items: filteredTrendItems(.weibo, orchestrator.weiboItems))
-            }
-            if sourceFilter.matches(.bilibili) || !isSearchActive {
-                DashboardHotTrendCard(source: .bilibili, items: filteredTrendItems(.bilibili, orchestrator.bilibiliItems))
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
+    var body: some View {
+        DashboardToolbarAction(
+            title: settings.appLanguage == .en ? "Refresh" : "刷新",
+            symbol: "arrow.clockwise",
+            isDisabled: orchestrator.isRefreshing,
+            action: action
+        )
     }
 }
 

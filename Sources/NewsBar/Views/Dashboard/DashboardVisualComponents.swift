@@ -298,13 +298,31 @@ private struct DashboardTrendPresentation {
 
 struct DashboardRSSSourceCard: View {
     let source: NewsSource
-    let items: [NewsItem]
-    let state: SourceLoadState
+    let orchestrator: NewsOrchestrator
+    let sourceFilter: DashboardWindow.DashboardSourceFilter
+    let searchQuery: String?
+    let hasAnyFilter: Bool
     let isExpanded: Bool
     let onRefresh: () -> Void
     let onToggleExpansion: () -> Void
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    /// Only this card reads its own slice of the orchestrator, so a refresh of
+    /// another source no longer rebuilds every card in the list.
+    private var allItems: [NewsItem] {
+        orchestrator.rssItemsMap[source.id] ?? []
+    }
+
+    private var items: [NewsItem] {
+        guard sourceFilter.matches(source) else { return [] }
+        guard let searchQuery else { return allItems }
+        return allItems.filter { DashboardSearch.matches($0, query: searchQuery) }
+    }
+
+    private var state: SourceLoadState {
+        orchestrator.sourceStates[source.id] ?? .idle
+    }
 
     private var sourceTint: Color {
         DashboardPalette.tint(for: source.displayName)
@@ -334,21 +352,24 @@ struct DashboardRSSSourceCard: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            header
+        if sourceFilter.matches(source) && (!items.isEmpty || !hasAnyFilter) {
+            VStack(alignment: .leading, spacing: 12) {
+                header
 
-            if isExpanded {
-                DashboardAdaptiveRSSMasonryFeed(
-                    items: items,
-                    title: source.displayName,
-                    state: state,
-                    showsHeader: false
-                )
+                if isExpanded {
+                    DashboardAdaptiveRSSMasonryFeed(
+                        items: items,
+                        title: source.displayName,
+                        state: state,
+                        showsHeader: false,
+                        maxRenderedItems: 40
+                    )
+                }
             }
+            .padding(14)
+            .newsCardSurface(rotation: -0.1)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .padding(14)
-        .newsCardSurface(rotation: -0.1)
-        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var header: some View {
@@ -429,9 +450,14 @@ struct DashboardAdaptiveRSSMasonryFeed: View {
     var title: String = "RSS 订阅"
     var state: SourceLoadState = .idle
     var showsHeader: Bool = true
+    /// Upper bound on rendered cards for the dashboard overview. A feed can
+    /// hold hundreds of entries; laying all of them out is what made width
+    /// changes and first paint expensive. `nil` renders everything.
+    var maxRenderedItems: Int? = nil
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var cachedSourceSummaries: [(name: String, count: Int)] = []
+    @State private var revealedLimit: Int?
 
     private let columns = [
         GridItem(.flexible(), spacing: 12),
@@ -440,6 +466,17 @@ struct DashboardAdaptiveRSSMasonryFeed: View {
 
     private var sourceSummaries: [(name: String, count: Int)] {
         cachedSourceSummaries
+    }
+
+    private var renderedItems: [NewsItem] {
+        guard let maxRenderedItems else { return items }
+        let limit = revealedLimit ?? maxRenderedItems
+        guard items.count > limit else { return items }
+        return Array(items.prefix(limit))
+    }
+
+    private var remainingItemCount: Int {
+        max(0, items.count - renderedItems.count)
     }
 
     private var statusMessage: String? {
@@ -488,9 +525,25 @@ struct DashboardAdaptiveRSSMasonryFeed: View {
                 }
 
                 LazyVGrid(columns: columns, spacing: 12) {
-                    ForEach(items) { item in
+                    ForEach(renderedItems) { item in
                         DashboardRSSMasonryCard(item: item, reduceMotion: reduceMotion)
                     }
+                }
+
+                if remainingItemCount > 0, let maxRenderedItems {
+                    Button {
+                        revealedLimit = (revealedLimit ?? maxRenderedItems) + maxRenderedItems
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: "chevron.down")
+                                .font(.system(size: 8, weight: .semibold))
+                            Text("再显示 \(min(maxRenderedItems, remainingItemCount)) 条 · 共 \(items.count) 条")
+                                .font(.system(size: 11, weight: .medium))
+                        }
+                        .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(EditorialActionButtonStyle(compact: true))
+                    .controlSize(.small)
                 }
             }
         }

@@ -291,7 +291,7 @@ struct DashboardAIBriefingPanel: View {
                         )
 
                         if index < selectedSections.count - 1 {
-                            Divider().opacity(0.3).padding(.horizontal, 4)
+                            Divider().opacity(0.3)
                         }
                     }
                 }

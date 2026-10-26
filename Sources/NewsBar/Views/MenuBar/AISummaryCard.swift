@@ -11,15 +11,16 @@ struct AISummaryCard: View {
     var onConfigureKey: (() -> Void)?
     var contextID: String? = nil
 
-    @State private var displayText = ""
-    @State private var animationTargetText = ""
-    @State private var cachedGroups: [SummarySectionGroup] = []
-    @State private var animationTask: Task<Void, Never>?
+    @State private var renderModel: SummaryRenderModel?
+    @State private var revealedSectionCount = 0
+    @State private var revealTask: Task<Void, Never>?
     @State private var regenerationCooldownRemaining: TimeInterval = 0
     @Environment(AppSettings.self) private var settings
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    private var isRetro: Bool { settings.appTheme == .retroEditorial }
+    private var groupRuleColor: Color {
+        settings.appTheme == .retroEditorial ? RetroEditorialTokens.brick : .purple
+    }
 
     private enum Metrics {
         static let cardPadding: CGFloat = 10
@@ -28,11 +29,13 @@ struct AISummaryCard: View {
         static let headerIconCornerRadius: CGFloat = 9
         static let headerTitleSize: CGFloat = 13
         static let helperTextSize: CGFloat = 10
-        static let contentPadding: CGFloat = 8
-        static let rowPadding: CGFloat = 8
+        static let contentHorizontalPadding: CGFloat = 10
+        static let contentVerticalPadding: CGFloat = 3
+        static let rowVerticalPadding: CGFloat = 7
         static let badgeFontSize: CGFloat = 9
         static let chevronSize: CGFloat = 8
-        static let revealAnimationDuration: TimeInterval = 0.18
+        static let sectionRevealInterval: Duration = .milliseconds(60)
+        static let sectionRevealAnimation: TimeInterval = 0.2
     }
 
     var body: some View {
@@ -50,31 +53,14 @@ struct AISummaryCard: View {
         .padding(Metrics.cardPadding)
         .newsCardSurface(rotation: 0.12)
         .onAppear {
-            switch state {
-            case .done(let text), .truncated(let text):
-                prepareRenderModel(for: text)
-                displayText = animationTargetText
-            default: break
-            }
+            syncRenderModel(animated: false)
         }
-        .onChange(of: state) { _, newState in
-            switch newState {
-            case .done(let text), .truncated(let text):
-                animationTask?.cancel()
-                prepareRenderModel(for: text)
-                let target = animationTargetText
-                animationTask = Task { await animateText(target) }
-            default:
-                animationTask?.cancel()
-                animationTask = nil
-                displayText = ""
-                animationTargetText = ""
-                cachedGroups = []
-            }
+        .onChange(of: state) { _, _ in
+            syncRenderModel(animated: true)
         }
         .onDisappear {
-            animationTask?.cancel()
-            animationTask = nil
+            revealTask?.cancel()
+            revealTask = nil
         }
         .task(id: isRegenerating) {
             // Keep the manual-regeneration cooldown ticking every second so the
@@ -113,6 +99,8 @@ struct AISummaryCard: View {
                     Text("aiCard.subtitle".localized)
                         .font(.system(size: Metrics.helperTextSize))
                         .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
                 }
 
                 Spacer(minLength: 8)
@@ -125,32 +113,6 @@ struct AISummaryCard: View {
         }
         .buttonStyle(.plain)
         .accessibilityHint(isExpanded ? "aiCard.collapseHint".localized : "aiCard.expandHint".localized)
-    }
-
-    @ViewBuilder
-    private var stateHeaderIcon: some View {
-        switch state {
-        case .noKey:
-            Image(systemName: "key.fill")
-                .font(.system(size: 10, weight: .semibold))
-                .foregroundStyle(.orange)
-        case .fetching, .summarizing:
-            ProgressView()
-                .scaleEffect(0.58)
-                .frame(width: 12, height: 12)
-        case .error:
-            Image(systemName: "xmark.circle.fill")
-                .font(.system(size: 10, weight: .semibold))
-                .foregroundStyle(.red)
-        case .done, .truncated:
-            Image(systemName: "sparkles")
-                .font(.system(size: 10, weight: .semibold))
-                .foregroundStyle(.purple)
-        case .idle:
-            Image(systemName: "sparkles")
-                .font(.system(size: 10, weight: .semibold))
-                .foregroundStyle(.secondary)
-        }
     }
 
     @ViewBuilder
@@ -193,12 +155,9 @@ struct AISummaryCard: View {
                 EmptyView()
             }
         }
-        .padding(Metrics.contentPadding)
+        .padding(.horizontal, Metrics.contentHorizontalPadding)
+        .padding(.vertical, Metrics.contentVerticalPadding)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(contentBackground)
-        .overlay(contentShape.stroke(Color(nsColor: .separatorColor).opacity(0.12), lineWidth: 1))
-        .compositingGroup()
-        .clipShape(contentShape)
     }
 
     private var noKeyContent: some View {
@@ -240,27 +199,24 @@ struct AISummaryCard: View {
 
     @ViewBuilder
     private var summaryContent: some View {
-        let fullText: String = {
-            switch state {
-            case .done(let t), .truncated(let t): return t
-            default: return ""
+        VStack(alignment: .leading, spacing: 6) {
+            if let model = renderModel {
+                if model.groups.isEmpty {
+                    Text(model.fallbackAttributed)
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(.primary)
+                        .lineSpacing(3)
+                } else {
+                    sectionList(model)
+                }
             }
-        }()
-
-        VStack(alignment: .leading, spacing: 8) {
-            let fullyVisible = displayText == animationTargetText
-            sectionRenderedView(
-                fullText,
-                visibleText: fullyVisible ? nil : displayText,
-                useMarkdown: fullyVisible
-            )
 
             if case .truncated = state {
                 HStack(spacing: 6) {
                     Image(systemName: "exclamationmark.triangle.fill")
                         .font(.system(size: 9))
                         .foregroundStyle(.orange)
-            Text("aiCard.maybeIncomplete".localized)
+                    Text("aiCard.maybeIncomplete".localized)
                         .font(.system(size: 10))
                         .foregroundStyle(.orange)
                     Spacer()
@@ -270,12 +226,11 @@ struct AISummaryCard: View {
                 }
             }
 
-            if case .done = state {
+            if case .done = state, let onRegenerate {
+                Divider().padding(.top, 4)
                 HStack {
                     Spacer()
-                    if let onRegenerate {
-                        regenerateButton(action: onRegenerate)
-                    }
+                    regenerateButton(action: onRegenerate)
                 }
             }
         }
@@ -284,140 +239,180 @@ struct AISummaryCard: View {
     // MARK: - Section Rendering
 
     @ViewBuilder
-    private func sectionRenderedView(
-        _ fullText: String,
-        visibleText: String? = nil,
-        useMarkdown: Bool = true
-    ) -> some View {
-        let groups = revealedSectionGroups(cachedGroups, visibleText: visibleText)
-        if groups.allSatisfy({ $0.sections.isEmpty }) {
-            let fallbackText = visibleText ?? AISummaryParser.stripCitations(fullText)
-            if useMarkdown {
-                Text((try? AttributedString(markdown: fallbackText)) ?? AttributedString(fallbackText))
-                    .font(.system(size: 11.5))
-                    .foregroundStyle(.primary)
-                    .lineSpacing(3)
-                    .contentTransition(.opacity)
-                    .animation(reduceMotion ? nil : .smooth(duration: Metrics.revealAnimationDuration), value: fallbackText)
-            } else {
-                Text(fallbackText)
-                    .font(.system(size: 11.5))
-                    .foregroundStyle(.primary)
-                    .lineSpacing(3)
-            }
-        } else {
-            ForEach(Array(groups.enumerated()), id: \.offset) { groupIndex, group in
-                if !group.sections.isEmpty {
-                    if !group.title.isEmpty {
+    private func sectionList(_ model: SummaryRenderModel) -> some View {
+        ForEach(Array(model.groups.enumerated()), id: \.offset) { groupIndex, group in
+            if !group.sections.isEmpty {
+                if !group.title.isEmpty,
+                   let firstSection = group.sections.first,
+                   firstSection.order < revealedSectionCount {
+                    VStack(alignment: .leading, spacing: 4) {
+                        if groupIndex > 0 {
+                            Rectangle()
+                                .fill(groupRuleColor.opacity(0.3))
+                                .frame(height: 1)
+                        }
                         Text(group.title)
                             .font(.system(size: 10, weight: .semibold))
+                            .tracking(0.35)
                             .foregroundStyle(.secondary)
-                            .padding(.horizontal, 2)
                     }
+                    .padding(.top, groupIndex == 0 ? 2 : 6)
+                    .padding(.bottom, 2)
+                }
 
-                    ForEach(Array(group.sections.enumerated()), id: \.offset) { index, section in
+                ForEach(group.sections) { section in
+                    if section.order < revealedSectionCount {
                         SectionRow(
                             title: section.title,
                             content: section.body,
-                            visibleContent: section.visibleBody,
-                            useMarkdown: useMarkdown,
+                            attributedContent: section.attributedBody,
+                            accessibilityText: section.accessibilityText,
                             matchedItem: section.primaryIndex.flatMap {
                                 allItems.indices.contains($0) ? allItems[$0] : nil
                             },
                             contextID: contextID
                         )
-                        if index < group.sections.count - 1 {
-                            Divider().opacity(0.3).padding(.horizontal, 4)
-                        }
+                        .transition(.opacity.combined(with: .offset(y: 4)))
                     }
 
-                    if groupIndex < groups.count - 1 {
-                        Divider().opacity(0.3).padding(.horizontal, 4)
+                    // Reveal the rule with its section. Drawing it up front
+                    // left bare dividers floating before any text arrived.
+                    if section.order < revealedSectionCount,
+                       section.order < (group.sections.last?.order ?? 0) {
+                        Divider().opacity(0.3)
                     }
                 }
             }
         }
     }
 
-    private struct SummarySectionGroup {
-        let title: String
-        let sections: [SummarySection]
+    // MARK: - Render model
+
+    private struct SummaryRenderModel {
+        struct Section: Identifiable {
+            let id: Int
+            let order: Int
+            let title: String
+            let body: String
+            let attributedBody: AttributedString
+            let accessibilityText: String
+            let primaryIndex: Int?
+        }
+
+        struct Group: Identifiable {
+            let id: Int
+            let title: String
+            let sections: [Section]
+        }
+
+        let groups: [Group]
+        let fallbackAttributed: AttributedString
+
+        var sectionCount: Int {
+            groups.reduce(0) { $0 + $1.sections.count }
+        }
     }
 
-    private struct SummarySection {
-        let title: String
-        let body: String
-        let revealCharacters: [Character]
-        let visibleBody: String?
-        let primaryIndex: Int?
+    @MainActor
+    private func syncRenderModel(animated: Bool) {
+        switch state {
+        case .done(let text), .truncated(let text):
+            let model = makeRenderModel(for: text)
+            renderModel = model
+            revealTask?.cancel()
+            revealTask = nil
+
+            guard animated, !reduceMotion, model.sectionCount > 0 else {
+                revealedSectionCount = model.sectionCount
+                return
+            }
+
+            revealedSectionCount = 0
+            let total = model.sectionCount
+            revealTask = Task { @MainActor in
+                for index in 1...total {
+                    guard !Task.isCancelled else { return }
+                    withAnimation(.easeOut(duration: Metrics.sectionRevealAnimation)) {
+                        revealedSectionCount = index
+                    }
+                    try? await Task.sleep(for: Metrics.sectionRevealInterval)
+                }
+            }
+        default:
+            revealTask?.cancel()
+            revealTask = nil
+            renderModel = nil
+            revealedSectionCount = 0
+        }
     }
 
-    private func resolvedSectionGroups(for fullText: String) -> [SummarySectionGroup] {
+    private func makeRenderModel(for fullText: String) -> SummaryRenderModel {
+        let resolved = resolvedSectionGroups(for: fullText)
+        var order = 0
+        var groups: [SummaryRenderModel.Group] = []
+
+        for (groupIndex, group) in resolved.enumerated() {
+            var sections: [SummaryRenderModel.Section] = []
+            for section in group.sections {
+                let plainBody = AISummaryParser.stripMarkdown(section.body)
+                let attributed = Self.attributed(section.body)
+                let stripped = AISummaryParser.stripCitations(plainBody)
+                    .replacingOccurrences(of: "\n", with: " ")
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                let normalizedTitle = section.title.trimmingCharacters(in: .whitespacesAndNewlines)
+                let accessibilityText: String
+                if normalizedTitle.isEmpty {
+                    accessibilityText = stripped
+                } else if stripped.isEmpty {
+                    accessibilityText = normalizedTitle
+                } else {
+                    accessibilityText = "\(normalizedTitle)。\(stripped)"
+                }
+
+                sections.append(SummaryRenderModel.Section(
+                    id: order,
+                    order: order,
+                    title: section.title,
+                    body: section.body,
+                    attributedBody: attributed,
+                    accessibilityText: accessibilityText,
+                    primaryIndex: section.primaryIndex
+                ))
+                order += 1
+            }
+            if !sections.isEmpty {
+                groups.append(SummaryRenderModel.Group(
+                    id: groupIndex,
+                    title: group.title,
+                    sections: sections
+                ))
+            }
+        }
+
+        let fallback = Self.attributed(AISummaryParser.stripCitations(fullText))
+        return SummaryRenderModel(groups: groups, fallbackAttributed: fallback)
+    }
+
+    private func resolvedSectionGroups(for fullText: String) -> [(title: String, sections: [(title: String, body: String, primaryIndex: Int?)])] {
         if let parsedSummary {
             let visibleSummary = AISummaryParser.limited(
                 parsedSummary,
                 maxSectionsPerCategory: maxSectionsPerCategory
             )
             return [
-                SummarySectionGroup(title: "aiCard.trendOverview".localized, sections: visibleSummary.trendOverview.map(summarySection)),
-                SummarySectionGroup(title: "aiCard.dailyEssentials".localized, sections: visibleSummary.dailyEssentials.map(summarySection))
+                (title: "aiCard.trendOverview".localized, sections: visibleSummary.trendOverview),
+                (title: "aiCard.dailyEssentials".localized, sections: visibleSummary.dailyEssentials)
             ].filter { !$0.sections.isEmpty }
         }
 
-        let sections = AISummaryParser.parseSections(fullText, itemCount: allItems.count)
-        return [SummarySectionGroup(title: "", sections: sections.map(summarySection))]
+        return [(title: "", sections: AISummaryParser.parseSections(fullText, itemCount: allItems.count))]
     }
 
-    private func revealedSectionGroups(
-        _ groups: [SummarySectionGroup],
-        visibleText: String?
-    ) -> [SummarySectionGroup] {
-        guard let visibleText else { return groups }
-
-        var remainingCharacters = visibleText.count
-        return groups.map { group in
-            let sections = group.sections.map { section in
-                let visibleBody = String(section.revealCharacters.prefix(remainingCharacters))
-                remainingCharacters = max(0, remainingCharacters - section.revealCharacters.count)
-                return SummarySection(
-                    title: section.title,
-                    body: section.body,
-                    revealCharacters: section.revealCharacters,
-                    visibleBody: visibleBody,
-                    primaryIndex: section.primaryIndex
-                )
-            }
-            return SummarySectionGroup(title: group.title, sections: sections)
+    private static func attributed(_ text: String) -> AttributedString {
+        if let parsed = try? AttributedString(markdown: text) {
+            return parsed
         }
-    }
-
-    private func summarySection(_ section: (title: String, body: String, primaryIndex: Int?)) -> SummarySection {
-        SummarySection(
-            title: section.title,
-            body: section.body,
-            revealCharacters: Array(renderedBodyText(section.body)),
-            visibleBody: nil,
-            primaryIndex: section.primaryIndex
-        )
-    }
-
-    @MainActor
-    private func prepareRenderModel(for fullText: String) {
-        let groups = resolvedSectionGroups(for: fullText)
-        cachedGroups = groups
-        if groups.allSatisfy({ $0.sections.isEmpty }) {
-            animationTargetText = AISummaryParser.stripMarkdown(fullText)
-        } else {
-            animationTargetText = groups
-                .flatMap(\.sections)
-                .flatMap(\.revealCharacters)
-                .map(String.init)
-                .joined()
-        }
-    }
-
-    private func renderedBodyText(_ text: String) -> String {
-        AISummaryParser.stripMarkdown(text)
+        return AttributedString(text)
     }
 
     private func errorContent(_ message: String) -> some View {
@@ -470,36 +465,6 @@ struct AISummaryCard: View {
         return "aiCard.regenerate".localized
     }
 
-    // MARK: - Animation
-
-    @MainActor
-    private func animateText(_ fullText: String) async {
-        guard !reduceMotion else {
-            displayText = fullText
-            return
-        }
-
-        let chars: [Character] = Array(fullText)
-        guard !chars.isEmpty else { return }
-        let chunkSize = 3
-        var index = 0
-        var accumulated = ""
-        while index < chars.count {
-            let endIndex = min(index + chunkSize, chars.count)
-            accumulated.append(contentsOf: chars[index..<endIndex])
-            index = endIndex
-            displayText = accumulated
-            guard index < chars.count else { break }
-            do {
-                try await Task.sleep(nanoseconds: 30_000_000)
-            } catch {
-                displayText = fullText
-                return
-            }
-        }
-        displayText = fullText
-    }
-
     private func toggleExpansion() {
         if reduceMotion {
             isExpanded.toggle()
@@ -509,29 +474,6 @@ struct AISummaryCard: View {
             }
         }
     }
-
-    private var cardShape: RoundedRectangle {
-        RoundedRectangle(cornerRadius: 18, style: .continuous)
-    }
-
-    private var cardBackground: some View {
-        cardShape.fill(.ultraThinMaterial)
-    }
-
-    private var cardStroke: some View {
-        cardShape.strokeBorder(.separator.opacity(0.32), lineWidth: 1)
-    }
-
-    private var contentBackground: some View {
-        contentShape.fill(.purple.opacity(0.05))
-    }
-
-    private var contentShape: AnyShape {
-        isRetro
-            ? AnyShape(Rectangle())
-            : AnyShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-    }
-
 }
 
 // MARK: - Section Row
@@ -539,7 +481,8 @@ struct AISummaryCard: View {
 struct SectionRow: View {
     let title: String
     let content: String
-    var visibleContent: String? = nil
+    var attributedContent: AttributedString? = nil
+    var accessibilityText: String? = nil
     var useMarkdown: Bool = true
     let matchedItem: NewsItem?
     var contextID: String? = nil
@@ -550,12 +493,9 @@ struct SectionRow: View {
 
     private var isRetro: Bool { settings.appTheme == .retroEditorial }
 
-    private enum Metrics {
-        static let revealAnimationDuration: TimeInterval = 0.18
-    }
-
     private var accessibilityLabelText: String {
-        let stripped = AISummaryParser.stripCitations(displayContent)
+        if let accessibilityText { return accessibilityText }
+        let stripped = AISummaryParser.stripCitations(content)
             .replacingOccurrences(of: "\n", with: " ")
             .trimmingCharacters(in: .whitespacesAndNewlines)
         let normalizedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -571,47 +511,48 @@ struct SectionRow: View {
         return "aiCard.readonly".localized
     }
 
-    private var displayContent: String {
-        visibleContent ?? content
-    }
-
-    /// Parse markdown only when fully visible; the reveal prefix stays plain.
-    private func makeBodyText(_ text: String) -> AttributedString {
-        if useMarkdown, let attributed = try? AttributedString(markdown: text) {
+    /// Parse markdown only once per row; the summary card supplies a
+    /// pre-attributed body when it has one.
+    private var bodyText: AttributedString {
+        if let attributedContent { return attributedContent }
+        if useMarkdown, let attributed = try? AttributedString(markdown: content) {
             return attributed
         }
-        return AttributedString(text)
+        return AttributedString(content)
     }
 
     var body: some View {
-        HStack(alignment: .top, spacing: 0) {
-            VStack(alignment: .leading, spacing: 3) {
-                if !title.isEmpty {
+        VStack(alignment: .leading, spacing: 3) {
+            if !title.isEmpty {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
                     Text(title)
                         .font(.system(size: 11, weight: .semibold))
                         .foregroundStyle(.primary)
+                        .lineLimit(2)
+                        .accessibilityHidden(true)
+
+                    Spacer(minLength: 6)
+
+                    if let item = matchedItem {
+                        SourceBadge(sourceName: item.source.displayName, url: item.url, item: item, contextID: contextID)
+                    }
                 }
-
-                Text(makeBodyText(displayContent))
-                    .font(.system(size: 11.5))
-                    .foregroundStyle(.primary)
-                    .lineSpacing(3)
-                    .contentTransition(.opacity)
-                    .animation(reduceMotion ? nil : .smooth(duration: Metrics.revealAnimationDuration), value: displayContent)
+            } else if let item = matchedItem {
+                HStack {
+                    Spacer(minLength: 0)
+                    SourceBadge(sourceName: item.source.displayName, url: item.url, item: item, contextID: contextID)
+                }
             }
-            .accessibilityElement(children: .ignore)
-            .accessibilityLabel(accessibilityLabelText)
-            .accessibilityValue(matchedItem?.source.displayName ?? "aiCard.noSource".localized)
-            .accessibilityHint(accessibilityHintText)
 
-            Spacer(minLength: 4)
-
-            if let item = matchedItem {
-                SourceBadge(sourceName: item.source.displayName, url: item.url, item: item, contextID: contextID)
-                    .padding(.top, 2)
-            }
+            Text(bodyText)
+                .font(.system(size: 11.5))
+                .foregroundStyle(.primary)
+                .lineSpacing(3)
+                .accessibilityLabel(accessibilityLabelText)
+                .accessibilityValue(matchedItem?.source.displayName ?? "aiCard.noSource".localized)
+                .accessibilityHint(accessibilityHintText)
         }
-        .padding(8)
+        .padding(.vertical, Metrics.rowVerticalPadding)
         .background(rowBackground)
         .overlay(rowStroke)
         .clipShape(rowShape)
@@ -624,6 +565,10 @@ struct SectionRow: View {
                 }
             }
         }
+    }
+
+    private enum Metrics {
+        static let rowVerticalPadding: CGFloat = 9
     }
 
     private var rowShape: AnyShape {

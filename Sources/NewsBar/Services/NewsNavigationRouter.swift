@@ -10,6 +10,10 @@ struct NewsReaderRequest: Identifiable {
     let contextID: String?
     let consentEpoch: UUID
     let privateSession: Bool
+    // Frozen ranking-batch provenance captured when the row was opened.
+    var policyVersion: String? = nil
+    var profileVersion: Int? = nil
+    var position: Int? = nil
 }
 
 @MainActor
@@ -18,19 +22,53 @@ final class NewsNavigationRouter {
     static let shared = NewsNavigationRouter()
     var selection: NewsReaderRequest?
 
-    func open(_ item: NewsItem, surface: String, contextID: String? = nil) {
-        open(url: item.url, title: item.displayTitle, item: item, surface: surface, contextID: contextID)
+    func open(
+        _ item: NewsItem,
+        surface: String,
+        contextID: String? = nil,
+        policyVersion: String? = nil,
+        profileVersion: Int? = nil,
+        position: Int? = nil
+    ) {
+        open(
+            url: item.url,
+            title: item.displayTitle,
+            item: item,
+            surface: surface,
+            contextID: contextID,
+            policyVersion: policyVersion,
+            profileVersion: profileVersion,
+            position: position
+        )
     }
 
-    func open(url: String, title: String = "", item: NewsItem? = nil, surface: String, contextID: String? = nil) {
+    func open(
+        url: String,
+        title: String = "",
+        item: NewsItem? = nil,
+        surface: String,
+        contextID: String? = nil,
+        policyVersion: String? = nil,
+        profileVersion: Int? = nil,
+        position: Int? = nil
+    ) {
         let interest = InterestController.shared
-        let request = NewsReaderRequest(url: url, title: title.isEmpty ? (URL(string: url)?.host ?? url) : title,
-                                        item: item, surface: surface, contextID: contextID,
-                                        consentEpoch: interest.state.consentEpoch, privateSession: interest.privateReading)
+        let request = NewsReaderRequest(
+            url: url,
+            title: title.isEmpty ? (URL(string: url)?.host ?? url) : title,
+            item: item,
+            surface: surface,
+            contextID: contextID,
+            consentEpoch: interest.state.consentEpoch,
+            privateSession: interest.privateReading,
+            policyVersion: policyVersion,
+            profileVersion: profileVersion,
+            position: position
+        )
         selection = request
-        if let item, !request.privateSession {
-            interest.record(item, kind: .opened, epoch: request.consentEpoch, sessionID: request.id)
-        }
+        // Opening is only an attempt. The reader records `opened` after a
+        // successfully loaded, attributed document; a failed open stays a
+        // failed/zero-strength event and never becomes positive evidence.
         NotificationCenter.default.post(name: .newsReaderRequested, object: nil)
     }
 
@@ -39,7 +77,18 @@ final class NewsNavigationRouter {
     func external(_ request: NewsReaderRequest, currentURL: String) {
         guard let url = ReaderNavigationPolicy.allowedURL(currentURL) else { return }
         if let item = request.item, !request.privateSession {
-            InterestController.shared.record(item, kind: .externalHandoff, epoch: request.consentEpoch, sessionID: request.id)
+            InterestController.shared.record(
+                item,
+                kind: .externalHandoff,
+                epoch: request.consentEpoch,
+                sessionID: request.id,
+                surface: request.surface,
+                contextID: request.contextID,
+                position: request.position,
+                readerSessionID: request.id,
+                policyVersion: request.policyVersion,
+                profileVersion: request.profileVersion
+            )
         }
         // Explicit user action only. Never invoked by a page or failure callback.
         NSWorkspace.shared.open(url)

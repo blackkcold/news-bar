@@ -41,6 +41,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private var updateChecker: UpdateChecker?
     private var autoRefreshTimer: Timer?
     private var dashboardRefreshTask: Task<Void, Never>?
+    private var popoverRefreshTask: Task<Void, Never>?
     private var workspaceObservers: [NSObjectProtocol] = []
     private var isSystemSleeping = false
 
@@ -54,6 +55,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         EncryptedKeyStore.migrateFromKeychainIfNeeded()
         settings = AppSettings()
         Task { await InterestController.shared.prepare() }
+        Task { await ReaderRuleListCache.prewarm() }
         setupWorkspaceObservers()
 
         preloadCachedNews()
@@ -400,7 +402,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         }
 
         activePopover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
-        requestVisibleRefreshIfNeeded()
+        schedulePopoverRefresh()
     }
 
     private func makePopover(
@@ -471,6 +473,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         }
     }
 
+    /// Let the popover draw its first frame from cached data before a network
+    /// refresh starts changing source state under the user's eyes.
+    private func schedulePopoverRefresh(after delay: Duration = .milliseconds(350)) {
+        popoverRefreshTask?.cancel()
+        popoverRefreshTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: delay)
+            guard !Task.isCancelled, let self, self.popover?.isShown == true else { return }
+            self.requestVisibleRefreshIfNeeded()
+        }
+    }
+
     /// Let the dashboard draw its first frame and cached content before a
     /// network refresh starts changing source state under the user's eyes.
     private func scheduleDashboardRefresh(after delay: Duration = .milliseconds(450)) {
@@ -526,6 +539,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
     func applicationWillTerminate(_ notification: Notification) {
         dashboardRefreshTask?.cancel()
+        popoverRefreshTask?.cancel()
         autoRefreshTimer?.invalidate()
         let workspaceCenter = NSWorkspace.shared.notificationCenter
         workspaceObservers.forEach { workspaceCenter.removeObserver($0) }
