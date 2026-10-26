@@ -131,6 +131,7 @@ final class NewsReaderModel: NSObject, WKNavigationDelegate, WKUIDelegate, WKScr
         try? await Task.sleep(for: .milliseconds(50))
         guard !stopped else { return }
         let web = WKWebView(frame: .zero, configuration: configuration)
+        web.customUserAgent = ReaderUserAgent.value()
         web.navigationDelegate = self
         web.uiDelegate = self
         web.allowsBackForwardNavigationGestures = true
@@ -453,6 +454,12 @@ final class NewsReaderModel: NSObject, WKNavigationDelegate, WKUIDelegate, WKScr
             if navigationResponse.isForMainFrame {
                 blockMainNavigation(.downloadBlocked)
             }
+            return .cancel
+        }
+        if navigationResponse.isForMainFrame,
+           let response = navigationResponse.response as? HTTPURLResponse,
+           ReaderResponsePolicy.isRiskControlRejection(status: response.statusCode) {
+            blockMainNavigation(.siteBlocked)
             return .cancel
         }
         return .allow
