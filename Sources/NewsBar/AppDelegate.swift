@@ -11,6 +11,8 @@ extension Notification.Name {
     static let fillBurstTestTopic = Notification.Name("fillBurstTestTopic")
     static let interestSettingsRequested = Notification.Name("interestSettingsRequested")
     static let switchToInterestSettings = Notification.Name("switchToInterestSettings")
+    static let browserSettingsRequested = Notification.Name("browserSettingsRequested")
+    static let switchToBrowserTab = Notification.Name("switchToBrowserTab")
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
@@ -21,7 +23,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private static let startupDelay: TimeInterval = 2
     private static let updateCheckDelay: TimeInterval = 10
     private static let popoverSize = NSSize(width: 400, height: 520)
-    private static let settingsSize = NSSize(width: 560, height: 420)
+    private static let settingsSize = NSSize(width: 640, height: 560)
     private static let dashboardSize = NSSize(width: 1180, height: 860)
     private static let dashboardMinimumSize = NSSize(width: 960, height: 720)
     private static let burstWindowSize = NSSize(width: 640, height: 720)
@@ -38,6 +40,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private var orchestrator: NewsOrchestrator?
     private var updateChecker: UpdateChecker?
     private var autoRefreshTimer: Timer?
+    private var dashboardRefreshTask: Task<Void, Never>?
     private var workspaceObservers: [NSObjectProtocol] = []
     private var isSystemSleeping = false
 
@@ -145,8 +148,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         NotificationCenter.default.addObserver(forName: NSWindow.willCloseNotification, object: nil, queue: .main) { [weak self] notification in
             guard let self, let window = notification.object as? NSWindow, window === self.dashboardWindow else { return }
             Task { @MainActor in
+                self.dashboardRefreshTask?.cancel()
+                self.dashboardRefreshTask = nil
                 NewsNavigationRouter.shared.close()
                 InterestController.shared.endListSession()
+                DockPresence.hide()
             }
         }
         NotificationCenter.default.addObserver(forName: .newsReaderRequested, object: nil, queue: .main) { [weak self] _ in
@@ -155,6 +161,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         NotificationCenter.default.addObserver(forName: .interestSettingsRequested, object: nil, queue: .main) { [weak self] _ in
             self?.openSettings()
             NotificationCenter.default.post(name: .switchToInterestSettings, object: nil)
+        }
+        NotificationCenter.default.addObserver(forName: .browserSettingsRequested, object: nil, queue: .main) { [weak self] _ in
+            self?.openSettings()
+            DispatchQueue.main.async {
+                NotificationCenter.default.post(name: .switchToBrowserTab, object: nil)
+            }
         }
         NotificationCenter.default.addObserver(forName: .interestDataCleared, object: nil, queue: .main) { [weak self] _ in
             Task { @MainActor [weak self] in
@@ -459,13 +471,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         }
     }
 
+    /// Let the dashboard draw its first frame and cached content before a
+    /// network refresh starts changing source state under the user's eyes.
+    private func scheduleDashboardRefresh(after delay: Duration = .milliseconds(450)) {
+        dashboardRefreshTask?.cancel()
+        dashboardRefreshTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: delay)
+            guard !Task.isCancelled, let self, self.dashboardWindow?.isVisible == true else { return }
+            self.requestVisibleRefreshIfNeeded()
+        }
+    }
+
     func openDashboard(refresh: Bool = true) {
         popover?.performClose(nil)
 
         if let existing = dashboardWindow {
             existing.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
-            if refresh { requestVisibleRefreshIfNeeded() }
+            MainActor.assumeIsolated { DockPresence.show() }
+            if refresh { scheduleDashboardRefresh() }
             return
         }
 
@@ -496,10 +520,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         dashboardWindow = window
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
-        if refresh { requestVisibleRefreshIfNeeded() }
+        MainActor.assumeIsolated { DockPresence.show() }
+        if refresh { scheduleDashboardRefresh() }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        dashboardRefreshTask?.cancel()
         autoRefreshTimer?.invalidate()
         let workspaceCenter = NSWorkspace.shared.notificationCenter
         workspaceObservers.forEach { workspaceCenter.removeObserver($0) }

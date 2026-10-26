@@ -1,10 +1,49 @@
 import AppKit
+import os
 import SwiftUI
 import WebKit
 
+private let readerCookieLogger = Logger(subsystem: "com.newsbar.app", category: "ReaderCookie")
+
+@MainActor
+enum ReaderRuleListCache {
+    private static let identifier = "newsbar-local-resource-policy-v1"
+    private static var cached: WKContentRuleList?
+    private static var inFlight: Task<WKContentRuleList?, Never>?
+
+    static func prewarm() async {
+        _ = await rules()
+    }
+
+    static func rules() async -> WKContentRuleList? {
+        if let cached { return cached }
+        if let inFlight { return await inFlight.value }
+        let task = Task { () -> WKContentRuleList? in
+            do {
+                return try await WKContentRuleListStore.default().compileContentRuleList(
+                    forIdentifier: identifier,
+                    encodedContentRuleList: ReaderNavigationPolicy.resourceRules
+                )
+            } catch {
+                return nil
+            }
+        }
+        inFlight = task
+        let list = await task.value
+        inFlight = nil
+        if let list { cached = list }
+        return list
+    }
+}
+
 @MainActor
 @Observable
-final class NewsReaderModel: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler {
+final class NewsReaderModel: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler, WKHTTPCookieStoreObserver {
+    struct SessionOptions: Equatable {
+        var cookieMemoryEnabled = false
+        var historyEnabled = false
+    }
+
     let request: NewsReaderRequest
     private(set) var webView: WKWebView?
     var loading = true
@@ -29,6 +68,10 @@ final class NewsReaderModel: NSObject, WKNavigationDelegate, WKUIDelegate, WKScr
     private var lastTick = ProcessInfo.processInfo.systemUptime
     private var lastMessageAt: TimeInterval = 0
     private var stopped = false
+    private var sessionOptions = SessionOptions()
+    private var didRecordHistory = false
+    private var observingCookieStore: WKHTTPCookieStore?
+    private var cookieCaptureTask: Task<Void, Never>?
     private var terminalState = ReadingTerminalState.unknown
     private var suspended = false
     private var observers: [(NotificationCenter, NSObjectProtocol)] = []
@@ -61,25 +104,24 @@ final class NewsReaderModel: NSObject, WKNavigationDelegate, WKUIDelegate, WKScr
         super.init()
     }
 
-    func start() async {
+    func start(options: SessionOptions? = nil) async {
         guard webView == nil, !stopped else { return }
+        if let options { sessionOptions = options }
         networkRevision = proxyController.revision
         do { proxySession = try proxyController.authorizedSession() }
         catch { fail(.proxyTrustRequired); return }
+        recordHistoryIfNeeded()
         let configuration = WKWebViewConfiguration()
         configuration.websiteDataStore = .nonPersistent()
         if let proxySession { configuration.websiteDataStore.proxyConfigurations = [proxySession.configuration] }
         configuration.preferences.javaScriptCanOpenWindowsAutomatically = false
         configuration.defaultWebpagePreferences.allowsContentJavaScript = true
-        do {
-            let rules = try await WKContentRuleListStore.default().compileContentRuleList(forIdentifier: "newsbar-local-resource-policy-v1", encodedContentRuleList: ReaderNavigationPolicy.resourceRules)
-            if let rules { configuration.userContentController.add(rules) }
-            else { throw NewsBarError.requestFailed }
-        } catch {
+        guard let rules = await ReaderRuleListCache.rules() else {
             loading = false
             failure = .safetyRulesUnavailable
             return
         }
+        configuration.userContentController.add(rules)
         guard !stopped else { return }
         guard networkContextIsCurrent else { fail(.proxyTrustRequired); return }
         configuration.userContentController.add(self, contentWorld: world, name: "aggregate")
@@ -111,8 +153,25 @@ final class NewsReaderModel: NSObject, WKNavigationDelegate, WKUIDelegate, WKScr
                 }
             }
         }
+        if sessionOptions.cookieMemoryEnabled, !request.privateSession, let host = initialHost {
+            await BrowserDataController.shared.prepare()
+            let cookies = await BrowserDataController.shared.cookiesForInjection(host: host)
+            let cookieStore = web.configuration.websiteDataStore.httpCookieStore
+            await injectCookies(cookies, into: cookieStore)
+            guard !stopped else { return }
+            #if DEBUG
+            await verifyInjectedCookies(cookies, in: cookieStore, host: host)
+            #endif
+            cookieStore.add(self)
+            observingCookieStore = cookieStore
+        }
+        guard !stopped, networkContextIsCurrent else { return }
+        // Let the opening transition draw its first frames before WebKit starts
+        // network and render work on the main thread.
+        try? await Task.sleep(for: .milliseconds(80))
+        guard !stopped, networkContextIsCurrent else { return }
         installLifecycleObservers()
-        timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+        timer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in self?.tick() }
         }
         loadInitial()
@@ -121,6 +180,23 @@ final class NewsReaderModel: NSObject, WKNavigationDelegate, WKUIDelegate, WKScr
     func stop(terminal: ReadingTerminalState? = nil) {
         guard !stopped else { return }
         tick(final: true)
+        cookieCaptureTask?.cancel()
+        cookieCaptureTask = nil
+        observingCookieStore?.remove(self)
+        observingCookieStore = nil
+        if sessionOptions.cookieMemoryEnabled, !request.privateSession,
+           let cookieStore = webView?.configuration.websiteDataStore.httpCookieStore {
+            let host = currentHost
+            let title = pageTitle
+            Task {
+                let cookies = await cookieStore.allCookies()
+                guard let host else { return }
+                let count = await BrowserDataController.shared.capture(
+                    cookies: cookies, host: host, title: title
+                )
+                readerCookieLogger.debug("capture host=\(host, privacy: .public) cookies=\(cookies.count, privacy: .public) stored=\(count, privacy: .public) reason=stop")
+            }
+        }
         if let item = request.item, !request.privateSession {
             let finalState = terminal ?? (evidence.signal(articleAdapted: adapted) == .qualifiedRead || evidence.signal(articleAdapted: adapted) == .deepRead ? .engaged : terminalState)
             InterestController.shared.recordSession(ReadingSessionRecord(id: request.id, epoch: request.consentEpoch,
@@ -165,6 +241,83 @@ final class NewsReaderModel: NSObject, WKNavigationDelegate, WKUIDelegate, WKScr
 
     func dismissNotice() { notice = nil }
 
+    var initialHost: String? {
+        ReaderCookieHost.normalize(URL(string: request.url)?.host)
+    }
+
+    var currentHost: String? {
+        ReaderCookieHost.normalize(webView?.url?.host)
+            ?? ReaderCookieHost.normalize(URL(string: currentURL)?.host)
+            ?? initialHost
+    }
+
+    private func recordHistoryIfNeeded() {
+        guard sessionOptions.historyEnabled, !request.privateSession, !didRecordHistory,
+              let host = initialHost else { return }
+        didRecordHistory = true
+        let url = request.url
+        let title = request.title
+        Task { await BrowserDataController.shared.recordOpen(url: url, title: title, host: host) }
+    }
+
+    /// Captures the current page's first-party cookies. An explicit save still works
+    /// when the global switch is off; the view turns the switch on for that case.
+    func captureCurrentSite(force: Bool = false) async -> Int {
+        guard force || sessionOptions.cookieMemoryEnabled, !request.privateSession,
+              let webView, let host = currentHost else { return 0 }
+        let cookies = await webView.configuration.websiteDataStore.httpCookieStore.allCookies()
+        let count = await BrowserDataController.shared.capture(
+            cookies: cookies, host: host, title: pageTitle
+        )
+        readerCookieLogger.debug("capture host=\(host, privacy: .public) cookies=\(cookies.count, privacy: .public) stored=\(count, privacy: .public)")
+        return count
+    }
+
+    /// QR sign-in often writes cookies from JS/XHR without a new `didFinish`.
+    /// Debounce cookie-store notifications so a burst of `Set-Cookie` writes
+    /// produces one vault update.
+    nonisolated func cookiesDidChange(in cookieStore: WKHTTPCookieStore) {
+        Task { @MainActor [weak self] in
+            self?.scheduleCookieCapture()
+        }
+    }
+
+    private func scheduleCookieCapture() {
+        guard !stopped, sessionOptions.cookieMemoryEnabled, !request.privateSession else { return }
+        cookieCaptureTask?.cancel()
+        cookieCaptureTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(600))
+            guard !Task.isCancelled, let self, !self.stopped else { return }
+            _ = await self.captureCurrentSite()
+        }
+    }
+
+    private func injectCookies(_ cookies: [HTTPCookie], into store: WKHTTPCookieStore) async {
+        guard !cookies.isEmpty else { return }
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            let group = DispatchGroup()
+            for cookie in cookies {
+                group.enter()
+                store.setCookie(cookie) { group.leave() }
+            }
+            group.notify(queue: .main) { continuation.resume() }
+        }
+    }
+
+    private func verifyInjectedCookies(_ cookies: [HTTPCookie], in store: WKHTTPCookieStore, host: String) async {
+        guard !cookies.isEmpty else { return }
+        let installed = await store.allCookies()
+        let installedIDs = Set(installed.map { "\($0.name)|\($0.domain)|\($0.path)" })
+        let missing = cookies.filter { !installedIDs.contains("\($0.name)|\($0.domain)|\($0.path)") }
+        readerCookieLogger.debug("inject host=\(host, privacy: .public) requested=\(cookies.count, privacy: .public) installed=\(installed.count, privacy: .public) missing=\(missing.count, privacy: .public)")
+        for cookie in cookies.prefix(24) {
+            readerCookieLogger.debug("inject cookie=\(cookie.name, privacy: .public) domain=\(cookie.domain, privacy: .public) path=\(cookie.path, privacy: .public) secure=\(cookie.isSecure, privacy: .public)")
+        }
+        for cookie in missing.prefix(12) {
+            readerCookieLogger.debug("inject missing=\(cookie.name, privacy: .public) domain=\(cookie.domain, privacy: .public) path=\(cookie.path, privacy: .public)")
+        }
+    }
+
     private func installLifecycleObservers() {
         let proxyToken = NotificationCenter.default.addObserver(forName: .readerNetworkContextChanged, object: nil, queue: .main) { [weak self] _ in
             Task { @MainActor [weak self] in
@@ -200,13 +353,18 @@ final class NewsReaderModel: NSObject, WKNavigationDelegate, WKUIDelegate, WKScr
               !request.privateSession, !InterestController.shared.privateReading else { return }
         let window = webView.window
         let visible = window?.isVisible == true && window?.occlusionState.contains(.visible) == true && !webView.isHiddenOrHasHiddenAncestor
-        let idle = CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: .mouseMoved)
-        let keyboardIdle = CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: .keyDown)
-        let scrollIdle = CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: .scrollWheel)
-        let systemSession = CGSessionCopyCurrentDictionary() as? [String: Any]
-        let locked = systemSession?["CGSSessionScreenIsLocked"] as? Bool ?? false
-        evidence.tick(elapsed: elapsed, loaded: loaded, active: NSApp.isActive && window?.isKeyWindow == true,
-                      visible: visible, unlocked: !suspended && !locked, idle: min(idle, min(keyboardIdle, scrollIdle)))
+        let active = NSApp.isActive && window?.isKeyWindow == true && visible && !suspended
+        let idle: TimeInterval
+        if active {
+            let mouseIdle = CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: .mouseMoved)
+            let keyboardIdle = CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: .keyDown)
+            let scrollIdle = CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: .scrollWheel)
+            idle = min(mouseIdle, min(keyboardIdle, scrollIdle))
+        } else {
+            idle = .greatestFiniteMagnitude
+        }
+        evidence.tick(elapsed: elapsed, loaded: loaded, active: active,
+                      visible: visible, unlocked: !suspended, idle: idle)
         // Aggregated evidence only; never persist per-frame trajectories.
         if evidence.shouldEmit(final: final), let kind = evidence.signal(articleAdapted: adapted) {
             InterestController.shared.record(item, kind: kind, epoch: request.consentEpoch, sessionID: request.id)
@@ -302,6 +460,9 @@ final class NewsReaderModel: NSObject, WKNavigationDelegate, WKUIDelegate, WKScr
         attributed = ContentIdentity.canonicalURL(currentURL) == ContentIdentity.canonicalURL(request.url)
         canGoBack = webView.canGoBack
         canGoForward = webView.canGoForward
+        if sessionOptions.cookieMemoryEnabled, !request.privateSession {
+            Task { _ = await self.captureCurrentSite() }
+        }
         let path = webView.url?.path.lowercased() ?? ""
         if ["login", "signin", "account", "passport", "captcha", "challenge"].contains(where: path.contains) { attributed = false }
         guard attributed, InterestController.shared.canLearn, !request.privateSession else { return }
@@ -365,6 +526,7 @@ private struct ReaderWebSurface: NSViewRepresentable {
 
 struct NewsReaderView: View {
     @State private var model: NewsReaderModel
+    @Environment(AppSettings.self) private var settings
     var onOpenSettings: () -> Void = {}
 
     init(request: NewsReaderRequest, onOpenSettings: @escaping () -> Void = {}) {
@@ -373,12 +535,17 @@ struct NewsReaderView: View {
     }
 
     var body: some View {
-        ReaderContentView(model: model, onClose: { NewsNavigationRouter.shared.close() }, onOpenSettings: onOpenSettings)
-            .task { await model.start() }
+        ReaderContentView(model: model, onClose: { ReaderTransitionCoordinator.shared.requestClose() }, onOpenSettings: onOpenSettings)
+            .task {
+                await model.start(options: NewsReaderModel.SessionOptions(
+                    cookieMemoryEnabled: settings.readerCookieMemoryEnabled,
+                    historyEnabled: settings.readerHistoryEnabled
+                ))
+            }
             .onDisappear { model.stop() }
             .onReceive(NotificationCenter.default.publisher(for: .interestDataCleared)) { _ in
                 model.stop()
-                NewsNavigationRouter.shared.close()
+                ReaderTransitionCoordinator.shared.requestClose()
             }
     }
 }
@@ -393,7 +560,9 @@ struct ReaderContentView: View {
     @State private var feedbackMessage: String?
     @State private var askExternal = false
     @State private var showPrivacy = false
+    @State private var browserData = BrowserDataController.shared
     @Environment(AppSettings.self) private var settings
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var english: Bool { settings.appLanguage == .en }
     private var controller: InterestController { InterestController.shared }
@@ -415,54 +584,30 @@ struct ReaderContentView: View {
                 .tint(.accentColor)
                 .opacity(model.loading ? 1 : 0)
                 .frame(height: 3)
+                .animation(reduceMotion ? nil : .easeInOut(duration: 0.15), value: model.loading)
                 .accessibilityLabel(english ? "Page loading progress" : "网页加载进度")
                 .accessibilityHidden(!model.loading)
-            if let notice = model.notice {
-                HStack(alignment: .top, spacing: 8) {
-                    Image(systemName: notice.symbol).foregroundStyle(.secondary)
-                    Text(notice.message(language: settings.appLanguage)).font(.caption)
-                    Spacer(minLength: 0)
-                    Button { model.dismissNotice() } label: { Image(systemName: "xmark") }
-                        .accessibilityLabel(english ? "Dismiss notice" : "关闭提示")
+
+            ZStack(alignment: .top) {
+                readerContent
+                if let notice = model.notice {
+                    noticeView(notice)
                 }
-                .padding(12)
-                .background(.quaternary.opacity(0.4))
             }
-            if let failure = model.failure {
-                failureContent(failure)
-            } else if let web = model.webView {
-                ReaderWebSurface(webView: web)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                VStack(spacing: 12) {
-                    ProgressView()
-                    Text(english ? "Preparing a private web session…" : "正在准备临时阅读会话…")
-                        .font(.callout).foregroundStyle(.secondary)
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            }
-            if let message = feedbackMessage {
-                HStack {
-                    Image(systemName: "checkmark.circle").foregroundStyle(.secondary)
-                    Text(message)
-                    Spacer()
-                    if let id = lastFeedback {
-                        Button(english ? "Undo" : "撤销") {
-                            controller.undo(id)
-                            lastFeedback = nil
-                            feedbackMessage = nil
-                        }
+            .animation(reduceMotion ? nil : DashboardMotion.micro, value: model.notice != nil)
+            .overlay(alignment: .bottom) {
+                ZStack {
+                    if let message = feedbackMessage {
+                        feedbackView(message)
                     }
-                    Button { feedbackMessage = nil } label: { Image(systemName: "xmark") }
-                        .accessibilityLabel(english ? "Dismiss feedback confirmation" : "关闭反馈确认")
                 }
-                .font(.caption).padding(10)
-                .background(.quaternary.opacity(0.4))
+                .animation(reduceMotion ? nil : DashboardMotion.micro, value: feedbackMessage)
             }
+
             Divider()
             footer
         }
-        .newsCardSurface(cornerRadius: 12)
+        .readerSurface(cornerRadius: 12)
         .confirmationDialog(english ? "Open in your browser?" : "在系统浏览器打开？", isPresented: $askExternal) {
             Button(english ? "Open" : "打开") {
                 let url = model.currentURL
@@ -473,6 +618,56 @@ struct ReaderContentView: View {
         } message: {
             Text(english ? "Your browser's cookies and history settings will apply. Reading measurement ends at handoff." : "将使用浏览器自身的 Cookie 和历史设置；外开不作为有效阅读。")
         }
+    }
+
+    @ViewBuilder
+    private var readerContent: some View {
+        if let failure = model.failure {
+            failureContent(failure)
+        } else if let web = model.webView {
+            ReaderWebSurface(webView: web)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else {
+            VStack(spacing: 12) {
+                ProgressView()
+                Text(english ? "Preparing the reader…" : "正在准备阅读会话…")
+                    .font(.callout).foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+
+    private func noticeView(_ notice: ReaderFailure) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: notice.symbol).foregroundStyle(.secondary)
+            Text(notice.message(language: settings.appLanguage)).font(.caption)
+            Spacer(minLength: 0)
+            Button { model.dismissNotice() } label: { Image(systemName: "xmark") }
+                .accessibilityLabel(english ? "Dismiss notice" : "关闭提示")
+        }
+        .padding(12)
+        .background(.quaternary.opacity(0.4))
+        .transition(.move(edge: .top).combined(with: .opacity))
+    }
+
+    private func feedbackView(_ message: String) -> some View {
+        HStack {
+            Image(systemName: "checkmark.circle").foregroundStyle(.secondary)
+            Text(message)
+            Spacer()
+            if let id = lastFeedback {
+                Button(english ? "Undo" : "撤销") {
+                    controller.undo(id)
+                    lastFeedback = nil
+                    feedbackMessage = nil
+                }
+            }
+            Button { feedbackMessage = nil } label: { Image(systemName: "xmark") }
+                .accessibilityLabel(english ? "Dismiss feedback confirmation" : "关闭反馈确认")
+        }
+        .font(.caption).padding(10)
+        .background(.quaternary.opacity(0.4))
+        .transition(.move(edge: .bottom).combined(with: .opacity))
     }
 
     private func toolbar(compact: Bool) -> some View {
@@ -531,6 +726,7 @@ struct ReaderContentView: View {
                 .accessibilityLabel(english ? "Article preferences" : "文章偏好操作")
                 .help(english ? "More reading preferences" : "更多阅读偏好")
             }
+            cookieMenu
             Button { askExternal = true } label: {
                 HStack(spacing: 5) {
                     Image(systemName: "arrow.up.forward.app")
@@ -544,6 +740,50 @@ struct ReaderContentView: View {
         }
         .buttonStyle(.borderless)
         .controlSize(.regular)
+    }
+
+    private var cookieMenu: some View {
+        Menu {
+            Button(english ? "Remember this site's sign-in" : "记住此站登录") {
+                Task { await saveSiteCookies() }
+            }
+            if let host = model.currentHost, browserData.hasSite(host) {
+                Button(english ? "Update saved cookies" : "更新已保存的 Cookie") {
+                    Task { await saveSiteCookies() }
+                }
+                Button(english ? "Forget this site" : "移除此站登录", role: .destructive) {
+                    Task { await forgetSite() }
+                }
+            }
+            Divider()
+            Button(english ? "Manage browser data…" : "管理浏览器数据…") {
+                NotificationCenter.default.post(name: .browserSettingsRequested, object: nil)
+            }
+        } label: {
+            Image(systemName: "key")
+                .frame(width: 24, height: 28)
+        }
+        .menuIndicator(.hidden)
+        .accessibilityLabel(english ? "Saved sign-ins" : "登录与 Cookie")
+        .help(english ? "Remember this site's sign-in" : "记住此站登录")
+    }
+
+    private func saveSiteCookies() async {
+        if !settings.readerCookieMemoryEnabled {
+            settings.readerCookieMemoryEnabled = true
+        }
+        let count = await model.captureCurrentSite(force: true)
+        lastFeedback = nil
+        feedbackMessage = count > 0
+            ? (english ? "Saved \(count) cookies for this site (encrypted on this Mac)" : "已保存 \(count) 条 Cookie（仅本机加密）")
+            : (english ? "No cookies found for this site yet" : "当前站点暂无可保存的 Cookie")
+    }
+
+    private func forgetSite() async {
+        guard let host = model.currentHost else { return }
+        await browserData.removeSite(host)
+        lastFeedback = nil
+        feedbackMessage = english ? "Saved sign-in removed for this site" : "已移除此站的登录 Cookie"
     }
 
     private func failureContent(_ failure: ReaderFailure) -> some View {
@@ -576,7 +816,10 @@ struct ReaderContentView: View {
 
     private var footer: some View {
         HStack(spacing: 8) {
-            Label(english ? "Temporary session" : "临时会话", systemImage: "lock.shield")
+            Label(settings.readerCookieMemoryEnabled
+                  ? (english ? "Sign-in memory" : "登录记忆")
+                  : (english ? "Temporary session" : "临时会话"),
+                  systemImage: settings.readerCookieMemoryEnabled ? "key.fill" : "lock.shield")
             if model.usesTrustedProxy {
                 Text(english ? "· Trusted proxy" : "· 受信任代理")
                     .help(english ? "Destination resolution is delegated to the proxy; the reader cannot verify its final destination IP." : "目标解析交给代理；阅读器无法核验其最终连接 IP。")
@@ -589,7 +832,7 @@ struct ReaderContentView: View {
             Button { showPrivacy = true } label: { Image(systemName: "info.circle") }
                 .accessibilityLabel(english ? "Reading privacy details" : "阅读隐私说明")
                 .popover(isPresented: $showPrivacy) {
-                    Text(english ? "This web session does not share browser cookies or store website sign-ins. Site restrictions still apply. Only supported article pages can produce qualified-reading evidence; unknown sites use weak browsing evidence." : "网页会话不共享浏览器 Cookie，不保存网站登录，不绕过网站限制。只有适配的文章页才采集合格阅读证据；未适配站点仅使用弱浏览信号。")
+                    Text(english ? "The reader uses an isolated web session. Only first-party cookies saved on this Mac are replayed on your next visit to keep you signed in. System browser cookies are never imported, and site restrictions still apply." : "阅读器使用独立网页会话；只有你保存在本机的该站第一方 Cookie 会在下次打开时回填，用于保持登录。不会导入系统浏览器 Cookie，也不会绕过网站限制。")
                         .font(.callout).padding(16).frame(width: 320)
                 }
             Button(english ? "Privacy settings" : "隐私设置", action: onOpenSettings)
@@ -602,5 +845,23 @@ struct ReaderContentView: View {
     private func recordFeedback(_ item: NewsItem, kind: InterestFeedbackKind) {
         lastFeedback = controller.feedback(item, kind: kind)
         if lastFeedback != nil { feedbackMessage = english ? "Reading preference updated" : "已更新阅读偏好" }
+    }
+}
+
+private extension WKHTTPCookieStore {
+    func allCookies() async -> [HTTPCookie] {
+        await withCheckedContinuation { continuation in
+            getAllCookies { cookies in
+                continuation.resume(returning: cookies)
+            }
+        }
+    }
+
+    func setCookie(_ cookie: HTTPCookie) async {
+        await withCheckedContinuation { continuation in
+            self.setCookie(cookie, completionHandler: {
+                continuation.resume()
+            })
+        }
     }
 }

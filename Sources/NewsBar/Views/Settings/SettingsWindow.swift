@@ -54,12 +54,21 @@ struct SettingsWindow: View {
                         Label("settings.tab.about".localized, systemImage: "info.circle")
                     }
                     .tag(6)
+
+                BrowserDataTab()
+                    .tabItem {
+                        Label("settings.tab.browser".localized, systemImage: "globe")
+                    }
+                    .tag(7)
             }
             .onReceive(NotificationCenter.default.publisher(for: .switchToAITab)) { _ in
                 selectedTab = 3
             }
             .onReceive(NotificationCenter.default.publisher(for: .switchToInterestSettings)) { _ in
                 selectedTab = 0
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .switchToBrowserTab)) { _ in
+                selectedTab = 7
             }
 
             Divider()
@@ -78,7 +87,7 @@ struct SettingsWindow: View {
             .padding(.horizontal, 16)
             .padding(.vertical, 8)
         }
-        .frame(minWidth: 560, minHeight: 420)
+        .frame(minWidth: 640, minHeight: 560)
         .padding(.top, 8)
         .adaptiveColorScheme()
         .appThemeSurface()
@@ -125,6 +134,7 @@ struct SettingsWindow: View {
         case 4: return "settings.reminder".localized
         case 5: return "settings.developer".localized
         case 6: return "settings.about".localized
+        case 7: return "settings.browser".localized
         default: return "settings.general".localized
         }
     }
@@ -137,6 +147,7 @@ struct SettingsWindow: View {
         case 4: return "settings.reminder.subtitle".localized
         case 5: return "settings.developer.subtitle".localized
         case 6: return "settings.about.subtitle".localized
+        case 7: return "settings.browser.subtitle".localized
         default: return "settings.general.subtitle".localized
         }
     }
@@ -149,6 +160,7 @@ struct SettingsWindow: View {
         case 4: return "bell.fill"
         case 5: return "hammer"
         case 6: return "info.circle"
+        case 7: return "globe"
         default: return "gearshape"
         }
     }

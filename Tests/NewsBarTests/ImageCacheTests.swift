@@ -74,8 +74,8 @@ final class ImageCacheTests: XCTestCase {
         XCTAssertEqual(ImageCache.maxCacheBytes, 100 * 1024 * 1024)
     }
 
-    func testMaxCacheCount_Is50() {
-        XCTAssertEqual(ImageCache.maxCacheCount, 50)
+    func testMaxCacheCount_Is120() {
+        XCTAssertEqual(ImageCache.maxCacheCount, 120)
     }
 
     func testThumbnailMaxPixelSize_IsBoundedForCardRendering() {

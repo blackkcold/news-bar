@@ -16,6 +16,17 @@ enum InterestLearningStatus: Equatable {
     }
 }
 
+/// A signal captured on the render path but merged into the observed document
+/// later. Impressions arrive in bursts while scrolling; doing a full JSON encode
+/// and SQLite write per impression is what made scrolling expensive.
+private struct PendingInterestEvent: Sendable {
+    let item: NewsItem
+    let kind: InterestEventKind
+    let epoch: UUID
+    let sessionID: UUID
+    let occurredAt: Date
+}
+
 /// Single consent boundary for UI, reader and ranking. All disk work is serialized
 /// off the main actor; every callback carries the epoch captured at entry.
 @MainActor
@@ -31,7 +42,12 @@ final class InterestController {
     private var candidates: [NewsItem] = []
     private var rankingGeneration = UUID()
     private let store: LocalInterestStore
-    private var pendingWrite: Task<Void, Never>?
+    @ObservationIgnored private var pendingEvents: [PendingInterestEvent] = []
+    @ObservationIgnored private var pendingFlush: Task<Void, Never>?
+    @ObservationIgnored private var writeTask: Task<Void, Never>?
+    @ObservationIgnored private var pendingSnapshot: LocalInterestState?
+    @ObservationIgnored private var pendingReset = false
+    @ObservationIgnored private var lastPruneAt = Date.distantPast
     private var loading: Task<Void, Never>?
 
     init(store: LocalInterestStore = LocalInterestStore()) { self.store = store }
@@ -43,6 +59,7 @@ final class InterestController {
             do {
                 state = try await store.load()
                 state.prune()
+                lastPruneAt = Date()
                 isReady = true
             } catch {
                 storageError = "本地兴趣数据不可用，已停止学习。 / Local interest storage unavailable; learning stopped."
@@ -75,12 +92,15 @@ final class InterestController {
     }
 
     func recordSession(_ session: ReadingSessionRecord) {
-        guard canLearn, state.recordSession(session) else { return }
+        guard canLearn else { return }
+        flushPendingEvents()
+        guard state.recordSession(session) else { return }
         persist()
     }
 
     func setLearningEnabled(_ enabled: Bool) {
         guard isReady else { return }
+        flushPendingEvents()
         state.learningEnabled = enabled
         state.consentEpoch = UUID()
         state.profileVersion += 1
@@ -90,6 +110,7 @@ final class InterestController {
 
     func setPaused(_ paused: Bool) {
         guard isReady else { return }
+        flushPendingEvents()
         state.learningPaused = paused
         state.consentEpoch = UUID()
         persist(reset: true)
@@ -97,15 +118,29 @@ final class InterestController {
 
     func record(_ item: NewsItem, kind: InterestEventKind, epoch: UUID, sessionID: UUID) {
         guard canLearn else { return }
-        if state.record(item: item, kind: kind, epoch: epoch, sessionID: sessionID) {
-            persist()
-            if kind.strength > 0 { rebuild() }
+        if kind.strength > 0 {
+            // Meaningful evidence is rare (one per article) and affects ranking
+            // immediately; only the high-frequency impressions are buffered.
+            flushPendingEvents()
+            if applyRecord(item: item, kind: kind, epoch: epoch, sessionID: sessionID, now: Date()) {
+                rebuild()
+            }
+            return
         }
+        pendingEvents.append(PendingInterestEvent(
+            item: item,
+            kind: kind,
+            epoch: epoch,
+            sessionID: sessionID,
+            occurredAt: Date()
+        ))
+        schedulePendingFlush()
     }
 
     @discardableResult
     func feedback(_ item: NewsItem, kind: InterestFeedbackKind, topic: String? = nil) -> UUID? {
         guard canLearn else { return nil }
+        flushPendingEvents()
         if kind == .moreLikeThis {
             let feedback = InterestFeedback(item: item, kind: kind, occurredAt: Date())
             sessionFeedback.append(feedback)
@@ -120,6 +155,7 @@ final class InterestController {
 
     func undo(_ id: UUID) {
         guard canManagePreferences else { return }
+        flushPendingEvents()
         state.undoFeedback(id)
         sessionFeedback.removeAll { $0.id == id }
         persist()
@@ -141,6 +177,7 @@ final class InterestController {
         let keyword = String(SecurityPolicies.sanitizeUserInput(raw).prefix(80))
         guard !keyword.isEmpty, state.followedTopics.count < 100,
               !state.followedTopics.contains(where: { $0.caseInsensitiveCompare(keyword) == .orderedSame }) else { return false }
+        flushPendingEvents()
         state.followedTopics.append(keyword)
         state.profileVersion += 1
         persist()
@@ -150,6 +187,7 @@ final class InterestController {
 
     func unfollow(_ topic: String) {
         guard canManagePreferences else { return }
+        flushPendingEvents()
         state.followedTopics.removeAll { $0 == topic }
         state.profileVersion += 1
         persist()
@@ -162,8 +200,10 @@ final class InterestController {
     }
 
     func endListSession() {
+        // Closing the dashboard should not rebuild a ranking nobody is looking
+        // at; the next load/refresh ranks with the cleared session feedback.
+        flushPendingEvents()
         sessionFeedback = []
-        rebuild()
     }
 
     private func rebuild() {
@@ -183,6 +223,11 @@ final class InterestController {
 
     func clear(keepBookmarks: Bool) async {
         guard isReady else { return }
+        // Clearing is a privacy reset: drop buffered signals instead of writing
+        // them just before the tombstone.
+        pendingFlush?.cancel()
+        pendingFlush = nil
+        pendingEvents.removeAll(keepingCapacity: true)
         state.clearPersonalData(keepBookmarks: keepBookmarks)
         sessionFeedback = []
         recommendations = nil
@@ -200,21 +245,97 @@ final class InterestController {
         persist()
     }
 
-    func flush() async { await pendingWrite?.value }
+    func flush() async {
+        flushPendingEvents()
+        await writeTask?.value
+    }
+
+    @discardableResult
+    private func applyRecord(item: NewsItem, kind: InterestEventKind, epoch: UUID, sessionID: UUID, now: Date) -> Bool {
+        let changed = state.record(
+            item: item,
+            kind: kind,
+            epoch: epoch,
+            sessionID: sessionID,
+            now: now,
+            pruneNow: false
+        )
+        guard changed else { return false }
+        pruneIfNeeded()
+        persist()
+        return true
+    }
+
+    @discardableResult
+    private func flushPendingEvents() -> Bool {
+        pendingFlush?.cancel()
+        pendingFlush = nil
+        guard !pendingEvents.isEmpty else { return false }
+        let events = pendingEvents
+        pendingEvents.removeAll(keepingCapacity: true)
+        var changed = false
+        for event in events {
+            if state.record(
+                item: event.item,
+                kind: event.kind,
+                epoch: event.epoch,
+                sessionID: event.sessionID,
+                now: event.occurredAt,
+                pruneNow: false
+            ) {
+                changed = true
+            }
+        }
+        guard changed else { return false }
+        pruneIfNeeded()
+        persist()
+        return true
+    }
+
+    private func schedulePendingFlush() {
+        guard pendingFlush == nil else { return }
+        pendingFlush = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(1500))
+            guard !Task.isCancelled else { return }
+            self?.flushPendingEvents()
+        }
+    }
+
+    private func pruneIfNeeded(force: Bool = false) {
+        let now = Date()
+        guard force
+                || state.events.count > 10_000
+                || now.timeIntervalSince(lastPruneAt) >= 60 else { return }
+        state.prune(now: now)
+        lastPruneAt = now
+    }
 
     private func persist(reset: Bool = false) {
         state.revision += 1
-        let snapshot = state
-        let previous = pendingWrite
-        pendingWrite = Task { @MainActor [store] in
-            await previous?.value
+        pendingSnapshot = state
+        pendingReset = pendingReset || reset
+        guard writeTask == nil else { return }
+        writeTask = Task { @MainActor [weak self] in
+            await self?.drainWrites()
+        }
+    }
+
+    private func drainWrites() async {
+        while let snapshot = pendingSnapshot {
+            let reset = pendingReset
+            pendingSnapshot = nil
+            pendingReset = false
             do {
                 if reset { try await store.reset(snapshot) }
                 else { try await store.save(snapshot) }
             } catch {
+                pendingSnapshot = nil
+                pendingReset = false
                 storageError = "本地数据写入失败，已停止学习。 / Local write failed; learning stopped."
+                break
             }
         }
+        writeTask = nil
     }
 }
 

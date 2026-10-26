@@ -8,6 +8,8 @@ struct DashboardAIBriefingPanel: View {
 
     @State private var selectedCategory: DashboardBriefingCategory = .trendOverview
     @State private var regenerationCooldownRemaining: TimeInterval = 0
+    @State private var cachedParsedSummary: ParsedSummary?
+    @State private var cachedParseKey = ""
 
     private var summaryState: AISummaryState {
         orchestrator.aiSummaryState
@@ -33,12 +35,21 @@ struct DashboardAIBriefingPanel: View {
             return parsed
         }
 
-        guard let text = resolvedSummaryText else { return nil }
-        return AISummaryParser.parseDualSummary(
-            text,
-            itemCount: sharedSummaryItems.count,
-            trendIndices: orchestrator.aiSummaryManifest?.trendIndices ?? Set(sharedSummaryItems.enumerated().filter { $0.element.source.isBuiltIn }.map(\.offset))
-        )
+        guard cachedParseKey == parseKey else { return nil }
+        return cachedParsedSummary
+    }
+
+    /// Cheap identity for the parsed cache. The actual parse runs in a `.task`,
+    /// not on every body evaluation.
+    private var parseKey: String {
+        let textLength: Int
+        switch summaryState {
+        case .done(let text), .truncated(let text):
+            textLength = text.count
+        default:
+            textLength = 0
+        }
+        return "\(orchestrator.aiSummaryManifest?.id.uuidString ?? "-")-\(sharedSummaryItems.count)-\(textLength)"
     }
 
     private var trendSections: [(title: String, body: String, primaryIndex: Int?)] {
@@ -134,12 +145,46 @@ struct DashboardAIBriefingPanel: View {
             if selectedSections.isEmpty {
                 selectedCategory = preferredCategory
             }
-            requestSharedSummaryIfNeeded()
         }
         .onChange(of: summarySignature) { _, _ in
             if selectedSections.isEmpty {
                 selectedCategory = preferredCategory
             }
+        }
+        .task(id: parseKey) {
+            guard hasCitationSnapshot else {
+                cachedParsedSummary = nil
+                cachedParseKey = parseKey
+                return
+            }
+            if let parsed = orchestrator.aiParsedSummary {
+                cachedParsedSummary = parsed
+                cachedParseKey = parseKey
+                return
+            }
+            guard let text = resolvedSummaryText else {
+                cachedParsedSummary = nil
+                cachedParseKey = parseKey
+                return
+            }
+            let key = parseKey
+            let trendIndices = orchestrator.aiSummaryManifest?.trendIndices
+                ?? Set(sharedSummaryItems.enumerated().filter { $0.element.source.isBuiltIn }.map(\.offset))
+            let parsed = AISummaryParser.parseDualSummary(
+                text,
+                itemCount: sharedSummaryItems.count,
+                trendIndices: trendIndices
+            )
+            guard !Task.isCancelled else { return }
+            cachedParsedSummary = parsed
+            cachedParseKey = key
+        }
+        .task(id: sharedSummaryNeedsGeneration) {
+            // Keep the first frame free of keychain reads, hashing and network.
+            guard sharedSummaryNeedsGeneration else { return }
+            try? await Task.sleep(for: .seconds(2))
+            guard !Task.isCancelled, sharedSummaryNeedsGeneration else { return }
+            await orchestrator.generateSharedSummaryIfNeeded(settings: settings)
         }
         .task(id: isSummaryRefreshing) {
             // Keep the manual-regeneration cooldown ticking so the refresh
@@ -370,25 +415,6 @@ struct DashboardAIBriefingPanel: View {
 
     private var isSummaryRefreshing: Bool {
         summaryState == .fetching || summaryState == .summarizing
-    }
-
-    private func requestSharedSummaryIfNeeded() {
-        guard sharedSummaryNeedsGeneration else { return }
-        Task {
-            await orchestrator.generateSharedSummaryIfNeeded(settings: settings)
-        }
-    }
-
-    private var cardShape: RoundedRectangle {
-        RoundedRectangle(cornerRadius: 18, style: .continuous)
-    }
-
-    private var cardBackground: some View {
-        cardShape.fill(.ultraThinMaterial)
-    }
-
-    private var cardStroke: some View {
-        cardShape.strokeBorder(.separator.opacity(0.32), lineWidth: 1)
     }
 }
 

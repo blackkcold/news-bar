@@ -71,7 +71,7 @@ struct InterestPrivacySection: View {
         } header: {
             Text(english ? "Local interest & privacy" : "本地兴趣与隐私")
         } footer: {
-            Text(english ? "Off by default. Behavior and profile stay on this Mac. Selected news titles still go to your configured AI provider for summaries. No browser history, passwords or cookies are imported." : "默认关闭。行为与画像仅存本机；摘要仍会把选中的新闻标题发给配置的 AI 提供商。不导入浏览器历史、密码或 Cookie。")
+            Text(english ? "Off by default. Behavior and profile stay on this Mac. Selected news titles still go to your configured AI provider for summaries. System browser history, passwords and cookies are never imported; the reader only keeps first-party cookies from sites you visit, managed in the Browser tab." : "默认关闭。行为与画像仅存本机；摘要仍会把选中的新闻标题发给配置的 AI 提供商。不导入系统浏览器的历史、密码或 Cookie；阅读器只保存你访问站点自身的第一方 Cookie，可在「浏览器」页签管理。")
         }
         .task { await controller.prepare() }
         .confirmationDialog(english ? "Allow local reading-behavior learning?" : "允许在本机记录新闻阅读行为？", isPresented: $consentPrompt) {

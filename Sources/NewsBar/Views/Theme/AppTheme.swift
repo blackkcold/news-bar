@@ -16,6 +16,40 @@ enum EditorialButtonTone {
     case destructive
 }
 
+/// A concrete shape for cards, pills and buttons so SwiftUI does not have to
+/// erase to `AnyShape` on every body evaluation.
+struct EditorialSurfaceShape: Shape, InsettableShape {
+    var cornerRadius: CGFloat
+    var isRetro: Bool
+    var insetAmount: CGFloat = 0
+
+    func path(in rect: CGRect) -> Path {
+        let rect = rect.insetBy(dx: insetAmount, dy: insetAmount)
+        if isRetro {
+            return Rectangle().path(in: rect)
+        }
+        return RoundedRectangle(cornerRadius: cornerRadius, style: .continuous).path(in: rect)
+    }
+
+    func inset(by amount: CGFloat) -> EditorialSurfaceShape {
+        var copy = self
+        copy.insetAmount += amount
+        return copy
+    }
+}
+
+enum EditorialSurfaceTokens {
+    /// Near-opaque card fill: the window keeps one material layer; cards only
+    /// paint a solid surface, which avoids one offscreen material pass per row.
+    static func cardFill(colorScheme: ColorScheme, reduceTransparency: Bool) -> Color {
+        if reduceTransparency {
+            return Color(nsColor: .windowBackgroundColor)
+        }
+        return Color(nsColor: .controlBackgroundColor)
+            .opacity(colorScheme == .dark ? 0.82 : 0.78)
+    }
+}
+
 enum EditorialSourceMark {
     case weibo
     case bilibili
@@ -233,7 +267,6 @@ struct EditorialActionButtonStyle: ButtonStyle {
             .padding(.vertical, compact ? 4 : 6)
             .background { buttonBackground }
             .overlay { buttonBorder }
-            .compositingGroup()
             .clipShape(buttonShape)
             .background {
                 if retro && isEnabled {
@@ -275,8 +308,8 @@ struct EditorialActionButtonStyle: ButtonStyle {
         }
     }
 
-    private var buttonShape: AnyShape {
-        retro ? AnyShape(Rectangle()) : AnyShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+    private var buttonShape: EditorialSurfaceShape {
+        EditorialSurfaceShape(cornerRadius: 7, isRetro: retro)
     }
 
     private var retroFill: Color {
@@ -290,6 +323,7 @@ struct EditorialActionButtonStyle: ButtonStyle {
 
 struct AppThemeBackground: View {
     @Environment(AppSettings.self) private var settings
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
     var body: some View {
         Group {
@@ -306,6 +340,8 @@ struct AppThemeBackground: View {
                     )
                     RetroPaperGrain()
                 }
+            } else if reduceTransparency {
+                Rectangle().fill(Color(nsColor: .windowBackgroundColor))
             } else {
                 Rectangle().fill(.regularMaterial)
             }
@@ -405,6 +441,8 @@ private struct AppThemeSurfaceModifier: ViewModifier {
 
 private struct NewsCardSurfaceModifier: ViewModifier {
     @Environment(AppSettings.self) private var settings
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     let cornerRadius: CGFloat
     let rotation: Double
     let isHovering: Bool
@@ -413,34 +451,41 @@ private struct NewsCardSurfaceModifier: ViewModifier {
     private var radius: CGFloat { retro ? 0 : cornerRadius }
     private var shadowOffset: CGFloat { isHovering ? 5 : 3 }
 
+    private var shape: EditorialSurfaceShape {
+        EditorialSurfaceShape(cornerRadius: radius, isRetro: retro)
+    }
+
+    private var fill: Color {
+        if retro { return RetroEditorialTokens.raisedPaper }
+        return EditorialSurfaceTokens.cardFill(colorScheme: colorScheme, reduceTransparency: reduceTransparency)
+    }
+
     func body(content: Content) -> some View {
         content
-            .background {
-                RoundedRectangle(cornerRadius: radius, style: .continuous)
-                    .fill(retro ? RetroEditorialTokens.raisedPaper : Color.clear)
-                    .background {
-                        if !retro {
-                            RoundedRectangle(cornerRadius: radius, style: .continuous)
-                                .fill(.ultraThinMaterial)
-                        }
-                    }
+            .background { shape.fill(fill) }
+            .overlay {
+                if !retro {
+                    shape
+                        .fill(Color.primary.opacity(isHovering ? 0.035 : 0))
+                        .allowsHitTesting(false)
+                }
             }
             .overlay {
-                RoundedRectangle(cornerRadius: radius, style: .continuous)
-                    .strokeBorder(
-                        retro ? RetroEditorialTokens.rule : Color(nsColor: .separatorColor).opacity(isHovering ? 0.45 : 0.32),
-                        lineWidth: retro ? 1.7 : 1
-                    )
+                shape.strokeBorder(
+                    retro ? RetroEditorialTokens.rule : Color(nsColor: .separatorColor).opacity(0.34),
+                    lineWidth: retro ? 1.7 : 1
+                )
+                .allowsHitTesting(false)
             }
             .overlay(alignment: .top) {
                 if retro {
                     Rectangle()
                         .fill(RetroEditorialTokens.brick)
                         .frame(height: 4)
+                        .allowsHitTesting(false)
                 }
             }
-            .compositingGroup()
-            .clipShape(RoundedRectangle(cornerRadius: radius, style: .continuous))
+            .clipShape(shape)
             .background {
                 if retro {
                     Rectangle()
@@ -495,13 +540,32 @@ private struct EditorialClipShapeModifier: ViewModifier {
     let cornerRadius: CGFloat
 
     func body(content: Content) -> some View {
-        content
-            .compositingGroup()
-            .clipShape(
-                settings.appTheme == .retroEditorial
-                    ? AnyShape(Rectangle())
-                    : AnyShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+        content.clipShape(
+            EditorialSurfaceShape(
+                cornerRadius: cornerRadius,
+                isRetro: settings.appTheme == .retroEditorial
             )
+        )
+    }
+}
+
+private struct ReaderSurfaceModifier: ViewModifier {
+    @Environment(AppSettings.self) private var settings
+    let cornerRadius: CGFloat
+
+    private var radius: CGFloat {
+        settings.appTheme == .retroEditorial ? 0 : cornerRadius
+    }
+
+    func body(content: Content) -> some View {
+        content
+            .background(Color(nsColor: .windowBackgroundColor))
+            .clipShape(EditorialSurfaceShape(cornerRadius: radius, isRetro: radius == 0))
+            .overlay {
+                EditorialSurfaceShape(cornerRadius: radius, isRetro: radius == 0)
+                    .strokeBorder(Color(nsColor: .separatorColor).opacity(0.45), lineWidth: 1)
+                    .allowsHitTesting(false)
+            }
     }
 }
 
@@ -545,5 +609,11 @@ extension View {
 
     func editorialClipShape(cornerRadius: CGFloat) -> some View {
         modifier(EditorialClipShapeModifier(cornerRadius: cornerRadius))
+    }
+
+    /// Opaque chrome for the reader. An opaque WKWebView does not benefit from
+    /// a material behind it, so avoid the extra compositing pass.
+    func readerSurface(cornerRadius: CGFloat = 12) -> some View {
+        modifier(ReaderSurfaceModifier(cornerRadius: cornerRadius))
     }
 }

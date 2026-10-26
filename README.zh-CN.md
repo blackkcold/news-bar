@@ -92,6 +92,9 @@ swift build -c release --arch arm64
 
 # 或使用官方打包脚本（构建 App + DMG）
 bash scripts/build.sh
+
+# 仅本地验证 App（不生成 DMG；输出：release/<version>/NewsBar.app）
+bash scripts/package-local.sh
 ```
 
 ### 发布流程

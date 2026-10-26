@@ -136,6 +136,39 @@ struct RecommendationSnapshot: Identifiable, Sendable {
     var items: [ScoredRecommendation]
 }
 
+/// One pass over explicit feedback per ranking, instead of scanning the whole
+/// feedback list (and re-hashing URLs) for every candidate.
+private struct BlockedContentIndex {
+    let sourceIDs: Set<String>
+    let contentIDs: Set<String>
+    let clusterIDs: Set<String>
+
+    init(state: LocalInterestState) {
+        var sourceIDs: Set<String> = []
+        var contentIDs: Set<String> = []
+        var clusterIDs: Set<String> = []
+        for feedback in state.feedbacks {
+            switch feedback.kind {
+            case .muteSource:
+                sourceIDs.insert(feedback.item.source.id)
+            case .notInterested:
+                contentIDs.insert(ContentIdentity.id(for: feedback.item.url))
+            case .hideEvent:
+                clusterIDs.insert(ContentIdentity.cluster(for: feedback.item))
+            default:
+                break
+            }
+        }
+        self.sourceIDs = sourceIDs
+        self.contentIDs = contentIDs
+        self.clusterIDs = clusterIDs
+    }
+
+    func isBlocked(sourceID: String, contentID: String, clusterID: String) -> Bool {
+        sourceIDs.contains(sourceID) || contentIDs.contains(contentID) || clusterIDs.contains(clusterID)
+    }
+}
+
 protocol RecommendationPolicy: Sendable {
     func select(_ snapshot: RecommendationSnapshot, limit: Int) -> [NewsItem]
 }
@@ -152,9 +185,11 @@ enum RecommendationEngine {
         let peakShort = max(1, profile.shortTermTopics.values.max() ?? 1)
         let peakSource = max(1, profile.sources.values.max() ?? 1)
         let readIDs = state.learningEnabled ? Set(state.profileSignals.values.filter { $0.strength >= 1 }.map { ContentIdentity.id(for: $0.item.url) }) : []
+        let blocked = BlockedContentIndex(state: state)
         for item in items {
-            guard !state.isBlocked(item) else { continue }
             let id = ContentIdentity.id(for: item.url)
+            let clusterID = ContentIdentity.cluster(for: item)
+            guard !blocked.isBlocked(sourceID: item.source.id, contentID: id, clusterID: clusterID) else { continue }
             guard ids.insert(id).inserted else { continue }
             var tags = TitleFeatures.tags(item.title)
             if state.learningEnabled {
@@ -182,7 +217,7 @@ enum RecommendationEngine {
             let reduced = state.learningEnabled && state.feedbacks.contains { $0.kind == .reduceTopic && $0.topic.map(tags.contains) == true }
             let score = profile.confidence * personal + (1 - profile.confidence) * baseline - (readIDs.contains(id) ? 0.15 : 0) - (reduced ? 0.2 : 0)
             let reason = profile.confidence > 0 && (affinity ?? 0) > 0.1 ? "interest" : heat != nil ? "publicHeat" : "fresh"
-            candidates.append(ScoredRecommendation(item: item, contentID: id, clusterID: ContentIdentity.cluster(for: item), score: score,
+            candidates.append(ScoredRecommendation(item: item, contentID: id, clusterID: clusterID, score: score,
                                                     components: components, reason: reason, topic: topic))
         }
         candidates.sort { $0.score == $1.score ? $0.contentID < $1.contentID : $0.score > $1.score }

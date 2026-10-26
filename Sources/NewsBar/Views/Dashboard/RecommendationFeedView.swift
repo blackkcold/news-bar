@@ -3,7 +3,41 @@ import Combine
 import SwiftUI
 
 private enum ExposureClock {
-    static let ticks = Timer.publish(every: 0.5, on: .main, in: .common).autoconnect().share()
+    static let ticks = Timer.publish(every: 1, on: .main, in: .common).autoconnect().share()
+}
+
+/// One timer and one set of window/session checks for the whole feed. Previously
+/// every visible row performed these system calls on every tick.
+@MainActor
+private final class ExposureEnvironment {
+    static let shared = ExposureEnvironment()
+
+    private(set) var isActive = false
+    private var timer: Timer?
+
+    func start() {
+        guard timer == nil else { return }
+        refresh()
+        timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in self?.refresh() }
+        }
+    }
+
+    func stop() {
+        timer?.invalidate()
+        timer = nil
+        isActive = false
+    }
+
+    private func refresh() {
+        let window = NSApp.keyWindow ?? NSApp.mainWindow
+        let session = CGSessionCopyCurrentDictionary() as? [String: Any]
+        let locked = session?["CGSSessionScreenIsLocked"] as? Bool ?? false
+        isActive = NSApp.isActive
+            && window?.isVisible == true
+            && window?.occlusionState.contains(.visible) == true
+            && !locked
+    }
 }
 
 private struct QualifiedImpression: ViewModifier {
@@ -17,12 +51,13 @@ private struct QualifiedImpression: ViewModifier {
         content
             .onScrollVisibilityChange(threshold: 0.5) { visible = $0 }
             .onReceive(ExposureClock.ticks) { _ in
+                guard ExposureEnvironment.shared.isActive else { return }
                 guard InterestController.shared.canLearn else { return }
-                let window = NSApp.keyWindow
-                let session = CGSessionCopyCurrentDictionary() as? [String: Any]
-                let locked = session?["CGSSessionScreenIsLocked"] as? Bool ?? false
-                let active = NSApp.isActive && window?.isVisible == true && window?.occlusionState.contains(.visible) == true && !locked
-                if exposure.update(visibleFraction: visible ? 1 : 0, active: active, now: ProcessInfo.processInfo.systemUptime) {
+                if exposure.update(
+                    visibleFraction: visible ? 1 : 0,
+                    active: true,
+                    now: ProcessInfo.processInfo.systemUptime
+                ) {
                     InterestController.shared.record(item, kind: .impression, epoch: epoch, sessionID: sessionID)
                 }
             }
@@ -68,9 +103,11 @@ struct RecommendationFeedView: View {
                 LazyVStack(alignment: .leading, spacing: 12) {
                     ForEach(Array(snapshot.items.filter { matches($0.item) }.prefix(visibleCount))) { row in
                         VStack(alignment: .leading, spacing: 9) {
-                            Button {
-                                NewsNavigationRouter.shared.open(row.item, surface: "recommendation", contextID: snapshot.id.uuidString)
-                            } label: {
+                            HeroOpenButton(
+                                item: row.item,
+                                surface: "recommendation",
+                                contextID: snapshot.id.uuidString
+                            ) {
                                 VStack(alignment: .leading, spacing: 6) {
                                     Text(row.item.displayTitle).font(.system(size: 15, weight: .semibold)).foregroundStyle(.primary).multilineTextAlignment(.leading)
                                     Text(row.item.source.displayName).font(.caption).foregroundStyle(.secondary)
@@ -78,7 +115,6 @@ struct RecommendationFeedView: View {
                                 .frame(maxWidth: .infinity, alignment: .leading)
                                 .contentShape(Rectangle())
                             }
-                            .buttonStyle(.plain)
                             .modifier(QualifiedImpression(item: row.item, sessionID: listSession, epoch: controller.state.consentEpoch))
                             HStack(spacing: 10) {
                                 Button(reason(row)) { expandedReason = expandedReason == row.id ? nil : row.id }
@@ -139,6 +175,8 @@ struct RecommendationFeedView: View {
             Text(english ? "Ranked on this Mac · original source order is unchanged" : "在本机排序 · 不改变来源原榜顺序")
                 .font(.caption2).foregroundStyle(.secondary)
         }
+        .onAppear { ExposureEnvironment.shared.start() }
+        .onDisappear { ExposureEnvironment.shared.stop() }
     }
 
     private func reason(_ row: ScoredRecommendation) -> String {

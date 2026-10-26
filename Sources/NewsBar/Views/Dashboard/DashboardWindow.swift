@@ -1,19 +1,36 @@
+import AppKit
 import SwiftUI
 
 struct DashboardWindow: View {
     @Environment(AppSettings.self) private var settings
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     let orchestrator: NewsOrchestrator
     @State private var collapsedRSSSourceIDs: Set<NewsSource.ID> = []
     @State private var searchText = ""
+    @State private var debouncedSearchText = ""
     @State private var sourceFilter: DashboardSourceFilter = .all
     @State private var browseScroll = ScrollPosition()
     @State private var forYou = true
+    @State private var listWidth: CGFloat = 400
+    @State private var phase: ReaderPresentationPhase = .idle
+    @State private var displayedRequest: NewsReaderRequest?
+    @State private var transitionSnapshot: NSImage?
+    @State private var transitionSnapshotFrame: CGRect = .zero
+    @State private var snapshotVisible = false
+    @State private var readerVisible = false
+    @State private var hero: ReaderHeroState?
+    @State private var narrowParallax = false
 
     var onOpenSettings: () -> Void = {}
     var onConfigureAI: (() -> Void)? = nil
 
     private let layoutBreakpoint: CGFloat = 960
     private let sidebarWidth: CGFloat = 336
+    private let dividerWidth: CGFloat = 9
+    private let listMinWidth: CGFloat = 320
+    private let listMaxWidth: CGFloat = 480
 
     enum DashboardSourceFilter: String, CaseIterable, Identifiable {
         case all, weibo, bilibili, rss
@@ -65,21 +82,28 @@ struct DashboardWindow: View {
         !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
-    private func matchesSearch(_ item: NewsItem) -> Bool {
-        guard isSearchActive else { return true }
-        let q = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+    private var normalizedSearchQuery: String? {
+        let query = debouncedSearchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return nil }
+        return query.folding(options: [.caseInsensitive], locale: .current)
+    }
+
+    private func matchesSearch(_ item: NewsItem, query: String? = nil) -> Bool {
+        guard let query = query ?? normalizedSearchQuery else { return true }
         return item.displayTitle.folding(options: [.caseInsensitive], locale: .current)
-            .contains(q.folding(options: [.caseInsensitive], locale: .current))
+            .contains(query)
     }
 
     private func filteredTrendItems(_ source: NewsSource, _ items: [NewsItem]) -> [NewsItem] {
         guard sourceFilter.matches(source) else { return [] }
-        return items.filter(matchesSearch)
+        let query = normalizedSearchQuery
+        return items.filter { matchesSearch($0, query: query) }
     }
 
     private func filteredRSSItems(_ source: NewsSource) -> [NewsItem] {
         guard sourceFilter.matches(source) else { return [] }
-        return (orchestrator.rssItemsMap[source.id] ?? []).filter(matchesSearch)
+        let query = normalizedSearchQuery
+        return (orchestrator.rssItemsMap[source.id] ?? []).filter { matchesSearch($0, query: query) }
     }
 
     private var hasAnyFilter: Bool {
@@ -141,17 +165,92 @@ struct DashboardWindow: View {
 
     var body: some View {
         GeometryReader { geometry in
-            if let request = NewsNavigationRouter.shared.selection {
-                if geometry.size.width >= 1100 {
-                    HSplitView {
-                        browsePane.frame(minWidth: 320, idealWidth: 400, maxWidth: 480)
-                        NewsReaderView(request: request, onOpenSettings: openInterestSettings).id(request.id).frame(minWidth: 560)
-                    }
-                } else {
-                    NewsReaderView(request: request, onOpenSettings: openInterestSettings).id(request.id)
-                }
-            } else {
+            let selection = NewsNavigationRouter.shared.selection
+            let isWide = geometry.size.width >= 1100
+            let readerFrame = self.readerFrame(for: geometry.size, isWide: isWide)
+            let listWidthForPhase: CGFloat = phase == .presented ? clampedListWidth : geometry.size.width
+
+            ZStack(alignment: .topLeading) {
                 browsePane
+                    .frame(width: listWidthForPhase, height: geometry.size.height, alignment: .topLeading)
+                    .allowsHitTesting(!(phase == .presented && !isWide))
+                    .zIndex(0)
+
+                if let snapshot = transitionSnapshot {
+                    Image(nsImage: snapshot)
+                        .resizable()
+                        .interpolation(.high)
+                        .frame(
+                            width: transitionSnapshotFrame.width,
+                            height: transitionSnapshotFrame.height
+                        )
+                        .offset(
+                            x: transitionSnapshotFrame.minX + (!isWide && narrowParallax && !reduceMotion ? -18 : 0),
+                            y: transitionSnapshotFrame.minY
+                        )
+                        .scaleEffect(
+                            !isWide && narrowParallax && !reduceMotion ? 0.985 : 1,
+                            anchor: .center
+                        )
+                        .opacity(
+                            snapshotVisible
+                                ? (narrowParallax && !isWide && !reduceMotion ? 0.55 : 1)
+                                : 0
+                        )
+                        .allowsHitTesting(false)
+                        .zIndex(1)
+                }
+
+                if let request = displayedRequest {
+                    readerPane(request)
+                        .frame(
+                            width: readerFrame.width,
+                            height: readerFrame.height,
+                            alignment: .topLeading
+                        )
+                        .offset(x: readerFrame.minX, y: readerFrame.minY)
+                        .opacity(readerVisible ? 1 : 0)
+                        .allowsHitTesting(readerVisible)
+                        .zIndex(2)
+                }
+
+                if isWide, phase == .presented, displayedRequest != nil {
+                    DashboardSplitter(width: $listWidth)
+                        .frame(width: dividerWidth, height: geometry.size.height)
+                        .offset(x: clampedListWidth)
+                        .zIndex(3)
+                }
+
+                if let hero {
+                    ReaderHeroOverlay(state: hero) {
+                        self.hero = nil
+                    }
+                    .zIndex(20)
+                }
+            }
+            .coordinateSpace(name: "dashboardRoot")
+            .onAppear {
+                installSnapshotProvider()
+                if let request = selection, displayedRequest == nil {
+                    beginReaderTransition(request: request, size: geometry.size, isWide: isWide)
+                }
+            }
+            .onChange(of: selection?.id) { _, _ in
+                if let request = selection {
+                    beginReaderTransition(request: request, size: geometry.size, isWide: isWide)
+                } else if displayedRequest != nil {
+                    beginReaderDismissal()
+                }
+            }
+            .task(id: searchText) {
+                let trimmed = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !trimmed.isEmpty else {
+                    debouncedSearchText = ""
+                    return
+                }
+                try? await Task.sleep(for: .milliseconds(150))
+                guard !Task.isCancelled else { return }
+                debouncedSearchText = searchText
             }
         }
         .frame(minWidth: 960, minHeight: 720)
@@ -166,6 +265,139 @@ struct DashboardWindow: View {
                 DashboardToolbarAction(title: settings.appLanguage == .en ? "Settings" : "设置", symbol: "gearshape", action: onOpenSettings)
             }
         }
+    }
+
+    private var clampedListWidth: CGFloat {
+        min(listMaxWidth, max(listMinWidth, listWidth))
+    }
+
+    private func readerPane(_ request: NewsReaderRequest) -> some View {
+        NewsReaderView(request: request, onOpenSettings: openInterestSettings)
+            .id(request.id)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private func readerFrame(for size: CGSize, isWide: Bool) -> CGRect {
+        if isWide {
+            let x = clampedListWidth + dividerWidth
+            return CGRect(x: x, y: 0, width: max(0, size.width - x), height: size.height)
+        }
+        return CGRect(origin: .zero, size: size)
+    }
+
+    private func installSnapshotProvider() {
+        ReaderTransitionCoordinator.shared.snapshotProvider = { rect in
+            guard let view = NSApp.keyWindow?.contentView,
+                  let rep = view.bitmapImageRepForCachingDisplay(in: rect) else { return nil }
+            view.cacheDisplay(in: rect, to: rep)
+            let image = NSImage(size: rect.size)
+            image.addRepresentation(rep)
+            return image
+        }
+    }
+
+    private func beginReaderTransition(request: NewsReaderRequest, size: CGSize, isWide: Bool) {
+        let origin = ReaderTransitionCoordinator.shared.consume()
+        let snapshot = ReaderTransitionCoordinator.shared.takeSnapshot()
+
+        // Already split open: swap the article without replaying the open
+        // transition. The list stays compact and the reader keeps its frame.
+        if phase == .presented, displayedRequest != nil {
+            displayedRequest = request
+            hero = nil
+            ReaderTransitionCoordinator.shared.discardSnapshot()
+            return
+        }
+
+        displayedRequest = request
+        if let snapshot {
+            transitionSnapshot = snapshot.image
+            transitionSnapshotFrame = snapshot.frame
+            snapshotVisible = true
+        } else {
+            transitionSnapshot = nil
+            transitionSnapshotFrame = .zero
+            snapshotVisible = false
+        }
+
+        phase = .presented
+        readerVisible = false
+        narrowParallax = false
+
+        if !reduceMotion, let origin, origin.frame.width > 2, origin.frame.height > 2 {
+            hero = ReaderHeroState(
+                origin: origin.frame,
+                target: readerFrame(for: size, isWide: isWide),
+                title: origin.title.isEmpty ? request.title : origin.title,
+                host: URL(string: request.url)?.host ?? "",
+                isRetro: isRetro
+            )
+        } else {
+            hero = nil
+        }
+
+        let settleDelay = reduceMotion ? 120 : 320
+        Task { @MainActor in
+            await Task.yield()
+            withAnimation(reduceMotion ? DashboardMotion.reduced : DashboardMotion.structural) {
+                readerVisible = true
+                if !isWide, !reduceMotion { narrowParallax = true }
+            }
+            try? await Task.sleep(for: .milliseconds(settleDelay))
+            guard phase == .presented else { return }
+            withAnimation(reduceMotion ? DashboardMotion.reduced : DashboardMotion.reveal) {
+                snapshotVisible = false
+            }
+            try? await Task.sleep(for: .milliseconds(180))
+            guard phase == .presented else { return }
+            transitionSnapshot = nil
+            transitionSnapshotFrame = .zero
+        }
+    }
+
+    private func beginReaderDismissal() {
+        guard phase == .presented else { return }
+        hero = nil
+        if transitionSnapshot == nil,
+           let snapshot = ReaderTransitionCoordinator.shared.takeSnapshot() {
+            transitionSnapshot = snapshot.image
+            transitionSnapshotFrame = snapshot.frame
+        }
+        snapshotVisible = transitionSnapshot != nil
+        phase = .dismissing
+        withAnimation(reduceMotion ? DashboardMotion.reduced : DashboardMotion.reveal) {
+            readerVisible = false
+            narrowParallax = false
+        }
+
+        let fadeDelay = reduceMotion ? 120 : 180
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(fadeDelay))
+            guard phase == .dismissing else { return }
+            withAnimation(reduceMotion ? DashboardMotion.reduced : DashboardMotion.reveal) {
+                snapshotVisible = false
+            }
+            try? await Task.sleep(for: .milliseconds(180))
+            guard phase == .dismissing else { return }
+            transitionSnapshot = nil
+            transitionSnapshotFrame = .zero
+            displayedRequest = nil
+            phase = .idle
+            ReaderTransitionCoordinator.shared.discardSnapshot()
+        }
+    }
+
+    private func cancelReaderTransition() {
+        hero = nil
+        transitionSnapshot = nil
+        transitionSnapshotFrame = .zero
+        snapshotVisible = false
+        readerVisible = false
+        narrowParallax = false
+        displayedRequest = nil
+        phase = .idle
+        ReaderTransitionCoordinator.shared.clear()
+        ReaderTransitionCoordinator.shared.discardSnapshot()
     }
 
     private var browsePane: some View {
@@ -184,7 +416,10 @@ struct DashboardWindow: View {
 
                         dashboardFilterBar
 
-                        contentLayout(isWideLayout: isWideLayout)
+                        contentLayout(
+                            isWideLayout: isWideLayout,
+                            isReaderCompact: phase == .presented
+                        )
                     }
                         .padding(20)
                         .frame(maxWidth: .infinity, alignment: .topLeading)
@@ -193,7 +428,11 @@ struct DashboardWindow: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .adaptiveColorScheme()
-            .appThemeSurface()
+            .onGeometryChange(for: CGRect.self) { proxy in
+                proxy.frame(in: .named("dashboardRoot"))
+            } action: { frame in
+                ReaderTransitionCoordinator.shared.listFrame = frame
+            }
             .task {
                 await orchestrator.loadCached(settings: settings)
             }
@@ -216,9 +455,9 @@ struct DashboardWindow: View {
     }
 
     @ViewBuilder
-    private func contentLayout(isWideLayout: Bool) -> some View {
+    private func contentLayout(isWideLayout: Bool, isReaderCompact: Bool) -> some View {
         if forYou {
-            if isWideLayout && NewsNavigationRouter.shared.selection == nil {
+            if isWideLayout && !isReaderCompact {
                 HStack(alignment: .top, spacing: 20) {
                     recommendationsView()
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -227,7 +466,7 @@ struct DashboardWindow: View {
             } else {
                 recommendationsView()
             }
-        } else if NewsNavigationRouter.shared.selection != nil {
+        } else if isReaderCompact {
             rssMainRegion
         } else if isWideLayout {
             HStack(alignment: .top, spacing: 20) {
@@ -440,7 +679,11 @@ struct DashboardWindow: View {
             if isRetro {
                 Rectangle().fill(RetroEditorialTokens.raisedPaper)
             } else {
-                RoundedRectangle(cornerRadius: 14, style: .continuous).fill(.ultraThinMaterial)
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .fill(EditorialSurfaceTokens.cardFill(
+                        colorScheme: colorScheme,
+                        reduceTransparency: reduceTransparency
+                    ))
             }
         }
         .overlay {
@@ -448,10 +691,9 @@ struct DashboardWindow: View {
                 Rectangle().strokeBorder(RetroEditorialTokens.ink, lineWidth: 1.5)
             } else {
                 RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .strokeBorder(Color(nsColor: .separatorColor).opacity(0.35), lineWidth: 1)
+                    .strokeBorder(Color(nsColor: .separatorColor).opacity(0.34), lineWidth: 1)
             }
         }
-        .compositingGroup()
         .editorialClipShape(cornerRadius: 14)
         .background {
             if isRetro {
@@ -609,5 +851,66 @@ private struct DashboardToolbarAction: View {
         .disabled(isDisabled)
         .help(title)
         .accessibilityLabel(title)
+    }
+}
+
+private struct DashboardSplitter: View {
+    @Binding var width: CGFloat
+    @State private var dragStart: CGFloat?
+    @State private var proposedWidth: CGFloat?
+
+    private let minWidth: CGFloat = 320
+    private let maxWidth: CGFloat = 480
+
+    var body: some View {
+        ZStack(alignment: .topLeading) {
+            Rectangle()
+                .fill(Color.clear)
+                .contentShape(Rectangle())
+
+            Rectangle()
+                .fill(Color(nsColor: .separatorColor))
+                .frame(width: 1)
+
+            if let proposedWidth {
+                // Show the target position while dragging; commit the real
+                // width once on release so the list does not reflow per frame.
+                Rectangle()
+                    .fill(Color.accentColor.opacity(0.7))
+                    .frame(width: 1)
+                    .frame(maxHeight: .infinity)
+                    .offset(x: proposedWidth - width)
+                    .allowsHitTesting(false)
+            }
+        }
+        .onHover { hovering in
+            if hovering {
+                NSCursor.resizeLeftRight.set()
+            } else {
+                NSCursor.arrow.set()
+            }
+        }
+        .onDisappear { NSCursor.arrow.set() }
+        .gesture(
+            DragGesture(minimumDistance: 1)
+                .onChanged { value in
+                    if dragStart == nil { dragStart = width }
+                    let start = dragStart ?? width
+                    proposedWidth = min(maxWidth, max(minWidth, start + value.translation.width))
+                }
+                .onEnded { _ in
+                    if let proposedWidth {
+                        width = proposedWidth
+                    }
+                    dragStart = nil
+                    proposedWidth = nil
+                }
+        )
+        .onTapGesture(count: 2) {
+            dragStart = nil
+            proposedWidth = nil
+            width = 400
+        }
+        .accessibilityLabel("Resize news list")
     }
 }

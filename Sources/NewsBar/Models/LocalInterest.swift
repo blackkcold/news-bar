@@ -151,7 +151,7 @@ struct LocalInterestState: Codable, Sendable {
     }
 
     @discardableResult
-    mutating func record(item: NewsItem, kind: InterestEventKind, epoch: UUID, sessionID: UUID = UUID(), now: Date = Date()) -> Bool {
+    mutating func record(item: NewsItem, kind: InterestEventKind, epoch: UUID, sessionID: UUID = UUID(), now: Date = Date(), pruneNow: Bool = true) -> Bool {
         guard learningEnabled, !learningPaused, epoch == consentEpoch else { return false }
         let key = ContentIdentity.id(for: item.url)
         // One content/day signal, evidence upgrades replace rather than add.
@@ -170,7 +170,7 @@ struct LocalInterestState: Codable, Sendable {
             }
         }
         profileVersion += kind.strength > 0 ? 1 : 0
-        prune(now: now)
+        if pruneNow { prune(now: now) }
         return true
     }
 
@@ -207,11 +207,13 @@ struct LocalInterestState: Codable, Sendable {
     }
 
     func isBlocked(_ item: NewsItem) -> Bool {
+        let contentID = ContentIdentity.id(for: item.url)
+        let clusterID = ContentIdentity.cluster(for: item)
         return feedbacks.contains { feedback in
             switch feedback.kind {
             case .muteSource: return feedback.item.source.id == item.source.id
-            case .notInterested: return ContentIdentity.id(for: feedback.item.url) == ContentIdentity.id(for: item.url)
-            case .hideEvent: return ContentIdentity.cluster(for: feedback.item) == ContentIdentity.cluster(for: item)
+            case .notInterested: return ContentIdentity.id(for: feedback.item.url) == contentID
+            case .hideEvent: return ContentIdentity.cluster(for: feedback.item) == clusterID
             default: return false
             }
         }

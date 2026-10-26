@@ -1,6 +1,8 @@
 # Local Interest Engine Implementation Plan
 
 > Execute inline in the primary session. No subagents, Git commits, paid API tests or silent model downloads.
+>
+> **Packaging rule update (2026-10-26):** local verification bundles now go to `release/{version}/NewsBar.app` via `bash scripts/package-local.sh`. The `output/` paths below are historical records and must not be used for new packages.
 
 **Goal:** Add a local, consent-gated interest engine and isolated Dashboard reader, sharing selection with summaries, research and notifications.
 

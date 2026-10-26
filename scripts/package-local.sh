@@ -1,23 +1,53 @@
 #!/bin/bash
 set -euo pipefail
 
+# Local verification build — canonical output only:
+#   release/<version>/NewsBar.app
+#
+# This helper intentionally does NOT create a DMG and does NOT update
+# release/latest, release/versions.json or any published release artifact.
+# Do not add an output/ directory: ad-hoc package paths are deprecated.
+
 PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$PROJECT_DIR"
+
 VERSION="$(tr -d '[:space:]' < version.txt)"
-OUTPUT_DIR="${1:-${PROJECT_DIR}/output/v${VERSION}_local-interest-$(date +%Y%m%d-%H%M%S)}"
-case "$OUTPUT_DIR/" in
-    "$PROJECT_DIR/output/"*) ;;
-    *) echo "Output must be a new directory under $PROJECT_DIR/output" >&2; exit 1 ;;
-esac
-if [ -e "$OUTPUT_DIR" ]; then
-    echo "Refusing to overwrite existing output: $OUTPUT_DIR" >&2
+RELEASE_DIR="${PROJECT_DIR}/release/${VERSION}"
+BUNDLE="${RELEASE_DIR}/NewsBar.app"
+FORCE=0
+
+for arg in "$@"; do
+    case "$arg" in
+        --force) FORCE=1 ;;
+        -h|--help)
+            echo "Usage: bash scripts/package-local.sh [--force]"
+            echo "Output: release/${VERSION}/NewsBar.app"
+            exit 0
+            ;;
+        *)
+            echo "Unknown argument: $arg" >&2
+            echo "Local packages must use release/${VERSION}/NewsBar.app." >&2
+            exit 2
+            ;;
+    esac
+done
+
+if [ -e "$BUNDLE" ] && [ "$FORCE" -ne 1 ]; then
+    echo "Refusing to overwrite existing bundle: $BUNDLE" >&2
+    echo "Re-run with --force after confirming it is a local build." >&2
     exit 1
 fi
+
+if [ -e "$BUNDLE" ]; then
+    echo "Replacing existing local bundle: $BUNDLE"
+    rm -rf "$BUNDLE"
+fi
+
+mkdir -p "$RELEASE_DIR"
 
 # No release cleanup, version bump, remote signing, DMG mounting or publication.
 swift build -c release --arch arm64
 BIN_DIR="$(swift build -c release --arch arm64 --show-bin-path)"
-BUNDLE="$OUTPUT_DIR/NewsBar.app"
 mkdir -p "$BUNDLE/Contents/MacOS" "$BUNDLE/Contents/Resources"
 cp "$BIN_DIR/NewsBar" "$BUNDLE/Contents/MacOS/NewsBar"
 cp version.txt "$BUNDLE/Contents/Resources/"
@@ -36,6 +66,7 @@ cat > "$BUNDLE/Contents/Info.plist" <<PLIST
     <key>CFBundleVersion</key><string>${VERSION}</string>
     <key>CFBundleShortVersionString</key><string>${VERSION}</string>
     <key>CFBundlePackageType</key><string>APPL</string>
+    <key>CFBundleSignature</key><string>????</string>
     <key>LSMinimumSystemVersion</key><string>15.0</string>
     <key>LSUIElement</key><true/>
     <key>CFBundleIconFile</key><string>AppIcon</string>
@@ -46,5 +77,12 @@ PLIST
 plutil -lint "$BUNDLE/Contents/Info.plist"
 codesign --force --deep --sign - "$BUNDLE"
 codesign --verify --strict --deep --verbose=2 "$BUNDLE"
-shasum -a 256 "$BUNDLE/Contents/MacOS/NewsBar" > "$OUTPUT_DIR/NewsBar-binary.sha256"
-printf '\nAPP_BUNDLE=%s\nOUTPUT_DIR=%s\n' "$BUNDLE" "$OUTPUT_DIR"
+
+# Relative path so `shasum -a 256 -c` works from the project root.
+(
+    cd "$PROJECT_DIR"
+    shasum -a 256 "release/${VERSION}/NewsBar.app/Contents/MacOS/NewsBar"
+) > "$RELEASE_DIR/NewsBar-binary.sha256"
+
+printf '\nAPP_BUNDLE=%s\nOUTPUT_DIR=%s\nSHA256_FILE=%s\n' \
+    "$BUNDLE" "$RELEASE_DIR" "$RELEASE_DIR/NewsBar-binary.sha256"

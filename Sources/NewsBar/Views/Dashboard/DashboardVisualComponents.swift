@@ -134,18 +134,6 @@ struct DashboardHotTrendCard: View {
         .accessibilityLabel("dash.noTrendData".localized)
     }
 
-    private var cardShape: RoundedRectangle {
-        RoundedRectangle(cornerRadius: 18, style: .continuous)
-    }
-
-    private var cardBackground: some View {
-        cardShape.fill(.ultraThinMaterial)
-    }
-
-    private var cardStroke: some View {
-        cardShape.strokeBorder(.separator.opacity(0.35), lineWidth: 1)
-    }
-
     private func toggleExpansion() {
         if reduceMotion {
             isExpanded.toggle()
@@ -175,9 +163,7 @@ private struct DashboardTrendRow: View {
     }
 
     var body: some View {
-        Button {
-            NewsNavigationRouter.shared.open(item, surface: "dashboardTrend")
-        } label: {
+        HeroOpenButton(item: item, surface: "dashboardTrend") {
             HStack(alignment: .top, spacing: 10) {
                 rankBadge
 
@@ -212,7 +198,6 @@ private struct DashboardTrendRow: View {
             .background(rowBackground)
             .contentShape(rowShape)
         }
-        .buttonStyle(.plain)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(accessibilityLabel)
         .accessibilityHint("news.openInBrowser".localized)
@@ -264,10 +249,8 @@ private struct DashboardTrendRow: View {
             }
     }
 
-    private var rowShape: AnyShape {
-        isRetro
-            ? AnyShape(Rectangle())
-            : AnyShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+    private var rowShape: EditorialSurfaceShape {
+        EditorialSurfaceShape(cornerRadius: 12, isRetro: isRetro)
     }
 
     private var accessibilityLabel: String {
@@ -426,18 +409,6 @@ struct DashboardRSSSourceCard: View {
             .tint(sourceTint)
             .accessibilityLabel(isExpanded ? "收起 \(source.displayName)" : "展开 \(source.displayName)")
         }
-    }
-
-    private var cardShape: RoundedRectangle {
-        RoundedRectangle(cornerRadius: 18, style: .continuous)
-    }
-
-    private var cardBackground: some View {
-        cardShape.fill(.ultraThinMaterial)
-    }
-
-    private var cardStroke: some View {
-        cardShape.strokeBorder(.separator.opacity(0.35), lineWidth: 1)
     }
 
     private func toggleExpansion() {
@@ -639,15 +610,12 @@ private struct DashboardRSSMasonryCard: View {
     }
 
     var body: some View {
-        Button {
-            NewsNavigationRouter.shared.open(item, surface: "dashboardRSS")
-        } label: {
+        HeroOpenButton(item: item, surface: "dashboardRSS") {
             cardContent
             .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
             .fixedSize(horizontal: false, vertical: true)
             .newsCardSurface(cornerRadius: 16, rotation: 0.12, isHovering: isHovering)
         }
-        .buttonStyle(.plain)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(item.displayTitle)
         .accessibilityValue(item.source.displayName)
@@ -776,7 +744,7 @@ private struct DashboardRSSMasonryCard: View {
         .foregroundStyle(sourceTint)
         .padding(.horizontal, 7)
         .padding(.vertical, 3)
-        .background(.ultraThinMaterial)
+        .background(Color(nsColor: .windowBackgroundColor).opacity(0.88))
         .editorialClipShape(cornerRadius: 20)
         .accessibilityHidden(true)
     }
@@ -799,18 +767,6 @@ private struct DashboardRSSMasonryCard: View {
                 .opacity(isHovering ? 1 : 0.55)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    private var cardShape: RoundedRectangle {
-        RoundedRectangle(cornerRadius: 16, style: .continuous)
-    }
-
-    private var cardBackground: some View {
-        cardShape.fill(.ultraThinMaterial)
-    }
-
-    private var cardStroke: some View {
-        cardShape.strokeBorder(.separator.opacity(isHovering ? 0.45 : 0.28), lineWidth: 1)
     }
 
     private var sourceMark: EditorialSourceMark {

@@ -75,6 +75,12 @@ final class AppSettings {
     var rssTitleTranslationEnabled: Bool {
         didSet { UserDefaults.standard.set(rssTitleTranslationEnabled, forKey: "rssTitleTranslationEnabled") }
     }
+    var readerCookieMemoryEnabled: Bool {
+        didSet { UserDefaults.standard.set(readerCookieMemoryEnabled, forKey: "readerCookieMemoryEnabled") }
+    }
+    var readerHistoryEnabled: Bool {
+        didSet { UserDefaults.standard.set(readerHistoryEnabled, forKey: "readerHistoryEnabled") }
+    }
     @ObservationIgnored var resolvedColorScheme: ColorScheme? {
         if appTheme == .retroEditorial { return .light }
         switch colorScheme {
@@ -286,6 +292,8 @@ final class AppSettings {
         self.appLanguage = language
         L10n.currentLanguage = language
         self.rssTitleTranslationEnabled = defaults.boolIfPresent(forKey: "rssTitleTranslationEnabled") ?? false
+        self.readerCookieMemoryEnabled = defaults.boolIfPresent(forKey: "readerCookieMemoryEnabled") ?? true
+        self.readerHistoryEnabled = defaults.boolIfPresent(forKey: "readerHistoryEnabled") ?? true
         self.aiSummaryEnabled = defaults.boolIfPresent(forKey: "aiSummaryEnabled") ?? false
         self.aiProvider = defaults.stringIfPresent(forKey: "aiProvider") ?? "deepseek"
 

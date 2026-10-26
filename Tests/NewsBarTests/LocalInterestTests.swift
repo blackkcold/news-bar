@@ -152,6 +152,43 @@ final class LocalInterestTests: XCTestCase {
     }
 
     @MainActor
+    func testImpressionsAreBufferedUntilFlushAndPersistOnce() async throws {
+        let path = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString).appendingPathComponent("db.sqlite")
+        let store = LocalInterestStore(fileURL: path)
+        let controller = InterestController(store: store)
+        await controller.prepare()
+        controller.setLearningEnabled(true)
+        let article = item()
+        let session = UUID()
+        controller.record(article, kind: .impression, epoch: controller.state.consentEpoch, sessionID: session)
+        // The render path must not mutate the observed document.
+        XCTAssertTrue(controller.state.events.isEmpty)
+
+        await controller.flush()
+        XCTAssertEqual(controller.state.events.count, 1)
+        XCTAssertEqual(controller.state.events.first?.kind, .impression)
+
+        let persisted = try await store.load()
+        XCTAssertEqual(persisted.events.count, 1)
+    }
+
+    @MainActor
+    func testBufferedImpressionsDedupeWithinTheSameListSession() async throws {
+        let path = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString).appendingPathComponent("db.sqlite")
+        let store = LocalInterestStore(fileURL: path)
+        let controller = InterestController(store: store)
+        await controller.prepare()
+        controller.setLearningEnabled(true)
+        let article = item()
+        let session = UUID()
+        controller.record(article, kind: .impression, epoch: controller.state.consentEpoch, sessionID: session)
+        controller.record(article, kind: .impression, epoch: controller.state.consentEpoch, sessionID: session)
+
+        await controller.flush()
+        XCTAssertEqual(controller.state.events.count, 1)
+    }
+
+    @MainActor
     func testControllerSerializesClearAndRejectsLateRead() async throws {
         let path = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString).appendingPathComponent("db.sqlite")
         let store = LocalInterestStore(fileURL: path)
