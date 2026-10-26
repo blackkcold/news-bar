@@ -26,29 +26,6 @@ struct DashboardWindow: View {
     private let listMinWidth: CGFloat = 320
     private let listMaxWidth: CGFloat = 480
 
-    enum DashboardSourceFilter: String, CaseIterable, Identifiable {
-        case all, weibo, bilibili, rss
-        var id: String { rawValue }
-
-        var displayName: String {
-            switch self {
-            case .all: return "dash.filter.all".localized
-            case .weibo: return "source.weibo".localized
-            case .bilibili: return "source.bilibili".localized
-            case .rss: return "dash.filter.rss".localized
-            }
-        }
-
-        func matches(_ source: NewsSource) -> Bool {
-            switch self {
-            case .all: return true
-            case .weibo: return source == .weibo
-            case .bilibili: return source == .bilibili
-            case .rss: return source != .weibo && source != .bilibili
-            }
-        }
-    }
-
     private var normalizedSearchQuery: String? {
         DashboardSearch.normalized(debouncedSearchText)
     }
@@ -78,6 +55,7 @@ struct DashboardWindow: View {
     }
 
     var body: some View {
+        @Bindable var router = NewsNavigationRouter.shared
         GeometryReader { geometry in
             let selection = NewsNavigationRouter.shared.selection
             let isWide = geometry.size.width >= 1100
@@ -158,6 +136,10 @@ struct DashboardWindow: View {
                 }
                 DashboardToolbarAction(title: settings.appLanguage == .en ? "Settings" : "设置", symbol: "gearshape", action: onOpenSettings)
             }
+        }
+        .sheet(item: $router.digest) { request in
+            NewsDigestSheet(request: request)
+                .environment(settings)
         }
     }
 
@@ -301,7 +283,8 @@ struct DashboardWindow: View {
                         sourceFilter: sourceFilter,
                         searchQuery: normalizedSearchQuery,
                         isSearchActive: isSearchActive,
-                        onConfigureAI: onConfigureAI ?? onOpenSettings
+                        onConfigureAI: onConfigureAI ?? onOpenSettings,
+                        showsHotTrends: true
                     )
                     .frame(width: sidebarWidth, alignment: .leading)
                 }
@@ -309,10 +292,10 @@ struct DashboardWindow: View {
                 recommendationsView()
             }
         } else if isReaderCompact {
-            rssMainRegion
+            sourceBrowserRegion
         } else if isWideLayout {
             HStack(alignment: .top, spacing: 20) {
-                rssMainRegion
+                sourceBrowserRegion
                     .frame(maxWidth: .infinity, alignment: .leading)
 
                 DashboardSidebarRegion(
@@ -320,7 +303,8 @@ struct DashboardWindow: View {
                     sourceFilter: sourceFilter,
                     searchQuery: normalizedSearchQuery,
                     isSearchActive: isSearchActive,
-                    onConfigureAI: onConfigureAI ?? onOpenSettings
+                    onConfigureAI: onConfigureAI ?? onOpenSettings,
+                    showsHotTrends: false
                 )
                 .frame(width: sidebarWidth, alignment: .leading)
             }
@@ -331,16 +315,17 @@ struct DashboardWindow: View {
                     sourceFilter: sourceFilter,
                     searchQuery: normalizedSearchQuery,
                     isSearchActive: isSearchActive,
-                    onConfigureAI: onConfigureAI ?? onOpenSettings
+                    onConfigureAI: onConfigureAI ?? onOpenSettings,
+                    showsHotTrends: false
                 )
-                rssMainRegion
+                sourceBrowserRegion
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 
-    private var rssMainRegion: some View {
-        DashboardRSSMainRegion(
+    private var sourceBrowserRegion: some View {
+        DashboardSourceBrowserRegion(
             orchestrator: orchestrator,
             sourceFilter: sourceFilter,
             searchQuery: normalizedSearchQuery,
@@ -350,7 +335,8 @@ struct DashboardWindow: View {
             onRefresh: { source in
                 Task { await orchestrator.refreshRSSSource(source, settings: settings) }
             },
-            onOpenSettings: onOpenSettings
+            onOpenSettings: onOpenSettings,
+            onResetFilters: { searchText = ""; sourceFilter = .all }
         )
     }
 
@@ -547,7 +533,7 @@ private struct DashboardMasthead: View {
 private struct DashboardFilterBar: View {
     @Environment(AppSettings.self) private var settings
     @Binding var searchText: String
-    @Binding var sourceFilter: DashboardWindow.DashboardSourceFilter
+    @Binding var sourceFilter: DashboardSourceFilter
     @Binding var forYou: Bool
     let orchestrator: NewsOrchestrator
     let debouncedQuery: String?
@@ -603,7 +589,7 @@ private struct DashboardFilterBar: View {
             }
 
             HStack(spacing: 6) {
-                ForEach(DashboardWindow.DashboardSourceFilter.allCases) { filter in
+                ForEach(DashboardSourceFilter.allCases) { filter in
                     filterChip(filter)
                 }
 
@@ -621,7 +607,7 @@ private struct DashboardFilterBar: View {
         }
     }
 
-    private func filterChip(_ filter: DashboardWindow.DashboardSourceFilter) -> some View {
+    private func filterChip(_ filter: DashboardSourceFilter) -> some View {
         let isSelected = sourceFilter == filter
         return Button {
             sourceFilter = filter
@@ -654,7 +640,7 @@ private struct DashboardFilterBar: View {
 private struct DashboardFilterCountLabel: View {
     @Environment(AppSettings.self) private var settings
     let orchestrator: NewsOrchestrator
-    let sourceFilter: DashboardWindow.DashboardSourceFilter
+    let sourceFilter: DashboardSourceFilter
     let query: String?
     let forYou: Bool
 
@@ -664,24 +650,14 @@ private struct DashboardFilterCountLabel: View {
                 sourceFilter.matches($0.item.source) && DashboardSearch.matches($0.item, query: query)
             }.count ?? 0
         }
-        var result = 0
-        if sourceFilter.matches(.weibo) {
-            result += orchestrator.weiboItems.filter {
-                DashboardSearch.matches($0, query: query)
-            }.count
-        }
-        if sourceFilter.matches(.bilibili) {
-            result += orchestrator.bilibiliItems.filter {
-                DashboardSearch.matches($0, query: query)
-            }.count
-        }
-        for source in settings.activeSources where !source.isBuiltIn {
-            guard sourceFilter.matches(source) else { continue }
-            result += (orchestrator.rssItemsMap[source.id] ?? []).filter {
-                DashboardSearch.matches($0, query: query)
-            }.count
-        }
-        return result
+        return DashboardBrowseCatalog.groups(
+            sources: settings.activeSources,
+            weiboItems: orchestrator.weiboItems,
+            bilibiliItems: orchestrator.bilibiliItems,
+            rssItems: orchestrator.rssItemsMap,
+            filter: sourceFilter,
+            query: query
+        ).reduce(0) { $0 + $1.matchCount }
     }
 
     var body: some View {
@@ -746,10 +722,11 @@ private struct DashboardStatusOverlay: View {
 
 private struct DashboardSidebarRegion: View {
     let orchestrator: NewsOrchestrator
-    let sourceFilter: DashboardWindow.DashboardSourceFilter
+    let sourceFilter: DashboardSourceFilter
     let searchQuery: String?
     let isSearchActive: Bool
     let onConfigureAI: () -> Void
+    let showsHotTrends: Bool
 
     private func filtered(_ source: NewsSource, _ items: [NewsItem]) -> [NewsItem] {
         guard sourceFilter.matches(source) else { return [] }
@@ -769,96 +746,150 @@ private struct DashboardSidebarRegion: View {
                 onConfigureAI: onConfigureAI
             )
 
-            EditorialSectionHeading(
-                index: "02",
-                title: "实时热榜",
-                subtitle: "社交平台正在发生"
-            )
+            if showsHotTrends {
+                EditorialSectionHeading(
+                    index: "02",
+                    title: "实时热榜",
+                    subtitle: "社交平台正在发生"
+                )
 
-            if sourceFilter.matches(.weibo) || !isSearchActive {
-                DashboardHotTrendCard(source: .weibo, items: filtered(.weibo, orchestrator.weiboItems))
-            }
-            if sourceFilter.matches(.bilibili) || !isSearchActive {
-                DashboardHotTrendCard(source: .bilibili, items: filtered(.bilibili, orchestrator.bilibiliItems))
+                if sourceFilter.matches(.weibo) || !isSearchActive {
+                    DashboardHotTrendCard(source: .weibo, items: filtered(.weibo, orchestrator.weiboItems))
+                }
+                if sourceFilter.matches(.bilibili) || !isSearchActive {
+                    DashboardHotTrendCard(source: .bilibili, items: filtered(.bilibili, orchestrator.bilibiliItems))
+                }
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
-// MARK: - RSS main region
+// MARK: - Source browser
 
-private struct DashboardRSSMainRegion: View {
+private struct DashboardSourceBrowserRegion: View {
     @Environment(AppSettings.self) private var settings
     let orchestrator: NewsOrchestrator
-    let sourceFilter: DashboardWindow.DashboardSourceFilter
+    let sourceFilter: DashboardSourceFilter
     let searchQuery: String?
     let hasAnyFilter: Bool
     let collapsedSourceIDs: Set<NewsSource.ID>
     let onToggleExpansion: (NewsSource) -> Void
     let onRefresh: (NewsSource) -> Void
     let onOpenSettings: () -> Void
+    let onResetFilters: () -> Void
 
     private var selectedSources: [NewsSource] {
         settings.activeSources.filter { !$0.isBuiltIn }
     }
 
-    private var totalItemCount: Int {
-        selectedSources.reduce(0) { partial, source in
-            partial + (orchestrator.rssItemsMap[source.id]?.count ?? 0)
-        }
+    private var showsRSSOnboarding: Bool {
+        selectedSources.isEmpty && sourceFilter != .weibo && sourceFilter != .bilibili
     }
 
     var body: some View {
+        let groups = DashboardBrowseCatalog.groups(
+            sources: settings.activeSources,
+            weiboItems: orchestrator.weiboItems,
+            bilibiliItems: orchestrator.bilibiliItems,
+            rssItems: orchestrator.rssItemsMap,
+            filter: sourceFilter,
+            query: searchQuery
+        )
         VStack(alignment: .leading, spacing: 16) {
             EditorialSectionHeading(
-                index: "03",
-                title: "RSS 主版",
-                subtitle: selectedSources.isEmpty
-                    ? "尚未启用 RSS 源"
-                    : "\(selectedSources.count) 个已启用源 · \(totalItemCount) 条内容"
+                index: "02",
+                title: L10n.string("dash.browse.title"),
+                subtitle: subtitle(for: groups)
             )
 
-            if selectedSources.isEmpty {
-                emptyState
+            if groups.isEmpty && !showsRSSOnboarding {
+                noMatchState
             } else {
                 LazyVStack(alignment: .leading, spacing: 16) {
-                    ForEach(selectedSources) { source in
-                        DashboardRSSSourceCard(
-                            source: source,
-                            orchestrator: orchestrator,
-                            sourceFilter: sourceFilter,
-                            searchQuery: searchQuery,
-                            hasAnyFilter: hasAnyFilter,
-                            isExpanded: !collapsedSourceIDs.contains(source.id),
-                            onRefresh: { onRefresh(source) },
-                            onToggleExpansion: { onToggleExpansion(source) }
-                        )
+                    ForEach(groups) { group in
+                        if group.source.isBuiltIn {
+                            DashboardHotTrendCard(
+                                source: group.source,
+                                items: hotItems(for: group.source)
+                            )
+                        } else {
+                            DashboardRSSSourceCard(
+                                source: group.source,
+                                orchestrator: orchestrator,
+                                sourceFilter: sourceFilter,
+                                searchQuery: searchQuery,
+                                hasAnyFilter: hasAnyFilter,
+                                isExpanded: !collapsedSourceIDs.contains(group.source.id),
+                                onRefresh: { onRefresh(group.source) },
+                                onToggleExpansion: { onToggleExpansion(group.source) }
+                            )
+                        }
                     }
+                }
+
+                if showsRSSOnboarding {
+                    rssOnboardingState
                 }
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    private var emptyState: some View {
+    private func subtitle(for groups: [DashboardBrowseGroup]) -> String {
+        guard !groups.isEmpty else {
+            return showsRSSOnboarding
+                ? L10n.string("dash.browse.rssEmptyTitle")
+                : L10n.string("dash.browse.empty")
+        }
+        let matchCount = groups.reduce(0) { $0 + $1.matchCount }
+        return L10n.string("dash.browse.subtitle", groups.count, matchCount)
+    }
+
+    private func hotItems(for source: NewsSource) -> [NewsItem] {
+        let items: [NewsItem]
+        switch source {
+        case .weibo: items = orchestrator.weiboItems
+        case .bilibili: items = orchestrator.bilibiliItems
+        case .rss: items = []
+        }
+        return items.filter { DashboardSearch.matches($0, query: searchQuery) }
+    }
+
+    private var noMatchState: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(L10n.string("dash.browse.empty"))
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+
+            Button(L10n.string("dash.browse.reset")) {
+                onResetFilters()
+            }
+            .buttonStyle(EditorialActionButtonStyle(tone: .primary, compact: true))
+            .controlSize(.small)
+        }
+        .padding(14)
+        .newsCardSurface()
+    }
+
+    private var rssOnboardingState: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 8) {
                 Image(systemName: "tray")
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
-                Text("尚未启用任何 RSS 源")
+                Text(L10n.string("dash.browse.rssEmptyTitle"))
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
                 Spacer(minLength: 0)
             }
 
-            Text("在设置中启用 RSS 订阅后，每个来源会以独立卡片显示在这里。")
+            Text(L10n.string("dash.browse.rssEmptyBody"))
                 .font(.system(size: 11))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
-            Button("打开设置") {
+            Button(L10n.string("dash.browse.openSettings")) {
                 onOpenSettings()
             }
             .buttonStyle(EditorialActionButtonStyle(tone: .primary, compact: true))

@@ -370,7 +370,7 @@ final class AppSettings {
 
         self.hourlyPushEnabled = defaults.boolIfPresent(forKey: "hourlyPushEnabled") ?? false
         self.dailyPushEnabled = defaults.boolIfPresent(forKey: "dailyPushEnabled") ?? false
-        self.pushCount = defaults.integerIfPresent(forKey: "pushCount") ?? 3
+        self.pushCount = min(max(defaults.integerIfPresent(forKey: "pushCount") ?? 3, 1), 3)
         self.dailyPushHour = defaults.integerIfPresent(forKey: "dailyPushHour") ?? 9
         self.dailyPushMinute = defaults.integerIfPresent(forKey: "dailyPushMinute") ?? 0
 
