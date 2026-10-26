@@ -18,6 +18,11 @@ final class ReaderPresentationTests: XCTestCase {
         XCTAssertFalse(ReaderFailure.privateDestination.canRetry)
         XCTAssertTrue(ReaderFailure.networkUnavailable.canRetry)
         XCTAssertTrue(ReaderFailure.safetyRulesUnavailable.canRetry)
+        XCTAssertFalse(ReaderFailure.siteBlocked.canRetry)
+        XCTAssertTrue(ReaderFailure.siteBlocked.message(language: .zh).contains("风控"))
+        XCTAssertTrue(ReaderFailure.siteBlocked.message(language: .en).contains("security policy"))
+        XCTAssertFalse(ReaderFailure.siteBlocked.message(language: .zh).contains("security policy"))
+        XCTAssertFalse(ReaderFailure.siteBlocked.message(language: .en).contains("风控"))
     }
 
     @MainActor

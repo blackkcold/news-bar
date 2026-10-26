@@ -3,6 +3,7 @@ import Foundation
 enum ReaderFailure: Equatable {
     case unsupportedURL, privateDestination, networkUnavailable, downloadBlocked, processTerminated, safetyRulesUnavailable
     case proxyTrustRequired, proxyUnavailable
+    case siteBlocked
 
     var canRetry: Bool {
         switch self {
@@ -14,6 +15,7 @@ enum ReaderFailure: Equatable {
     var symbol: String {
         switch self {
         case .unsupportedURL, .privateDestination, .downloadBlocked: return "exclamationmark.shield"
+        case .siteBlocked: return "hand.raised"
         case .networkUnavailable, .proxyUnavailable: return "wifi.exclamationmark"
         default: return "exclamationmark.triangle"
         }
@@ -28,6 +30,7 @@ enum ReaderFailure: Equatable {
         case .safetyRulesUnavailable: return language == .en ? "Reader is not ready" : "阅读器暂时不可用"
         case .proxyTrustRequired: return language == .en ? "Authorize this network's proxy" : "请授权当前网络的代理"
         case .proxyUnavailable: return language == .en ? "Cannot connect through the proxy" : "暂时无法通过代理连接"
+        case .siteBlocked: return language == .en ? "This site blocked the reader" : "该站点拒绝了内嵌访问"
         }
     }
 
@@ -50,6 +53,8 @@ enum ReaderFailure: Equatable {
             return ReaderProxyError.trustRequired.message(language: language)
         case .proxyUnavailable:
             return ReaderProxyError.unavailable.message(language: language)
+        case .siteBlocked:
+            return english ? "The site's security policy rejected this in-app session, so retrying will not help. Open the article in your browser." : "该站点按安全风控策略拒绝了内嵌会话，重试通常无效。请在浏览器中打开原文。"
         }
     }
 }
