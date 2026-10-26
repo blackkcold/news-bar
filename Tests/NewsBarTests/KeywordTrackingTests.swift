@@ -43,4 +43,10 @@ final class KeywordTrackingTests: XCTestCase {
         XCTAssertTrue(settings.keywordMatches("AI 技术发展"))
         XCTAssertTrue(settings.keywordMatches("人工智能 AI 应用"))
     }
+
+    func testShortEnglishKeywordDoesNotMatchUnrelatedWord() {
+        let settings = makeSettings(keywords: ["ai"])
+        XCTAssertFalse(settings.keywordMatches("chair and railway"))
+        XCTAssertTrue(settings.keywordMatches("AI模型发布"))
+    }
 }

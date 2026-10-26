@@ -59,13 +59,21 @@ enum AISummaryParser {
         itemCount: Int,
         weiboBilibiliRange: Range<Int>
     ) -> ParsedSummary {
-        let trendLabel = "【趋势概览】"
-        let dailyLabel = "【每日精选】"
+        parseDualSummary(text, itemCount: itemCount, trendIndices: Set(weiboBilibiliRange))
+    }
+
+    static func parseDualSummary(
+        _ text: String,
+        itemCount: Int,
+        trendIndices: Set<Int>
+    ) -> ParsedSummary {
+        let trendLabel = text.contains("【趋势概览】") ? "【趋势概览】" : "【Trend Overview】"
+        let dailyLabel = text.contains("【每日精选】") ? "【每日精选】" : "【Daily Essentials】"
 
         let trendRange = text.range(of: trendLabel)
         let dailyRange = text.range(of: dailyLabel)
 
-        if let trendStart = trendRange, let dailyStart = dailyRange {
+        if let trendStart = trendRange, let dailyStart = dailyRange, trendStart.upperBound <= dailyStart.lowerBound {
             let trendEnd = dailyStart.lowerBound
             let trendContent = String(text[trendStart.upperBound..<trendEnd])
             let dailyContent = String(text[dailyStart.upperBound...])
@@ -82,7 +90,7 @@ enum AISummaryParser {
             var movedToDaily: [(title: String, body: String, primaryIndex: Int?)] = []
             for section in rawTrendSections {
                 if let idx = section.primaryIndex {
-                    if weiboBilibiliRange.contains(idx) {
+                    if trendIndices.contains(idx) {
                         filteredTrend.append(section)
                     } else {
                         // Valid citation but not a trend source — move to daily
@@ -143,7 +151,7 @@ enum AISummaryParser {
             } else if trimmed.hasPrefix("#") {
                 flush()
                 currentTitle = extractMarkdownTitle(trimmed)
-            } else if trimmed.hasPrefix("引用：") {
+            } else if trimmed.hasPrefix("引用：") || trimmed.hasPrefix("Citation:") {
                 currentIndices = parseCitationNumbers(trimmed, itemCount: itemCount)
             } else if !trimmed.isEmpty, !currentTitle.isEmpty {
                 let refs = parseCitationNumbers(trimmed, itemCount: itemCount)

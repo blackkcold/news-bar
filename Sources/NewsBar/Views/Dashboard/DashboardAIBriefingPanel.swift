@@ -37,7 +37,7 @@ struct DashboardAIBriefingPanel: View {
         return AISummaryParser.parseDualSummary(
             text,
             itemCount: sharedSummaryItems.count,
-            weiboBilibiliRange: 0..<(orchestrator.weiboItems.count + orchestrator.bilibiliItems.count)
+            trendIndices: orchestrator.aiSummaryManifest?.trendIndices ?? Set(sharedSummaryItems.enumerated().filter { $0.element.source.isBuiltIn }.map(\.offset))
         )
     }
 
@@ -91,6 +91,12 @@ struct DashboardAIBriefingPanel: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             header
+            if let manifest = orchestrator.aiSummaryManifest {
+                Text(settings.appLanguage == .en
+                     ? "Based on collected titles · \(manifest.coverageStart.formatted(date: .omitted, time: .shortened))–\(manifest.asOf.formatted(date: .omitted, time: .shortened)) · not a complete daily archive"
+                     : "基于已采集标题 · \(manifest.coverageStart.formatted(date: .omitted, time: .shortened))–\(manifest.asOf.formatted(date: .omitted, time: .shortened)) · 非完整全天报道")
+                    .font(.caption2).foregroundStyle(.secondary)
+            }
 
             switch summaryState {
             case .idle:
@@ -235,7 +241,8 @@ struct DashboardAIBriefingPanel: View {
                             content: section.body,
                             matchedItem: section.primaryIndex.flatMap {
                                 summaryItems.indices.contains($0) ? summaryItems[$0] : nil
-                            }
+                            },
+                            contextID: orchestrator.aiSummaryManifest?.id.uuidString
                         )
 
                         if index < selectedSections.count - 1 {

@@ -3,6 +3,19 @@ import UserNotifications
 
 enum NotificationService {
 
+    /// Title-only fallback; never starts an AI request to produce a notification.
+    static func titleContent(items: [NewsItem], daily: Bool) -> UNMutableNotificationContent {
+        let content = UNMutableNotificationContent()
+        content.title = L10n.string(daily ? "notif.dailyTitle" : "notif.hourlyTitle", language: L10n.currentLanguage)
+        content.body = items.map { SecurityPolicies.sanitizeHTMLContent($0.displayTitle) }.joined(separator: "\n• ")
+        content.sound = nil
+        if let first = items.first {
+            content.userInfo = ["type": "news", "url": first.url, "title": first.displayTitle, "newsItemID": first.id,
+                                "snapshotAsOf": Date().timeIntervalSince1970]
+        } else { content.userInfo = ["type": "daily"] }
+        return content
+    }
+
     static func requestAuthorization() async -> Bool {
         do {
             return try await UNUserNotificationCenter.current()
@@ -21,13 +34,7 @@ enum NotificationService {
         guard count > 0, !items.isEmpty else { return }
 
         let topItems = Array(items.prefix(count))
-        let content = UNMutableNotificationContent()
-        content.title = L10n.string("notif.hourlyTitle", language: L10n.currentLanguage)
-        let bodyText = topItems
-            .map { SecurityPolicies.sanitizeHTMLContent($0.displayTitle) }
-            .joined(separator: "\n• ")
-        content.body = "• " + bodyText
-        content.sound = nil
+        let content = titleContent(items: topItems, daily: false)
 
         let request = UNNotificationRequest(
             identifier: "hourly-\(Int(Date().timeIntervalSince1970))",
@@ -44,19 +51,14 @@ enum NotificationService {
         center.removePendingNotificationRequests(withIdentifiers: ["daily-summary"])
 
         let topItems = Array(items.prefix(count))
-        let content = UNMutableNotificationContent()
-        content.title = L10n.string("notif.dailyTitle", language: L10n.currentLanguage)
-        content.body = topItems
-            .map { SecurityPolicies.sanitizeHTMLContent($0.displayTitle) }
-            .joined(separator: "\n• ")
-        content.sound = nil
-        content.userInfo = ["type": "daily"]
+        let content = titleContent(items: topItems, daily: true)
 
         var dateComponents = DateComponents()
         dateComponents.hour = hour
         dateComponents.minute = minute
 
-        let trigger = UNCalendarNotificationTrigger(dateMatching: dateComponents, repeats: true)
+        // A frozen title snapshot is sent once, not repeated indefinitely after app exit.
+        let trigger = UNCalendarNotificationTrigger(dateMatching: dateComponents, repeats: false)
         let request = UNNotificationRequest(
             identifier: "daily-summary",
             content: content,
@@ -121,5 +123,11 @@ enum NotificationService {
 
     static func clearAllPending() {
         UNUserNotificationCenter.current().removeAllPendingNotificationRequests()
+    }
+
+    static func clearPersonalizedNotifications() {
+        let center = UNUserNotificationCenter.current()
+        center.removeAllPendingNotificationRequests()
+        center.removeAllDeliveredNotifications()
     }
 }

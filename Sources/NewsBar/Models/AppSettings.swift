@@ -121,6 +121,7 @@ final class AppSettings {
             guard !isInitializing else { return }
             UserDefaults.standard.set(aiProvider, forKey: "aiProvider")
             cachedAPIKey = nil
+            invalidateModelCatalog(clearSelection: true)
         }
     }
     var onePasswordRef: String {
@@ -169,7 +170,12 @@ final class AppSettings {
     }
 
     var customAIProviders: [CustomAIProviderConfig] {
-        didSet { saveCustomAIProviders() }
+        didSet {
+            saveCustomAIProviders()
+            guard !isInitializing else { return }
+            let old = oldValue.first { "custom:\($0.id)" == aiProvider }
+            if old != selectedCustomProvider { invalidateModelCatalog(clearSelection: true) }
+        }
     }
 
     var hourlyPushEnabled: Bool {
@@ -248,14 +254,28 @@ final class AppSettings {
         didSet { saveRSSSources() }
     }
 
-    @ObservationIgnored var cachedAPIKey: String?
+    @ObservationIgnored var cachedAPIKey: String? {
+        didSet {
+            if !isInitializing, cachedAPIKey != oldValue { invalidateModelCatalog(clearSelection: false) }
+        }
+    }
+    private let modelService: ProviderModelService
+    private(set) var availableProviderModels: [ProviderModel] = []
+    private(set) var modelCatalogProviderID: String?
+    private(set) var modelCatalogUpdatedAt: Date?
+    private(set) var modelCatalogError: ProviderModelError?
+    private(set) var isLoadingModelCatalog = false
+    private(set) var modelCatalogIsStale = false
+    private(set) var modelCatalogRevision = UUID()
+    private var modelCatalogIdentity: String?
     private var isInitializing = true
 
     var currentProvider: AIProvider {
         AIProvider(rawValue: aiProvider) ?? .deepseek
     }
 
-    init() {
+    init(modelService: ProviderModelService = .shared) {
+        self.modelService = modelService
         let defaults = UserDefaults.standard
 
         self.autoRefreshEnabled = defaults.boolIfPresent(forKey: "autoRefreshEnabled") ?? false
@@ -269,14 +289,9 @@ final class AppSettings {
         self.aiSummaryEnabled = defaults.boolIfPresent(forKey: "aiSummaryEnabled") ?? false
         self.aiProvider = defaults.stringIfPresent(forKey: "aiProvider") ?? "deepseek"
 
-        let savedModel = defaults.stringIfPresent(forKey: "aiModel")
-            ?? "deepseek-v4-flash"
-        let deprecatedModels: Set<String> = ["deepseek-chat", "deepseek-reasoner"]
-        if deprecatedModels.contains(savedModel) {
-            self.aiModel = "deepseek-v4-flash"
-        } else {
-            self.aiModel = savedModel
-        }
+        // Persisted selections are historical until the provider's real catalog
+        // validates them. Never migrate to another hard-coded model ID.
+        self.aiModel = defaults.stringIfPresent(forKey: "aiModel") ?? ""
 
         let rawPopupMaxWords = defaults.integerIfPresent(forKey: "aiPopupMaxWords") ?? 120
         self.aiPopupMaxWords = Self.validAIPopupMaxWords.contains(rawPopupMaxWords) ? rawPopupMaxWords : 120
@@ -453,10 +468,7 @@ final class AppSettings {
     }
 
     var currentAIModels: [String] {
-        if let custom = selectedCustomProvider {
-            return custom.effectiveModels
-        }
-        return currentProvider.models(showAll: showAllAIModels)
+        providerModels(forID: aiProvider)
     }
 
     /// Encrypted-key account for the active provider. Custom providers store
@@ -481,17 +493,118 @@ final class AppSettings {
     }
 
     func providerDefaultModel(forID id: String) -> String {
-        if let custom = customProvider(byID: id) {
-            return custom.effectiveModels.first ?? ""
-        }
-        return AIProvider(rawValue: id)?.defaultModel ?? ""
+        guard modelCatalogProviderID == id else { return "" }
+        return ProviderModelSelection.preferred(in: availableProviderModels, current: nil) ?? ""
     }
 
     func providerModels(forID id: String) -> [String] {
-        if let custom = customProvider(byID: id) {
-            return custom.effectiveModels
+        guard modelCatalogProviderID == id else { return [] }
+        let ordered = ProviderModelSelection.ordered(availableProviderModels)
+        let deepseek = ordered.filter { ProviderModelSelection.isDeepSeek($0.id) }
+        let visible = !showAllAIModels && !deepseek.isEmpty ? deepseek : ordered
+        var ids = visible.map(\.id)
+        if ordered.contains(where: { $0.id == aiModel }), !ids.contains(aiModel) { ids.append(aiModel) }
+        return ids
+    }
+
+    var canUseCurrentAIModel: Bool {
+        guard modelCatalogProviderID == aiProvider,
+              let updated = modelCatalogUpdatedAt, Date().timeIntervalSince(updated) <= 24 * 3600,
+              modelCatalogIdentity == ProviderModelService.identity(providerID: aiProvider, connection: resolvedAIConnection, apiKey: cachedAPIKey ?? "") else { return false }
+        return availableProviderModels.contains { $0.id == aiModel }
+    }
+
+    @discardableResult
+    func activateAPIKey(_ key: String, providerID: String, revision: UUID) -> Bool {
+        guard providerID == aiProvider, revision == modelCatalogRevision else { return false }
+        cachedAPIKey = key
+        return true
+    }
+
+    @MainActor
+    func validatedAIConfiguration(apiKey: String) async -> ValidatedAIConfiguration? {
+        guard await refreshModelCatalog(apiKey: apiKey), canUseCurrentAIModel else { return nil }
+        return ValidatedAIConfiguration(providerID: aiProvider, connection: resolvedAIConnection,
+                                        model: aiModel, apiKey: apiKey, revision: modelCatalogRevision)
+    }
+
+    func isCurrentAIConfiguration(_ configuration: ValidatedAIConfiguration) -> Bool {
+        canUseCurrentAIModel && configuration.revision == modelCatalogRevision
+            && configuration.providerID == aiProvider && configuration.model == aiModel
+            && configuration.apiKey == cachedAPIKey
+    }
+
+    /// A connection test must not activate an unsaved credential or make a
+    /// billable generation request. Stale results are returned as stale.
+    @MainActor
+    func checkModelConnection(apiKey: String) async throws -> ProviderModelResult {
+        let revision = modelCatalogRevision
+        let result = try await modelService.catalog(providerID: aiProvider, connection: resolvedAIConnection, apiKey: apiKey, force: true)
+        guard revision == modelCatalogRevision else { throw CancellationError() }
+        return result
+    }
+
+    private func invalidateModelCatalog(clearSelection: Bool) {
+        modelCatalogRevision = UUID()
+        modelCatalogIdentity = nil
+        modelCatalogProviderID = nil
+        availableProviderModels = []
+        modelCatalogUpdatedAt = nil
+        modelCatalogError = nil
+        modelCatalogIsStale = false
+        isLoadingModelCatalog = false
+        if clearSelection { aiModel = "" }
+    }
+
+    /// Called on provider/key changes and before paid generation. Listing is
+    /// metadata-only and never triggers a summary or research request itself.
+    @MainActor
+    @discardableResult
+    func refreshModelCatalog(apiKey providedKey: String? = nil, force: Bool = false) async -> Bool {
+        let provider = aiProvider
+        let startingRevision = modelCatalogRevision
+        let connection = resolvedAIConnection
+        var key = providedKey ?? cachedAPIKey ?? ""
+        if key.isEmpty, provider != AIProvider.ollamaCloud.rawValue {
+            let account = activeAPIKeyAccount
+            key = await EncryptedKeyStore().readAPIKey(account: account) ?? ""
+            guard provider == aiProvider, startingRevision == modelCatalogRevision else { return false }
         }
-        return AIProvider(rawValue: id)?.models(showAll: showAllAIModels) ?? []
+        guard provider == AIProvider.ollamaCloud.rawValue || !key.isEmpty else {
+            modelCatalogError = .unauthorized
+            return false
+        }
+        if !key.isEmpty, cachedAPIKey != key { cachedAPIKey = key }
+        let revision = modelCatalogRevision
+        let identity = ProviderModelService.identity(providerID: provider, connection: connection, apiKey: key)
+        isLoadingModelCatalog = true
+        modelCatalogError = nil
+        do {
+            let result = try await modelService.catalog(providerID: provider, connection: connection, apiKey: key, force: force)
+            guard revision == modelCatalogRevision, provider == aiProvider,
+                  identity == ProviderModelService.identity(providerID: aiProvider, connection: resolvedAIConnection, apiKey: cachedAPIKey ?? "") else { return false }
+            modelCatalogProviderID = provider
+            modelCatalogIdentity = identity
+            availableProviderModels = result.snapshot.models
+            modelCatalogUpdatedAt = result.snapshot.fetchedAt
+            modelCatalogIsStale = result.source == .stale
+            modelCatalogError = result.refreshError
+            isLoadingModelCatalog = false
+            aiModel = ProviderModelSelection.preferred(in: result.snapshot.models, current: aiModel) ?? ""
+            return canUseCurrentAIModel
+        } catch {
+            guard revision == modelCatalogRevision, provider == aiProvider else { return false }
+            let failure = error as? ProviderModelError ?? .network
+            availableProviderModels = []
+            modelCatalogIdentity = nil
+            modelCatalogProviderID = nil
+            modelCatalogUpdatedAt = nil
+            modelCatalogError = failure
+            modelCatalogIsStale = false
+            isLoadingModelCatalog = false
+            if failure.invalidatesCache { aiModel = "" }
+            return false
+        }
     }
 
     func providerDisplayName(forID id: String) -> String {
@@ -552,14 +665,7 @@ final class AppSettings {
     func keywordMatches(_ title: String) -> Bool {
         let active = activeKeywords
         guard !active.isEmpty else { return false }
-        let foldedTitle = title.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
-        for keyword in active {
-            let folded = keyword.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
-            if foldedTitle.range(of: folded, options: [.caseInsensitive]) != nil {
-                return true
-            }
-        }
-        return false
+        return active.contains { TitleFeatures.matches($0, in: title) }
     }
 
     var estimatedAICostText: String {

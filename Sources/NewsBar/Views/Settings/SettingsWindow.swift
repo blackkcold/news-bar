@@ -58,6 +58,9 @@ struct SettingsWindow: View {
             .onReceive(NotificationCenter.default.publisher(for: .switchToAITab)) { _ in
                 selectedTab = 3
             }
+            .onReceive(NotificationCenter.default.publisher(for: .switchToInterestSettings)) { _ in
+                selectedTab = 0
+            }
 
             Divider()
 

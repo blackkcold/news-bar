@@ -6,6 +6,8 @@ struct DashboardWindow: View {
     @State private var collapsedRSSSourceIDs: Set<NewsSource.ID> = []
     @State private var searchText = ""
     @State private var sourceFilter: DashboardSourceFilter = .all
+    @State private var browseScroll = ScrollPosition()
+    @State private var forYou = true
 
     var onOpenSettings: () -> Void = {}
     var onConfigureAI: (() -> Void)? = nil
@@ -138,6 +140,35 @@ struct DashboardWindow: View {
     }
 
     var body: some View {
+        GeometryReader { geometry in
+            if let request = NewsNavigationRouter.shared.selection {
+                if geometry.size.width >= 1100 {
+                    HSplitView {
+                        browsePane.frame(minWidth: 320, idealWidth: 400, maxWidth: 480)
+                        NewsReaderView(request: request, onOpenSettings: openInterestSettings).id(request.id).frame(minWidth: 560)
+                    }
+                } else {
+                    NewsReaderView(request: request, onOpenSettings: openInterestSettings).id(request.id)
+                }
+            } else {
+                browsePane
+            }
+        }
+        .frame(minWidth: 960, minHeight: 720)
+        .adaptiveColorScheme()
+        .appThemeSurface()
+        .toolbar {
+            ToolbarItem(placement: .principal) { toolbarTitle }
+            ToolbarItemGroup(placement: .primaryAction) {
+                DashboardToolbarAction(title: settings.appLanguage == .en ? "Refresh" : "刷新", symbol: "arrow.clockwise", isDisabled: orchestrator.isRefreshing) {
+                    Task { await orchestrator.manualRefresh(settings: settings) }
+                }
+                DashboardToolbarAction(title: settings.appLanguage == .en ? "Settings" : "设置", symbol: "gearshape", action: onOpenSettings)
+            }
+        }
+    }
+
+    private var browsePane: some View {
         GeometryReader { proxy in
             let isWideLayout = proxy.size.width >= layoutBreakpoint
 
@@ -158,41 +189,47 @@ struct DashboardWindow: View {
                         .padding(20)
                         .frame(maxWidth: .infinity, alignment: .topLeading)
                 }
+                .scrollPosition($browseScroll)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            .toolbar {
-                ToolbarItem(placement: .principal) {
-                    toolbarTitle
-                }
-
-                ToolbarItemGroup(placement: .primaryAction) {
-                    DashboardToolbarAction(
-                        title: "刷新",
-                        symbol: "arrow.clockwise",
-                        isDisabled: orchestrator.isRefreshing
-                    ) {
-                        Task { await orchestrator.manualRefresh(settings: settings) }
-                    }
-
-                    DashboardToolbarAction(
-                        title: "设置",
-                        symbol: "gearshape",
-                        action: onOpenSettings
-                    )
-                }
-            }
             .adaptiveColorScheme()
             .appThemeSurface()
             .task {
                 await orchestrator.loadCached(settings: settings)
             }
         }
-        .frame(minWidth: 960, minHeight: 720)
+    }
+
+    private func openInterestSettings() {
+        NotificationCenter.default.post(name: .interestSettingsRequested, object: nil)
+    }
+
+    private func recommendationsView() -> some View {
+        RecommendationFeedView(
+            matches: { sourceFilter.matches($0.source) && matchesSearch($0) },
+            hasFilter: hasAnyFilter,
+            onOpenSettings: openInterestSettings,
+            onResetFilters: { searchText = ""; sourceFilter = .all },
+            onRefresh: { Task { await orchestrator.manualRefresh(settings: settings) } },
+            onShowSources: { forYou = false }
+        )
     }
 
     @ViewBuilder
     private func contentLayout(isWideLayout: Bool) -> some View {
-        if isWideLayout {
+        if forYou {
+            if isWideLayout && NewsNavigationRouter.shared.selection == nil {
+                HStack(alignment: .top, spacing: 20) {
+                    recommendationsView()
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    sidebarRegion.frame(width: sidebarWidth, alignment: .leading)
+                }
+            } else {
+                recommendationsView()
+            }
+        } else if NewsNavigationRouter.shared.selection != nil {
+            rssMainRegion
+        } else if isWideLayout {
             HStack(alignment: .top, spacing: 20) {
                 rssMainRegion
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -235,6 +272,11 @@ struct DashboardWindow: View {
 
     private var dashboardFilterBar: some View {
         VStack(alignment: .leading, spacing: 10) {
+            Picker(settings.appLanguage == .en ? "Browse mode" : "浏览模式", selection: $forYou) {
+                Text(settings.appLanguage == .en ? "For you" : "为你推荐").tag(true)
+                Text(settings.appLanguage == .en ? "By source" : "按源浏览").tag(false)
+            }
+            .pickerStyle(.segmented)
             HStack(spacing: 10) {
                 Image(systemName: "magnifyingglass")
                     .font(.system(size: 13, weight: .semibold))
@@ -288,6 +330,10 @@ struct DashboardWindow: View {
     }
 
     private var filteredResultLabel: String {
+        if forYou {
+            let count = InterestController.shared.recommendations?.items.filter { sourceFilter.matches($0.item.source) && matchesSearch($0.item) }.count ?? 0
+            return L10n.string("dash.filterCount", count)
+        }
         var count = 0
         count += filteredTrendItems(.weibo, orchestrator.weiboItems).count
         count += filteredTrendItems(.bilibili, orchestrator.bilibiliItems).count

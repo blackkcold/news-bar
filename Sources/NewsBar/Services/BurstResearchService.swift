@@ -16,6 +16,8 @@ enum BurstResearchService {
     private static let budgetLock = OSAllocatedUnfairLock<(day: Int, count: Int)>(
         initialState: (day: Self.currentDay, count: 0)
     )
+    private static let persistentBudget = PersistentRequestBudget(fileURL: FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        .appendingPathComponent("com.newsbar.app/ResearchBudget/requests.json"))
 
     private static var currentDay: Int {
         Calendar.current.ordinality(of: .day, in: .era, for: Date()) ?? 0
@@ -31,7 +33,7 @@ enum BurstResearchService {
     static func readDailyCount() -> Int {
         budgetLock.withLock { state in
             Self.rollIfNeeded(&state)
-            return state.count
+            return max(state.count, persistentBudget.used())
         }
     }
 
@@ -41,6 +43,7 @@ enum BurstResearchService {
         budgetLock.withLock { state in
             Self.rollIfNeeded(&state)
             guard state.count < cap else { return false }
+            guard persistentBudget.reserve(cap: cap, baseline: state.count) else { return false }
             state.count += 1
             return true
         }
@@ -66,6 +69,7 @@ enum BurstResearchService {
         let searchConfig: WebSearchService.Config?
         let dailyCap: Int
         let maxRefetchURLs: Int
+        var isAllowed: @Sendable () async -> Bool = { true }
     }
 
     private typealias Staged = (url: String, title: String, desc: String, body: String)
@@ -75,6 +79,7 @@ enum BurstResearchService {
     private static let proactiveScrapeCount = 4
 
     static func research(_ input: ResearchInput) async -> BurstResearch {
+        guard await input.isAllowed(), readDailyCount() < input.dailyCap else { return BurstResearch() }
         if let config = input.searchConfig {
             do {
                 let title = input.item.title
@@ -112,7 +117,8 @@ enum BurstResearchService {
         var scraped: [Staged] = []
         await withTaskGroup(of: Staged?.self) { group in
             for url in limited {
-                group.addTask {
+            group.addTask {
+                    guard await input.isAllowed() else { return nil }
                     do {
                         let body = try await WebScrapeService.scrape(urlString: url, apiKey: apiKey)
                         return (url: url, title: "", desc: "", body: body)
@@ -137,6 +143,7 @@ enum BurstResearchService {
     ) async -> BurstResearch {
         var results = staged
         for attempt in 0...1 {
+            guard await input.isAllowed() else { return BurstResearch(searchStatus: searchStatus) }
             guard tryReserveRequest(cap: input.dailyCap) else { return BurstResearch(searchStatus: searchStatus) }
             let prompt = buildPrompt(input: input, searchMode: searchMode, staged: results)
             do {
@@ -154,6 +161,8 @@ enum BurstResearchService {
                 }
             } catch {
                 NSLog("[BurstResearchService] AI research attempt %d failed: %@", attempt, error.localizedDescription)
+                // Unknown transport outcome may already have incurred a charge.
+                if error is URLError || error is CancellationError { return BurstResearch(searchStatus: searchStatus) }
             }
         }
         return BurstResearch(searchStatus: searchStatus)
@@ -163,6 +172,7 @@ enum BurstResearchService {
         let limited = urls.prefix(max(1, input.maxRefetchURLs))
         var staged: [Staged] = []
         for url in limited {
+            guard await input.isAllowed() else { break }
             do {
                 let body = try await WebScrapeService.scrape(urlString: url, apiKey: input.searchConfig?.apiKey ?? "")
                 staged.append((url: url, title: "", desc: "", body: body))

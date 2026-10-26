@@ -9,6 +9,8 @@ extension Notification.Name {
     static let fireFakeBurstPush = Notification.Name("fireFakeBurstPush")
     static let burstDetailRequest = Notification.Name("burstDetailRequest")
     static let fillBurstTestTopic = Notification.Name("fillBurstTestTopic")
+    static let interestSettingsRequested = Notification.Name("interestSettingsRequested")
+    static let switchToInterestSettings = Notification.Name("switchToInterestSettings")
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
@@ -48,6 +50,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         // 从 Keychain 迁移到加密文件存储（必须在任何读取之前）
         EncryptedKeyStore.migrateFromKeychainIfNeeded()
         settings = AppSettings()
+        Task { await InterestController.shared.prepare() }
         setupWorkspaceObservers()
 
         preloadCachedNews()
@@ -139,6 +142,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
 
     private func setupNotificationObservers() {
+        NotificationCenter.default.addObserver(forName: NSWindow.willCloseNotification, object: nil, queue: .main) { [weak self] notification in
+            guard let self, let window = notification.object as? NSWindow, window === self.dashboardWindow else { return }
+            Task { @MainActor in
+                NewsNavigationRouter.shared.close()
+                InterestController.shared.endListSession()
+            }
+        }
+        NotificationCenter.default.addObserver(forName: .newsReaderRequested, object: nil, queue: .main) { [weak self] _ in
+            self?.openDashboard(refresh: false)
+        }
+        NotificationCenter.default.addObserver(forName: .interestSettingsRequested, object: nil, queue: .main) { [weak self] _ in
+            self?.openSettings()
+            NotificationCenter.default.post(name: .switchToInterestSettings, object: nil)
+        }
+        NotificationCenter.default.addObserver(forName: .interestDataCleared, object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.burstWindow?.close()
+                self?.burstWindow?.contentViewController = nil
+                self?.burstWindow = nil
+                await self?.orchestrator?.clearPersonalizedArtifacts()
+            }
+        }
         NotificationCenter.default.addObserver(
             forName: .rssSourceAdded,
             object: nil,
@@ -170,7 +195,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         ) { [weak self] notification in
             guard let self,
                   let title = notification.userInfo?["title"] as? String else { return }
-            self.openBurstWindow(title: title)
+            Task { @MainActor [weak self] in self?.openBurstWindow(title: title) }
         }
 
         NotificationCenter.default.addObserver(
@@ -246,12 +271,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         guard settings.aiSummaryEnabled, settings.cachedAPIKey == nil else { return }
         guard currentProviderHasSavedKeyFlag() else { return }
         let account = settings.activeAPIKeyAccount
+        let providerID = settings.aiProvider
+        let revision = settings.modelCatalogRevision
         Task { [weak self] in
             guard let self else { return }
             let store = EncryptedKeyStore()
             if let key = await store.readAPIKey(account: account), !key.isEmpty {
                 await MainActor.run {
-                    self.settings.cachedAPIKey = key
+                    _ = self.settings.activateAPIKey(key, providerID: providerID, revision: revision)
                 }
             }
         }
@@ -265,6 +292,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             return
         }
         let account = settings.activeAPIKeyAccount
+        let providerID = settings.aiProvider
+        let revision = settings.modelCatalogRevision
 
         Task { @MainActor in orchestrator?.aiSummaryState = .idle }
         Task { [weak self] in
@@ -272,9 +301,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             let store = EncryptedKeyStore()
             if let key = await store.readAPIKey(account: account), !key.isEmpty {
                 await MainActor.run {
+                    guard self.settings.activateAPIKey(key, providerID: providerID, revision: revision) else { return }
                     UserDefaults.standard.set(true, forKey: self.settings.currentProvider.keyExistsFlag())
                     UserDefaults.standard.set(true, forKey: "hasAIKey-\(self.settings.activeAPIKeyAccount)")
-                    self.settings.cachedAPIKey = key
                     Task {
                         await self.orchestrator?.manualRefresh(settings: self.settings)
                     }
@@ -430,13 +459,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         }
     }
 
-    func openDashboard() {
+    func openDashboard(refresh: Bool = true) {
         popover?.performClose(nil)
 
         if let existing = dashboardWindow {
             existing.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
-            requestVisibleRefreshIfNeeded()
+            if refresh { requestVisibleRefreshIfNeeded() }
             return
         }
 
@@ -467,7 +496,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         dashboardWindow = window
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
-        requestVisibleRefreshIfNeeded()
+        if refresh { requestVisibleRefreshIfNeeded() }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -528,8 +557,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         if let type = userInfo["type"] as? String, type == "burst",
            let eventID = userInfo["eventID"] as? String {
             Task { @MainActor [weak self] in
+                await self?.orchestrator?.restoreResearchStateIfNeeded()
                 self?.openBurstWindow(title: eventID)
             }
+        } else if let type = userInfo["type"] as? String, type == "news", let url = userInfo["url"] as? String {
+            let title = userInfo["title"] as? String ?? ""
+            Task { @MainActor in
+                let item = InterestController.shared.state.contents[ContentIdentity.id(for: url)]?.item
+                NewsNavigationRouter.shared.open(url: url, title: title, item: item, surface: "notification")
+            }
+        } else {
+            Task { @MainActor [weak self] in self?.openDashboard(refresh: false) }
         }
         completionHandler()
     }

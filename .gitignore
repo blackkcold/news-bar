@@ -1,6 +1,7 @@
 # Build artifacts
 .build/
 DerivedData/
+output/
 
 # Release artifacts (generated, not committed)
 release/*/

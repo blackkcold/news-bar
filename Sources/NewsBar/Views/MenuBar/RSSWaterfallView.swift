@@ -294,7 +294,7 @@ struct RSSTextRow: View {
 
     var body: some View {
         Button {
-            URLOpener.open(item.url)
+            NewsNavigationRouter.shared.open(item, surface: "menuRSSText")
         } label: {
             VStack(alignment: .leading, spacing: 4) {
                 Text(item.displayTitle)
@@ -397,7 +397,7 @@ struct RSSImageCard: View {
 
     var body: some View {
         Button {
-            URLOpener.open(item.url)
+            NewsNavigationRouter.shared.open(item, surface: "menuRSSImage")
         } label: {
             VStack(spacing: 0) {
                 ZStack(alignment: .topLeading) {

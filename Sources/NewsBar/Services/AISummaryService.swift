@@ -62,6 +62,14 @@ enum AISummaryService {
     }
 
     private static let timeout: TimeInterval = 60
+    private static let durableSharedBudget = persistentBudget(named: "shared")
+    private static let durablePopupBudget = persistentBudget(named: "popup")
+    private static let durableDashboardBudget = persistentBudget(named: "dashboard")
+
+    private static func persistentBudget(named name: String) -> PersistentRequestBudget {
+        PersistentRequestBudget(fileURL: FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("com.newsbar.app/AIRequestBudgets/\(name).json"))
+    }
     /// Output-token budget for the first attempt. Scales with the requested
     /// length so a 360-word dual-category briefing is not cut off mid-sentence.
     /// A floor of 4096 covers structured markers + citations + a safety margin.
@@ -226,10 +234,11 @@ enum AISummaryService {
         formatEnforcementSuffix: String? = nil,
         trendHistoryContext: String = "",
         summaryLanguage: AppLanguage = .zh,
-        disableDeepSeekThinking: Bool = false
+        disableDeepSeekThinking: Bool = false,
+        requestAllowed: @escaping @Sendable () async -> Bool = { true }
     ) async throws -> SummaryResult {
         let titles = items.enumerated().map { index, item in
-            let safeTitle = sanitizeTitle(item.title)
+            let safeTitle = String(sanitizeTitle(item.title).prefix(300))
             let sourceLabel: String
             switch item.source {
             case .weibo:    sourceLabel = summaryLanguage == .en ? "Weibo" : "微博"
@@ -246,7 +255,8 @@ enum AISummaryService {
         let trendTopicHint = promptTopicHint(range: trendTopicCount)
         let dailyTopicHint = promptTopicHint(range: dailyTopicCount)
 
-        let safeHistoryContext = sanitizeTitle(String(trendHistoryContext.prefix(3_000)))
+        let historyPrefix = String(decoding: Array(trendHistoryContext.utf8.prefix(1000)), as: UTF8.self)
+        let safeHistoryContext = sanitizeTitle(historyPrefix)
         let historySection: String
         if summaryLanguage == .en {
             historySection = safeHistoryContext.isEmpty
@@ -291,6 +301,7 @@ enum AISummaryService {
             - Topics marked [Weibo·爆] (burst) must be included in 【Trend Overview】 and shown first (may be bolded)
             - Each topic "【Title】" on its own line, followed by a paragraph, then "Citation: [#N]"
             - Overviews are natural paragraphs (not lists), concise
+            - Only titles are provided: write title-level overviews, never imply that full articles were read
             - Each paragraph cites only the 1 most relevant news number
             - **Bold** only for burst/breaking hot topics
             - Do not output source names
@@ -321,6 +332,7 @@ enum AISummaryService {
             - 标记 [微博·爆] 的爆标签话题必须纳入【趋势概览】并优先展示（可加粗）
             - 每个话题「【标题】」独占一行，下接一段概述，再下接「引用：[#N]」
             - 概述为自然段落（不要列表），内容精炼
+            - 输入只有标题：只能作标题级概述，不得声称已读全文，不得补写未给出的细节
             - 每段只标 1 条最相关新闻的编号
             - **加粗**仅限爆火/突发热点
             - 不输出来源名称
@@ -338,7 +350,8 @@ enum AISummaryService {
         }
 
         let result = try await withRetry {
-            try await makeRequest(
+            guard await requestAllowed() else { throw CancellationError() }
+            return try await makeRequest(
                 url: url,
                 connection: connection,
                 apiKey: apiKey,
@@ -355,7 +368,8 @@ enum AISummaryService {
             return SummaryResult(summary: result.summary, isTruncated: false)
         }
         let retryResult = try await withRetry {
-            try await makeRequest(
+            guard await requestAllowed() else { throw CancellationError() }
+            return try await makeRequest(
                 url: url,
                 connection: connection,
                 apiKey: apiKey,
@@ -384,6 +398,9 @@ enum AISummaryService {
         budgetMode: AISummaryBudgetMode
     ) async throws -> (summary: String, isTruncated: Bool) {
         try consumeAttemptBudget(target: target, mode: budgetMode)
+        let (baseline, cap) = budgetStateLock(for: target, mode: budgetMode).withLock { ($0.baseline, $0.cap) }
+        let durable = budgetMode == .shared ? durableSharedBudget : (target == .popup ? durablePopupBudget : durableDashboardBudget)
+        guard durable.reserve(cap: cap, baseline: baseline) else { throw NewsBarError.rateLimited }
         switch connection.responseFormat {
         case .openAI:
             return try await makeOpenAIRequest(

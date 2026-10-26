@@ -176,7 +176,7 @@ private struct DashboardTrendRow: View {
 
     var body: some View {
         Button {
-            URLOpener.open(item.url)
+            NewsNavigationRouter.shared.open(item, surface: "dashboardTrend")
         } label: {
             HStack(alignment: .top, spacing: 10) {
                 rankBadge
@@ -640,7 +640,7 @@ private struct DashboardRSSMasonryCard: View {
 
     var body: some View {
         Button {
-            URLOpener.open(item.url)
+            NewsNavigationRouter.shared.open(item, surface: "dashboardRSS")
         } label: {
             cardContent
             .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)

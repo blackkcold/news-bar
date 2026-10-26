@@ -8,6 +8,7 @@ struct AISummaryCacheEntry: Codable, Sendable {
     let generatedAt: Date
     let trendItemCount: Int
     let language: AppLanguage
+    let manifest: SummaryManifest?
 
     init(
         summary: String,
@@ -16,7 +17,8 @@ struct AISummaryCacheEntry: Codable, Sendable {
         trendHistoryHash: String,
         generatedAt: Date,
         trendItemCount: Int,
-        language: AppLanguage = .zh
+        language: AppLanguage = .zh,
+        manifest: SummaryManifest? = nil
     ) {
         self.summary = summary
         self.items = items
@@ -25,10 +27,11 @@ struct AISummaryCacheEntry: Codable, Sendable {
         self.generatedAt = generatedAt
         self.trendItemCount = trendItemCount
         self.language = language
+        self.manifest = manifest
     }
 
     private enum CodingKeys: String, CodingKey {
-        case summary, items, contentHash, trendHistoryHash, generatedAt, trendItemCount, language
+        case summary, items, contentHash, trendHistoryHash, generatedAt, trendItemCount, language, manifest
     }
 
     init(from decoder: Decoder) throws {
@@ -40,6 +43,7 @@ struct AISummaryCacheEntry: Codable, Sendable {
         generatedAt = try c.decode(Date.self, forKey: .generatedAt)
         trendItemCount = try c.decode(Int.self, forKey: .trendItemCount)
         language = (try? c.decodeIfPresent(AppLanguage.self, forKey: .language)) ?? .zh
+        manifest = try c.decodeIfPresent(SummaryManifest.self, forKey: .manifest)
     }
 }
 
