@@ -16,11 +16,26 @@ struct NewsReaderRequest: Identifiable {
     var position: Int? = nil
 }
 
+/// The payload a digest notification click presents in the dashboard sheet.
+struct NewsDigestRequest: Identifiable, Equatable {
+    let id = UUID()
+    let items: [NewsItem]
+    let kind: String
+    let generatedAt: Date
+
+    init(digest: NotificationDigest) {
+        self.items = digest.items
+        self.kind = digest.kind
+        self.generatedAt = digest.generatedAt
+    }
+}
+
 @MainActor
 @Observable
 final class NewsNavigationRouter {
     static let shared = NewsNavigationRouter()
     var selection: NewsReaderRequest?
+    var digest: NewsDigestRequest?
 
     func open(
         _ item: NewsItem,
@@ -71,6 +86,9 @@ final class NewsNavigationRouter {
         // failed/zero-strength event and never becomes positive evidence.
         NotificationCenter.default.post(name: .newsReaderRequested, object: nil)
     }
+
+    func presentDigest(_ request: NewsDigestRequest) { digest = request }
+    func dismissDigest() { digest = nil }
 
     func close() { selection = nil }
 

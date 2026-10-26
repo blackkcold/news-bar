@@ -2,24 +2,99 @@ import Foundation
 import UserNotifications
 
 enum NotificationService {
+    static let maxPushCount = 3
 
-    /// Title-only fallback; never starts an AI request to produce a notification.
+    /// Builds the notification content for an aggregated push. The first item
+    /// keeps the legacy `url`/`title`/`newsItemID` keys so notifications that
+    /// were already delivered before the digest payload existed still open a
+    /// single article; new notifications additionally carry a decodable digest.
     static func titleContent(items: [NewsItem], daily: Bool) -> UNMutableNotificationContent {
         let content = UNMutableNotificationContent()
-        content.title = L10n.string(daily ? "notif.dailyTitle" : "notif.hourlyTitle", language: L10n.currentLanguage)
-        content.body = items.map { SecurityPolicies.sanitizeHTMLContent($0.displayTitle) }.joined(separator: "\n• ")
-        content.sound = nil
+
+        guard !items.isEmpty else {
+            content.title = L10n.string(daily ? "notif.dailyTitle" : "notif.hourlyTitle", language: L10n.currentLanguage)
+            content.userInfo = ["type": "daily"]
+            return content
+        }
+
+        content.title = L10n.string(
+            daily ? "notif.dailyTitleCount" : "notif.hourlyTitleCount",
+            language: L10n.currentLanguage,
+            items.count
+        )
+        content.subtitle = sourceSummary(items)
+        content.body = items.map { "• " + clipped($0.displayTitle) }.joined(separator: "\n")
+        content.sound = .default
+        content.threadIdentifier = "newsbar.digest"
+        content.categoryIdentifier = NotificationIdentifier.digestCategory
+        content.interruptionLevel = .active
+
+        var userInfo: [String: Any] = ["type": "news"]
         if let first = items.first {
-            content.userInfo = ["type": "news", "url": first.url, "title": first.displayTitle, "newsItemID": first.id,
-                                "snapshotAsOf": Date().timeIntervalSince1970]
-        } else { content.userInfo = ["type": "daily"] }
+            userInfo["url"] = first.url
+            userInfo["title"] = first.displayTitle
+            userInfo["newsItemID"] = first.id
+            userInfo["snapshotAsOf"] = Date().timeIntervalSince1970
+        }
+        if let digest = NotificationDigest.encode(
+            NotificationDigest(kind: daily ? "daily" : "hourly", items: items)
+        ) {
+            userInfo["digest"] = digest
+        }
+        content.userInfo = userInfo
         return content
+    }
+
+    static func registerCategories() {
+        let openDigest = UNNotificationAction(
+            identifier: NotificationIdentifier.openDigestAction,
+            title: L10n.string("notif.action.openDigest"),
+            options: [.foreground]
+        )
+        let category = UNNotificationCategory(
+            identifier: NotificationIdentifier.digestCategory,
+            actions: [openDigest],
+            intentIdentifiers: [],
+            options: [.customDismissAction]
+        )
+        UNUserNotificationCenter.current().setNotificationCategories([category])
+    }
+
+    /// "微博热搜 2 · B站热搜 1", keeping first-seen order and capping at three
+    /// source names.
+    static func sourceSummary(_ items: [NewsItem]) -> String {
+        var order: [String] = []
+        var counts: [String: Int] = [:]
+        for item in items {
+            let name = item.source.displayName
+            if counts[name] == nil {
+                order.append(name)
+            }
+            counts[name, default: 0] += 1
+        }
+
+        let visible = order.prefix(3).map { "\($0) \(counts[$0, default: 0])" }
+        guard !visible.isEmpty else { return "" }
+        let joined = visible.joined(separator: " · ")
+        return order.count > 3 ? "\(joined) \(L10n.string("notif.digest.etc"))" : joined
+    }
+
+    static func clipped(_ text: String, limit: Int = 60) -> String {
+        let sanitized = SecurityPolicies.sanitizeHTMLContent(text)
+        guard sanitized.count > limit else { return sanitized }
+        return String(sanitized.prefix(limit)) + "…"
+    }
+
+    /// Keeps the settings value and the service in agreement even if an old
+    /// UserDefaults value (or a corrupted one) is outside 1...3.
+    static func normalizedPushCount(_ count: Int) -> Int {
+        min(max(count, 1), maxPushCount)
     }
 
     static func requestAuthorization() async -> Bool {
         do {
             return try await UNUserNotificationCenter.current()
-                .requestAuthorization(options: [.alert, .badge])
+                .requestAuthorization(options: [.alert, .badge, .sound])
         } catch {
             NSLog("[NotificationService] Authorization failed: %@", error.localizedDescription)
             return false
@@ -33,7 +108,7 @@ enum NotificationService {
     static func sendHourlyPush(items: [NewsItem], count: Int) async {
         guard count > 0, !items.isEmpty else { return }
 
-        let topItems = Array(items.prefix(count))
+        let topItems = Array(items.prefix(normalizedPushCount(count)))
         let content = titleContent(items: topItems, daily: false)
 
         let request = UNNotificationRequest(
@@ -50,7 +125,7 @@ enum NotificationService {
         let center = UNUserNotificationCenter.current()
         center.removePendingNotificationRequests(withIdentifiers: ["daily-summary"])
 
-        let topItems = Array(items.prefix(count))
+        let topItems = Array(items.prefix(normalizedPushCount(count)))
         let content = titleContent(items: topItems, daily: true)
 
         var dateComponents = DateComponents()
