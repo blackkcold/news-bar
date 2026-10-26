@@ -10,7 +10,7 @@
   "release_branch": true,
   "auto_merge": false,
   "release_note_style": "structured-cn",
-  "summary": "本地推荐解释中心、真实推荐轨迹与推荐/埋点正确性修复",
-  "summary_en": "Local recommendation explainer, real ranking traces, and recommendation/telemetry correctness fixes",
-  "validation": "swift test 608/608（1 skipped）+ scripts/build.sh + codesign verify + hdiutil verify 通过"
+  "summary": "阅读器内嵌访问修复：Safari User-Agent 与 HTTP 412 风控处理",
+  "summary_en": "Reader embedded-access fixes: Safari user agent and HTTP 412 risk-control handling",
+  "validation": "swift test 612/612（1 skipped）+ scripts/build.sh + codesign verify + hdiutil verify 通过"
 }
