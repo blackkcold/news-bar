@@ -6,6 +6,10 @@ struct HeroOpenButton<Label: View>: View {
     let item: NewsItem
     let surface: String
     var contextID: String? = nil
+    // Batch provenance carried into the reader; presentation is unchanged.
+    var policyVersion: String? = nil
+    var profileVersion: Int? = nil
+    var position: Int? = nil
 
     @State private var frame: CGRect = .zero
     @State private var isHovering = false
@@ -15,21 +19,33 @@ struct HeroOpenButton<Label: View>: View {
         item: NewsItem,
         surface: String,
         contextID: String? = nil,
+        policyVersion: String? = nil,
+        profileVersion: Int? = nil,
+        position: Int? = nil,
         @ViewBuilder label: () -> Label
     ) {
         self.item = item
         self.surface = surface
         self.contextID = contextID
+        self.policyVersion = policyVersion
+        self.profileVersion = profileVersion
+        self.position = position
         self.label = label()
     }
 
     var body: some View {
         Button {
             if isHovering, frame.width > 1, frame.height > 1 {
-                ReaderTransitionCoordinator.shared.captureSnapshot()
                 ReaderTransitionCoordinator.shared.register(frame: frame, title: item.displayTitle)
             }
-            NewsNavigationRouter.shared.open(item, surface: surface, contextID: contextID)
+            NewsNavigationRouter.shared.open(
+                item,
+                surface: surface,
+                contextID: contextID,
+                policyVersion: policyVersion,
+                profileVersion: profileVersion,
+                position: position
+            )
         } label: {
             label
         }

@@ -26,12 +26,30 @@ struct TitleFeatures: ContentFeatureProvider {
         "entity:vivo": ["vivo"],
         "entity:tesla": ["特斯拉", "Tesla"]
     ]
+    // Canonical tag for each known alias, so an explicit follow of "人工智能"
+    // also transfers to titles that only say "AI" / "大模型".
+    private static let aliasIndex: [String: String] = {
+        var index: [String: String] = [:]
+        for (tag, aliases) in lexicon.sorted(by: { $0.key < $1.key }) {
+            for alias in aliases {
+                let key = alias.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                if index[key] == nil { index[key] = tag }
+            }
+        }
+        return index
+    }()
     // Precompile Latin boundaries once, rather than compiling per candidate.
     private static let rules: [(String, [(String, NSRegularExpression?)])] = lexicon.map { tag, aliases in
         (tag, aliases.map { alias in
             let latin = alias.unicodeScalars.allSatisfy { $0.isASCII }
             return (alias.lowercased(), latin ? try? NSRegularExpression(pattern: "(?<![A-Za-z0-9])" + NSRegularExpression.escapedPattern(for: alias) + "(?![A-Za-z0-9])", options: .caseInsensitive) : nil)
         })
+    }
+
+    static func canonicalTag(for keyword: String) -> String? {
+        let value = keyword.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !value.isEmpty else { return nil }
+        return aliasIndex[value]
     }
 
     static func matches(_ keyword: String, in title: String) -> Bool {
@@ -91,11 +109,14 @@ struct InterestProfile: Sendable {
         let feedbacks = state.feedbacks + sessionFeedback
         var explicitCount = 0
         for feedback in feedbacks {
+            // Feedback saved without profile consent (learning off/paused/private)
+            // is historical user intent, not evidence to apply now or later.
+            // Hard blocks are indexed separately and still apply.
+            guard feedback.participatesInProfile else { continue }
             let age = now.timeIntervalSince(feedback.occurredAt)
             switch feedback.kind {
             case .bookmark:
                 // A preserved bookmark after clearing is not itself consent to rebuild a profile.
-                guard feedback.participatesInProfile else { continue }
                 add(feedback.item, strength: 3, age: age)
                 explicitCount += 1
             case .moreLikeThis:
@@ -109,8 +130,22 @@ struct InterestProfile: Sendable {
             default: break
             }
         }
-        for keyword in state.followedTopics { profile.topics["followed:" + keyword, default: 0] += 4 }
-        profile.confidence = min(1, Double(independent.count + (explicitCount + state.followedTopics.count) * 3) / 12)
+        // Known-alias follows collapse onto their canonical topic and count once
+        // even if the user followed several aliases of the same topic. Arbitrary
+        // literal keywords keep their own spelling and count each.
+        var canonicalFollowedTags: Set<String> = []
+        var literalKeywords: [String] = []
+        for keyword in state.followedTopics {
+            if let tag = TitleFeatures.canonicalTag(for: keyword) {
+                canonicalFollowedTags.insert(tag)
+            } else {
+                literalKeywords.append(keyword)
+            }
+        }
+        for tag in canonicalFollowedTags { profile.topics[tag, default: 0] += 4 }
+        for keyword in literalKeywords { profile.topics["followed:" + keyword, default: 0] += 4 }
+        profile.confidence = min(1, Double(independent.count +
+            (explicitCount + canonicalFollowedTags.count + literalKeywords.count) * 3) / 12)
         return profile
     }
 }
@@ -124,6 +159,9 @@ struct ScoredRecommendation: Identifiable, Sendable {
     let components: [String: Double]
     var reason: String
     let topic: String?
+    /// Produced by the actual ranking pass. `nil` only for callers that build a
+    /// row manually or for snapshots from before traces existed.
+    var trace: RecommendationTrace? = nil
 }
 
 struct RecommendationSnapshot: Identifiable, Sendable {
@@ -173,18 +211,61 @@ protocol RecommendationPolicy: Sendable {
     func select(_ snapshot: RecommendationSnapshot, limit: Int) -> [NewsItem]
 }
 
+/// One feature term from the single scoring table shared by `weighted`,
+/// the denominator and `contributions`.
+private struct FeatureTerm {
+    let key: String
+    let coefficient: Double
+    let value: Double
+}
+
+/// A candidate plus the score parts needed to explain its selection without
+/// recomputing them.
+private struct TracedCandidate {
+    var row: ScoredRecommendation
+    let terms: [FeatureTerm]
+    let baselineTerms: [FeatureTerm]
+    let denominator: Double
+    let personalScore: Double
+    let baselineScore: Double
+    let confidence: Double
+    let readPenalty: Double
+    let feedbackPenalty: Double
+
+    /// Single source of truth: the score the selector actually compares.
+    var rawScore: Double { row.score }
+}
+
 enum RecommendationEngine {
-    static let policyVersion = 1
+    // 2: known-dictionary follows transfer to their canonical topic tag.
+    // 3: canonical alias follows count once; non-consenting soft feedback no
+    //    longer shapes the profile or the reduce-topic penalty.
+    static let policyVersion = 3
+
+    private static func contributions(terms: [FeatureTerm], baselineTerms: [FeatureTerm],
+                                      denominator: Double, confidence: Double) -> [String: Double] {
+        var result: [String: Double] = [:]
+        for term in terms {
+            result["personal." + term.key] = confidence * term.coefficient * term.value / denominator
+        }
+        for term in baselineTerms {
+            result["baseline." + term.key] = (1 - confidence) * term.coefficient * term.value
+        }
+        return result
+    }
 
     static func rank(items: [NewsItem], state: LocalInterestState, now: Date = Date(), limit: Int = 60, seed: UInt64 = 0,
                      sourceFiltered: Bool = false, sessionFeedback: [InterestFeedback] = []) -> RecommendationSnapshot {
         let profile = InterestProfile.build(state: state, now: now, sessionFeedback: sessionFeedback)
         var ids: Set<String> = []
-        var candidates: [ScoredRecommendation] = []
+        var candidates: [TracedCandidate] = []
         let peakTopic = max(1, profile.topics.values.max() ?? 1)
         let peakShort = max(1, profile.shortTermTopics.values.max() ?? 1)
         let peakSource = max(1, profile.sources.values.max() ?? 1)
         let readIDs = state.learningEnabled ? Set(state.profileSignals.values.filter { $0.strength >= 1 }.map { ContentIdentity.id(for: $0.item.url) }) : []
+        // Known-dictionary follows are handled by canonical tags above; only
+        // arbitrary keywords keep the literal match rule.
+        let literalFollows = state.learningEnabled ? state.followedTopics.filter { TitleFeatures.canonicalTag(for: $0) == nil } : []
         let blocked = BlockedContentIndex(state: state)
         for item in items {
             let id = ContentIdentity.id(for: item.url)
@@ -192,8 +273,8 @@ enum RecommendationEngine {
             guard !blocked.isBlocked(sourceID: item.source.id, contentID: id, clusterID: clusterID) else { continue }
             guard ids.insert(id).inserted else { continue }
             var tags = TitleFeatures.tags(item.title)
-            if state.learningEnabled {
-                for keyword in state.followedTopics where TitleFeatures.matches(keyword, in: item.title) { tags.insert("followed:" + keyword) }
+            for keyword in literalFollows where TitleFeatures.matches(keyword, in: item.title) {
+                tags.insert("followed:" + keyword)
             }
             let topic = tags.sorted().max { a, b in (profile.topics[a] ?? 0) < (profile.topics[b] ?? 0) }
             let affinity = tags.map { max(0, min(1, 0.65 * (profile.topics[$0] ?? 0) / peakTopic + 0.35 * (profile.shortTermTopics[$0] ?? 0) / peakShort)) }.max()
@@ -203,24 +284,69 @@ enum RecommendationEngine {
             let recency = pow(0.5, age / (24 * 3600))
             let novelty = readIDs.contains(id) ? 0.0 : 1.0
             var components = ["source": source, "recency": recency, "novelty": novelty]
-            var weighted = source * 0.10 + recency * 0.15 + novelty * 0.10
-            var weight = 0.35
-            if let affinity { components["interest"] = affinity; weighted += affinity * 0.35; weight += 0.35 }
+            // This is the only scoring table: weighted, denominator and trace
+            // contributions all derive from these terms.
+            var terms = [
+                FeatureTerm(key: "source", coefficient: 0.10, value: source),
+                FeatureTerm(key: "recency", coefficient: 0.15, value: recency),
+                FeatureTerm(key: "novelty", coefficient: 0.10, value: novelty)
+            ]
+            var denominator = 0.35
+            if let affinity {
+                components["interest"] = affinity
+                terms.append(FeatureTerm(key: "interest", coefficient: 0.35, value: affinity))
+                denominator += 0.35
+            }
             var heat: Double?
             if item.source.isBuiltIn, let rank = item.rank, rank > 0 {
                 heat = max(0, min(1, 1 / sqrt(Double(rank)) + (item.hotLabel == "爆" ? 0.3 : 0)))
             }
-            if let heat { components["publicHeat"] = heat; weighted += heat * 0.15; weight += 0.15 }
-            let personal = weighted / weight
-            // Missing heat is unknown, not a negative vote against RSS.
-            let baseline = heat.map { 0.5 * $0 + 0.35 * recency + 0.15 * novelty } ?? (0.7 * recency + 0.3 * novelty)
-            let reduced = state.learningEnabled && state.feedbacks.contains { $0.kind == .reduceTopic && $0.topic.map(tags.contains) == true }
-            let score = profile.confidence * personal + (1 - profile.confidence) * baseline - (readIDs.contains(id) ? 0.15 : 0) - (reduced ? 0.2 : 0)
+            if let heat {
+                components["publicHeat"] = heat
+                terms.append(FeatureTerm(key: "publicHeat", coefficient: 0.15, value: heat))
+                denominator += 0.15
+            }
+            let personal = terms.reduce(0) { $0 + $1.coefficient * $1.value } / denominator
+            // Missing heat is unknown: the baseline has no publicHeat term at
+            // all, rather than a zero heat term.
+            let baselineTerms: [FeatureTerm]
+            if let heat {
+                baselineTerms = [
+                    FeatureTerm(key: "publicHeat", coefficient: 0.5, value: heat),
+                    FeatureTerm(key: "recency", coefficient: 0.35, value: recency),
+                    FeatureTerm(key: "novelty", coefficient: 0.15, value: novelty)
+                ]
+            } else {
+                baselineTerms = [
+                    FeatureTerm(key: "recency", coefficient: 0.7, value: recency),
+                    FeatureTerm(key: "novelty", coefficient: 0.3, value: novelty)
+                ]
+            }
+            let baseline = baselineTerms.reduce(0) { $0 + $1.coefficient * $1.value }
+            let reduced = state.learningEnabled && state.feedbacks.contains {
+                $0.participatesInProfile && $0.kind == .reduceTopic && $0.topic.map(tags.contains) == true
+            }
+            let readPenalty = readIDs.contains(id) ? 0.15 : 0
+            let feedbackPenalty = reduced ? 0.2 : 0
+            let score = profile.confidence * personal + (1 - profile.confidence) * baseline - readPenalty - feedbackPenalty
             let reason = profile.confidence > 0 && (affinity ?? 0) > 0.1 ? "interest" : heat != nil ? "publicHeat" : "fresh"
-            candidates.append(ScoredRecommendation(item: item, contentID: id, clusterID: clusterID, score: score,
-                                                    components: components, reason: reason, topic: topic))
+            candidates.append(TracedCandidate(
+                row: ScoredRecommendation(item: item, contentID: id, clusterID: clusterID, score: score,
+                                          components: components, reason: reason, topic: topic),
+                terms: terms,
+                baselineTerms: baselineTerms,
+                denominator: denominator,
+                personalScore: personal,
+                baselineScore: baseline,
+                confidence: profile.confidence,
+                readPenalty: readPenalty,
+                feedbackPenalty: feedbackPenalty
+            ))
         }
-        candidates.sort { $0.score == $1.score ? $0.contentID < $1.contentID : $0.score > $1.score }
+        candidates.sort { $0.row.score == $1.row.score ? $0.row.contentID < $1.row.contentID : $0.row.score > $1.row.score }
+        let rankBeforeDiversity = Dictionary(uniqueKeysWithValues: candidates.enumerated().map {
+            ($0.element.row.contentID, $0.offset + 1)
+        })
         var selected: [ScoredRecommendation] = []
         var clusters: Set<String> = []
         var sourceCounts: [String: Int] = [:]
@@ -230,35 +356,90 @@ enum RecommendationEngine {
             // Greedy diversity re-ranking across the entire eligible pool, not only interest Top-N.
             let explorationSlot = selected.count % 10 == 9
             let publicSlot = selected.count % 10 == 7 || selected.count % 10 == 8
+            func penalties(for candidate: TracedCandidate) -> (source: Double, topic: Double, diversity: Double) {
+                let sourcePenalty = sourceFiltered ? 0 : Double(sourceCounts[candidate.row.item.source.id, default: 0]) * 0.12
+                let topicPenalty = Double(topicCounts[candidate.row.topic ?? "unknown", default: 0]) * 0.04
+                let hardDiversity = !sourceFiltered && sourceCounts[candidate.row.item.source.id, default: 0] >= cap ? 1.0 : 0
+                return (sourcePenalty, topicPenalty, hardDiversity)
+            }
             let index: Int
+            var applied = (source: 0.0, topic: 0.0, diversity: 0.0)
+            var selectionBase = 0.0
+            var policy = "score"
+            var rotation: (sourceUseCount: Int, offset: Int, index: Int, count: Int)?
             if explorationSlot {
-                let offset = Int(seed % UInt64(max(1, candidates.count)))
+                // Honest source rotation: least-used source first, seed-rotated
+                // tiebreak. This is lexicographic, not an additive score.
+                let candidateCount = candidates.count
+                let offset = Int(seed % UInt64(max(1, candidateCount)))
                 index = candidates.indices.min { a, b in
-                    let ca = sourceCounts[candidates[a].item.source.id, default: 0]
-                    let cb = sourceCounts[candidates[b].item.source.id, default: 0]
+                    let ca = sourceCounts[candidates[a].row.item.source.id, default: 0]
+                    let cb = sourceCounts[candidates[b].row.item.source.id, default: 0]
                     if ca != cb { return ca < cb }
-                    return (a + offset) % candidates.count < (b + offset) % candidates.count
+                    return (a + offset) % candidateCount < (b + offset) % candidateCount
                 } ?? 0
+                rotation = (sourceCounts[candidates[index].row.item.source.id, default: 0],
+                            offset, index, candidateCount)
+                // Not the decision key; kept as the audit scalar explained by the
+                // rotation* fields rather than misrepresented as additive.
+                selectionBase = candidates[index].row.score
+                policy = "sourceRotation"
             } else {
                 index = candidates.indices.max { a, b in
                     func adjusted(_ i: Int) -> Double {
                         let candidate = candidates[i]
-                        let sourcePenalty = sourceFiltered ? 0 : Double(sourceCounts[candidate.item.source.id, default: 0]) * 0.12
-                        let topicPenalty = Double(topicCounts[candidate.topic ?? "unknown", default: 0]) * 0.04
-                        let hardDiversity = !sourceFiltered && sourceCounts[candidate.item.source.id, default: 0] >= cap ? 1.0 : 0
-                        return (publicSlot ? candidate.components["publicHeat"] ?? candidate.components["recency"] ?? 0 : candidate.score) - sourcePenalty - topicPenalty - hardDiversity
+                        let p = penalties(for: candidate)
+                        let base = publicSlot
+                            ? candidate.row.components["publicHeat"] ?? candidate.row.components["recency"] ?? 0
+                            : candidate.row.score
+                        return base - p.source - p.topic - p.diversity
                     }
                     let aa = adjusted(a), bb = adjusted(b)
                     return aa == bb ? a > b : aa < bb
                 } ?? 0
+                applied = penalties(for: candidates[index])
+                if publicSlot {
+                    if let heat = candidates[index].row.components["publicHeat"] {
+                        selectionBase = heat
+                        policy = "publicHeat"
+                    } else {
+                        selectionBase = candidates[index].row.components["recency"] ?? 0
+                        policy = "publicFresh"
+                    }
+                } else {
+                    selectionBase = candidates[index].row.score
+                    policy = "score"
+                }
             }
             var candidate = candidates.remove(at: index)
-            guard clusters.insert(candidate.clusterID).inserted else { continue }
-            if explorationSlot { candidate.reason = "exploration" }
-            else if publicSlot { candidate.reason = candidate.components["publicHeat"] == nil ? "fresh" : "publicHeat" }
-            selected.append(candidate)
-            sourceCounts[candidate.item.source.id, default: 0] += 1
-            topicCounts[candidate.topic ?? "unknown", default: 0] += 1
+            guard clusters.insert(candidate.row.clusterID).inserted else { continue }
+            if explorationSlot { candidate.row.reason = "exploration" }
+            else if publicSlot { candidate.row.reason = candidate.row.components["publicHeat"] == nil ? "fresh" : "publicHeat" }
+            let selectionScore = selectionBase - applied.source - applied.topic - applied.diversity
+            candidate.row.trace = RecommendationTrace(
+                contributions: contributions(terms: candidate.terms, baselineTerms: candidate.baselineTerms,
+                                             denominator: candidate.denominator, confidence: candidate.confidence),
+                personalScore: candidate.personalScore,
+                baselineScore: candidate.baselineScore,
+                confidence: candidate.confidence,
+                readPenalty: candidate.readPenalty,
+                feedbackPenalty: candidate.feedbackPenalty,
+                rawScore: candidate.rawScore,
+                selectionScore: selectionScore,
+                sourcePenalty: applied.source,
+                topicPenalty: applied.topic,
+                diversityPenalty: applied.diversity,
+                rankBeforeDiversity: rankBeforeDiversity[candidate.row.contentID] ?? 0,
+                finalRank: selected.count + 1,
+                selectionPolicy: policy,
+                rotationSourceUseCount: rotation?.sourceUseCount,
+                rotationOffset: rotation?.offset,
+                rotationCandidateIndex: rotation?.index,
+                rotationCandidateCount: rotation?.count
+            )
+            selected.append(candidate.row)
+            sourceCounts[candidate.row.item.source.id, default: 0] += 1
+            topicCounts[candidate.row.topic ?? "unknown", default: 0] += 1
         }
         return RecommendationSnapshot(asOf: now, profileVersion: state.profileVersion, policyVersion: policyVersion,
                                       profileConfidence: profile.confidence, semanticDegraded: true, items: selected)

@@ -1,0 +1,101 @@
+{
+  "schemaVersion": 1,
+  "title": {
+    "zh": "推荐原理与我的兴趣",
+    "en": "How NewsBar Recommends"
+  },
+  "notice": {
+    "zh": "本页由 Sources/NewsBar/Resources/recommendation-guide.json 生成，请运行 scripts/sync-recommendation-guide.sh 更新，勿手工编辑。",
+    "en": "Generated from Sources/NewsBar/Resources/recommendation-guide.json. Run scripts/sync-recommendation-guide.sh to update; do not edit by hand."
+  },
+  "sections": [
+    {
+      "id": "overview",
+      "title": {
+        "zh": "概览",
+        "en": "Overview"
+      },
+      "body": {
+        "zh": "这里解释 NewsBar 如何决定推荐顺序，以及本机保存了哪些兴趣信息。说明依据的是你此刻看到的最新一次排序快照，不是预测，也不是对文章质量的最终判断。\n\n排序在本机完成，不需要云端画像。开启本地学习后，应用会把你对标题和来源的反应汇总成兴趣画像，再与公开热度、时效和新颖度混合；关闭学习时只按公开信息排序，但显式屏蔽、不感兴趣与隐藏仍会过滤内容。",
+        "en": "This guide explains how NewsBar orders recommendations and what interest information stays on this Mac. It describes the most recent ranking snapshot you are looking at, not a prediction or a final judgment of article quality.\n\nRanking runs locally and needs no cloud profile. With local learning on, NewsBar summarizes your reactions to titles and sources into an interest profile, then mixes that with public heat, recency and novelty. With learning off, only public information is used, but explicit mutes, not-interested and hides still filter content."
+      }
+    },
+    {
+      "id": "features",
+      "title": {
+        "zh": "兴趣特征",
+        "en": "Interest features"
+      },
+      "body": {
+        "zh": "参与排序的是标题词与来源，而不是全文语义。主题和实体词典把标题映射为标量标签，例如某个话题或品牌；关注词按字面匹配，已知话题还会接受同义词别名。长期与短期兴趣分开累计，标签强度按当前最强标签归一化后再混合，因此同样的阅读次数在不同画像下可能得到不同强度。\n\n曝光只作为零强度记录，只有成功加载的打开才构成正向证据，失败的打开不算。公开热度仅对带榜单信息的内置来源可用；RSS 缺少热度时按“未知”处理，不会当成负面信号。当前语义向量只用于离线评测，没有参与线上排序。",
+        "en": "Ranking uses title terms and sources, not full-text semantics. A topic and entity lexicon maps titles to scalar tags, such as a subject or brand. Followed keywords match literally, while known topics also accept synonym aliases. Long-term and short-term interests accumulate separately; tag strength is normalized against the current strongest tag before mixing, so the same number of reads can produce different strength under a different profile.\n\nImpressions are recorded at zero strength. Only a successfully loaded open provides positive evidence; a failed open does not. Public heat exists only for built-in sources that expose a ranking. When RSS has no heat, it is treated as unknown rather than a negative vote. The current semantic embedding model is evaluation-only and does not affect live ranking."
+      }
+    },
+    {
+      "id": "scoring",
+      "title": {
+        "zh": "排序与基线",
+        "en": "Scoring and baseline"
+      },
+      "body": {
+        "zh": "每个候选先按可用特征计算个人分和公共基线分，再按画像置信度混合：证据越多，个人分权重越高；证据少或关闭学习时更接近公共基线。标签命中使用按峰值归一化的标量强度，因此排序分数只在同一批候选中可比较，不能当作跨日或跨用户的绝对质量分。\n\n已读内容会降权；学习开启时，减少某个主题也会带来降权；这些都是排序调整，不是删除内容。当前具体系数、归一化峰值和上限会随版本变化，请以 App 内的推荐诊断和 RecommendationEngine 源码为准，这里不复制可调参数。",
+        "en": "For each candidate, available features produce a personal score and a public baseline score. The two are blended by profile confidence: more evidence gives the personal score more weight, while sparse evidence or learning off stays closer to the public baseline. Tag matches use scalar strength normalized against the current peak, so scores are comparable only within the same candidate batch, not across days or people.\n\nAlready-read items are down-weighted, and while learning is on, reducing a topic also lowers its score. These are ranking adjustments, not deletion. Current coefficients, normalization peaks and caps change between versions; consult the in-app recommendation diagnostics and RecommendationEngine source for live values. This guide does not duplicate tunable numbers."
+      }
+    },
+    {
+      "id": "diversity",
+      "title": {
+        "zh": "多样性与来源补位",
+        "en": "Diversity and source rotation"
+      },
+      "body": {
+        "zh": "初步排序之后还有多样性调整：同一来源或同一主题反复出现会被施加软惩罚，来源重复的保护上限随列表长度变化，并不是固定配额；来源筛选只改变展示哪些条目，排序与多样性惩罚仍按完整候选计算。在固定节奏的位置上，列表会优先补入出现次数较少的来源，这叫来源补位（Source rotation）。它按来源计数和固定顺序选择，不是随机探索，也不是语义模型。\n\n另一些固定位置会优先展示公开热度或新鲜内容，让个性化不会完全遮蔽公共榜单。因此来源占比是软惩罚和上限共同作用的软约束，不保证每个来源获得平均份额。",
+        "en": "Diversity adjustments follow the initial ranking. Repeated sources or topics receive a soft penalty, and a source protection cap varies with list length rather than acting as a fixed quota; source filtering only changes which items are displayed, while ranking and diversity penalties still use the full candidate pool. At fixed positions, the list prefers a less-used source. This is source rotation (source backfill): it selects by source count and a deterministic order, not random exploration and not a semantic model.\n\nOther fixed positions prefer public heat or fresh content so personalization does not fully hide the public ranking. Source share is therefore a soft constraint produced by penalties and a cap, and equal shares per source are not guaranteed."
+      }
+    },
+    {
+      "id": "telemetry",
+      "title": {
+        "zh": "本地记录",
+        "en": "Local records"
+      },
+      "body": {
+        "zh": "学习事件（曝光、成功打开、阅读时长和显式反馈）保存在本机 SQLite 数据库中，用来计算兴趣画像。原始事件约保留 30 天，画像证据约保留 180 天，公开内容元数据约保留 7 天；三者都有数量上限，超出后按时间清理。收藏、关注词与显式屏蔽/主题调整会保留到你更改或清空，其余记录随时间滚动清理。\n\n本应用没有把事件或画像上传到自有服务器，也没有持续设备标识或跨设备同步。事件流水与同篇同日的最强画像证据分开保存，因此升级不会为了“精简”而删除合法的漏斗事件。",
+        "en": "Learning events (impressions, successful opens, reading time and explicit feedback) are stored in a local SQLite database and used to compute the interest profile. Raw events are kept for roughly 30 days, profile evidence for roughly 180 days and public content metadata for roughly 7 days; each has a count limit and ages out beyond it. Bookmarks, followed keywords and explicit block/topic rules persist until you change or clear them; other records roll off over time.\n\nNewsBar does not upload events or profiles to its own servers, and there is no persistent device identifier or cross-device sync. The event stream is stored separately from the strongest same-day profile evidence, so upgrades do not discard legitimate funnel events merely to save space."
+      }
+    },
+    {
+      "id": "privacy",
+      "title": {
+        "zh": "数据与隐私",
+        "en": "Data and privacy"
+      },
+      "body": {
+        "zh": "行为记录和兴趣画像只存在本机。但当你主动使用 AI 摘要、标题翻译或联网搜索时，相关标题和必要上下文会发送给你配置的服务商，并受其隐私政策约束。你主动发起的深度调研还会把标题、主题与搜索结果发送给该服务商。阅读器也可能按你的设置访问原网页。\n\n本地兴趣库未加密，依靠文件权限保护，因此不能承诺磁盘或系统备份中绝无残留。清空个人数据会删除事件、画像、关注词和阅读会话，并默认停止学习；如果选择保留收藏，收藏仍在但不再参与画像。清空只作用于本应用兴趣库，不会删除浏览器 Cookie、浏览历史、缓存或系统备份；浏览器数据在阅读器相关设置里单独管理。",
+        "en": "Behavior records and the interest profile stay on this Mac. When you actively use AI summaries, title translation or online search, the relevant titles and necessary context are sent to the provider you configured and are subject to that provider's privacy policy. A deep research run you start also sends its titles, topics and search results to that provider. The reader may also load original pages according to your settings.\n\nThe local interest store is not encrypted and relies on file permissions, so no promise can be made that nothing remains in disk images or system backups. Clearing personal data deletes events, the profile, followed keywords and reading sessions, and stops learning by default. If you keep bookmarks, they remain but no longer feed the profile. Clearing affects only this app's interest store; it does not delete browser cookies, history, caches or system backups. Browser data is managed separately in the reader settings."
+      }
+    },
+    {
+      "id": "controls",
+      "title": {
+        "zh": "控制与清除",
+        "en": "Controls and clearing"
+      },
+      "body": {
+        "zh": "关闭学习会停止采集新证据和个性化排序，但不会删除已有画像；重新开启会继续使用保留的画像。暂停只是临时停止，画像保留；隐私阅读期间不记录学习事件。清空个人数据后默认停止学习，需要你再次开启才会重新学习。\n\n收藏、屏蔽与隐藏始终可用（关闭学习时也仍会过滤内容）；减少主题、更多同类与关注需要学习开启。公开内容缓存（标题、来源、时间等）用于离线显示和去重，不属于个人画像；清空后普通刷新可能重新建立。想彻底停止个性化，请关闭学习；想重置画像，请使用清空。只清浏览器数据不会重置兴趣画像，反之亦然。",
+        "en": "You can stop learning at any time. Turning learning off stops collecting new evidence and stops personalized ranking, but does not delete the existing profile. Turning it back on resumes with the retained profile. Pausing is temporary and also keeps the profile; private reading records no learning events. Clearing personal data stops learning by default, and you must enable it again before new learning starts.\n\nBookmarks, mutes and hides still work (and explicit blocks still filter content while learning is off); reducing a topic, more like this and follows require learning on. Public content cache (titles, sources, timestamps and similar fields) supports offline display and deduplication; it is not part of the personal profile and normal refresh may rebuild it after clearing. To stop personalization entirely, turn learning off. To reset the profile, use clear. Clearing only browser data does not reset the interest profile, and the reverse is also true."
+      }
+    },
+    {
+      "id": "limitations",
+      "title": {
+        "zh": "边界与限制",
+        "en": "Limits and unknowns"
+      },
+      "body": {
+        "zh": "当前没有启用语义向量排序，也没有因果图或概率置信度展示；关系图只表示标题标签与画像证据的命中，不代表语义距离。排序解释来自最近一次快照，刷新或画像变化后可能不同；缺少排序轨迹时会明确显示不可用。\n\n推荐分数不是文章质量评分，也不预测你会喜欢什么。来源多样性是软约束，无法保证内容平衡。应用无法推断窗口是否被完全遮挡，只能根据自身窗口、列表可见性和阅读器遮挡判断曝光，因此解释只描述可观测的状态。",
+        "en": "Semantic vector ranking is not enabled, and no causal graph or probability confidence is shown. Relationship views only indicate title-tag and profile-evidence matches; they do not represent semantic distance. Explanations come from the latest snapshot and may change after a refresh or profile update. When a selection trace is missing, the app says it is unavailable.\n\nA recommendation score is not an article quality rating and does not predict what you will enjoy. Source diversity is a soft constraint, so balanced coverage is not guaranteed. The app cannot infer whether the window is fully occluded; it only uses its own window, list visibility and reader occlusion to judge exposure, so explanations describe observable state only."
+      }
+    }
+  ]
+}

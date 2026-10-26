@@ -10,7 +10,7 @@
   "release_branch": true,
   "auto_merge": false,
   "release_note_style": "structured-cn",
-  "summary": "本地兴趣引擎、Dashboard 内嵌阅读器、阅读隐私与性能优化",
-  "summary_en": "Local interest engine, isolated dashboard reader, reading privacy and performance improvements",
-  "validation": "swift test 486/486（1 skipped）+ scripts/build.sh + codesign verify + hdiutil verify 通过"
+  "summary": "本地推荐解释中心、真实推荐轨迹与推荐/埋点正确性修复",
+  "summary_en": "Local recommendation explainer, real ranking traces, and recommendation/telemetry correctness fixes",
+  "validation": "swift test 608/608（1 skipped）+ scripts/build.sh + codesign verify + hdiutil verify 通过"
 }

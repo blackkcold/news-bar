@@ -69,6 +69,10 @@ final class NewsOrchestrator {
         AISummaryCacheStore(language: L10n.currentLanguage)
     }
     private var isLoadingCachedState = false
+    /// Source set whose disk cache has already been folded into memory. Kept so
+    /// opening the popover after the dashboard (or vice versa) does not re-read
+    /// every cache entry and re-run interest ingestion on the first frame.
+    private var loadedCacheSourceIDs: Set<String> = []
     private var refreshWaiters: [RefreshWaiter] = []
     private var pendingManualRefresh = false
     var sharedSummaryLastHash: String?
@@ -154,13 +158,21 @@ final class NewsOrchestrator {
     // MARK: - Public API
 
     func loadCached(settings: AppSettings) async {
+        let sourceIDs = Set(settings.activeSources.map(\.id))
+        guard loadedCacheSourceIDs != sourceIDs else { return }
+        guard !isLoadingCachedState else { return }
         await loadCachedState(settings: settings, logTrigger: .popoverOpen)
         await updateInterestCandidates(settings: settings)
+        loadedCacheSourceIDs = sourceIDs
     }
 
     func preloadCached(settings: AppSettings) async {
+        let sourceIDs = Set(settings.activeSources.map(\.id))
+        guard loadedCacheSourceIDs != sourceIDs else { return }
+        guard !isLoadingCachedState else { return }
         await loadCachedState(settings: settings, logTrigger: nil)
         await updateInterestCandidates(settings: settings)
+        loadedCacheSourceIDs = sourceIDs
     }
 
     private func loadCachedState(settings: AppSettings, logTrigger: RefreshLog.Trigger?) async {
@@ -171,78 +183,97 @@ final class NewsOrchestrator {
 
         let aiBefore = logStateLabel(aiSummaryState)
         var sourceResults: [String: String] = [:]
+        // Stage every cached read in locals and commit once. Writing each
+        // source into the observable properties made the popover rebuild its
+        // whole feed N times while the first frame was still being drawn.
+        var hotItems = weiboItems
+        var videoItems = bilibiliItems
+        var feeds = rssItemsMap
+        var states = sourceStates
+
         // 内存优先: 若已有数据则不覆盖 (避免 stale 缓存清空自动刷新填入的新数据)
-        if weiboItems.isEmpty {
+        if hotItems.isEmpty {
             if let cached = await cacheManager.load(for: .weibo) {
-                weiboItems = cached.items
+                hotItems = cached.items
                 let validatedAt = cached.lastValidatedAt ?? cached.timestamp
                 lastHotRefresh = max(lastHotRefresh ?? .distantPast, validatedAt)
                 if cached.isStale {
-                    sourceStates[NewsSource.weibo.id] = .idle
+                    states[NewsSource.weibo.id] = .idle
                     sourceResults[NewsSource.weibo.displayName] = "cacheStale"
                 } else {
-                    applyCachedState(.loaded, for: .weibo)
+                    if let next = cachedState(.loaded, for: .weibo, in: states) {
+                        states[NewsSource.weibo.id] = next
+                    }
                     sourceResults[NewsSource.weibo.displayName] = "cache/\(cached.items.count)"
                 }
             } else {
-                if sourceStates[NewsSource.weibo.id] == nil {
-                    sourceStates[NewsSource.weibo.id] = .idle
+                if states[NewsSource.weibo.id] == nil {
+                    states[NewsSource.weibo.id] = .idle
                 }
                 sourceResults[NewsSource.weibo.displayName] = "noCache"
             }
         } else {
-            sourceResults[NewsSource.weibo.displayName] = "skipped/\(weiboItems.count)"
+            sourceResults[NewsSource.weibo.displayName] = "skipped/\(hotItems.count)"
         }
-        if bilibiliItems.isEmpty {
+        if videoItems.isEmpty {
             if let cached = await cacheManager.load(for: .bilibili) {
-                bilibiliItems = cached.items
+                videoItems = cached.items
                 let validatedAt = cached.lastValidatedAt ?? cached.timestamp
                 lastHotRefresh = max(lastHotRefresh ?? .distantPast, validatedAt)
                 if cached.isStale {
-                    sourceStates[NewsSource.bilibili.id] = .idle
+                    states[NewsSource.bilibili.id] = .idle
                     sourceResults[NewsSource.bilibili.displayName] = "cacheStale"
                 } else {
-                    applyCachedState(.loaded, for: .bilibili)
+                    if let next = cachedState(.loaded, for: .bilibili, in: states) {
+                        states[NewsSource.bilibili.id] = next
+                    }
                     sourceResults[NewsSource.bilibili.displayName] = "cache/\(cached.items.count)"
                 }
             } else {
-                if sourceStates[NewsSource.bilibili.id] == nil {
-                    sourceStates[NewsSource.bilibili.id] = .idle
+                if states[NewsSource.bilibili.id] == nil {
+                    states[NewsSource.bilibili.id] = .idle
                 }
                 sourceResults[NewsSource.bilibili.displayName] = "noCache"
             }
         } else {
-            sourceResults[NewsSource.bilibili.displayName] = "skipped/\(bilibiliItems.count)"
+            sourceResults[NewsSource.bilibili.displayName] = "skipped/\(videoItems.count)"
         }
 
         for source in settings.activeSources where !source.isBuiltIn {
-            if rssItemsMap[source.id, default: []].isEmpty {
+            if feeds[source.id, default: []].isEmpty {
                 if let entry = await cacheManager.load(for: source) {
                     lastSourceRefresh[source.id] = entry.lastValidatedAt ?? entry.timestamp
                     if entry.isExpired {
-                        sourceStates[source.id] = .idle
+                        states[source.id] = .idle
                         sourceResults[source.displayName] = "cacheExpired"
                     } else {
-                        rssItemsMap[source.id] = entry.items
+                        feeds[source.id] = entry.items
                         if entry.isStale {
-                            sourceStates[source.id] = .idle
+                            states[source.id] = .idle
                             sourceResults[source.displayName] = "cacheStale"
                         } else {
-                            applyCachedState(.loaded, for: source)
+                            if let next = cachedState(.loaded, for: source, in: states) {
+                                states[source.id] = next
+                            }
                             sourceResults[source.displayName] = "cache/\(entry.items.count)"
                         }
                     }
                 } else {
-                    if sourceStates[source.id] == nil {
-                        sourceStates[source.id] = .idle
+                    if states[source.id] == nil {
+                        states[source.id] = .idle
                     }
                     sourceResults[source.displayName] = "noCache"
                 }
             } else {
-                let count = rssItemsMap[source.id]?.count ?? 0
+                let count = feeds[source.id]?.count ?? 0
                 sourceResults[source.displayName] = "skipped/\(count)"
             }
         }
+
+        if hotItems != weiboItems { weiboItems = hotItems }
+        if videoItems != bilibiliItems { bilibiliItems = videoItems }
+        if feeds != rssItemsMap { rssItemsMap = feeds }
+        if states != sourceStates { sourceStates = states }
 
         await restoreCachedSummaryIfPossible(settings: settings)
 
@@ -409,25 +440,32 @@ final class NewsOrchestrator {
 
         var rssChanged = false
         if !rssSources.isEmpty {
-            let batchSize = 6
             batchProgress = BatchProgress(completed: 0, total: rssSources.count)
 
-            for batchStart in stride(from: 0, to: rssSources.count, by: batchSize) {
-                let batch = Array(rssSources[batchStart..<min(batchStart + batchSize, rssSources.count)])
+            for range in RSSRefreshPlanner.batches(count: rssSources.count) {
+                let batch = Array(rssSources[range])
                 for source in batch {
                     lastSourceAttempt[source.id] = Date()
                 }
 
-                await withTaskGroup(of: Bool.self) { group in
+                let outcomes = await withTaskGroup(of: RSSFetchOutcome.self, returning: [RSSFetchOutcome].self) { group in
                     for source in batch {
                         group.addTask { await self.fetchRSS(source: source, useCacheFallback: !isManual, settings: settings) }
                     }
-                    for await changed in group {
-                        rssChanged = rssChanged || changed
+                    var collected: [RSSFetchOutcome] = []
+                    collected.reserveCapacity(batch.count)
+                    for await outcome in group {
+                        collected.append(outcome)
                     }
+                    return collected
                 }
 
-                batchProgress.completed = min(batchStart + batchSize, rssSources.count)
+                applyRSSBatch(outcomes)
+                rssChanged = rssChanged || outcomes.contains(where: \.changed)
+                batchProgress = BatchProgress(
+                    completed: range.upperBound,
+                    total: rssSources.count
+                )
 
             }
             batchProgress = .zero
@@ -501,10 +539,22 @@ final class NewsOrchestrator {
         return false
     }
 
-    private func fetchRSS(source: NewsSource, useCacheFallback: Bool, settings: AppSettings) async -> Bool {
+    /// Result of one RSS fetch. Observable state is committed by the caller in
+    /// one batch so a 6-source batch invalidates the UI once, not 12 times.
+    private struct RSSFetchOutcome {
+        let source: NewsSource
+        let state: SourceLoadState
+        /// `nil` leaves the existing map entry untouched.
+        let itemsUpdate: [NewsItem]?
+        let changed: Bool
+    }
+
+    private func fetchRSS(source: NewsSource, useCacheFallback: Bool, settings: AppSettings) async -> RSSFetchOutcome {
         let existing = await cacheManager.load(for: source)
         let fetchedItems: [NewsItem]?
         let changed: Bool
+        var outcomeItems: [NewsItem]?
+        var outcomeState = SourceLoadState.loaded
 
         do {
             let result = try await RSSService.fetchConditional(
@@ -522,7 +572,7 @@ final class NewsOrchestrator {
                 ) else {
                     throw NewsBarError.requestFailed
                 }
-                rssItemsMap[source.id] = validated.items
+                outcomeItems = validated.items
                 fetchedItems = validated.items
                 changed = false
                 rssUnchangedRefreshCounts[source.id, default: 0] += 1
@@ -544,7 +594,7 @@ final class NewsOrchestrator {
                     lastModified: lastModified
                 )
                 await cacheManager.save(entry, for: source)
-                rssItemsMap[source.id] = translatedItems
+                outcomeItems = translatedItems
                 fetchedItems = translatedItems
                 if changed {
                     rssUnchangedRefreshCounts[source.id] = 0
@@ -553,19 +603,18 @@ final class NewsOrchestrator {
                     rssUnchangedRefreshCounts[source.id, default: 0] += 1
                 }
             }
-            sourceStates[source.id] = .loaded
             rssFailureCounts[source.id] = 0
             lastSourceRefresh[source.id] = Date()
         } catch {
             NSLog("[NewsOrchestrator] 获取 \(source.displayName) 失败: \(error.localizedDescription)")
-            sourceStates[source.id] = .failed(sourceErrorMessage(error))
+            outcomeState = .failed(sourceErrorMessage(error))
             rssFailureCounts[source.id, default: 0] += 1
             changed = false
             if existing?.isExpired == true {
-                rssItemsMap[source.id] = []
+                outcomeItems = []
                 fetchedItems = nil
             } else if useCacheFallback, rssItemsMap[source.id, default: []].isEmpty, let existing {
-                rssItemsMap[source.id] = existing.items
+                outcomeItems = existing.items
                 fetchedItems = existing.items
             } else {
                 fetchedItems = nil
@@ -585,7 +634,27 @@ final class NewsOrchestrator {
                 }
             }
         }
-        return changed
+        return RSSFetchOutcome(
+            source: source,
+            state: outcomeState,
+            itemsUpdate: outcomeItems,
+            changed: changed
+        )
+    }
+
+    /// Commits a whole fetch batch into the observable dictionaries at once.
+    private func applyRSSBatch(_ outcomes: [RSSFetchOutcome]) {
+        guard !outcomes.isEmpty else { return }
+        var feeds = rssItemsMap
+        var states = sourceStates
+        for outcome in outcomes {
+            if let items = outcome.itemsUpdate {
+                feeds[outcome.source.id] = items
+            }
+            states[outcome.source.id] = outcome.state
+        }
+        if feeds != rssItemsMap { rssItemsMap = feeds }
+        if states != sourceStates { sourceStates = states }
     }
 
     // MARK: - RSS Title Translation
@@ -1087,23 +1156,29 @@ final class NewsOrchestrator {
     }
 
     private func markSources(_ sources: [NewsSource], as state: SourceLoadState) {
+        guard !sources.isEmpty else { return }
+        var states = sourceStates
         for source in sources {
-            sourceStates[source.id] = state
+            states[source.id] = state
         }
+        if states != sourceStates { sourceStates = states }
     }
 
-    private func applyCachedState(_ state: SourceLoadState, for source: NewsSource) {
-        switch sourceStates[source.id] {
+    private func cachedState(
+        _ state: SourceLoadState,
+        for source: NewsSource,
+        in states: [String: SourceLoadState]
+    ) -> SourceLoadState? {
+        switch states[source.id] {
         case .some(.loading):
-            return
+            return nil
         case .some(.failed):
-            if case .loaded = state {
-                sourceStates[source.id] = state
-            }
+            if case .loaded = state { return state }
+            return nil
         case .some(.loaded):
-            return  // 已完成加载 → 不退回到 idle
+            return nil  // 已完成加载 → 不退回到 idle
         case .some(.idle), .none:
-            sourceStates[source.id] = state
+            return state
         }
     }
 
@@ -1505,6 +1580,7 @@ final class NewsOrchestrator {
         rssUnchangedRefreshCounts = [:]
         rssLastChangedAt = [:]
         rssFailureCounts = [:]
+        loadedCacheSourceIDs = []
         lastHourlyPushAt = nil
         latestTrendSummary = .none
         notifiedBurstTopics = []
@@ -1523,11 +1599,9 @@ final class NewsOrchestrator {
         guard !source.isBuiltIn else { return }
         guard sourceStates[source.id] != .loading else { return }
 
-        sourceStates[source.id] = .loading
-        _ = await fetchRSS(source: source, useCacheFallback: false, settings: settings)
-        if case .some(.loaded) = sourceStates[source.id] {
-            lastSourceRefresh[source.id] = Date()
-        }
+        markSources([source], as: .loading)
+        let outcome = await fetchRSS(source: source, useCacheFallback: false, settings: settings)
+        applyRSSBatch([outcome])
         await updateInterestCandidates(settings: settings)
     }
 }
