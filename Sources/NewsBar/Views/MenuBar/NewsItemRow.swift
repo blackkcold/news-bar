@@ -34,7 +34,7 @@ struct NewsItemRow: View, Equatable {
 
     var body: some View {
         Button {
-            URLOpener.open(item.url)
+            NewsNavigationRouter.shared.open(item, surface: "menuTrend")
         } label: {
             HStack(alignment: .top, spacing: rowSpacing) {
                 if showRank, let rank = item.rank {

@@ -244,7 +244,7 @@ struct BurstDetailView: View {
             VStack(alignment: .leading, spacing: 6) {
                 ForEach(research.sources, id: \.self) { source in
                     Button {
-                        URLOpener.open(source)
+                        NewsNavigationRouter.shared.open(url: source, surface: "researchSource", contextID: burst.id)
                     } label: {
                         HStack(spacing: 6) {
                             Image(systemName: "link")

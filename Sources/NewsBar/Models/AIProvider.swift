@@ -74,57 +74,6 @@ enum AIProvider: String, CaseIterable, Codable {
         responseFormat == .anthropic ? "2023-06-01" : nil
     }
 
-    // MARK: - Models
-
-    /// Complete official model list for the provider (used when the developer
-    /// toggle "显示全部模型" is enabled). Sources verified against official docs.
-    var allModels: [String] {
-        switch self {
-        case .deepseek:
-            return ["deepseek-v4-flash", "deepseek-v4-pro"]
-        case .minimaxTokenPlan, .minimaxAPI:
-            return [
-                "MiniMax-M3", "MiniMax-M2.7", "MiniMax-M2.7-highspeed",
-                "MiniMax-M2.5", "MiniMax-M2.5-highspeed",
-                "MiniMax-M2.1", "MiniMax-M2.1-highspeed", "MiniMax-M2",
-            ]
-        case .opencodeGo, .opencodeZen:
-            // These proxy endpoints serve DeepSeek models.
-            return ["deepseek-v4-flash", "deepseek-v4-pro"]
-        case .googleAIStudio:
-            return [
-                "gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite",
-                "gemini-3.1-flash-lite", "gemini-3.1-pro-preview", "gemini-3-flash-preview",
-                "gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite",
-            ]
-        case .ollamaCloud:
-            return [
-                "deepseek-v4-flash:cloud", "deepseek-v4-pro:cloud",
-                "gpt-oss:20b-cloud", "gpt-oss:120b-cloud",
-                "kimi-k3:cloud", "kimi-k2.7-code:cloud", "kimi-k2.6:cloud",
-                "minimax-m3:cloud", "minimax-m2.7:cloud",
-                "glm-5.2:cloud", "glm-5.1:cloud",
-                "qwen3.5:397b-cloud",
-                "nemotron-3-super:cloud", "nemotron-3-ultra:cloud", "nemotron-3-nano:cloud",
-                "mistral-large-3:cloud",
-            ]
-        }
-    }
-
-    /// Default collapsed model list: when the provider offers DeepSeek models,
-    /// only those are shown by default; otherwise the full list is shown.
-    var models: [String] {
-        let deepseekModels = allModels.filter { $0.contains("deepseek") }
-        return deepseekModels.isEmpty ? allModels : deepseekModels
-    }
-
-    /// Resolve the model list honouring the developer "显示全部模型" toggle.
-    func models(showAll: Bool) -> [String] {
-        showAll ? allModels : models
-    }
-
-    var defaultModel: String { models.first ?? "" }
-
     func resolvedConnection() -> ResolvedAIConnection {
         ResolvedAIConnection(
             baseURL: baseURL,
@@ -184,8 +133,7 @@ enum AIProvider: String, CaseIterable, Codable {
         switch self {
         case .deepseek:
             return [
-                ("deepseek-v4-flash", "¥1/1M 输入 · ¥2/1M 输出 (缓存 ¥0.2)"),
-                ("deepseek-v4-pro",  "¥12/1M 输入 · ¥24/1M 输出 (缓存 ¥1)"),
+                ("计费方式", "按实际模型计费，详见 platform.deepseek.com 定价页"),
                 ("用量参考",         "每次总结约消耗 200-800 tokens"),
             ]
         case .minimaxTokenPlan:
@@ -205,8 +153,7 @@ enum AIProvider: String, CaseIterable, Codable {
             ]
         case .googleAIStudio:
             return [
-                ("gemini-2.5-flash", "免费层：每天 1500 次请求"),
-                ("gemini-2.5-pro",   "免费层：每天 50 次请求"),
+                ("计费方式", "免费层及按量额度依实际模型和账户而定，详见 aistudio.google.com"),
                 ("用量参考",          "每次总结约消耗 200-800 tokens"),
             ]
         case .ollamaCloud:
@@ -222,24 +169,9 @@ enum AIProvider: String, CaseIterable, Codable {
 
         switch self {
         case .deepseek:
-            let inputTokensPerRequest = 400
-            let outputTokensPerRequest = 100
-            let inputRatePerMillion: Double
-            let outputRatePerMillion: Double
-
-            if model.contains("pro") {
-                inputRatePerMillion = 12
-                outputRatePerMillion = 24
-            } else {
-                inputRatePerMillion = 1
-                outputRatePerMillion = 2
-            }
-
-            let inputCost = Double(requestCount * inputTokensPerRequest) * inputRatePerMillion / 1_000_000
-            let outputCost = Double(requestCount * outputTokensPerRequest) * outputRatePerMillion / 1_000_000
-            return String(format: "≈¥%.4f", inputCost + outputCost)
+            return "以实际模型及提供商账单为准"
         case .googleAIStudio:
-            return "≈¥0（免费层内）"
+            return "以账户额度及实际模型为准"
         case .minimaxTokenPlan:
             return "按 Token Plan 扣减"
         case .minimaxAPI:

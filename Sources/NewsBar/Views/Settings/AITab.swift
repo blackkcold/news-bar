@@ -7,6 +7,7 @@ struct AITab: View {
     @State private var apiKeyInput = ""
     @State private var onePasswordRef = ""
     @State private var testResult: String?
+    @State private var testSucceeded = false
     @State private var isTesting = false
     @State private var isSaving = false
     @State private var saveResult: String?
@@ -38,7 +39,6 @@ struct AITab: View {
                     set: { newProvider in
                         selectedProviderID = newProvider
                         settings.aiProvider = newProvider
-                        settings.aiModel = settings.providerDefaultModel(forID: newProvider)
                         settings.cachedAPIKey = nil
                         apiKeyInput = ""
                         testResult = nil
@@ -129,7 +129,7 @@ struct AITab: View {
                 if let result = testResult {
                     Text(result)
                         .font(.caption)
-                        .foregroundStyle(result.contains("ai.test.success".localized) ? .green : .red)
+                        .foregroundStyle(testSucceeded ? .green : .orange)
                 }
             } header: {
                 Text("ai.apiKey".localized)
@@ -182,16 +182,45 @@ struct AITab: View {
                     get: { settings.aiModel },
                     set: { settings.aiModel = $0 }
                 )) {
+                    if !settings.currentAIModels.contains(settings.aiModel) {
+                        Text("ai.models.unselected".localized).tag(settings.aiModel)
+                    }
                     ForEach(settings.providerModels(forID: selectedProviderID), id: \.self) { model in
                         Text(model).tag(model)
                     }
                 }
+                .disabled(settings.currentAIModels.isEmpty || settings.isLoadingModelCatalog)
+
+                HStack {
+                    if settings.isLoadingModelCatalog {
+                        ProgressView().controlSize(.small)
+                        Text("ai.models.loading".localized).font(.caption).foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Button {
+                        Task { await settings.refreshModelCatalog(force: true) }
+                    } label: {
+                        Label("ai.models.refresh".localized, systemImage: "arrow.clockwise")
+                    }
+                    .buttonStyle(EditorialActionButtonStyle(compact: true))
+                    .disabled(settings.isLoadingModelCatalog)
+                }
+
+                if let error = settings.modelCatalogError {
+                    Text(error.message(language: settings.appLanguage))
+                        .font(.caption).foregroundStyle(.orange)
+                }
+                if let updated = settings.modelCatalogUpdatedAt {
+                    HStack(spacing: 4) {
+                        Text(settings.modelCatalogIsStale ? "ai.models.stale".localized : "ai.models.updated".localized)
+                        Text(updated, style: .relative)
+                    }
+                    .font(.caption2).foregroundStyle(.secondary)
+                }
             } header: {
                 Text("ai.modelSettings".localized)
             } footer: {
-                if !settings.isUsingCustomProvider && !settings.showAllAIModels {
-                    Text("ai.model.footer".localized)
-                }
+                Text("ai.model.footer".localized)
             }
 
             Section {
@@ -300,6 +329,10 @@ struct AITab: View {
         }
         .formStyle(.grouped)
         .scrollContentBackground(.hidden)
+        .task(id: settings.modelCatalogRevision) {
+            selectedProviderID = settings.aiProvider
+            await settings.refreshModelCatalog()
+        }
         .sheet(isPresented: $showCustomEditor) {
             CustomAIProviderEditor(provider: editingCustom) { saved in
                 editingCustom = nil
@@ -308,7 +341,6 @@ struct AITab: View {
                     let customID = "custom:\(saved.id)"
                     selectedProviderID = customID
                     settings.aiProvider = customID
-                    settings.aiModel = settings.providerDefaultModel(forID: customID)
                     settings.cachedAPIKey = nil
                     apiKeyInput = ""
                     testResult = nil
@@ -351,12 +383,14 @@ struct AITab: View {
         saveResult = nil
         let sanitized = SecurityPolicies.sanitizeUserInput(apiKeyInput)
         let account = settings.activeAPIKeyAccount
+        let providerID = settings.aiProvider
+        let revision = settings.modelCatalogRevision
         Task {
             let store = EncryptedKeyStore()
             let success = await store.saveAPIKey(sanitized, account: account)
             await MainActor.run {
                 if success {
-                    settings.cachedAPIKey = sanitized
+                    guard settings.activateAPIKey(sanitized, providerID: providerID, revision: revision) else { isSaving = false; return }
                     settings.onePasswordRef = onePasswordRef
                     apiKeyInput = ""
                     saveResult = "ai.saved".localized
@@ -380,17 +414,20 @@ struct AITab: View {
         settings.onePasswordRef = onePasswordRef
         isLoadingFrom1Password = true
         onePasswordResult = nil
+        let providerID = settings.aiProvider
+        let revision = settings.modelCatalogRevision
+        let account = settings.activeAPIKeyAccount
+        let reference = onePasswordRef
 
         Task {
             do {
-                let key = try await OnePasswordService.readSecretAsync(reference: onePasswordRef)
-                let account = settings.activeAPIKeyAccount
+                let key = try await OnePasswordService.readSecretAsync(reference: reference)
                 let store = EncryptedKeyStore()
                 let success = await store.saveAPIKey(key, account: account)
                 await MainActor.run {
                     if success {
+                        guard settings.activateAPIKey(key, providerID: providerID, revision: revision) else { isLoadingFrom1Password = false; return }
                         apiKeyInput = key
-                        settings.cachedAPIKey = key
                         NotificationCenter.default.post(name: .apiKeyConfigured, object: nil)
                     }
                     onePasswordResult = success ? "ai.1p.success".localized : "ai.1p.saveFailed".localized
@@ -429,85 +466,32 @@ struct AITab: View {
     private func testConnection() {
         isTesting = true
         testResult = nil
+        testSucceeded = false
+        let providerID = settings.aiProvider
+        let revision = settings.modelCatalogRevision
+        let key = SecurityPolicies.sanitizeUserInput(apiKeyInput.isEmpty ? (settings.cachedAPIKey ?? "") : apiKeyInput)
 
         Task {
+            defer { isTesting = false }
             do {
-                let testItems = [
-                    NewsItem(title: "测试新闻", url: "https://example.com", source: .weibo)
-                ]
-                let rawInput = apiKeyInput
-                let apiKey: String
-                if !rawInput.isEmpty {
-                    apiKey = SecurityPolicies.sanitizeUserInput(rawInput)
-                } else if let cachedAPIKey = settings.cachedAPIKey, !cachedAPIKey.isEmpty {
-                    apiKey = cachedAPIKey
-                } else {
-                    testResult = "ai.test.noKey".localized
-                    isTesting = false
-                    return
-                }
-                guard !apiKey.isEmpty else {
+                guard !key.isEmpty else {
                     testResult = "ai.test.emptyKey".localized
-                    isTesting = false
                     return
                 }
-                AISummaryService.initBudget(
-                    target: .popup,
-                    mode: settings.aiBudgetMode,
-                    baseline: 0,
-                    cap: settings.effectiveDailyCap(for: .popup)
-                )
-                let result = try await AISummaryService.summarize(
-                    items: testItems,
-                    maxWords: 30,
-                    connection: settings.resolvedAIConnection,
-                    model: settings.aiModel,
-                    apiKey: apiKey,
-                    target: .popup,
-                    budgetMode: settings.aiBudgetMode
-                )
-                if !result.summary.isEmpty {
-                    testResult = "ai.test.success".localized
+                let result = try await settings.checkModelConnection(apiKey: key)
+                guard providerID == settings.aiProvider, revision == settings.modelCatalogRevision else { return }
+                if result.source == .live {
+                    testSucceeded = true
+                    testResult = "ai.models.connectionSuccess".localized
                 } else {
-                    testResult = "ai.test.empty".localized
+                    testResult = "ai.models.connectionStale".localized
                 }
-            } catch NewsBarError.apiKeyInvalid {
-                testResult = "ai.test.invalidKey".localized
-            } catch let error as NewsBarError {
-                switch error {
-                case .requestFailed:
-                    testResult = "ai.test.requestFailed".localized
-                case .invalidURL:
-                    testResult = "ai.test.invalidURL".localized
-                case .parseFailed:
-                    testResult = "ai.test.parseFailed".localized
-                case .parseFailedWithDetail(let detail):
-                    testResult = L10n.string("ai.test.parseFailedDetail", detail)
-                default:
-                    testResult = "ai.test.unknown".localized
-                }
-            } catch let error as URLError {
-                NSLog("[AITab] testConnection URLError: %@", error.localizedDescription)
-                switch error.code {
-                case .timedOut:
-                    testResult = "ai.test.timeout".localized
-                case .notConnectedToInternet:
-                    testResult = "ai.test.noNetwork".localized
-                case .cannotFindHost:
-                    testResult = L10n.string("ai.test.cannotFindHost", settings.resolvedAIConnection.baseURL)
-                case .networkConnectionLost:
-                    testResult = "ai.test.networkLost".localized
-                default:
-                    testResult = L10n.string("ai.test.networkError", error.localizedDescription)
-                }
-            } catch let error as DecodingError {
-                NSLog("[AITab] testConnection DecodingError: %@", error.localizedDescription)
-                testResult = "ai.test.badResponse".localized
+            } catch is CancellationError {
+                return
             } catch {
-                NSLog("[AITab] testConnection failed: %@", error.localizedDescription)
-                testResult = L10n.string("ai.test.failed", error.localizedDescription)
+                guard providerID == settings.aiProvider, revision == settings.modelCatalogRevision else { return }
+                testResult = (error as? ProviderModelError ?? .network).message(language: settings.appLanguage)
             }
-            isTesting = false
         }
     }
 
@@ -533,8 +517,6 @@ private struct CustomAIProviderEditor: View {
 
     @State private var name: String
     @State private var baseURL: String
-    @State private var modelsText: String
-    @State private var defaultModel: String
     @State private var isAnthropicFormat = false
     @State private var authHeaderName: String
     @State private var authHeaderPrefix: String
@@ -547,8 +529,6 @@ private struct CustomAIProviderEditor: View {
         self.onSaved = onSaved
         _name = State(initialValue: provider?.name ?? "")
         _baseURL = State(initialValue: provider?.baseURL ?? "")
-        _modelsText = State(initialValue: (provider?.models ?? []).joined(separator: "\n"))
-        _defaultModel = State(initialValue: provider?.defaultModel ?? "")
         _isAnthropicFormat = State(initialValue: provider?.responseFormat == .anthropic)
         _authHeaderName = State(initialValue: provider?.authHeaderName ?? "Authorization")
         _authHeaderPrefix = State(initialValue: provider?.authHeaderPrefix ?? "Bearer ")
@@ -568,18 +548,8 @@ private struct CustomAIProviderEditor: View {
                 .textFieldStyle(.roundedBorder)
                 .font(.system(size: 12, design: .monospaced))
 
-            TextField("ai.custom.defaultModel".localized, text: $defaultModel)
-                .textFieldStyle(.roundedBorder)
-
-            VStack(alignment: .leading, spacing: 4) {
-                Text("ai.custom.models".localized)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                TextEditor(text: $modelsText)
-                    .font(.system(size: 12, design: .monospaced))
-                    .frame(minHeight: 80)
-                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.secondary.opacity(0.2)))
-            }
+            Text("ai.models.customDiscovery".localized)
+                .font(.caption).foregroundStyle(.secondary)
 
             Toggle("ai.custom.anthropic".localized, isOn: $isAnthropicFormat)
 
@@ -618,7 +588,7 @@ private struct CustomAIProviderEditor: View {
                     save()
                 }
                 .buttonStyle(EditorialActionButtonStyle(tone: .primary, compact: true))
-                .disabled(name.isEmpty || baseURL.isEmpty || modelsText.isEmpty)
+                .disabled(name.isEmpty || baseURL.isEmpty)
             }
         }
         .padding(20)
@@ -628,20 +598,13 @@ private struct CustomAIProviderEditor: View {
 
     private func save() {
         guard !name.isEmpty, !baseURL.isEmpty else { return }
-        let models = modelsText
-            .split(whereSeparator: \.isNewline)
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
-        guard !models.isEmpty else {
-            errorMessage = "ai.custom.needModel".localized
-            return
-        }
 
         var normalizedURL = baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
         if URL(string: normalizedURL)?.scheme == nil {
             normalizedURL = "https://" + normalizedURL
         }
-        guard URL(string: normalizedURL) != nil else {
+        guard let parts = URLComponents(string: normalizedURL), parts.scheme?.lowercased() == "https",
+              parts.host?.isEmpty == false, parts.user == nil, parts.password == nil else {
             errorMessage = "ai.custom.invalidURL".localized
             return
         }
@@ -650,8 +613,7 @@ private struct CustomAIProviderEditor: View {
             id: provider?.id ?? UUID().uuidString,
             name: SecurityPolicies.sanitizeUserInput(name),
             baseURL: normalizedURL,
-            models: models,
-            defaultModel: defaultModel.trimmingCharacters(in: .whitespacesAndNewlines),
+            models: [],
             responseFormat: isAnthropicFormat ? .anthropic : .openAI,
             authHeaderName: authHeaderName.isEmpty ? (isAnthropicFormat ? "x-api-key" : "Authorization") : authHeaderName,
             authHeaderPrefix: authHeaderPrefix,

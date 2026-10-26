@@ -72,6 +72,9 @@ swift build && swift run
 # Release (app bundle + DMG)
 scripts/build.sh
 
+# Local verification app bundle (no DMG, no release index changes)
+bash scripts/package-local.sh
+
 # Version bump + git tag
 scripts/bump-version.sh           # 1.0.1 → 1.0.2
 scripts/bump-version.sh 2.0.0     # 指定版本
@@ -80,7 +83,8 @@ scripts/bump-version.sh 2.0.0     # 指定版本
 scripts/release.sh                # 自动生成 release notes + 创建 GitHub Release
 ```
 
-Output: `release/{version}/NewsBar.app` + `NewsBar-{version}.dmg`
+Local app bundle: `release/{version}/NewsBar.app`
+Release output: `release/{version}/NewsBar.app` + `NewsBar-{version}.dmg`
 
 ## Key Patterns
 

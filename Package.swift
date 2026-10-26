@@ -6,9 +6,10 @@ let package = Package(
     platforms: [.macOS("15.0")],
     dependencies: [],
     targets: [
+        .systemLibrary(name: "CSQLite", path: "Sources/CSQLite"),
         .executableTarget(
             name: "NewsBar",
-            dependencies: [],
+            dependencies: ["CSQLite"],
             path: "Sources/NewsBar"
         ),
         .testTarget(

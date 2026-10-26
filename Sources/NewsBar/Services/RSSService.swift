@@ -166,9 +166,26 @@ enum RSSService {
                 title: SecurityPolicies.sanitizeHTMLContent(item.title),
                 url: validatedLink,
                 source: .rss(name: sourceName, url: sourceURL),
-                imageURL: validatedImageURL
+                imageURL: validatedImageURL,
+                publishedAt: parsePublicationDate(item.publicationDate)
             )
         }
+    }
+
+    static func parsePublicationDate(_ raw: String) -> Date? {
+        let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return nil }
+        let iso = ISO8601DateFormatter()
+        if let date = iso.date(from: text) { return date }
+        iso.formatOptions.insert(.withFractionalSeconds)
+        if let date = iso.date(from: text) { return date }
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        for format in ["EEE, dd MMM yyyy HH:mm:ss Z", "EEE, d MMM yyyy HH:mm:ss zzz", "yyyy-MM-dd'T'HH:mm:ssZ"] {
+            formatter.dateFormat = format
+            if let date = formatter.date(from: text) { return date }
+        }
+        return nil
     }
 
     private static func fetchResponse(
@@ -232,6 +249,7 @@ final class RSSParserDelegate: NSObject, XMLParserDelegate {
         var title: String = ""
         var link: String = ""
         var imageURL: String? = nil
+        var publicationDate: String = ""
     }
 
     private(set) var items: [Item] = []
@@ -279,6 +297,8 @@ final class RSSParserDelegate: NSObject, XMLParserDelegate {
         switch currentElement {
         case "title":
             currentItem?.title += trimmed
+        case "pubDate", "published", "dc:date":
+            currentItem?.publicationDate += string
         case "link":
             if currentItem?.link.isEmpty ?? true {
                 currentItem?.link += trimmed

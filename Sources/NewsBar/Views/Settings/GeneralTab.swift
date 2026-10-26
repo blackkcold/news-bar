@@ -7,6 +7,8 @@ struct GeneralTab: View {
 
     var body: some View {
         Form {
+            InterestPrivacySection()
+            ReaderProxySettingsSection()
             Section {
                 Picker("settings.language".localized, selection: Binding(
                     get: { settings.appLanguage },

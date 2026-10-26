@@ -9,6 +9,7 @@ struct AISummaryCard: View {
     var isRegenerating = false
     var onRegenerate: (() -> Void)?
     var onConfigureKey: (() -> Void)?
+    var contextID: String? = nil
 
     @State private var displayText = ""
     @State private var animationTargetText = ""
@@ -322,7 +323,8 @@ struct AISummaryCard: View {
                             useMarkdown: useMarkdown,
                             matchedItem: section.primaryIndex.flatMap {
                                 allItems.indices.contains($0) ? allItems[$0] : nil
-                            }
+                            },
+                            contextID: contextID
                         )
                         if index < group.sections.count - 1 {
                             Divider().opacity(0.3).padding(.horizontal, 4)
@@ -540,6 +542,7 @@ struct SectionRow: View {
     var visibleContent: String? = nil
     var useMarkdown: Bool = true
     let matchedItem: NewsItem?
+    var contextID: String? = nil
 
     @State private var isHovered = false
     @Environment(AppSettings.self) private var settings
@@ -604,7 +607,7 @@ struct SectionRow: View {
             Spacer(minLength: 4)
 
             if let item = matchedItem {
-                SourceBadge(sourceName: item.source.displayName, url: item.url)
+                SourceBadge(sourceName: item.source.displayName, url: item.url, item: item, contextID: contextID)
                     .padding(.top, 2)
             }
         }
@@ -647,6 +650,8 @@ struct SectionRow: View {
 private struct SourceBadge: View {
     let sourceName: String
     let url: String
+    let item: NewsItem
+    let contextID: String?
 
     @State private var isBadgeHovered = false
     @Environment(AppSettings.self) private var settings
@@ -656,7 +661,7 @@ private struct SourceBadge: View {
 
     var body: some View {
         Button {
-            URLOpener.open(url)
+            NewsNavigationRouter.shared.open(item, surface: "summaryCitation", contextID: contextID)
         } label: {
             HStack(spacing: 3) {
                 EditorialSourceBadge(

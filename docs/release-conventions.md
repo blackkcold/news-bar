@@ -141,6 +141,30 @@ gh release view vX.Y.Z
 
 ---
 
+## 本地打包（验证用）
+
+本地验证构建统一输出到：
+
+```
+release/{version}/NewsBar.app
+```
+
+使用：
+
+```bash
+bash scripts/package-local.sh
+# 已有本地 bundle 时，确认后覆盖：
+bash scripts/package-local.sh --force
+```
+
+规则：
+
+- 本地打包**不生成 DMG**，不更新 `release/latest`、`release/versions.json`，也不创建 GitHub Release。
+- 本地打包不得写入 `output/`。该目录是历史遗留的临时目录，已废弃。
+- 需要正式 DMG 时使用 `bash scripts/build.sh`；需要发布时使用 `bash scripts/release.sh`。
+
+---
+
 ## 历史版本参考
 
 | 版本 | 标题 | 副标题 |

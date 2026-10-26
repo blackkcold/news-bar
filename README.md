@@ -92,6 +92,9 @@ swift build -c release --arch arm64
 
 # Or use the official packaging script (builds app + DMG)
 bash scripts/build.sh
+
+# Local verification app only (no DMG; output: release/<version>/NewsBar.app)
+bash scripts/package-local.sh
 ```
 
 ### Release Workflow

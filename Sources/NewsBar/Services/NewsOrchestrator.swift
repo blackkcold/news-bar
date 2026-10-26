@@ -52,6 +52,7 @@ final class NewsOrchestrator {
     var aiSummaryState = AISummaryState.idle
     var aiSummaryItems: [NewsItem] = []
     var aiParsedSummary: ParsedSummary?
+    var aiSummaryManifest: SummaryManifest?
 
     var isRefreshing = false
     var sourceStates: [String: SourceLoadState] = [:]
@@ -89,6 +90,8 @@ final class NewsOrchestrator {
     private var notifiedBurstTopics: Set<String> = []
     /// Latest research keyed by burst topic title, cached for the detail window.
     private var burstResearchCache: [String: BurstResearch] = [:]
+    private var researchStateLoaded = false
+    private var lastResearchAt: Date?
     private var latestTrendSummary = TrendChangeSummary.none
     /// The shared result uses the detailed Dashboard prompt. Popup limits rows at render time.
     static let sharedSummaryTarget: SummaryTarget = .dashboard
@@ -152,13 +155,16 @@ final class NewsOrchestrator {
 
     func loadCached(settings: AppSettings) async {
         await loadCachedState(settings: settings, logTrigger: .popoverOpen)
+        await updateInterestCandidates(settings: settings)
     }
 
     func preloadCached(settings: AppSettings) async {
         await loadCachedState(settings: settings, logTrigger: nil)
+        await updateInterestCandidates(settings: settings)
     }
 
     private func loadCachedState(settings: AppSettings, logTrigger: RefreshLog.Trigger?) async {
+        await InterestController.shared.prepare()
         guard !isLoadingCachedState else { return }
         isLoadingCachedState = true
         defer { isLoadingCachedState = false }
@@ -381,19 +387,6 @@ final class NewsOrchestrator {
         markSources(sourcesToLoad, as: .loading)
 
         let previousSummaryState = aiSummaryState
-        let apiKey: String
-        if let cached = settings.cachedAPIKey, !cached.isEmpty {
-            apiKey = cached
-        } else {
-            let store = EncryptedKeyStore()
-            if let fallback = await store.readAPIKey(account: settings.activeAPIKeyAccount),
-               !fallback.isEmpty {
-                settings.cachedAPIKey = fallback
-                apiKey = fallback
-            } else {
-                apiKey = ""
-            }
-        }
         var hotChanged = false
         var trendSummary = latestTrendSummary
         if refreshHot {
@@ -445,9 +438,9 @@ final class NewsOrchestrator {
             manualRefreshWarning = await rateLimiter.manualRefreshWarning()
         }
 
+        await updateInterestCandidates(settings: settings)
         await handleSharedAISummary(
             settings: settings,
-            apiKey: apiKey,
             previousState: previousSummaryState,
             isManualRefresh: isManual,
             hotChanged: hotChanged,
@@ -455,20 +448,21 @@ final class NewsOrchestrator {
             trendSummary: trendSummary
         )
 
-        await handleBurstTopics(settings: settings, apiKey: apiKey)
-        await handleKeywordTopics(settings: settings, apiKey: apiKey)
+        await handleBurstTopics(settings: settings)
+        await handleKeywordTopics(settings: settings)
 
         let allItems = allActiveItems(settings: settings)
         if !isManual {
+            let notificationItems = NotificationSelectionPolicy.select(items: allItems, state: InterestController.shared.state, count: settings.pushCount)
             let now = Date()
             if settings.hourlyPushEnabled,
                trigger == .startup || now.timeIntervalSince(lastHourlyPushAt ?? .distantPast) >= 60 * 60 {
-                await NotificationService.sendHourlyPush(items: allItems, count: settings.pushCount)
+                await NotificationService.sendHourlyPush(items: notificationItems, count: settings.pushCount)
                 lastHourlyPushAt = now
             }
             if settings.dailyPushEnabled {
                 NotificationService.rescheduleDailyPush(
-                    items: allItems,
+                    items: notificationItems,
                     count: settings.pushCount,
                     hour: settings.dailyPushHour,
                     minute: settings.dailyPushMinute
@@ -642,36 +636,45 @@ final class NewsOrchestrator {
 
     /// Detects new Weibo "爆" topics and pushes a single notification each with
     /// AI research pre-generated. De-duplicates by title and respects a cooldown.
-    private func handleBurstTopics(settings: AppSettings, apiKey: String) async {
+    private func handleBurstTopics(settings: AppSettings) async {
         guard settings.burstPushEnabled else { return }
-        guard !apiKey.isEmpty else { return }
         let now = Date()
-        let cooldown = now.timeIntervalSince(lastBurstSummaryAt ?? .distantPast)
+        let epoch = InterestController.shared.state.consentEpoch
+        let cooldown = now.timeIntervalSince(lastResearchAt ?? .distantPast)
         guard cooldown >= RefreshPolicy.burstSummaryCooldown else { return }
 
-        let newBursts = weiboItems
-            .filter { $0.hotLabel == "爆" && !notifiedBurstTopics.contains($0.title) }
+        let newBursts = ResearchSelectionPolicy.select(items: weiboItems
+            .filter { $0.hotLabel == "爆" && !notifiedBurstTopics.contains($0.title) }, state: InterestController.shared.state, limit: 2).map(\.item)
         guard !newBursts.isEmpty else { return }
-        lastBurstSummaryAt = now
+        let apiKey = await resolveAPIKey(settings: settings)
+        guard let configuration = await validatedConfiguration(settings: settings, apiKey: apiKey) else { return }
+        lastResearchAt = now
 
         let trendContext = latestTrendSummary.context
         for burst in newBursts.prefix(2) {
+            guard epoch == InterestController.shared.state.consentEpoch, settings.isCurrentAIConfiguration(configuration) else { return }
             notifiedBurstTopics.insert(burst.title)
+            await persistResearchState(epoch: epoch)
+            guard InterestController.shared.storageError == nil else { return }
+            burstResearchInFlight.insert(burst.title)
+            defer { burstResearchInFlight.remove(burst.title) }
             let research = await BurstResearchService.research(
                 BurstResearchService.ResearchInput(
                     item: burst,
                     trendContext: trendContext,
-                    apiKey: apiKey,
-                    connection: settings.resolvedAIConnection,
-                    model: settings.aiModel,
+                    apiKey: configuration.apiKey,
+                    connection: configuration.connection,
+                    model: configuration.model,
                     summaryLanguage: settings.appLanguage,
                     disableDeepSeekThinking: settings.aiDisableDeepSeekThinking,
                     searchConfig: makeSearchConfig(settings: settings, forceSearch: false),
                     dailyCap: settings.burstDailyCap,
-                    maxRefetchURLs: 3
+                    maxRefetchURLs: 3,
+                    isAllowed: { await MainActor.run { InterestController.shared.state.consentEpoch == epoch && settings.isCurrentAIConfiguration(configuration) } }
                 )
             )
             settings.recordBurstResearchRequests(BurstResearchService.readDailyCount())
+            guard epoch == InterestController.shared.state.consentEpoch, settings.isCurrentAIConfiguration(configuration) else { return }
             if !research.summary.isEmpty {
                 burstResearchCache[burst.title] = research
                 let title = L10n.string("notif.burstTitle", language: settings.appLanguage)
@@ -682,6 +685,7 @@ final class NewsOrchestrator {
                     eventID: burst.title
                 )
             }
+            await persistResearchState(epoch: epoch)
             await RefreshLog.shared.recordBurst(
                 topic: burst.title,
                 searchStatus: research.searchStatus.rawValue,
@@ -703,23 +707,29 @@ final class NewsOrchestrator {
     /// Force-recomputes research for a burst topic (used by the detail window's
     /// retry action). Returns a freshly generated research value.
     func regenerateBurstResearch(for burst: NewsItem, settings: AppSettings) async -> BurstResearch {
+        await InterestController.shared.prepare()
+        let epoch = InterestController.shared.state.consentEpoch
         let apiKey = await resolveAPIKey(settings: settings)
-        guard !apiKey.isEmpty else { return BurstResearch() }
+        guard let configuration = await validatedConfiguration(settings: settings, apiKey: apiKey) else { return BurstResearch() }
         let research = await BurstResearchService.research(
             BurstResearchService.ResearchInput(
                 item: burst,
                 trendContext: latestTrendSummary.context,
-                apiKey: apiKey,
-                connection: settings.resolvedAIConnection,
-                model: settings.aiModel,
+                apiKey: configuration.apiKey,
+                connection: configuration.connection,
+                model: configuration.model,
                 summaryLanguage: settings.appLanguage,
                 disableDeepSeekThinking: settings.aiDisableDeepSeekThinking,
                 searchConfig: makeSearchConfig(settings: settings, forceSearch: false),
                 dailyCap: settings.burstDailyCap,
-                maxRefetchURLs: 3
+                maxRefetchURLs: 3,
+                isAllowed: { await MainActor.run { InterestController.shared.state.consentEpoch == epoch && settings.isCurrentAIConfiguration(configuration) } }
             )
         )
+        settings.recordBurstResearchRequests(BurstResearchService.readDailyCount())
+        guard epoch == InterestController.shared.state.consentEpoch, settings.isCurrentAIConfiguration(configuration) else { return BurstResearch() }
         burstResearchCache[burst.title] = research
+        await persistResearchState(epoch: epoch)
         return research
     }
 
@@ -733,49 +743,57 @@ final class NewsOrchestrator {
     /// notification with AI research pre-generated, reusing the burst pipeline.
     /// Scans Weibo + Bilibili + all enabled RSS. De-duplicates by
     /// (keyword,title) and applies a global research cooldown.
-    private func handleKeywordTopics(settings: AppSettings, apiKey: String) async {
+    private func handleKeywordTopics(settings: AppSettings) async {
         guard settings.keywordTrackingEnabled else { return }
-        guard !apiKey.isEmpty else { return }
         let active = settings.activeKeywords
         guard !active.isEmpty else { return }
 
         let now = Date()
-        let cooldown = now.timeIntervalSince(lastBurstSummaryAt ?? .distantPast)
+        let epoch = InterestController.shared.state.consentEpoch
+        let cooldown = now.timeIntervalSince(lastResearchAt ?? .distantPast)
         guard cooldown >= RefreshPolicy.burstSummaryCooldown else { return }
 
         var matches: [(keyword: String, item: NewsItem)] = []
         for item in allActiveItems(settings: settings) {
             guard settings.keywordMatches(item.title) else { continue }
-            let foldedTitle = item.title.folding(options: [.caseInsensitive], locale: .current)
-            guard let keyword = active.first(where: { kw in
-                foldedTitle.contains(kw.folding(options: [.caseInsensitive], locale: .current))
-            }) else { continue }
+            guard !InterestController.shared.state.isBlocked(item), !notifiedBurstTopics.contains(item.title),
+                  let keyword = active.first(where: { TitleFeatures.matches($0, in: item.title) }) else { continue }
             let pair = "\(keyword)\n\(item.title)"
             guard !notifiedKeywordPairs.contains(pair) else { continue }
             matches.append((keyword, item))
         }
         guard !matches.isEmpty else { return }
-        lastBurstSummaryAt = now
+        let apiKey = await resolveAPIKey(settings: settings)
+        guard let configuration = await validatedConfiguration(settings: settings, apiKey: apiKey) else { return }
+        lastResearchAt = now
+
+        let prioritizedIDs = ResearchSelectionPolicy.select(items: matches.map(\.item), state: InterestController.shared.state, limit: 2).map { $0.item.id }
+        matches.sort { (prioritizedIDs.firstIndex(of: $0.item.id) ?? Int.max) < (prioritizedIDs.firstIndex(of: $1.item.id) ?? Int.max) }
 
         let trendContext = latestTrendSummary.context
         for match in matches.prefix(2) {
+            guard epoch == InterestController.shared.state.consentEpoch, settings.isCurrentAIConfiguration(configuration) else { return }
             let pair = "\(match.keyword)\n\(match.item.title)"
             notifiedKeywordPairs.insert(pair)
+            await persistResearchState(epoch: epoch)
+            guard InterestController.shared.storageError == nil else { return }
             let research = await BurstResearchService.research(
                 BurstResearchService.ResearchInput(
                     item: match.item,
                     trendContext: trendContext,
-                    apiKey: apiKey,
-                    connection: settings.resolvedAIConnection,
-                    model: settings.aiModel,
+                    apiKey: configuration.apiKey,
+                    connection: configuration.connection,
+                    model: configuration.model,
                     summaryLanguage: settings.appLanguage,
                     disableDeepSeekThinking: settings.aiDisableDeepSeekThinking,
                     searchConfig: makeSearchConfig(settings: settings, forceSearch: false),
                     dailyCap: settings.burstDailyCap,
-                    maxRefetchURLs: 3
+                    maxRefetchURLs: 3,
+                    isAllowed: { await MainActor.run { InterestController.shared.state.consentEpoch == epoch && settings.isCurrentAIConfiguration(configuration) } }
                 )
             )
             settings.recordBurstResearchRequests(BurstResearchService.readDailyCount())
+            guard epoch == InterestController.shared.state.consentEpoch, settings.isCurrentAIConfiguration(configuration) else { return }
             if !research.summary.isEmpty {
                 burstResearchCache[match.item.title] = research
                 let title = L10n.string("notif.keywordTitle", language: settings.appLanguage)
@@ -786,6 +804,7 @@ final class NewsOrchestrator {
                     eventID: match.item.title
                 )
             }
+            await persistResearchState(epoch: epoch)
             await RefreshLog.shared.recordBurst(
                 topic: match.item.title,
                 searchStatus: research.searchStatus.rawValue,
@@ -802,6 +821,8 @@ final class NewsOrchestrator {
     /// The developer toggle always forces web search so the full pipeline is
     /// exercised; the window polls for the result via `isBurstResearchInFlight`.
     func fireFakeBurstPush(settings: AppSettings) async {
+        await InterestController.shared.prepare()
+        let epoch = InterestController.shared.state.consentEpoch
         guard settings.burstTestMode else { return }
         let trimmedTopic = settings.burstTestTopic.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedTopic.isEmpty else { return }
@@ -813,7 +834,7 @@ final class NewsOrchestrator {
             hotLabel: "爆"
         )
         let apiKey = await resolveAPIKey(settings: settings)
-        guard !apiKey.isEmpty else { return }
+        guard let configuration = await validatedConfiguration(settings: settings, apiKey: apiKey) else { return }
 
         // 1) Open the detail window right away so the user sees the loading state.
         openBurstDetail(title: trimmedTopic)
@@ -826,18 +847,21 @@ final class NewsOrchestrator {
             BurstResearchService.ResearchInput(
                 item: fake,
                 trendContext: latestTrendSummary.context,
-                apiKey: apiKey,
-                connection: settings.resolvedAIConnection,
-                model: settings.aiModel,
+                apiKey: configuration.apiKey,
+                connection: configuration.connection,
+                model: configuration.model,
                 summaryLanguage: settings.appLanguage,
                 disableDeepSeekThinking: settings.aiDisableDeepSeekThinking,
                 searchConfig: makeSearchConfig(settings: settings, forceSearch: true),
                 dailyCap: settings.burstDailyCap,
-                maxRefetchURLs: 3
+                maxRefetchURLs: 3,
+                isAllowed: { await MainActor.run { InterestController.shared.state.consentEpoch == epoch && settings.isCurrentAIConfiguration(configuration) } }
             )
         )
         settings.recordBurstResearchRequests(BurstResearchService.readDailyCount())
+        guard epoch == InterestController.shared.state.consentEpoch, settings.isCurrentAIConfiguration(configuration) else { return }
         burstResearchCache[trimmedTopic] = research
+        await persistResearchState(epoch: epoch)
         let notifTitle = L10n.string("notif.burstTitle", language: settings.appLanguage) + " \(trimmedTopic)"
         NotificationService.sendBurstNotification(
             title: notifTitle,
@@ -869,7 +893,6 @@ final class NewsOrchestrator {
 
     private func handleSharedAISummary(
         settings: AppSettings,
-        apiKey: String,
         previousState: AISummaryState,
         isManualRefresh: Bool,
         hotChanged: Bool,
@@ -880,16 +903,12 @@ final class NewsOrchestrator {
 
         let allItems = allActiveItems(settings: settings)
         guard !allItems.isEmpty else {
-            if !apiKey.isEmpty {
-                aiSummaryState = previousState
-            }
+            aiSummaryState = previousState
             return
         }
 
-        guard !apiKey.isEmpty else {
-            aiSummaryState = .noKey
-            return
-        }
+        let apiKey = await resolveAPIKey(settings: settings)
+        guard let configuration = await validatedConfiguration(settings: settings, apiKey: apiKey) else { return }
 
         guard AISummaryService.tryAcquireGenerationLock(for: Self.sharedSummaryTarget) else {
             aiSummaryState = .error("error.aiGenerating".localized)
@@ -897,7 +916,7 @@ final class NewsOrchestrator {
         }
         defer { AISummaryService.releaseGenerationLock(for: Self.sharedSummaryTarget) }
 
-        let newHash = CacheEntry.contentIdentifier(for: allItems)
+        let newHash = summaryGenerationHash(items: allItems, settings: settings)
         let hasNewContent = newHash != sharedSummaryLastHash
             && newHash != sharedSummaryLastTruncatedHash
         let elapsed = Date().timeIntervalSince(lastSummaryGeneratedAt ?? .distantPast)
@@ -928,9 +947,7 @@ final class NewsOrchestrator {
                 items: allItems,
                 contentHash: newHash,
                 maxWords: settings.aiDashboardMaxWords,
-                model: settings.aiModel,
-                apiKey: apiKey,
-                connection: settings.resolvedAIConnection,
+                configuration: configuration,
                 settings: settings,
                 trendHistoryContext: trendSummary.context,
                 trendHistoryHash: trendSummary.historyHash,
@@ -956,12 +973,9 @@ final class NewsOrchestrator {
         }
 
         let apiKey = await resolveAPIKey(settings: settings)
-        guard !apiKey.isEmpty else {
-            aiSummaryState = .noKey
-            return
-        }
+        guard let configuration = await validatedConfiguration(settings: settings, apiKey: apiKey) else { return }
 
-        let newHash = CacheEntry.contentIdentifier(for: allItems)
+        let newHash = summaryGenerationHash(items: allItems, settings: settings)
         let shouldGenerate = (newHash != sharedSummaryLastHash && newHash != sharedSummaryLastTruncatedHash)
             || shouldRecoverAISummary(from: aiSummaryState)
 
@@ -982,9 +996,7 @@ final class NewsOrchestrator {
             items: allItems,
             contentHash: newHash,
             maxWords: settings.aiDashboardMaxWords,
-            model: settings.aiModel,
-            apiKey: apiKey,
-            connection: settings.resolvedAIConnection,
+            configuration: configuration,
             settings: settings,
             trendHistoryContext: latestTrendSummary.context,
             trendHistoryHash: latestTrendSummary.historyHash,
@@ -1011,21 +1023,8 @@ final class NewsOrchestrator {
         }
         defer { AISummaryService.releaseGenerationLock(for: Self.sharedSummaryTarget) }
 
-        let apiKey: String
-        if let cached = settings.cachedAPIKey, !cached.isEmpty {
-            apiKey = cached
-        } else {
-            let store = EncryptedKeyStore()
-            let account = settings.activeAPIKeyAccount
-            if let fallback = await store.readAPIKey(account: account),
-               !fallback.isEmpty {
-                settings.cachedAPIKey = fallback
-                apiKey = fallback
-            } else {
-                aiSummaryState = .noKey
-                return
-            }
-        }
+        let apiKey = await resolveAPIKey(settings: settings)
+        guard let configuration = await validatedConfiguration(settings: settings, apiKey: apiKey) else { return }
         AISummaryService.recordManualRegeneration()
         AISummaryService.initBudget(
             target: Self.sharedSummaryTarget,
@@ -1033,14 +1032,12 @@ final class NewsOrchestrator {
             baseline: settings.todayAIRequestCount,
             cap: settings.aiDailyCap
         )
-        let newHash = CacheEntry.contentIdentifier(for: allItems)
+        let newHash = summaryGenerationHash(items: allItems, settings: settings)
         let requestCount = await generateSummary(
             items: allItems,
             contentHash: newHash,
             maxWords: settings.aiDashboardMaxWords,
-            model: settings.aiModel,
-            apiKey: apiKey,
-            connection: settings.resolvedAIConnection,
+            configuration: configuration,
             settings: settings,
             trendHistoryContext: latestTrendSummary.context,
             trendHistoryHash: latestTrendSummary.historyHash,
@@ -1191,13 +1188,24 @@ final class NewsOrchestrator {
         if let cached = settings.cachedAPIKey, !cached.isEmpty {
             return cached
         }
+        let revision = settings.modelCatalogRevision
         let store = EncryptedKeyStore()
         if let fallback = await store.readAPIKey(account: settings.activeAPIKeyAccount),
            !fallback.isEmpty {
+            guard revision == settings.modelCatalogRevision else { return "" }
             settings.cachedAPIKey = fallback
             return fallback
         }
         return ""
+    }
+
+    private func validatedConfiguration(settings: AppSettings, apiKey: String) async -> ValidatedAIConfiguration? {
+        guard !apiKey.isEmpty else { aiSummaryState = .noKey; return nil }
+        guard let configuration = await settings.validatedAIConfiguration(apiKey: apiKey) else {
+            if let error = settings.modelCatalogError { aiSummaryState = .error(error.message(language: settings.appLanguage)) }
+            return nil
+        }
+        return configuration
     }
 
     private func restoreCachedSummaryIfPossible(settings: AppSettings) async {
@@ -1206,14 +1214,15 @@ final class NewsOrchestrator {
               let cached = await aiSummaryCacheStore.load() else { return }
         let currentItems = allActiveItems(settings: settings)
         guard !currentItems.isEmpty,
-              CacheEntry.contentIdentifier(for: currentItems) == cached.contentHash else { return }
+              summaryGenerationHash(items: currentItems, settings: settings) == cached.contentHash else { return }
 
-        let trendCount = min(cached.trendItemCount, cached.items.count)
+        let trendIndices = cached.manifest?.trendIndices ?? Set(cached.items.enumerated().filter { $0.element.source.isBuiltIn }.map(\.offset))
         aiSummaryItems = cached.items
+        aiSummaryManifest = cached.manifest
         aiParsedSummary = AISummaryParser.parseDualSummary(
             cached.summary,
             itemCount: cached.items.count,
-            weiboBilibiliRange: 0..<trendCount
+            trendIndices: trendIndices
         )
         sharedSummaryLastHash = cached.contentHash
         sharedSummaryLastTruncatedHash = nil
@@ -1224,12 +1233,10 @@ final class NewsOrchestrator {
 
     @discardableResult
     private func generateSummary(
-        items: [NewsItem],
+        items candidateItems: [NewsItem],
         contentHash: String,
         maxWords: Int,
-        model: String,
-        apiKey: String,
-        connection: ResolvedAIConnection,
+        configuration: ValidatedAIConfiguration,
         settings: AppSettings,
         trendHistoryContext: String,
         trendHistoryHash: String,
@@ -1237,6 +1244,32 @@ final class NewsOrchestrator {
         summaryLanguage: AppLanguage = .zh
     ) async -> Int {
         let budgetMode: AISummaryBudgetMode = .shared
+        let model = configuration.model
+        let apiKey = configuration.apiKey
+        let connection = configuration.connection
+        let interest = InterestController.shared
+        let epoch = interest.state.consentEpoch
+        defer {
+            if epoch != interest.state.consentEpoch || !settings.isCurrentAIConfiguration(configuration),
+               aiSummaryState == .summarizing || aiSummaryState == .fetching { aiSummaryState = .idle }
+        }
+        let state = interest.state
+        let activeIDs = Set(settings.activeSources.map(\.id))
+        let now = Date()
+        let archive = state.contents.values.filter {
+            activeIDs.contains($0.item.source.id) && now.timeIntervalSince($0.lastSeen) <= 24 * 3600
+        }.map(\.item)
+        let inputItems = candidateItems.filter { activeIDs.contains($0.source.id) } + archive
+        let selected = await Task.detached(priority: .userInitiated) {
+            SummarySelectionPolicy.select(items: inputItems, state: state, now: now)
+        }.value
+        guard epoch == interest.state.consentEpoch, settings.isCurrentAIConfiguration(configuration) else { return 0 }
+        let manifest = SummaryManifest(items: selected, profileVersion: state.learningEnabled ? state.profileVersion : 0,
+                                       model: model, provider: ContentIdentity.digest(connection.baseURL), language: summaryLanguage, maxWords: maxWords,
+                                       asOf: now, coverageStart: max(now.addingTimeInterval(-24 * 3600), state.archiveStartedAt ?? now), trendHistoryHash: trendHistoryHash)
+        let items = manifest.items
+        let frozenThinking = settings.aiDisableDeepSeekThinking
+        guard !items.isEmpty else { aiSummaryState = .idle; return 0 }
         guard !apiKey.isEmpty else {
             aiSummaryState = .noKey
             return AISummaryService.readGenerationAttempts(target: Self.sharedSummaryTarget, mode: budgetMode)
@@ -1261,9 +1294,12 @@ final class NewsOrchestrator {
                 trendTopicCount: trendRange, dailyTopicCount: dailyRange,
                 trendHistoryContext: trendHistoryContext,
                 summaryLanguage: summaryLanguage,
-                disableDeepSeekThinking: settings.aiDisableDeepSeekThinking
+                disableDeepSeekThinking: frozenThinking,
+                requestAllowed: { await MainActor.run { InterestController.shared.state.consentEpoch == epoch && settings.isCurrentAIConfiguration(configuration) } }
             )
-            let wbRange = 0..<(weiboItems.count + bilibiliItems.count)
+            guard epoch == interest.state.consentEpoch, settings.isCurrentAIConfiguration(configuration) else {
+                return AISummaryService.readGenerationAttempts(target: Self.sharedSummaryTarget, mode: budgetMode)
+            }
 
             // Determine the final result. A successful-but-unrenderable response
             // (non-truncated, zero parsed sections) triggers exactly one extra
@@ -1276,7 +1312,7 @@ final class NewsOrchestrator {
                 let firstParsed = AISummaryParser.parseDualSummary(
                     firstResult.summary,
                     itemCount: items.count,
-                    weiboBilibiliRange: wbRange
+                    trendIndices: manifest.trendIndices
                 )
                 if Self.needsFormatRetry(firstParsed) {
                     NSLog("[NewsOrchestrator] AI summary unrenderable (0 sections), retrying once with format enforcement")
@@ -1289,7 +1325,8 @@ final class NewsOrchestrator {
                         formatEnforcementSuffix: Self.formatEnforcementSuffix,
                         trendHistoryContext: trendHistoryContext,
                         summaryLanguage: summaryLanguage,
-                        disableDeepSeekThinking: settings.aiDisableDeepSeekThinking
+                        disableDeepSeekThinking: frozenThinking,
+                        requestAllowed: { await MainActor.run { InterestController.shared.state.consentEpoch == epoch && settings.isCurrentAIConfiguration(configuration) } }
                     )
                 } else {
                     finalResult = firstResult
@@ -1299,10 +1336,11 @@ final class NewsOrchestrator {
             }
 
             let requestCount = AISummaryService.readGenerationAttempts(target: Self.sharedSummaryTarget, mode: budgetMode)
+            guard epoch == interest.state.consentEpoch, settings.isCurrentAIConfiguration(configuration) else { return requestCount }
             let finalParsed = AISummaryParser.parseDualSummary(
                 finalResult.summary,
                 itemCount: items.count,
-                weiboBilibiliRange: wbRange
+                trendIndices: manifest.trendIndices
             )
 
             // After the single permitted format-enforcement retry, a non-truncated
@@ -1315,6 +1353,7 @@ final class NewsOrchestrator {
             }
 
             aiSummaryItems = items
+            aiSummaryManifest = manifest
             aiParsedSummary = finalParsed
             // A `length`-truncated response that still yields both sections with
             // real content is treated as complete: the truncation only clipped
@@ -1333,15 +1372,16 @@ final class NewsOrchestrator {
                     lastBurstSummaryAt = generatedAt
                 }
                 aiSummaryState = .done(finalResult.summary)
-                await aiSummaryCacheStore.save(
+                await AISummaryCacheStore(language: summaryLanguage).save(
                     AISummaryCacheEntry(
                         summary: finalResult.summary,
                         items: items,
                         contentHash: contentHash,
                         trendHistoryHash: trendHistoryHash,
                         generatedAt: generatedAt,
-                        trendItemCount: weiboItems.count + bilibiliItems.count,
-                        language: summaryLanguage
+                        trendItemCount: manifest.trendIndices.count,
+                        language: summaryLanguage,
+                        manifest: manifest
                     )
                 )
             }
@@ -1388,6 +1428,63 @@ final class NewsOrchestrator {
         return all
     }
 
+    private func summaryGenerationHash(items: [NewsItem], settings: AppSettings) -> String {
+        SummaryManifest.generationIdentity(items: items, model: settings.aiModel,
+                                           provider: ContentIdentity.digest(settings.resolvedAIConnection.baseURL),
+                                           language: settings.appLanguage, maxWords: settings.aiDashboardMaxWords)
+    }
+
+    private func updateInterestCandidates(settings: AppSettings) async {
+        let interest = InterestController.shared
+        let activeIDs = Set(settings.activeSources.map(\.id))
+        let current = allActiveItems(settings: settings).filter { activeIDs.contains($0.source.id) }
+        await interest.ingest(current)
+        await restoreResearchStateIfNeeded()
+        let archive = interest.state.contents.values.filter {
+            activeIDs.contains($0.item.source.id) && Date().timeIntervalSince($0.lastSeen) <= 24 * 3600
+        }.map(\.item)
+        interest.rankCandidates(current + archive)
+    }
+
+    func restoreResearchStateIfNeeded() async {
+        let interest = InterestController.shared
+        await interest.prepare()
+        if !researchStateLoaded, interest.isReady {
+            let saved = interest.state.research
+            burstResearchCache = saved.artifacts
+            notifiedBurstTopics = saved.notifiedBursts
+            notifiedKeywordPairs = saved.notifiedKeywords
+            lastResearchAt = saved.lastResearchAt
+            researchStateLoaded = true
+        }
+    }
+
+    private func persistResearchState(epoch: UUID) async {
+        var persisted = PersistedResearchState()
+        persisted.artifacts = Dictionary(uniqueKeysWithValues: burstResearchCache.sorted { $0.key < $1.key }.prefix(500).map { ($0.key, $0.value) })
+        persisted.notifiedBursts = Set(notifiedBurstTopics.sorted().prefix(2000))
+        persisted.notifiedKeywords = Set(notifiedKeywordPairs.sorted().prefix(2000))
+        persisted.lastResearchAt = lastResearchAt
+        InterestController.shared.updateResearch(persisted, epoch: epoch)
+        await InterestController.shared.flush()
+    }
+
+    func clearPersonalizedArtifacts() async {
+        NotificationService.clearPersonalizedNotifications()
+        for language in AppLanguage.allCases { await AISummaryCacheStore(language: language).clear() }
+        aiSummaryState = .idle
+        aiSummaryItems = []
+        aiParsedSummary = nil
+        aiSummaryManifest = nil
+        sharedSummaryLastHash = nil
+        sharedSummaryLastTruncatedHash = nil
+        notifiedBurstTopics = []
+        notifiedKeywordPairs = []
+        burstResearchCache = [:]
+        researchStateLoaded = false
+        lastResearchAt = nil
+    }
+
     func clearCache() async {
         await cacheManager.clear()
         await aiSummaryCacheStore.clear()
@@ -1413,6 +1510,8 @@ final class NewsOrchestrator {
         notifiedBurstTopics = []
         notifiedKeywordPairs = []
         burstResearchCache = [:]
+        researchStateLoaded = false
+        aiSummaryManifest = nil
     }
 
     func refreshRSSSource(url: String, name: String, settings: AppSettings) async {
@@ -1429,6 +1528,7 @@ final class NewsOrchestrator {
         if case .some(.loaded) = sourceStates[source.id] {
             lastSourceRefresh[source.id] = Date()
         }
+        await updateInterestCandidates(settings: settings)
     }
 }
 

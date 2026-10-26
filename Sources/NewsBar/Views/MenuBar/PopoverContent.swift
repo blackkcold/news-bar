@@ -354,7 +354,8 @@ private struct PopoverAISummarySection: View {
                         await orchestrator.regenerateAISummary(settings: settings)
                     }
                 },
-                onConfigureKey: onConfigureKey
+                onConfigureKey: onConfigureKey,
+                contextID: orchestrator.aiSummaryManifest?.id.uuidString
             )
             Divider().padding(.horizontal, 10)
         }

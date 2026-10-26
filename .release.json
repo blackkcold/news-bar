@@ -10,7 +10,7 @@
   "release_branch": true,
   "auto_merge": false,
   "release_note_style": "structured-cn",
-  "summary": "修复 36氪 RSS 源、统一 RSS 解析与验证、修正失败调度与过期缓存上限",
-  "summary_en": "Fix the 36kr RSS source, unify RSS parsing and validation, and harden failure retry and stale-cache policy",
-  "validation": "swift test 374/374 + scripts/build.sh + codesign verify + hdiutil verify 通过"
+  "summary": "本地兴趣引擎、Dashboard 内嵌阅读器、阅读隐私与性能优化",
+  "summary_en": "Local interest engine, isolated dashboard reader, reading privacy and performance improvements",
+  "validation": "swift test 486/486（1 skipped）+ scripts/build.sh + codesign verify + hdiutil verify 通过"
 }
