@@ -10,7 +10,7 @@
   "release_branch": true,
   "auto_merge": false,
   "release_note_style": "structured-cn",
-  "summary": "来源浏览目录、聚合通知摘要与通知点击路由",
-  "summary_en": "Source browse catalog, aggregated notification digest, and notification click routing",
+  "summary": "热搜榜单回归右栏 02，阅读器侧窗保留热榜",
+  "summary_en": "Hot trends return to rail 02; hot trends stay visible beside the reader",
   "validation": "swift test 651/651（2 skipped）+ scripts/build.sh + codesign verify + hdiutil verify 通过"
 }
