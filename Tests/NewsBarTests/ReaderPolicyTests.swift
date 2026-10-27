@@ -173,3 +173,29 @@ private final class ReaderFrameFixtureDelegate: NSObject, WKNavigationDelegate {
         return result
     }
 }
+
+/// `window.open` targets are loaded in the isolated reader, never in a popup:
+/// a second web view would escape the ephemeral store and the content rules.
+final class ReaderPopupDestinationTests: XCTestCase {
+    func testPopupDestinationAcceptsHTTPSOnly() {
+        XCTAssertEqual(
+            ReaderNavigationPolicy.popupDestination("https://passport.weibo.com/sso/signin")?.host,
+            "passport.weibo.com"
+        )
+        XCTAssertNil(ReaderNavigationPolicy.popupDestination("http://passport.weibo.com/sso/signin"))
+        XCTAssertNil(ReaderNavigationPolicy.popupDestination("javascript:window.close()"))
+        XCTAssertNil(ReaderNavigationPolicy.popupDestination(""))
+        XCTAssertNil(ReaderNavigationPolicy.popupDestination(nil))
+    }
+}
+
+/// Quitting must flush the open reader's cookies, but only when it could have
+/// captured anything: no reader, or cookie memory off, means quit immediately.
+final class ReaderTerminationPolicyTests: XCTestCase {
+    func testFlushIsNeededOnlyForAnOpenReaderWithCookieMemoryOn() {
+        XCTAssertTrue(ReaderTerminationPolicy.needsCookieFlush(cookieMemoryEnabled: true, hasActiveReader: true))
+        XCTAssertFalse(ReaderTerminationPolicy.needsCookieFlush(cookieMemoryEnabled: false, hasActiveReader: true))
+        XCTAssertFalse(ReaderTerminationPolicy.needsCookieFlush(cookieMemoryEnabled: true, hasActiveReader: false))
+        XCTAssertFalse(ReaderTerminationPolicy.needsCookieFlush(cookieMemoryEnabled: false, hasActiveReader: false))
+    }
+}

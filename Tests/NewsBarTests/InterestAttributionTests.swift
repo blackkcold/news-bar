@@ -315,6 +315,56 @@ final class InterestAttributionTests: XCTestCase {
         XCTAssertTrue(gate.shouldRecordLoaded(attributed: true, privateSession: false))
     }
 
+    func testShortLinkServerRedirectStillAttributesTheOpenedItem() {
+        var attribution = DocumentAttribution()
+        attribution.noteServerRedirect()
+        XCTAssertTrue(attribution.evaluate(
+            finalURL: "https://www.bilibili.com/video/BV1xx",
+            itemURL: "https://b23.tv/BV1xx"
+        ))
+    }
+
+    func testCrossSiteRedirectDropsAttribution() {
+        var attribution = DocumentAttribution()
+        attribution.noteServerRedirect()
+        XCTAssertFalse(attribution.evaluate(
+            finalURL: "https://www.example.com/watch",
+            itemURL: "https://b23.tv/BV1xx"
+        ))
+    }
+
+    func testRedirectAfterTheFirstDocumentDoesNotWidenAttribution() {
+        var attribution = DocumentAttribution()
+        attribution.noteServerRedirect()
+        XCTAssertTrue(attribution.evaluate(
+            finalURL: "https://www.bilibili.com/video/BV1xx",
+            itemURL: "https://b23.tv/BV1xx"
+        ))
+        attribution.noteServerRedirect()
+        XCTAssertFalse(attribution.evaluate(
+            finalURL: "https://www.bilibili.com/video/BV1yy",
+            itemURL: "https://b23.tv/BV1xx"
+        ))
+    }
+
+    func testUserNavigationDropsAttributionEvenOnTheSameSite() {
+        var attribution = DocumentAttribution()
+        attribution.noteServerRedirect()
+        attribution.noteUserNavigation()
+        XCTAssertFalse(attribution.evaluate(
+            finalURL: "https://www.bilibili.com/video/BV1yy",
+            itemURL: "https://b23.tv/BV1xx"
+        ))
+    }
+
+    func testExactURLAttributesWithoutAnyRedirect() {
+        var attribution = DocumentAttribution()
+        XCTAssertTrue(attribution.evaluate(
+            finalURL: "https://www.example.com/story",
+            itemURL: "https://www.example.com/story"
+        ))
+    }
+
     // MARK: - Store recovery
 
     @MainActor

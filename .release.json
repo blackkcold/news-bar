@@ -10,7 +10,7 @@
   "release_branch": true,
   "auto_merge": false,
   "release_note_style": "structured-cn",
-  "summary": "来源浏览目录、聚合通知摘要与通知点击路由",
-  "summary_en": "Source browse catalog, aggregated notification digest, and notification click routing",
-  "validation": "swift test 651/651（2 skipped）+ scripts/build.sh + codesign verify + hdiutil verify 通过"
+  "summary": "通知点击摘要、每日推送存活与摘要面板主题",
+  "summary_en": "Notification digest clicks, daily push survival, and themed digest sheet",
+  "validation": "swift test 687/687（2 skipped）+ scripts/build.sh + codesign verify + hdiutil verify 通过"
 }

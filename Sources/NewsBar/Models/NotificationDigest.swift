@@ -6,6 +6,12 @@ enum NotificationIdentifier {
     static let researchCategory = "newsbar.research"
     static let openResearchAction = "newsbar.openResearch"
     static let markResearchReadAction = "newsbar.markResearchRead"
+
+    /// Stable request identifiers. A fixed identifier makes the system replace
+    /// the previous request and delivered banner instead of piling one up per
+    /// hour or per launch.
+    static let hourlyRequest = "hourly-summary"
+    static let dailyRequest = "daily-summary"
 }
 
 /// Payload embedded in a delivered notification so a click can list every

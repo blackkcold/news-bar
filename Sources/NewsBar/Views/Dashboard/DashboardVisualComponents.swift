@@ -145,7 +145,7 @@ struct DashboardHotTrendCard: View {
     }
 }
 
-private struct DashboardTrendRow: View {
+struct DashboardTrendRow: View {
     let item: NewsItem
     let sourceLabel: String
     let sourceMark: EditorialSourceMark

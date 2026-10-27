@@ -11,6 +11,19 @@ enum NotificationRoute: Equatable {
     case digest(NotificationDigest)
     case news(url: String, title: String)
     case dashboard
+
+    /// Short, log-safe name. The digest payload is deliberately not printed.
+    var label: String {
+        switch self {
+        case .dismiss: return "dismiss"
+        case .burst: return "burst"
+        case .research: return "research"
+        case .markResearchRead: return "markResearchRead"
+        case .digest(let digest): return "digest(\(digest.items.count))"
+        case .news: return "news"
+        case .dashboard: return "dashboard"
+        }
+    }
 }
 
 enum NotificationClickRouter {

@@ -12,27 +12,33 @@ struct NewsDigestSheet: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
-            Divider()
+            DigestRule()
             ScrollView {
                 LazyVStack(spacing: 0) {
                     ForEach(Array(request.items.enumerated()), id: \.element.id) { index, item in
                         row(item)
                         if index < request.items.count - 1 {
-                            Divider().padding(.leading, 52)
+                            DigestRule(inset: 52)
                         }
                     }
                 }
             }
-            Divider()
+            DigestRule()
             footer
         }
         .frame(minWidth: 420, idealWidth: 460, minHeight: 260, maxHeight: 460)
+        .adaptiveColorScheme()
+        .appThemeSurface()
+    }
+
+    private var titleKey: String {
+        request.kind == NewsDigestRequest.liveKind ? "notif.digest.liveTitle" : "notif.digest.title"
     }
 
     private var header: some View {
         HStack(alignment: .firstTextBaseline, spacing: 12) {
             VStack(alignment: .leading, spacing: 4) {
-                Text(L10n.string("notif.digest.title", request.items.count))
+                Text(L10n.string(titleKey, request.items.count))
                     .font(.system(size: 16, weight: .semibold))
                 if !sourceSummary.isEmpty {
                     Text(sourceSummary)
@@ -109,5 +115,25 @@ struct NewsDigestSheet: View {
             .keyboardShortcut(.cancelAction)
         }
         .padding(16)
+    }
+}
+
+/// A hairline in the standard theme and an ink rule in the retro editorial one,
+/// so the sheet sits on the same paper as the rest of the dashboard.
+private struct DigestRule: View {
+    @Environment(AppSettings.self) private var settings
+    var inset: CGFloat = 0
+
+    var body: some View {
+        Group {
+            if settings.appTheme == .retroEditorial {
+                Rectangle()
+                    .fill(RetroEditorialTokens.rule)
+                    .frame(height: 1.2)
+            } else {
+                Divider()
+            }
+        }
+        .padding(.leading, inset)
     }
 }
