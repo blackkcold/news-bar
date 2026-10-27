@@ -61,6 +61,7 @@ final class NewsReaderModel: NSObject, WKNavigationDelegate, WKUIDelegate, WKScr
     var canGoForward = false
     private var evidence = ReaderEvidence()
     private var openAttribution = OpenAttribution()
+    private var documentAttribution = DocumentAttribution()
     private var loaded = false
     private var attributed = false
     private var adapted = false
@@ -107,6 +108,7 @@ final class NewsReaderModel: NSObject, WKNavigationDelegate, WKUIDelegate, WKScr
 
     func start(options: SessionOptions? = nil) async {
         guard webView == nil, !stopped else { return }
+        ReaderSessionRegistry.active = self
         if let options { sessionOptions = options }
         networkRevision = proxyController.revision
         do { proxySession = try proxyController.authorizedSession() }
@@ -159,17 +161,20 @@ final class NewsReaderModel: NSObject, WKNavigationDelegate, WKUIDelegate, WKScr
                 }
             }
         }
-        if sessionOptions.cookieMemoryEnabled, !request.privateSession, let host = initialHost {
-            await BrowserDataController.shared.prepare()
-            let cookies = await BrowserDataController.shared.cookiesForInjection(host: host)
-            let cookieStore = web.configuration.websiteDataStore.httpCookieStore
-            await injectCookies(cookies, into: cookieStore)
-            guard !stopped else { return }
-            #if DEBUG
-            await verifyInjectedCookies(cookies, in: cookieStore, host: host)
-            #endif
-            cookieStore.add(self)
-            observingCookieStore = cookieStore
+        if sessionOptions.cookieMemoryEnabled, !request.privateSession {
+            let hosts = ReaderCookieSiteScope.injectionHosts(for: request.url)
+            if !hosts.isEmpty {
+                await BrowserDataController.shared.prepare()
+                let cookies = await BrowserDataController.shared.cookiesForInjection(hosts: hosts)
+                let cookieStore = web.configuration.websiteDataStore.httpCookieStore
+                await injectCookies(cookies, into: cookieStore)
+                guard !stopped else { return }
+                #if DEBUG
+                await verifyInjectedCookies(cookies, in: cookieStore, host: hosts.joined(separator: ","))
+                #endif
+                cookieStore.add(self)
+                observingCookieStore = cookieStore
+            }
         }
         guard !stopped, networkContextIsCurrent else { return }
         installLifecycleObservers()
@@ -190,11 +195,12 @@ final class NewsReaderModel: NSObject, WKNavigationDelegate, WKUIDelegate, WKScr
            let cookieStore = webView?.configuration.websiteDataStore.httpCookieStore {
             let host = currentHost
             let title = pageTitle
+            let allowEmptyRemoval = isLogoutDestination
             Task {
                 let cookies = await cookieStore.allCookies()
                 guard let host else { return }
                 let count = await BrowserDataController.shared.capture(
-                    cookies: cookies, host: host, title: title
+                    cookies: cookies, host: host, title: title, allowEmptyRemoval: allowEmptyRemoval
                 )
                 readerCookieLogger.debug("capture host=\(host, privacy: .public) cookies=\(cookies.count, privacy: .public) stored=\(count, privacy: .public) reason=stop")
             }
@@ -219,6 +225,7 @@ final class NewsReaderModel: NSObject, WKNavigationDelegate, WKUIDelegate, WKScr
         webView?.configuration.userContentController.removeScriptMessageHandler(forName: "aggregate", contentWorld: world)
         webView?.navigationDelegate = nil
         webView?.uiDelegate = nil
+        if ReaderSessionRegistry.active === self { ReaderSessionRegistry.active = nil }
         webView = nil // ephemeral cookies/data are released with the session
     }
 
@@ -264,15 +271,27 @@ final class NewsReaderModel: NSObject, WKNavigationDelegate, WKUIDelegate, WKScr
 
     /// Captures the current page's first-party cookies. An explicit save still works
     /// when the global switch is off; the view turns the switch on for that case.
-    func captureCurrentSite(force: Bool = false) async -> Int {
+    /// - Parameter allowEmptyRemoval: only a capture made on the site's log-out
+    ///   destination may clear a saved site when the jar comes back empty.
+    func captureCurrentSite(force: Bool = false, allowEmptyRemoval: Bool = false) async -> Int {
         guard force || sessionOptions.cookieMemoryEnabled, !request.privateSession,
               let webView, let host = currentHost else { return 0 }
         let cookies = await webView.configuration.websiteDataStore.httpCookieStore.allCookies()
         let count = await BrowserDataController.shared.capture(
-            cookies: cookies, host: host, title: pageTitle
+            cookies: cookies, host: host, title: pageTitle, allowEmptyRemoval: allowEmptyRemoval
         )
         readerCookieLogger.debug("capture host=\(host, privacy: .public) cookies=\(cookies.count, privacy: .public) stored=\(count, privacy: .public)")
         return count
+    }
+
+    /// Last-chance capture when the app is quitting.
+    ///
+    /// The reader already captures after every load and every cookie-store
+    /// change; this only covers a sign-in that landed in the final moment
+    /// before the process exits.
+    func flushCookiesBeforeTermination() async {
+        guard sessionOptions.cookieMemoryEnabled, !request.privateSession else { return }
+        _ = await captureCurrentSite()
     }
 
     /// QR sign-in often writes cookies from JS/XHR without a new `didFinish`.
@@ -290,8 +309,13 @@ final class NewsReaderModel: NSObject, WKNavigationDelegate, WKUIDelegate, WKScr
         cookieCaptureTask = Task { @MainActor [weak self] in
             try? await Task.sleep(for: .milliseconds(600))
             guard !Task.isCancelled, let self, !self.stopped else { return }
-            _ = await self.captureCurrentSite()
+            _ = await self.captureCurrentSite(allowEmptyRemoval: self.isLogoutDestination)
         }
+    }
+
+    /// True once the reader is showing the current site's own log-out landing page.
+    private var isLogoutDestination: Bool {
+        ReaderNavigationPolicy.isLogoutDestination(webView?.url?.absoluteString ?? currentURL)
     }
 
     private func injectCookies(_ cookies: [HTTPCookie], into store: WKHTTPCookieStore) async {
@@ -421,6 +445,10 @@ final class NewsReaderModel: NSObject, WKNavigationDelegate, WKUIDelegate, WKScr
         // exceptions. Never allow them as a top-level destination.
         if isSubframe && (raw == "about:blank" || raw == "about:srcdoc") { return .allow }
         if navigationAction.targetFrame == nil, navigationAction.navigationType != .linkActivated { return .cancel }
+        if !isSubframe,
+           [.linkActivated, .formSubmitted, .backForward].contains(navigationAction.navigationType) {
+            documentAttribution.noteUserNavigation()
+        }
         guard !navigationAction.shouldPerformDownload else {
             if !isSubframe { blockMainNavigation(.downloadBlocked) }
             return .cancel
@@ -446,6 +474,23 @@ final class NewsReaderModel: NSObject, WKNavigationDelegate, WKUIDelegate, WKScr
             return .cancel
         }
         return .allow
+    }
+
+    /// Popups never get their own web view: a second `WKWebView` would escape
+    /// the ephemeral store and the content rule list. A `window.open` target is
+    /// loaded in place instead, and anything unloadable is dropped.
+    func webView(
+        _ webView: WKWebView,
+        createWebViewWith configuration: WKWebViewConfiguration,
+        for navigationAction: WKNavigationAction,
+        windowFeatures: WKWindowFeatures
+    ) -> WKWebView? {
+        guard !stopped, networkContextIsCurrent,
+              let url = ReaderNavigationPolicy.popupDestination(
+                  navigationAction.request.url?.absoluteString
+              ) else { return nil }
+        webView.load(URLRequest(url: url))
+        return nil
     }
 
     func webView(_ webView: WKWebView, decidePolicyFor navigationResponse: WKNavigationResponse) async -> WKNavigationResponsePolicy {
@@ -480,6 +525,11 @@ final class NewsReaderModel: NSObject, WKNavigationDelegate, WKUIDelegate, WKScr
         notice = nil
     }
 
+    func webView(_ webView: WKWebView, didReceiveServerRedirectForProvisionalNavigation navigation: WKNavigation!) {
+        guard !stopped, networkContextIsCurrent else { return }
+        documentAttribution.noteServerRedirect()
+    }
+
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         guard !stopped, networkContextIsCurrent else { return }
         loading = false
@@ -488,11 +538,14 @@ final class NewsReaderModel: NSObject, WKNavigationDelegate, WKUIDelegate, WKScr
         lastTick = ProcessInfo.processInfo.systemUptime
         currentURL = webView.url?.absoluteString ?? request.url
         pageTitle = webView.title?.isEmpty == false ? (webView.title ?? request.title) : request.title
-        attributed = ContentIdentity.canonicalURL(currentURL) == ContentIdentity.canonicalURL(request.url)
+        attributed = documentAttribution.evaluate(finalURL: currentURL, itemURL: request.url)
         canGoBack = webView.canGoBack
         canGoForward = webView.canGoForward
         if sessionOptions.cookieMemoryEnabled, !request.privateSession {
-            Task { _ = await self.captureCurrentSite() }
+            let allowEmptyRemoval = ReaderNavigationPolicy.isLogoutDestination(
+                webView.url?.absoluteString ?? currentURL
+            )
+            Task { _ = await self.captureCurrentSite(allowEmptyRemoval: allowEmptyRemoval) }
         }
         let path = webView.url?.path.lowercased() ?? ""
         if ["login", "signin", "account", "passport", "captcha", "challenge"].contains(where: path.contains) { attributed = false }

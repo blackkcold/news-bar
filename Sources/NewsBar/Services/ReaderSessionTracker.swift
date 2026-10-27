@@ -48,6 +48,37 @@ struct OpenAttribution {
     }
 }
 
+/// Decides whether the document on screen is still the item the reader opened.
+///
+/// A short link (`b23.tv/BV1xx`) only becomes its sign-in host
+/// (`www.bilibili.com/video/BV1xx`) after a server redirect, so comparing
+/// canonical URLs alone drops every read of those items. The relaxed comparison
+/// applies to the initial document only and never across sites, so following a
+/// link on the same page still ends attribution.
+struct DocumentAttribution {
+    private var awaitingInitialDocument = true
+    private var sawServerRedirect = false
+
+    mutating func noteServerRedirect() {
+        guard awaitingInitialDocument else { return }
+        sawServerRedirect = true
+    }
+
+    /// A user-initiated navigation means the reader left the opened item.
+    mutating func noteUserNavigation() {
+        awaitingInitialDocument = false
+    }
+
+    mutating func evaluate(finalURL: String, itemURL: String) -> Bool {
+        let exact = ContentIdentity.canonicalURL(finalURL) == ContentIdentity.canonicalURL(itemURL)
+        let sameSiteRedirect = awaitingInitialDocument
+            && sawServerRedirect
+            && ReaderCookieSiteScope.sameSite(finalURL, itemURL)
+        awaitingInitialDocument = false
+        return exact || sameSiteRedirect
+    }
+}
+
 struct QualifiedExposure {
     private var startedAt: TimeInterval?
     private var recorded = false
@@ -58,5 +89,20 @@ struct QualifiedExposure {
         guard now - startedAt >= 1 else { return false }
         recorded = true
         return true
+    }
+}
+
+/// The reader currently on screen, so the app can flush its cookies before the
+/// process exits. Weak: a closed reader must disappear on its own.
+@MainActor
+enum ReaderSessionRegistry {
+    static weak var active: NewsReaderModel?
+}
+
+enum ReaderTerminationPolicy {
+    /// Only an open reader with cookie memory on has anything left to flush.
+    /// Everything else keeps the normal, immediate quit.
+    static func needsCookieFlush(cookieMemoryEnabled: Bool, hasActiveReader: Bool) -> Bool {
+        cookieMemoryEnabled && hasActiveReader
     }
 }

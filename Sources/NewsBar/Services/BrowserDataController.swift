@@ -94,15 +94,22 @@ final class BrowserDataController {
     /// Automatic and explicit captures both update in place. Deleting a saved
     /// site is a separate, explicit action (`removeSite`) so a transient empty
     /// page during a login redirect never erases a working sign-in.
+    /// - Parameter allowEmptyRemoval: set only for a capture made on the site's
+    ///   own log-out landing page, where an empty jar means the user signed out.
     @discardableResult
-    func capture(cookies: [HTTPCookie], host: String, title: String?) async -> Int {
+    func capture(
+        cookies: [HTTPCookie],
+        host: String,
+        title: String?,
+        allowEmptyRemoval: Bool = false
+    ) async -> Int {
         await prepare()
         do {
             let count = try await vault.upsert(
                 cookies: cookies,
                 host: host,
                 title: title,
-                allowEmptyRemoval: false
+                allowEmptyRemoval: allowEmptyRemoval
             )
             sites = await vault.siteSummaries()
             return count
@@ -113,8 +120,15 @@ final class BrowserDataController {
     }
 
     func site(for host: String) -> ReaderSavedSite? {
-        guard let normalized = ReaderCookieHost.normalize(host) else { return nil }
-        return sites.first { $0.host == normalized }
+        guard let normalized = ReaderCookieHost.normalize(host),
+              let site = ReaderCookieSiteScope.site(for: normalized) else { return nil }
+        if let exact = sites.first(where: { $0.host == normalized }) {
+            return exact
+        }
+        guard ReaderCookieSiteScope.isAliasSite(site) else { return nil }
+        return sites.first {
+            ReaderCookieHost.belongsToSite(domain: $0.host, site: site)
+        }
     }
 
     /// Cookies to replay into a new ephemeral reader session.
@@ -123,13 +137,19 @@ final class BrowserDataController {
         return await vault.cookies(matching: host)
     }
 
+    /// Cookies to replay for a short link and its sign-in site.
+    func cookiesForInjection(hosts: [String]) async -> [HTTPCookie] {
+        await prepare()
+        return await vault.cookies(forInjectionHosts: hosts)
+    }
+
     func hasSite(_ host: String) -> Bool {
         site(for: host) != nil
     }
 
     func removeSite(_ host: String) async {
         do {
-            try await vault.removeSite(host)
+            try await vault.removeSites(forSite: host)
             sites = await vault.siteSummaries()
         } catch {
             storageError = error.localizedDescription

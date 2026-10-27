@@ -3,8 +3,9 @@ import Foundation
 /// A cookie captured from the Dashboard reader, stored in the encrypted vault.
 ///
 /// Values are kept verbatim so a saved sign-in can be replayed on the next visit.
-/// WebKit offers no public way to restore the HTTP-only flag, so `isHTTPOnly` is
-/// kept for display only; replayed cookies are marked non-HTTP-only.
+/// The HTTP-only flag is restored through the `HttpOnly` property key where the
+/// platform accepts it; `isHTTPOnly` remains part of the persisted record so a
+/// runtime that rejects the key can still fall back safely.
 struct ReaderStoredCookie: Codable, Equatable, Sendable {
     var name: String
     var value: String
@@ -80,7 +81,22 @@ struct ReaderStoredCookie: Codable, Equatable, Sendable {
         // `HTTPCookie(properties:)` drops `.expires` whenever `.discard` is present,
         // so session cookies are persisted with an explicit soft expiry instead.
         properties[.expires] = expiresAt ?? effectiveExpiry
-        return HTTPCookie(properties: properties)
+
+        let httpOnlyKey = HTTPCookiePropertyKey("HttpOnly")
+        if isHTTPOnly {
+            properties[httpOnlyKey] = "TRUE"
+        }
+        if let cookie = HTTPCookie(properties: properties),
+           !isHTTPOnly || cookie.isHTTPOnly {
+            return cookie
+        }
+        // Some Foundation versions ignore the undocumented key. Never fail a
+        // replay because of it; fall back to the existing non-HTTP-only cookie.
+        if isHTTPOnly {
+            properties.removeValue(forKey: httpOnlyKey)
+            return HTTPCookie(properties: properties)
+        }
+        return nil
     }
 }
 
@@ -121,6 +137,21 @@ enum ReaderCookieHost {
         }
         return host == domain
     }
+
+    /// True when a cookie domain belongs to a site: the site itself, one of its
+    /// subdomains, or a known short-link/SSO alias (`b23.tv` -> `bilibili.com`).
+    ///
+    /// This is used to select one site's cookie jar for capture and display.
+    /// It does not broaden the cookie's own host-only scope: WebKit still only
+    /// sends a host-only cookie to its exact host.
+    static func belongsToSite(domain: String, site: String) -> Bool {
+        guard let domain = normalizeCookieDomain(domain),
+              let rawSite = normalize(site),
+              let siteKey = ReaderCookieSiteScope.site(for: rawSite) else { return false }
+        let base = domain.hasPrefix(".") ? String(domain.dropFirst()) : domain
+        if base == siteKey || base.hasSuffix("." + siteKey) { return true }
+        return ReaderCookieSiteScope.site(for: base) == siteKey
+    }
 }
 
 struct ReaderSavedSite: Codable, Identifiable, Equatable, Sendable {
@@ -138,7 +169,7 @@ struct ReaderSavedSite: Codable, Identifiable, Equatable, Sendable {
 }
 
 struct ReaderCookieSnapshot: Codable, Equatable, Sendable {
-    static let currentVersion = 2
+    static let currentVersion = 3
 
     var version: Int
     var sites: [ReaderSavedSite]
