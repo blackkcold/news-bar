@@ -124,12 +124,19 @@ actor ResearchCacheStore {
     func enforceLimits(
         now: Date = Date(),
         maxBytes: Int64,
-        protecting: Set<String> = []
+        protecting: Set<String> = [],
+        protectingSince: Date? = nil
     ) -> ResearchCacheStats {
         var stats = ResearchCacheStats()
         var files = allFiles()
 
-        for file in files where !protecting.contains(file.fileKey) {
+        func isProtected(_ file: FileRecord) -> Bool {
+            if protecting.contains(file.fileKey) { return true }
+            if let protectingSince, file.modifiedAt >= protectingSince { return true }
+            return false
+        }
+
+        for file in files where !isProtected(file) {
             guard now.timeIntervalSince(file.modifiedAt) > ttl(for: file.kind) else { continue }
             if remove(file) {
                 stats.removedFiles += 1
@@ -142,7 +149,7 @@ actor ResearchCacheStore {
         let target = maxBytes > 0 ? maxBytes * 9 / 10 : 0
         if total > maxBytes {
             let candidates = files
-                .filter { !protecting.contains($0.fileKey) }
+                .filter { !isProtected($0) }
                 .sorted { $0.modifiedAt < $1.modifiedAt }
             for file in candidates {
                 guard total > target else { break }

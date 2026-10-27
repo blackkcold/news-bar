@@ -187,6 +187,10 @@ actor ResearchStore: ResearchPersisting {
     private var lastProgressWrite: [String: Date] = [:]
     private var flushTask: Task<Void, Never>?
     private var didBootstrap = false
+    /// IDs removed by the user. A late progress callback or `touch` must not
+    /// resurrect a record after deletion.
+    private var deletedIDs: Set<String> = []
+    private var lastIndexWrite: Date = .distantPast
 
     init(
         directoryURL: URL? = nil,
@@ -229,10 +233,20 @@ actor ResearchStore: ResearchPersisting {
         }
 
         let activeIDs = entries.values.filter { $0.status.isActive }.map(\.id)
+        var healedIndex = false
         for id in activeIDs {
             guard var record = decodeRecord(id: id) else {
                 let date = modificationDate(of: recordURL(for: id)) ?? now()
                 entries[id] = ResearchIndexEntry(record: .corruptPlaceholder(id: id, date: date))
+                healedIndex = true
+                continue
+            }
+            // The index is only a projection. A record that finished after the
+            // last index write must not be rewritten as "interrupted"; heal the
+            // stale entry from the authoritative file instead.
+            guard record.status.isActive else {
+                entries[id] = ResearchIndexEntry(record: record)
+                healedIndex = true
                 continue
             }
             record.status = .interrupted
@@ -254,7 +268,7 @@ actor ResearchStore: ResearchPersisting {
             .sorted()
         result.entries = sortedEntries()
 
-        if result.rebuiltIndex || !result.interruptedIDs.isEmpty {
+        if result.rebuiltIndex || healedIndex || !result.interruptedIDs.isEmpty {
             writeIndexBestEffort()
         }
         didBootstrap = true
@@ -321,6 +335,10 @@ actor ResearchStore: ResearchPersisting {
         flushTask?.cancel()
         flushTask = nil
         pending.removeAll()
+        let fileIDs = Set(recordFileURLs().keys)
+        deletedIDs.formUnion(entries.keys)
+        deletedIDs.formUnion(fileIDs)
+        trimTombstones()
         for url in recordFileURLs().values {
             try fileManager.removeItem(at: url)
         }
@@ -332,6 +350,7 @@ actor ResearchStore: ResearchPersisting {
     func save(_ record: ResearchRecord) async throws {
         if !didBootstrap { _ = await bootstrap() }
         guard isSafeID(record.id) else { throw ResearchStoreError.invalidRecordID }
+        guard !deletedIDs.contains(record.id) else { return }
         try ensureDirectoriesThrowing()
         try writeRecord(record)
         entries[record.id] = ResearchIndexEntry(record: record)
@@ -350,6 +369,7 @@ actor ResearchStore: ResearchPersisting {
         }
         try ensureDirectoriesThrowing()
         for record in records {
+            guard !deletedIDs.contains(record.id) else { continue }
             try writeRecord(record)
             entries[record.id] = ResearchIndexEntry(record: record)
             pending.removeValue(forKey: record.id)
@@ -360,7 +380,7 @@ actor ResearchStore: ResearchPersisting {
 
     func saveProgress(_ record: ResearchRecord) async {
         if !didBootstrap { _ = await bootstrap() }
-        guard isSafeID(record.id) else { return }
+        guard isSafeID(record.id), !deletedIDs.contains(record.id) else { return }
 
         let terminal = record.status != .running || record.run.finishedAt != nil
         if terminal {
@@ -374,7 +394,13 @@ actor ResearchStore: ResearchPersisting {
         if current.timeIntervalSince(last) >= 1 {
             pending.removeValue(forKey: record.id)
             do {
-                try await save(record)
+                // Progress rewrites only the record file. The derived index is
+                // refreshed at most every 10 seconds, so a long run no longer
+                // re-encodes every entry once per tick.
+                try writeRecord(record)
+                entries[record.id] = ResearchIndexEntry(record: record)
+                lastProgressWrite[record.id] = current
+                writeIndexThrottled()
             } catch {
                 pending[record.id] = record
                 scheduleFlush()
@@ -399,6 +425,8 @@ actor ResearchStore: ResearchPersisting {
     func delete(id: String) async throws {
         if !didBootstrap { _ = await bootstrap() }
         guard isSafeID(id) else { throw ResearchStoreError.invalidRecordID }
+        deletedIDs.insert(id)
+        trimTombstones()
         let url = recordURL(for: id)
         if fileManager.fileExists(atPath: url.path) {
             try fileManager.removeItem(at: url)
@@ -437,7 +465,7 @@ actor ResearchStore: ResearchPersisting {
         if historyLimit >= 0 {
             while entries.count > historyLimit {
                 let candidates = entries.values.filter { !isProtected($0) }
-                guard let victim = candidates.min(by: { $0.lastAccessedAt < $1.lastAccessedAt }) else {
+                guard let victim = candidates.min(by: evictionOrder) else {
                     break
                 }
                 if removeRecord(id: victim.id) {
@@ -454,7 +482,7 @@ actor ResearchStore: ResearchPersisting {
         if total > byteCap {
             let candidates = entries.values
                 .filter { !isProtected($0) }
-                .sorted { $0.lastAccessedAt < $1.lastAccessedAt }
+                .sorted(by: evictionOrder)
             for victim in candidates {
                 guard total > byteCap else { break }
                 let size = fileSize(recordURL(for: victim.id))
@@ -549,10 +577,9 @@ actor ResearchStore: ResearchPersisting {
                 scanned.append(ResearchIndexEntry(record: .corruptPlaceholder(id: id, date: date)))
             }
         }
-        // Cap the derived index, not the files. The newest entries stay visible;
-        // the age/size enforcement pass owns actual deletion.
-        let kept = scanned.sorted(by: indexOrder).prefix(1000)
-        entries = Dictionary(uniqueKeysWithValues: kept.map { ($0.id, $0) })
+        // Every record file is visible. A truncated index used to hide files
+        // beyond the first 1000, which made them impossible to delete or evict.
+        entries = Dictionary(uniqueKeysWithValues: scanned.map { ($0.id, $0) })
         result.rebuiltIndex = true
     }
 
@@ -566,11 +593,34 @@ actor ResearchStore: ResearchPersisting {
         return lhs.id < rhs.id
     }
 
+    /// Deterministic eviction order. Dictionary iteration order is not stable,
+    /// so ties must fall back to durable fields or the same run deletes a
+    /// different record every time.
+    private func evictionOrder(_ lhs: ResearchIndexEntry, _ rhs: ResearchIndexEntry) -> Bool {
+        if lhs.lastAccessedAt != rhs.lastAccessedAt { return lhs.lastAccessedAt < rhs.lastAccessedAt }
+        if lhs.updatedAt != rhs.updatedAt { return lhs.updatedAt < rhs.updatedAt }
+        return lhs.id < rhs.id
+    }
+
     private func writeIndexBestEffort() {
         do {
             try writeIndex()
+            lastIndexWrite = now()
         } catch {
             // The record is authoritative; the next bootstrap rebuilds the index.
+        }
+    }
+
+    private func writeIndexThrottled() {
+        let current = now()
+        guard current.timeIntervalSince(lastIndexWrite) >= 10 else { return }
+        lastIndexWrite = current
+        writeIndexBestEffort()
+    }
+
+    private func trimTombstones() {
+        if deletedIDs.count > 2_000 {
+            deletedIDs = Set(Array(deletedIDs).suffix(1_000))
         }
     }
 
@@ -670,11 +720,12 @@ actor ResearchStore: ResearchPersisting {
 
     private func loadMeta() {
         guard !metaLoaded else { return }
-        metaLoaded = true
         if let data = try? Data(contentsOf: metaURL),
-           let meta = try? JSONDecoder().decode(ResearchStoreMeta.self, from: data) {
+           let meta = try? JSONDecoder().decode(ResearchStoreMeta.self, from: data),
+           meta.version <= ResearchStoreMeta().version {
             metaState = meta
         }
+        metaLoaded = true
     }
 
     private func writeMeta(_ meta: ResearchStoreMeta) throws {

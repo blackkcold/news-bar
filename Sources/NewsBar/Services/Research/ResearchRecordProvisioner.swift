@@ -5,6 +5,9 @@ import Foundation
 /// reuses any exact-key record so a user can always re-run it. Fuzzy merging is
 /// deliberately not used here.
 enum ResearchRecordProvisioner {
+    private static let inFlightLock = NSLock()
+    nonisolated(unsafe) private static var inFlight: Set<String> = []
+
     static func ensureRecord(
         for item: NewsItem,
         origin: ResearchOrigin,
@@ -15,6 +18,21 @@ enum ResearchRecordProvisioner {
         guard !normalizedTitle.isEmpty else { return nil }
 
         let topicKey = TopicFingerprint.key(for: item.title)
+
+        // Two callers (burst auto-detect and manual verify) can both see "no
+        // record" before either writes one. Serialize per topic key.
+        inFlightLock.lock()
+        let inserted = inFlight.insert(topicKey).inserted
+        inFlightLock.unlock()
+        guard inserted else {
+            try? await Task.sleep(nanoseconds: 50_000_000)
+            return await store.latestRecord(topicKey: topicKey)
+        }
+        defer {
+            inFlightLock.lock()
+            inFlight.remove(topicKey)
+            inFlightLock.unlock()
+        }
         if let existing = await store.latestRecord(topicKey: topicKey),
            shouldReuse(existing, origin: origin, now: now) {
             var record = existing

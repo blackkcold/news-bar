@@ -45,14 +45,20 @@ final class ResearchCoordinator {
     static let shared = ResearchCoordinator()
 
     private struct Job {
+        let token: UUID
         let recordID: String
         let executor: Executor
+    }
+
+    private struct RunningJob {
+        let token: UUID
+        let task: Task<Void, Never>
     }
 
     private let store: any ResearchPersisting
     private var maxConcurrent: Int
     private let notifier: @MainActor (ResearchRecord) -> Void
-    private var running: [String: Task<Void, Never>] = [:]
+    private var running: [String: RunningJob] = [:]
     private var queue: [Job] = []
     /// Bumped by `cancelAll` so a task that is already past the executor
     /// cannot write a record back after a history reset.
@@ -83,7 +89,13 @@ final class ResearchCoordinator {
         guard let record = await store.record(id: recordID) else { return }
         guard record.status != .running else { return }
 
-        let job = Job(recordID: recordID, executor: executor)
+        // Re-check after the awaits: two callers can both pass the first guard
+        // while waiting for the store, and the second must not enqueue a
+        // duplicate job for the same record.
+        guard running[recordID] == nil,
+              !queue.contains(where: { $0.recordID == recordID }) else { return }
+
+        let job = Job(token: UUID(), recordID: recordID, executor: executor)
         if running.count < maxConcurrent {
             start(job)
         } else {
@@ -97,10 +109,10 @@ final class ResearchCoordinator {
     }
 
     func cancel(recordID: String) {
-        if let task = running.removeValue(forKey: recordID) {
-            task.cancel()
-        }
         queue.removeAll { $0.recordID == recordID }
+        // Keep the slot until `execute` returns; removing it here would let a
+        // new job start while the cancelled task can still write.
+        running[recordID]?.task.cancel()
 
         Task { @MainActor [weak self] in
             guard let self else { return }
@@ -117,7 +129,7 @@ final class ResearchCoordinator {
     func cancelAll() {
         generation += 1
         queue.removeAll()
-        let tasks = running.values
+        let tasks = running.values.map(\.task)
         running.removeAll()
         for task in tasks { task.cancel() }
     }
@@ -141,10 +153,12 @@ final class ResearchCoordinator {
         let task = Task { @MainActor [weak self] in
             guard let self else { return }
             await self.execute(job)
-            self.running.removeValue(forKey: job.recordID)
+            if self.running[job.recordID]?.token == job.token {
+                self.running.removeValue(forKey: job.recordID)
+            }
             self.startNextIfPossible()
         }
-        running[job.recordID] = task
+        running[job.recordID] = RunningJob(token: job.token, task: task)
     }
 
     private func startNextIfPossible() {
@@ -181,6 +195,12 @@ final class ResearchCoordinator {
         let recordID = job.recordID
         let progress: @Sendable (ResearchRun) async -> Void = { [weak self, store] run in
             guard let self else { return }
+            let isCurrent = await MainActor.run { [weak self] in
+                self?.generation == executionGeneration
+            }
+            // A history reset bumps the generation; a late tick must not
+            // recreate the record that was just deleted.
+            guard isCurrent else { return }
             guard var latest = await store.record(id: recordID) else { return }
             guard latest.status == .running else { return }
             latest.run = run

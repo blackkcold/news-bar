@@ -71,9 +71,10 @@ struct ResearchMaintenance: Sendable {
             now: now(),
             maxBytes: Int64(settings.researchTempCacheMB) * 1024 * 1024,
             // Cache files are keyed by content hashes, not record IDs, so the
-            // active-record set cannot map onto them. A cache miss during a run
-            // is safe: the pipeline re-fetches the page.
-            protecting: []
+            // active-record set cannot map onto them. Protect everything a run
+            // could still be reading: files touched in the last hour.
+            protecting: [],
+            protectingSince: now().addingTimeInterval(-3_600)
         )
         result.removedCacheFiles = cacheStats.removedFiles
         result.removedCacheBytes = cacheStats.removedBytes

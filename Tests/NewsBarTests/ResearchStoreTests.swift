@@ -290,4 +290,41 @@ final class ResearchStoreTests: XCTestCase {
             )[.posixPermissions] as? NSNumber
         XCTAssertEqual(filePermissions?.intValue, 0o600)
     }
+
+    func testStaleIndexDoesNotMarkFinishedRecordInterrupted() async throws {
+        let directory = try researchTestDirectory()
+        let store = ResearchStore(directoryURL: directory)
+        var record = researchTestRecord(title: "已完成", status: .running, updatedAt: now)
+        try await store.save(record)
+
+        // Simulate a crash between the record write and the index write: the
+        // file says ready while the index still says running.
+        record.status = .ready
+        record.run.phase = .done
+        record.run.finishedAt = now
+        let url = directory.appendingPathComponent("records/\(record.id).json")
+        try JSONEncoder().encode(record).write(to: url)
+
+        let reloaded = ResearchStore(directoryURL: directory)
+        let bootstrap = await reloaded.bootstrap()
+
+        XCTAssertTrue(bootstrap.interruptedIDs.isEmpty)
+        let loaded = await reloaded.record(id: record.id)
+        XCTAssertEqual(loaded?.status, .ready)
+    }
+
+    func testDeletedRecordIsNotResurrectedByLateProgress() async throws {
+        let directory = try researchTestDirectory()
+        let store = ResearchStore(directoryURL: directory)
+        let record = researchTestRecord(title: "删除后迟到进度", status: .running, updatedAt: now)
+        try await store.save(record)
+        try await store.delete(id: record.id)
+
+        try await store.save(record)
+        await store.saveProgress(record)
+        await store.flushPendingWrites()
+
+        let loaded = await store.record(id: record.id)
+        XCTAssertNil(loaded)
+    }
 }
