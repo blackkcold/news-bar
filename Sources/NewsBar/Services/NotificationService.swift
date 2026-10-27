@@ -222,22 +222,10 @@ enum NotificationService {
         guard let report = record.report else { return }
 
         let language = L10n.currentLanguage
-        let titlePrefix: String
-        switch record.origin {
-        case .burst:
-            titlePrefix = L10n.string("notif.burstTitle", language: language)
-        case .keyword:
-            titlePrefix = L10n.string("notif.keywordTitle", language: language)
-        case .manual:
-            titlePrefix = L10n.string("research.notifTitle", language: language)
-        }
-
         let content = UNMutableNotificationContent()
-        content.title = "\(titlePrefix) \(record.topic)"
-        let body = report.summary.isEmpty ? report.overview : report.summary
-        content.body = SecurityPolicies.sanitizeHTMLContent(
-            body.isEmpty ? L10n.string("burst.noSummary", language: language) : body
-        )
+        content.title = L10n.string("research.notif.title", language: language)
+        content.subtitle = record.topic
+        content.body = ResearchNotificationSummary.make(report: report, language: language)
         content.sound = .default
         content.threadIdentifier = "research"
         content.categoryIdentifier = NotificationIdentifier.researchCategory

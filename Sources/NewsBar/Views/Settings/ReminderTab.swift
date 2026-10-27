@@ -92,29 +92,6 @@ struct ReminderTab: View {
             ResearchAutomationSection()
 
             Section {
-                Toggle("notif.webSearch".localized, isOn: Binding(
-                    get: { settings.webSearchEnabled },
-                    set: { settings.webSearchEnabled = $0 }
-                ))
-
-                if settings.webSearchEnabled {
-                    Text("notif.webSearch.keyNotice".localized)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                    Button("notif.webSearch.configure".localized) {
-                        NotificationCenter.default.post(name: .switchToAITab, object: nil)
-                    }
-                    .buttonStyle(EditorialActionButtonStyle(compact: true))
-                    .controlSize(.small)
-                }
-            } header: {
-                Text("notif.webSearchHeader".localized)
-            } footer: {
-                Text("notif.webSearch.footer".localized)
-            }
-
-            Section {
                 Toggle("notif.keywordTracking".localized, isOn: Binding(
                     get: { settings.keywordTrackingEnabled },
                     set: { settings.keywordTrackingEnabled = $0 }

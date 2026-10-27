@@ -210,7 +210,7 @@ struct ResearchSettingsSection: View {
                 } else {
                     next.remove(provider)
                 }
-                guard !next.isEmpty else { return }
+                // An empty set is a valid AI-only configuration.
                 settings.researchSearchProviders = SearchProviderID.failoverOrder
                     .filter { next.contains($0) }
                     .map(\.rawValue)

@@ -814,13 +814,13 @@ final class AppSettings {
     static let validResearchTempCacheMB: Set<Int> = [100, 250, 300, 500, 1000]
     static let validResearchTempCacheTTL: Set<Int> = [24, 72, 168]
 
-    /// Keeps only known providers in canonical order, and never leaves the list empty.
+    /// Keeps only known providers in canonical order. An empty list is a valid
+    /// choice: research degrades to AI-only and is labelled "offline".
     static func normalizedSearchProviders(_ raw: [String]) -> [String] {
         let enabled = Set(raw)
-        let normalized = SearchProviderID.allCases
+        return SearchProviderID.allCases
             .map(\.rawValue)
             .filter { enabled.contains($0) }
-        return normalized.isEmpty ? SearchProviderID.allCases.map(\.rawValue) : normalized
     }
 
     var enabledSearchProviders: Set<SearchProviderID> {
