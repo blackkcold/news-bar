@@ -35,7 +35,7 @@ struct ReminderTab: View {
                             )
                         } else {
                             UNUserNotificationCenter.current()
-                                .removePendingNotificationRequests(withIdentifiers: ["daily-summary"])
+                                .removePendingNotificationRequests(withIdentifiers: [NotificationIdentifier.dailyRequest])
                         }
                     }
                 ))

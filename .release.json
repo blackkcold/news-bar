@@ -10,7 +10,7 @@
   "release_branch": true,
   "auto_merge": false,
   "release_note_style": "structured-cn",
-  "summary": "阅读器跨短链登录态与 B 站阅读归因",
-  "summary_en": "Reader sign-in across short links and Bilibili read attribution",
-  "validation": "swift test 681/681（2 skipped）+ scripts/build.sh + codesign verify + hdiutil verify 通过"
+  "summary": "通知点击摘要、每日推送存活与摘要面板主题",
+  "summary_en": "Notification digest clicks, daily push survival, and themed digest sheet",
+  "validation": "swift test 687/687（2 skipped）+ scripts/build.sh + codesign verify + hdiutil verify 通过"
 }

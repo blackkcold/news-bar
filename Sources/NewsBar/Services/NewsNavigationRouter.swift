@@ -18,15 +18,23 @@ struct NewsReaderRequest: Identifiable {
 
 /// The payload a digest notification click presents in the dashboard sheet.
 struct NewsDigestRequest: Identifiable, Equatable {
+    /// `kind` used when the sheet is filled from live app data because the
+    /// notification itself carried no usable digest.
+    static let liveKind = "live"
+
     let id = UUID()
     let items: [NewsItem]
     let kind: String
     let generatedAt: Date
 
     init(digest: NotificationDigest) {
-        self.items = digest.items
-        self.kind = digest.kind
-        self.generatedAt = digest.generatedAt
+        self.init(items: digest.items, kind: digest.kind, generatedAt: digest.generatedAt)
+    }
+
+    init(items: [NewsItem], kind: String, generatedAt: Date = Date()) {
+        self.items = items
+        self.kind = kind
+        self.generatedAt = generatedAt
     }
 }
 

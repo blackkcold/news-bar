@@ -112,7 +112,7 @@ enum NotificationService {
         let content = titleContent(items: topItems, daily: false)
 
         let request = UNNotificationRequest(
-            identifier: "hourly-\(Int(Date().timeIntervalSince1970))",
+            identifier: NotificationIdentifier.hourlyRequest,
             content: content,
             trigger: nil
         )
@@ -123,7 +123,7 @@ enum NotificationService {
         guard count > 0, !items.isEmpty else { return }
 
         let center = UNUserNotificationCenter.current()
-        center.removePendingNotificationRequests(withIdentifiers: ["daily-summary"])
+        center.removePendingNotificationRequests(withIdentifiers: [NotificationIdentifier.dailyRequest])
 
         let topItems = Array(items.prefix(normalizedPushCount(count)))
         let content = titleContent(items: topItems, daily: true)
@@ -135,7 +135,7 @@ enum NotificationService {
         // A frozen title snapshot is sent once, not repeated indefinitely after app exit.
         let trigger = UNCalendarNotificationTrigger(dateMatching: dateComponents, repeats: false)
         let request = UNNotificationRequest(
-            identifier: "daily-summary",
+            identifier: NotificationIdentifier.dailyRequest,
             content: content,
             trigger: trigger
         )
@@ -148,7 +148,7 @@ enum NotificationService {
 
     static func scheduleDailyPush(hour: Int, minute: Int = 0) {
         let center = UNUserNotificationCenter.current()
-        center.removePendingNotificationRequests(withIdentifiers: ["daily-summary"])
+        center.removePendingNotificationRequests(withIdentifiers: [NotificationIdentifier.dailyRequest])
 
         let content = UNMutableNotificationContent()
         content.title = L10n.string("notif.dailyTitle", language: L10n.currentLanguage)
@@ -162,7 +162,7 @@ enum NotificationService {
 
         let trigger = UNCalendarNotificationTrigger(dateMatching: dateComponents, repeats: true)
         let request = UNNotificationRequest(
-            identifier: "daily-summary",
+            identifier: NotificationIdentifier.dailyRequest,
             content: content,
             trigger: trigger
         )
@@ -194,10 +194,6 @@ enum NotificationService {
                 NSLog("[NotificationService] sendBurstNotification failed: %@", error.localizedDescription)
             }
         }
-    }
-
-    static func clearAllPending() {
-        UNUserNotificationCenter.current().removeAllPendingNotificationRequests()
     }
 
     static func clearPersonalizedNotifications() {

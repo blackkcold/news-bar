@@ -8,6 +8,19 @@ struct DeveloperTab: View {
     var body: some View {
         Form {
             Section {
+                Button {
+                    NotificationCenter.default.post(name: .fireTestNewsPush, object: nil)
+                } label: {
+                    Label("notif.testPush".localized, systemImage: "bell.badge")
+                }
+                .buttonStyle(EditorialActionButtonStyle(tone: .primary, compact: true))
+            } header: {
+                Text("notif.testPush.header".localized)
+            } footer: {
+                Text("notif.testPush.footer".localized)
+            }
+
+            Section {
                 Toggle("general.forceLatest".localized, isOn: Binding(
                     get: { settings.updateDevMode },
                     set: { settings.updateDevMode = $0 }
