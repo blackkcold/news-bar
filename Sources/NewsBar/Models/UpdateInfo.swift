@@ -5,16 +5,27 @@ import Foundation
 /// Provenance of a fetched release metadata payload.
 ///
 /// - canonical: Metadata was fetched directly from the canonical GitHub API
-///   (`https://api.github.com/...`). Only canonical provenance can authorize
-///   an automatic DMG download, because the digest and artifact URL are
-///   guaranteed to originate from GitHub.
+///   (`https://api.github.com/...`).
+/// - githubHTML: Metadata was recovered from the official GitHub release page
+///   on `github.com` when the unauthenticated API was rate-limited. Asset URLs
+///   are constructed under this repository's release path and the SHA-256
+///   sidecar is fetched from the same release.
 /// - proxy: Metadata was fetched from a third-party proxy mirror. Proxy
 ///   metadata may be used to *surface* update availability to the user, but
 ///   must never authorize an automatic download — the proxy can tamper with
 ///   both the SHA-256 digest and the artifact download URL.
 enum ReleaseProvenance: Equatable {
     case canonical
+    case githubHTML
     case proxy(label: String)
+
+    /// Both API and official HTML metadata come from GitHub-owned endpoints.
+    var isGitHubOfficial: Bool {
+        switch self {
+        case .canonical, .githubHTML: return true
+        case .proxy: return false
+        }
+    }
 }
 
 struct GitHubRelease: Decodable {
@@ -43,6 +54,9 @@ struct GitHubRelease: Decodable {
         if case .canonical = provenance { return true }
         return false
     }
+
+    /// API or official GitHub HTML provenance; both live on GitHub-owned hosts.
+    var isGitHubOfficial: Bool { provenance.isGitHubOfficial }
 
     init(
         tag_name: String,
@@ -78,6 +92,20 @@ struct GitHubAsset: Decodable {
     let size: Int64
     let content_type: String?
     let digest: String?
+
+    init(
+        name: String,
+        browser_download_url: String,
+        size: Int64,
+        content_type: String?,
+        digest: String?
+    ) {
+        self.name = name
+        self.browser_download_url = browser_download_url
+        self.size = size
+        self.content_type = content_type
+        self.digest = digest
+    }
 
     var isDMG: Bool {
         name.hasSuffix(".dmg") || content_type == "application/x-apple-diskimage"

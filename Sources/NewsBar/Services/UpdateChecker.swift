@@ -7,11 +7,15 @@ final class UpdateChecker: ObservableObject {
     private static let repoOwner = "blackkcold"
     private static let repoName = "news-bar"
 
-    private static let releaseAPIURLs: [(label: String, url: String)] = [
-        ("GitHub",  "https://api.github.com/repos/\(repoOwner)/\(repoName)/releases/latest"),
-        ("ghproxy", "https://gh-proxy.com/https://api.github.com/repos/\(repoOwner)/\(repoName)/releases/latest"),
-        ("ghproxy888", "https://gh.api.99988866.xyz/https://api.github.com/repos/\(repoOwner)/\(repoName)/releases/latest"),
-    ]
+    private static let releaseAPIURL =
+        "https://api.github.com/repos/\(repoOwner)/\(repoName)/releases/latest"
+
+    /// Official release page used when the unauthenticated API is rate-limited.
+    /// GitHub redirects this to `/releases/tag/vX.Y.Z`, which lets the app
+    /// recover the version without a third-party mirror.
+    private static let releasesPageURL = URL(
+        string: "https://github.com/\(repoOwner)/\(repoName)/releases/latest"
+    )!
 
     /// GitHub-owned download hosts. Only these hosts are permitted for
     /// automatic DMG downloads. The artifact URL must come from canonical
@@ -56,12 +60,13 @@ final class UpdateChecker: ObservableObject {
             return
         }
 
-        lastCheckDate = Date()
-
         guard let release = await fetchLatestRelease() else {
             return
         }
 
+        // Only a successful fetch advances the 24h timer; a transient API
+        // failure should not suppress retries for a whole day.
+        lastCheckDate = Date()
         cachedRelease = release
 
         guard versionIsNewer(release.version, than: AppVersion.current) else {
@@ -125,17 +130,17 @@ final class UpdateChecker: ObservableObject {
                 return
             }
 
-            // Trust chain: automatic download requires canonical GitHub
-            // provenance AND a GitHub-owned download host. Proxy-sourced
-            // metadata is only allowed to surface availability, never to
-            // authorize a download.
-            guard release.isCanonical else {
-                await MainActor.run { state = .error("更新信息来自第三方镜像，无法自动下载。请从 GitHub 官方页面下载。") }
-                return
-            }
-
-            guard Self.isGitHubOwnedHost(dmgURL.host) else {
-                await MainActor.run { state = .error("下载地址非 GitHub 官方域名，已拒绝自动下载。请从 GitHub 官方页面下载。") }
+            // Trust chain: automatic download requires an official GitHub
+            // source (API or github.com release page) AND a GitHub-owned
+            // download host. Proxy metadata never authorizes a download.
+            guard Self.canAuthorizeAutoDownload(
+                provenance: release.provenance,
+                downloadHost: dmgURL.host
+            ) else {
+                let message = release.provenance.isGitHubOfficial
+                    ? "下载地址非 GitHub 官方域名，已拒绝自动下载。请从 GitHub 官方页面下载。"
+                    : "更新信息来自第三方镜像，无法自动下载。请从 GitHub 官方页面下载。"
+                await MainActor.run { state = .error(message) }
                 return
             }
 
@@ -223,68 +228,123 @@ final class UpdateChecker: ObservableObject {
     // MARK: - Network Helpers
 
     private func fetchLatestRelease() async -> GitHubRelease? {
-        for (index, entry) in Self.releaseAPIURLs.enumerated() {
-            let label = entry.label
-            let urlString = entry.url
-            guard let url = URL(string: urlString) else { continue }
-
-            var request = URLRequest(url: url)
-            request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
-            request.setValue("2022-11-28", forHTTPHeaderField: "X-GitHub-Api-Version")
-            request.timeoutInterval = 15
-
-            do {
-                let session = URLSession(configuration: .ephemeral)
-                let (data, response) = try await session.data(for: request)
-
-                guard let httpResponse = response as? HTTPURLResponse else { continue }
-                guard (200...299).contains(httpResponse.statusCode) else {
-                    if httpResponse.statusCode == 403 {
-                        NSLog("[UpdateChecker] \(label): HTTP 403 (rate limited)")
-                    } else {
-                        NSLog("[UpdateChecker] \(label): HTTP \(httpResponse.statusCode)")
-                    }
-                    continue
-                }
-
-                let decoder = JSONDecoder()
-                var release = try decoder.decode(GitHubRelease.self, from: data)
-
-                if index > 0 {
-                    let tagPattern = try! NSRegularExpression(pattern: "^v\\d+\\.\\d+\\.\\d+")
-                    let range = NSRange(location: 0, length: release.tag_name.utf16.count)
-                    guard tagPattern.firstMatch(in: release.tag_name, options: [], range: range) != nil else {
-                        NSLog("[UpdateChecker] \(label): invalid tag format '\(release.tag_name)', skipping proxy")
-                        continue
-                    }
-                    release.provenance = .proxy(label: label)
-                } else {
-                    release.provenance = .canonical
-                }
-
-                NSLog("[UpdateChecker] fetch succeeded via \(label), version=\(release.version)")
-                return release
-            } catch {
-                let nsError = error as NSError
-                if nsError.domain == NSURLErrorDomain {
-                    switch nsError.code {
-                    case NSURLErrorTimedOut:
-                        NSLog("[UpdateChecker] \(label): timeout")
-                    case NSURLErrorCannotFindHost, NSURLErrorDNSLookupFailed:
-                        NSLog("[UpdateChecker] \(label): DNS/Host failed")
-                    case NSURLErrorNotConnectedToInternet:
-                        NSLog("[UpdateChecker] \(label): no internet")
-                    default:
-                        NSLog("[UpdateChecker] \(label): URLError code=\(nsError.code)")
-                    }
-                } else {
-                    NSLog("[UpdateChecker] \(label): \(error.localizedDescription)")
-                }
-            }
+        if let release = await fetchAPILatestRelease() {
+            return release
         }
-
-        NSLog("[UpdateChecker] all URLs exhausted")
+        if let release = await fetchGitHubHTMLFallback() {
+            return release
+        }
+        NSLog("[UpdateChecker] all official sources exhausted")
         return nil
+    }
+
+    private func fetchAPILatestRelease() async -> GitHubRelease? {
+        guard let url = URL(string: Self.releaseAPIURL) else { return nil }
+
+        var request = URLRequest(url: url)
+        request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+        request.setValue("2022-11-28", forHTTPHeaderField: "X-GitHub-Api-Version")
+        request.setValue("NewsBar/\(AppVersion.current)", forHTTPHeaderField: "User-Agent")
+        request.timeoutInterval = 15
+
+        do {
+            let session = URLSession(configuration: .ephemeral)
+            let (data, response) = try await session.data(for: request)
+
+            guard let httpResponse = response as? HTTPURLResponse else { return nil }
+            guard (200...299).contains(httpResponse.statusCode) else {
+                if httpResponse.statusCode == 403 {
+                    NSLog("[UpdateChecker] GitHub API: HTTP 403 (rate limited)")
+                } else {
+                    NSLog("[UpdateChecker] GitHub API: HTTP \(httpResponse.statusCode)")
+                }
+                return nil
+            }
+
+            var release = try JSONDecoder().decode(GitHubRelease.self, from: data)
+            release.provenance = .canonical
+            NSLog("[UpdateChecker] fetch succeeded via GitHub API, version=\(release.version)")
+            return release
+        } catch {
+            logNetworkError(error, label: "GitHub API")
+            return nil
+        }
+    }
+
+    /// Official GitHub HTML fallback. No third-party mirror is involved:
+    /// - the redirect must land on github.com/blackkcold/news-bar/releases/tag/vX.Y.Z
+    /// - asset URLs are constructed under the same repository release path
+    /// - the SHA-256 sidecar is fetched from that same release
+    func fetchGitHubHTMLFallback() async -> GitHubRelease? {
+        var pageRequest = URLRequest(url: Self.releasesPageURL)
+        pageRequest.setValue("text/html", forHTTPHeaderField: "Accept")
+        pageRequest.setValue("NewsBar/\(AppVersion.current)", forHTTPHeaderField: "User-Agent")
+        pageRequest.timeoutInterval = 15
+
+        do {
+            let session = URLSession(configuration: .ephemeral)
+            let (_, response) = try await session.data(for: pageRequest)
+            guard let httpResponse = response as? HTTPURLResponse,
+                  (200...299).contains(httpResponse.statusCode),
+                  let finalURL = httpResponse.url,
+                  let version = Self.version(fromReleasePageURL: finalURL),
+                  let dmgURL = Self.releaseAssetURL(version: version, suffix: ".dmg"),
+                  let shaURL = Self.releaseAssetURL(version: version, suffix: ".dmg.sha256") else {
+                NSLog("[UpdateChecker] GitHub HTML: release page did not resolve to a semantic tag")
+                return nil
+            }
+
+            var shaRequest = URLRequest(url: shaURL)
+            shaRequest.setValue("text/plain", forHTTPHeaderField: "Accept")
+            shaRequest.setValue("NewsBar/\(AppVersion.current)", forHTTPHeaderField: "User-Agent")
+            shaRequest.timeoutInterval = 15
+            let (shaData, shaResponse) = try await session.data(for: shaRequest)
+            guard let shaHTTP = shaResponse as? HTTPURLResponse,
+                  (200...299).contains(shaHTTP.statusCode),
+                  let text = String(data: shaData, encoding: .utf8),
+                  let digest = Self.parseSHA256File(text) else {
+                NSLog("[UpdateChecker] GitHub HTML: SHA-256 sidecar unavailable")
+                return nil
+            }
+
+            let asset = GitHubAsset(
+                name: "NewsBar-\(version).dmg",
+                browser_download_url: dmgURL.absoluteString,
+                size: 0,
+                content_type: "application/x-apple-diskimage",
+                digest: "sha256:\(digest)"
+            )
+            let release = GitHubRelease(
+                tag_name: "v\(version)",
+                name: nil,
+                body: nil,
+                assets: [asset],
+                provenance: .githubHTML
+            )
+            NSLog("[UpdateChecker] fetch succeeded via GitHub HTML, version=\(version)")
+            return release
+        } catch {
+            logNetworkError(error, label: "GitHub HTML")
+            return nil
+        }
+    }
+
+    private func logNetworkError(_ error: Error, label: String) {
+        let nsError = error as NSError
+        if nsError.domain == NSURLErrorDomain {
+            switch nsError.code {
+            case NSURLErrorTimedOut:
+                NSLog("[UpdateChecker] \(label): timeout")
+            case NSURLErrorCannotFindHost, NSURLErrorDNSLookupFailed:
+                NSLog("[UpdateChecker] \(label): DNS/Host failed")
+            case NSURLErrorNotConnectedToInternet:
+                NSLog("[UpdateChecker] \(label): no internet")
+            default:
+                NSLog("[UpdateChecker] \(label): URLError code=\(nsError.code)")
+            }
+        } else {
+            NSLog("[UpdateChecker] \(label): \(error.localizedDescription)")
+        }
     }
 
     // MARK: - Validation
@@ -307,6 +367,44 @@ final class UpdateChecker: ObservableObject {
         return actual == expected.lowercased()
     }
 
+    // MARK: - Official HTML Fallback Helpers (pure, testable)
+
+    /// Extracts `X.Y.Z` from a final `github.com/<owner>/<repo>/releases/tag/vX.Y.Z`
+    /// URL. Rejects non-GitHub hosts, other repositories and non-semantic tags.
+    static func version(fromReleasePageURL url: URL) -> String? {
+        guard url.host?.lowercased() == "github.com" else { return nil }
+        let parts = url.pathComponents
+        guard parts.contains(repoOwner), parts.contains(repoName),
+              let tagIndex = parts.firstIndex(of: "tag"),
+              tagIndex + 1 < parts.count else { return nil }
+
+        let tag = parts[tagIndex + 1]
+        let version = tag.hasPrefix("v") ? String(tag.dropFirst()) : tag
+        guard version.range(of: #"^\d+\.\d+\.\d+$"#, options: .regularExpression) != nil else {
+            return nil
+        }
+        return version
+    }
+
+    /// Builds a release asset URL under this repository's official path.
+    static func releaseAssetURL(version: String, suffix: String) -> URL? {
+        guard version.range(of: #"^\d+\.\d+\.\d+$"#, options: .regularExpression) != nil else {
+            return nil
+        }
+        return URL(string: "https://github.com/\(repoOwner)/\(repoName)/releases/download/v\(version)/NewsBar-\(version)\(suffix)")
+    }
+
+    /// Parses a published `.sha256` sidecar (hash only, or `hash  filename`).
+    static func parseSHA256File(_ text: String) -> String? {
+        guard let token = text.split(whereSeparator: {
+            $0 == " " || $0 == "\t" || $0 == "\n" || $0 == "\r"
+        }).first else { return nil }
+
+        let value = String(token)
+        guard value.count == 64, value.allSatisfy(\.isHexDigit) else { return nil }
+        return value.lowercased()
+    }
+
     // MARK: - Trust Chain Helpers (pure, testable)
 
     /// Returns `true` if `host` is a GitHub-owned download host.
@@ -320,10 +418,10 @@ final class UpdateChecker: ObservableObject {
     /// download host is authorized for automatic download.
     ///
     /// Both conditions must hold:
-    /// 1. Metadata provenance is `.canonical` (direct from api.github.com).
+    /// 1. Metadata provenance is official GitHub (API or github.com page).
     /// 2. The artifact download URL host is GitHub-owned.
     static func canAuthorizeAutoDownload(provenance: ReleaseProvenance, downloadHost: String?) -> Bool {
-        guard case .canonical = provenance else { return false }
+        guard provenance.isGitHubOfficial else { return false }
         return isGitHubOwnedHost(downloadHost)
     }
 }

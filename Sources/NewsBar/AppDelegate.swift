@@ -66,6 +66,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         scheduleAutoUpdateCheck()
 
         Task { _ = await NotificationService.requestAuthorization() }
+        NotificationService.registerCategories()
         UNUserNotificationCenter.current().delegate = self
         if settings.dailyPushEnabled {
             NotificationService.scheduleDailyPush(hour: settings.dailyPushHour, minute: settings.dailyPushMinute)
@@ -153,6 +154,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 self.dashboardRefreshTask?.cancel()
                 self.dashboardRefreshTask = nil
                 NewsNavigationRouter.shared.close()
+                NewsNavigationRouter.shared.dismissDigest()
                 InterestController.shared.endListSession()
                 DockPresence.hide()
             }
@@ -594,19 +596,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         withCompletionHandler completionHandler: @escaping () -> Void
     ) {
         let userInfo = response.notification.request.content.userInfo
-        if let type = userInfo["type"] as? String, type == "burst",
-           let eventID = userInfo["eventID"] as? String {
+        switch NotificationClickRouter.route(
+            userInfo: userInfo,
+            actionIdentifier: response.actionIdentifier
+        ) {
+        case .dismiss:
+            break
+        case .burst(let eventID):
             Task { @MainActor [weak self] in
                 await self?.orchestrator?.restoreResearchStateIfNeeded()
                 self?.openBurstWindow(title: eventID)
             }
-        } else if let type = userInfo["type"] as? String, type == "news", let url = userInfo["url"] as? String {
-            let title = userInfo["title"] as? String ?? ""
+        case .digest(let digest):
+            Task { @MainActor [weak self] in
+                self?.openDashboard(refresh: false)
+                // The dashboard window may be created by the call above; wait
+                // one run-loop turn so its first view pass can mount the sheet.
+                DispatchQueue.main.async {
+                    NewsNavigationRouter.shared.presentDigest(NewsDigestRequest(digest: digest))
+                }
+            }
+        case .news(let url, let title):
             Task { @MainActor in
                 let item = InterestController.shared.state.contents[ContentIdentity.id(for: url)]?.item
                 NewsNavigationRouter.shared.open(url: url, title: title, item: item, surface: "notification")
             }
-        } else {
+        case .dashboard:
             Task { @MainActor [weak self] in self?.openDashboard(refresh: false) }
         }
         completionHandler()

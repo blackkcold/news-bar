@@ -43,6 +43,11 @@ final class InterestConsumerTests: XCTestCase {
         XCTAssertEqual(content.userInfo["url"] as? String, fresh.url)
         XCTAssertEqual(content.userInfo["type"] as? String, "news")
         XCTAssertFalse(content.body.contains("已读"))
+
+        let digest = NotificationDigest.decode(content.userInfo["digest"] as? String)
+        XCTAssertEqual(digest?.items.count, 1)
+        XCTAssertEqual(digest?.items.first?.url, fresh.url)
+        XCTAssertEqual(digest?.items.first?.id, fresh.id)
     }
 
     func testEnglishManifestParserSeparatesCategoriesAndChecksTrendSource() {

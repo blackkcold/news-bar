@@ -273,7 +273,7 @@ private struct DashboardTrendRow: View {
     }
 }
 
-private struct DashboardTrendPresentation {
+struct DashboardTrendPresentation {
     let title: String
     let mark: EditorialSourceMark
     let accent: Color
@@ -299,7 +299,7 @@ private struct DashboardTrendPresentation {
 struct DashboardRSSSourceCard: View {
     let source: NewsSource
     let orchestrator: NewsOrchestrator
-    let sourceFilter: DashboardWindow.DashboardSourceFilter
+    let sourceFilter: DashboardSourceFilter
     let searchQuery: String?
     let hasAnyFilter: Bool
     let isExpanded: Bool
