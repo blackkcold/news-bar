@@ -357,7 +357,7 @@ struct DepthProfile: Sendable, Equatable {
             return DepthProfile(
                 queryCount: 2,
                 pageCount: 2,
-                aiCallLimit: 3,
+                aiCallLimit: 4,
                 defaultRecencyDays: 7,
                 extractionBatchCount: 1
             )
@@ -365,7 +365,7 @@ struct DepthProfile: Sendable, Equatable {
             return DepthProfile(
                 queryCount: 4,
                 pageCount: 4,
-                aiCallLimit: 5,
+                aiCallLimit: 6,
                 defaultRecencyDays: 90,
                 extractionBatchCount: 2
             )

@@ -20,7 +20,9 @@ actor ResearchCacheStore {
     static let pagesTTL: TimeInterval = 72 * 3600
 
     private struct Entry: Codable {
-        let key: String
+        /// Only the digest is persisted; the query/page key itself never lands
+        /// on disk in cleartext.
+        let keyHash: String
         let createdAt: Date
         let payload: Data
     }
@@ -65,7 +67,7 @@ actor ResearchCacheStore {
             .appendingPathComponent(fileKey(kind: kind, key: key) + ".json") else {
             return
         }
-        let entry = Entry(key: key, createdAt: now, payload: payload)
+        let entry = Entry(keyHash: ContentIdentity.digest(key), createdAt: now, payload: payload)
         guard let data = try? JSONEncoder().encode(entry) else { return }
         do {
             try data.write(to: url, options: .atomic)

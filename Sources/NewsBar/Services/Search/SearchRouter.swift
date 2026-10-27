@@ -66,6 +66,7 @@ actor SearchRouter {
         var failovers = 0
 
         for provider in ordered {
+            try Task.checkCancellation()
             guard configuration.enabled.contains(provider.id) else { continue }
 
             let key = configuration.key(for: provider.id)
@@ -115,6 +116,10 @@ actor SearchRouter {
                 } catch is CancellationError {
                     throw CancellationError()
                 } catch {
+                    // A provider maps URLSession cancellation to a transport
+                    // error; do not fail over to the next provider after a
+                    // user cancel.
+                    if Task.isCancelled { throw CancellationError() }
                     let mapped = SearchHTTPMapping.map(error)
 
                     if mapped == .unauthorized {

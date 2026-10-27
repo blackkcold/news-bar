@@ -229,10 +229,20 @@ final class ResearchCoordinator {
             current.run.lastError = nil
             applyCounts()
         } else if let error = execution.error {
-            current.status = .failed
+            // Consent revoked or the AI model changed mid-run: the task itself
+            // was not cancelled, but the run was superseded. It must not be
+            // recorded as a user-visible failure.
+            // The message is produced by the pipeline in the run's language,
+            // which may differ from the current UI language.
+            let cancelledMessages = [
+                L10n.string("research.error.cancelled", language: .zh),
+                L10n.string("research.error.cancelled", language: .en),
+            ]
+            let superseded = cancelledMessages.contains(error) && !Task.isCancelled
+            current.status = superseded ? .cancelled : .failed
             current.run.phase = .done
             current.run.finishedAt = finishedAt
-            current.run.lastError = error
+            current.run.lastError = superseded ? nil : error
             applyCounts()
         } else if !BurstResearchParser.hasUsableContent(execution.research) {
             current.status = .failed

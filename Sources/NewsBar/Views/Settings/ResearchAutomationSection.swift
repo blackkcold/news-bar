@@ -27,6 +27,11 @@ struct ResearchAutomationSection: View {
                 get: { settings.researchShowPopoverChip },
                 set: { settings.researchShowPopoverChip = $0 }
             ))
+
+            Toggle("research.auto.notificationSummary".localized, isOn: Binding(
+                get: { settings.researchNotificationShowsSummary },
+                set: { settings.researchNotificationShowsSummary = $0 }
+            ))
         } header: {
             Text("research.auto.title".localized)
         } footer: {

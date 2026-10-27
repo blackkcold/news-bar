@@ -217,6 +217,17 @@ final class AppSettings {
     var researchShowPopoverChip: Bool {
         didSet { UserDefaults.standard.set(researchShowPopoverChip, forKey: "researchShowPopoverChip") }
     }
+    /// Shows the one-sentence summary in the completion notification. Turning
+    /// it off keeps the report title but hides the conclusion from the lock
+    /// screen.
+    var researchNotificationShowsSummary: Bool {
+        didSet {
+            UserDefaults.standard.set(
+                researchNotificationShowsSummary,
+                forKey: "researchNotificationShowsSummary"
+            )
+        }
+    }
     /// Research depth preset (quick / standard / deep).
     var researchDepth: ResearchDepth {
         didSet { UserDefaults.standard.set(researchDepth.rawValue, forKey: "researchDepth") }
@@ -433,6 +444,7 @@ final class AppSettings {
         let rawDetectionLimit = defaults.integerIfPresent(forKey: "researchDetectionLimit") ?? 3
         self.researchDetectionLimit = Self.validResearchDetectionLimits.contains(rawDetectionLimit) ? rawDetectionLimit : 3
         self.researchShowPopoverChip = defaults.boolIfPresent(forKey: "researchShowPopoverChip") ?? true
+        self.researchNotificationShowsSummary = defaults.boolIfPresent(forKey: "researchNotificationShowsSummary") ?? true
         let rawDepth = defaults.stringIfPresent(forKey: "researchDepth") ?? ResearchDepth.standard.rawValue
         self.researchDepth = ResearchDepth(rawValue: rawDepth) ?? .standard
         let rawResearchAICap = defaults.integerIfPresent(forKey: "researchDailyAICap") ?? 30

@@ -93,8 +93,30 @@ struct ReportValidationInput: Sendable {
 enum ReportValidator {
     static func validate(_ input: ReportValidationInput) -> BurstResearch {
         let allowed = Set(input.allowedURLs.map { ContentIdentity.canonicalURL($0) })
+
+        // When extraction produced no candidates, fall back to the inline
+        // evidence the synthesis model returned. It goes through the same URL
+        // whitelist and verbatim quote check, so an ungrounded URL is dropped.
+        var effectiveCandidates = input.candidates
+        if effectiveCandidates.isEmpty {
+            effectiveCandidates = input.draft.inlineEvidence.compactMap { raw in
+                guard let url = raw.url, !url.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                    return nil
+                }
+                return EvidenceCandidate(
+                    url: url,
+                    title: "",
+                    quote: raw.quote,
+                    claim: raw.claim,
+                    stance: raw.stance,
+                    publishedAt: raw.publishedAt,
+                    fetchedAt: input.now
+                )
+            }
+        }
+
         let evidence = buildEvidence(
-            candidates: input.candidates,
+            candidates: effectiveCandidates,
             documents: input.documents,
             allowed: allowed
         )
@@ -110,7 +132,7 @@ enum ReportValidator {
         let claims = buildClaims(
             draftClaims: input.draft.claims,
             plannedClaims: input.plannedClaims,
-            candidates: input.candidates.filter { allowed.contains(ContentIdentity.canonicalURL($0.url)) },
+            candidates: effectiveCandidates.filter { allowed.contains(ContentIdentity.canonicalURL($0.url)) },
             evidence: groupedEvidence,
             idRemap: idRemap,
             language: input.language
@@ -183,12 +205,14 @@ enum ReportValidator {
             limitations.append(L10n.string("research.limitation.lowTier", language: input.language))
         }
 
-        let verification = computeVerification(
+        var verification = computeVerification(
             evidence: groupedEvidence,
             claims: claims,
             independentDomainSet: independentDomains,
             notOnline: notOnline || input.pagesRead == 0
         )
+        verification.conflicts = uniqueNonEmpty(input.draft.conflicts)
+        verification.missing = uniqueNonEmpty(input.draft.missing)
 
         var report = BurstResearch(
             summary: input.draft.summary,

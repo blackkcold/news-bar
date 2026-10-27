@@ -155,4 +155,20 @@ final class ResearchCacheStoreTests: XCTestCase {
         let values = try directory.resourceValues(forKeys: [.isExcludedFromBackupKey])
         XCTAssertEqual(values.isExcludedFromBackup, true)
     }
+
+    func testCacheDoesNotPersistPlaintextQuery() async throws {
+        let directory = try researchTestDirectory()
+        let cache = ResearchCacheStore(directoryURL: directory)
+        let secret = "secret-query-token"
+        await cache.store(Data("payload".utf8), kind: .search, key: secret, now: now)
+
+        let searchDirectory = directory.appendingPathComponent("search", isDirectory: true)
+        let files = try FileManager.default.contentsOfDirectory(
+            at: searchDirectory,
+            includingPropertiesForKeys: nil
+        )
+        XCTAssertEqual(files.count, 1)
+        let raw = try String(contentsOf: files[0], encoding: .utf8)
+        XCTAssertFalse(raw.contains(secret))
+    }
 }

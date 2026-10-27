@@ -163,4 +163,22 @@ final class ResearchCoordinatorTests: XCTestCase {
         XCTAssertEqual(saved.status, .cancelled)
         XCTAssertNil(saved.report)
     }
+
+    @MainActor
+    func testSupersededCancellationIsNotRecordedAsFailure() async throws {
+        let record = queuedRecord("撤销授权")
+        let store = ResearchFakeStore(records: [record])
+        let coordinator = ResearchCoordinator(store: store, notifier: { _ in })
+        let cancelledMessage = L10n.string("research.error.cancelled", language: .zh)
+
+        await coordinator.schedule(recordID: record.id) { _, _ in
+            .failure(cancelledMessage)
+        }
+        await coordinator.waitForAll()
+
+        let stored = await store.record(id: record.id)
+        let saved = try XCTUnwrap(stored)
+        XCTAssertEqual(saved.status, .cancelled)
+        XCTAssertNil(saved.run.lastError)
+    }
 }

@@ -287,6 +287,9 @@ struct ResearchDataSection: View {
         ResearchCoordinator.shared.cancelAll()
         Task { @MainActor in
             do {
+                // Search snapshots contain the queries that produced the
+                // records we are deleting; clear them too.
+                await ResearchCacheStore.shared.clear(kind: .search)
                 try await ResearchStore.shared.deleteAll()
                 message = "research.data.clearedHistory".localized
             } catch {

@@ -78,6 +78,8 @@ struct ResearchRecord: Codable, Identifiable, Hashable, Sendable {
     var run: ResearchRun
     /// 0 = legacy single-pass report; 2 = the evidence-backed pipeline.
     var reportVersion: Int
+    /// Optional so records written before this field existed still decode.
+    var schemaVersion: Int? = nil
 
     static let aliasLimit = 8
 
