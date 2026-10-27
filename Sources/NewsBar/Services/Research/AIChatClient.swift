@@ -72,7 +72,13 @@ struct HTTPAIChatClient: AIChatClienting {
         model: String,
         disableDeepSeekThinking: Bool = false,
         timeout: TimeInterval = 60,
-        transport: @escaping Transport = { try await URLSession.shared.data(for: $0) }
+        transport: @escaping Transport = { request in
+            try await PrivateHTTP.data(
+                for: request,
+                maxBytes: PrivateHTTP.defaultMaxBytes,
+                timeout: request.timeoutInterval
+            )
+        }
     ) {
         self.connection = connection
         self.apiKey = apiKey

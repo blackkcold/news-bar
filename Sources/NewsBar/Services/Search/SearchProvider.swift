@@ -27,20 +27,12 @@ struct SearchRouterConfiguration: Sendable, Equatable {
 }
 
 enum SearchHTTP {
-    /// Ephemeral session: no cookies, no cached pages, no shared credentials.
-    static let session: URLSession = {
-        let configuration = URLSessionConfiguration.ephemeral
-        configuration.httpCookieStorage = nil
-        configuration.httpCookieAcceptPolicy = .never
-        configuration.urlCache = nil
-        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
-        configuration.timeoutIntervalForRequest = 20
-        configuration.timeoutIntervalForResource = 30
-        return URLSession(configuration: configuration)
-    }()
-
     static let transport: SearchHTTPTransport = { request in
-        try await session.data(for: request)
+        try await PrivateHTTP.data(
+            for: request,
+            maxBytes: PrivateHTTP.defaultMaxBytes,
+            timeout: 20
+        )
     }
 }
 

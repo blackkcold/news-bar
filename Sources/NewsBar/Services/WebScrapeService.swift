@@ -12,7 +12,13 @@ enum WebScrapeService {
         try await scrape(
             urlString: urlString,
             apiKey: apiKey,
-            transport: { request in try await SearchHTTP.session.data(for: request) }
+            transport: { request in
+                try await PrivateHTTP.data(
+                    for: request,
+                    maxBytes: maxResponseBytes,
+                    timeout: DepthProfile.pageTimeout
+                )
+            }
         )
     }
 

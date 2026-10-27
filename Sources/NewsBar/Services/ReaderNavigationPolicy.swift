@@ -41,22 +41,7 @@ enum ReaderNavigationPolicy {
     }
 
     static func isPublicAddress(_ address: String) -> Bool {
-        let lower = address.lowercased()
-        if lower.hasPrefix("::ffff:") { return isPublicAddress(String(lower.dropFirst(7))) }
-        if lower.contains(":") {
-            // Only globally routable 2000::/3, excluding transition/documentation ranges.
-            return (lower.hasPrefix("2") || lower.hasPrefix("3")) && !lower.hasPrefix("2001:db8") && !lower.hasPrefix("2002:")
-        }
-        let octets = lower.split(separator: ".").compactMap { Int($0) }
-        guard octets.count == 4, octets.allSatisfy({ (0...255).contains($0) }) else { return false }
-        let a = octets[0], b = octets[1]
-        return a != 0 && a != 10 && a != 127 && a < 224
-            && !(a == 172 && (16...31).contains(b))
-            && !(a == 192 && (b == 168 || b == 0))
-            && !(a == 169 && b == 254)
-            && !(a == 100 && (64...127).contains(b))
-            && !(a == 198 && (b == 18 || b == 19 || b == 51))
-            && !(a == 203 && b == 0)
+        IPAddress.isPublic(address)
     }
 
     /// Navigation DNS checks complement literal-host content rules. This is not a

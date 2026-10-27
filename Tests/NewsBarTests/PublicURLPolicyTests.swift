@@ -64,4 +64,49 @@ final class PublicURLPolicyTests: XCTestCase {
         XCTAssertTrue(PublicAddressPolicy.isPublicAddress("2606:4700:4700::1111"))
         XCTAssertFalse(PublicAddressPolicy.isPublicAddress("not-an-ip"))
     }
+
+    func testRejectsUncompressedIPv6LoopbackAndIPv4MappedForms() {
+        for host in [
+            "https://[0:0:0:0:0:0:0:1]/story",
+            "https://[0:0:0:0:0:0:0:0]/story",
+            "https://[0:0:0:0:0:ffff:7f00:1]/story",
+            "https://[0:0:0:0:0:ffff:8.8.8.8]/story",
+            "https://[::ffff:127.0.0.1]/story",
+        ] {
+            XCTAssertTrue(SecurityPolicies.validatePublicHTTPURL(host).isBlocked, host)
+        }
+    }
+
+    func testRejectsTransitionAndSiteLocalIPv6() {
+        for host in [
+            "https://[64:ff9b::7f00:1]/story",
+            "https://[64:ff9b::808:808]/story",
+            "https://[fec0::1]/story",
+            "https://[2001::1]/story",
+            "https://[2002:7f00:1::1]/story",
+            "https://[3fff::1]/story",
+        ] {
+            XCTAssertTrue(SecurityPolicies.validatePublicHTTPURL(host).isBlocked, host)
+        }
+    }
+
+    func testRejectsAmbiguousNumericHosts() {
+        for host in [
+            "https://010.0.0.1/story",
+            "https://0177.0.0.1/story",
+            "https://0x7f.0.0.1/story",
+        ] {
+            XCTAssertTrue(SecurityPolicies.validatePublicHTTPURL(host).isBlocked, host)
+        }
+    }
+
+    func testAllowsGlobalUnicastIPv6() {
+        for host in [
+            "https://[2001:4860:4860::8888]/story",
+            "https://[2606:4700:4700::1111]/story",
+            "https://[2a00:1450:4001:80f::200e]/story",
+        ] {
+            XCTAssertNotNil(SecurityPolicies.validatePublicHTTPURL(host).url, host)
+        }
+    }
 }

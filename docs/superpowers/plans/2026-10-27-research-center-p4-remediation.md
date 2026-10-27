@@ -45,9 +45,9 @@
 ## 批次 0 — 冻结与基线（0.5d）
 
 - [x] T0.1 隔离 `release/2.7.0` 与 `latest` 到 `release/_invalid/2026-10-27-dirty/`。
-- [ ] T0.2 提交当前绿色状态为 checkpoint。
-- [ ] T0.3 `git merge origin/main`（v2.7.1–v2.7.3），解冲突，`swift test` 全绿。
-- [ ] T0.4 记录测试数、耗时、已知 flaky。
+- [x] T0.2 提交当前绿色状态为 checkpoint（`c4ad7c0`，814 tests）。
+- [x] T0.3 `git merge origin/main`（v2.7.1–v2.7.3），解冲突，`swift test` 全绿（`e168b76`，850 tests）。
+- [x] T0.4 基线：850 tests / 2 skipped / 0 failed / 16.9s；无 flaky。
 
 **Gate 0:** 工作树干净、main 已合入、测试全绿。
 

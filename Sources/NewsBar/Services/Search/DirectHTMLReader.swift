@@ -176,22 +176,19 @@ struct DirectHTMLReader: Sendable {
     // MARK: - Live dependencies
 
     static let liveTransport: Transport = { request in
-        let configuration = URLSessionConfiguration.ephemeral
-        configuration.httpCookieStorage = nil
-        configuration.httpCookieAcceptPolicy = .never
-        configuration.urlCache = nil
-        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
-        configuration.timeoutIntervalForRequest = timeout
-        configuration.timeoutIntervalForResource = timeout
-        let session = URLSession(configuration: configuration)
-        defer { session.invalidateAndCancel() }
-
-        let blocker = RedirectBlocker()
-        let (data, response) = try await session.data(for: request, delegate: blocker)
-        guard let http = response as? HTTPURLResponse else {
+        do {
+            return try await PrivateHTTP.data(
+                for: request,
+                maxBytes: maxResponseBytes,
+                timeout: timeout
+            )
+        } catch PrivateHTTPError.tooLarge {
+            throw PageReadError.tooLarge
+        } catch let error as PageReadError {
+            throw error
+        } catch {
             throw PageReadError.http(0)
         }
-        return (data, http)
     }
 
     static let liveResolver: Resolver = { host in
@@ -237,17 +234,6 @@ struct DirectHTMLReader: Sendable {
             pointer = info.pointee.ai_next
         }
         return addresses
-    }
-}
-
-private final class RedirectBlocker: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
-    func urlSession(
-        _ session: URLSession,
-        task: URLSessionTask,
-        willPerformHTTPRedirection response: HTTPURLResponse,
-        newRequest request: URLRequest
-    ) async -> URLRequest? {
-        nil
     }
 }
 
