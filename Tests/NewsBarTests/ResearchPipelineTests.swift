@@ -417,7 +417,10 @@ final class ResearchPipelineTests: XCTestCase {
         let (pipeline, _) = makePipeline(
             directory: directory,
             ai: ai,
-            hits: [hit(reutersURL, title: "Reuters"), hit(bbcURL, title: "BBC")],
+            hits: [
+                hit(reutersURL, title: "Reuters", rank: 1),
+                hit(bbcURL, title: "BBC", rank: 2),
+            ],
             scrape: { url, _ in
                 url.contains("reuters") ? self.reutersText : self.bbcText
             }

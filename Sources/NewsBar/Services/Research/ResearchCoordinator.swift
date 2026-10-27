@@ -47,6 +47,7 @@ final class ResearchCoordinator {
     private struct Job {
         let token: UUID
         let recordID: String
+        let notify: Bool
         let executor: Executor
     }
 
@@ -83,7 +84,7 @@ final class ResearchCoordinator {
         startNextIfPossible()
     }
 
-    func schedule(recordID: String, executor: @escaping Executor) async {
+    func schedule(recordID: String, notify: Bool = true, executor: @escaping Executor) async {
         guard running[recordID] == nil,
               !queue.contains(where: { $0.recordID == recordID }) else { return }
         guard let record = await store.record(id: recordID) else { return }
@@ -95,7 +96,7 @@ final class ResearchCoordinator {
         guard running[recordID] == nil,
               !queue.contains(where: { $0.recordID == recordID }) else { return }
 
-        let job = Job(token: UUID(), recordID: recordID, executor: executor)
+        let job = Job(token: UUID(), recordID: recordID, notify: notify, executor: executor)
         if running.count < maxConcurrent {
             start(job)
         } else {
@@ -260,7 +261,7 @@ final class ResearchCoordinator {
         try? await store.save(current)
         postChanged()
 
-        if current.status == .ready {
+        if current.status == .ready, job.notify {
             notifier(current)
         }
     }

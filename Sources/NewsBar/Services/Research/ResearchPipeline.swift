@@ -258,6 +258,15 @@ struct ResearchPipeline: Sendable {
                 return await fail(L10n.string("research.error.cancelled", language: language))
             } catch {
                 anySearchFailed = true
+                // A failed query still sent HTTP requests to every enabled
+                // provider. Charge them, or the per-task cap is enforced only
+                // against successful calls.
+                let attempted = min(
+                    remainingCalls,
+                    max(1, configuration.searchConfiguration.enabled.count)
+                )
+                state.searchCalls += attempted
+                ledger.recordSearchCalls(attempted, origin: origin)
             }
             state.queriesCompleted += 1
             await progress(snapshot(.searching))

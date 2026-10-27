@@ -445,17 +445,22 @@ enum ReportValidator {
             }
         }
 
-        let supportDomains = independentDomains(for: evidence, stance: .supports)
-        let refuteDomains = independentDomains(for: evidence, stance: .refutes)
-        let tier12Support = tier12Domains(evidence, stance: .supports)
-        let tier12Refute = tier12Domains(evidence, stance: .refutes)
-
         return claims.map { claim in
             var ids = claim.evidenceIDs.compactMap { idRemap[$0] ?? ($0.isEmpty ? nil : $0) }
             ids = unique(ids).filter { id in evidence.contains(where: { $0.id == id }) }
 
+            // Only the evidence cited by *this* claim counts, and only quotes
+            // that were found verbatim in the fetched page. A claim backed only
+            // by tier-3/4 sources can no longer borrow another claim's tier-1
+            // domain, and a hallucinated quote cannot support anything.
+            let claimEvidence = evidence.filter { ids.contains($0.id) && $0.quoteVerified }
+            let supportDomains = independentDomains(for: claimEvidence, stance: .supports)
+            let refuteDomains = independentDomains(for: claimEvidence, stance: .refutes)
+            let tier12Support = tier12Domains(claimEvidence, stance: .supports)
+            let tier12Refute = tier12Domains(claimEvidence, stance: .refutes)
+
             let status: EvidenceStance?
-            if ids.isEmpty {
+            if ids.isEmpty || claimEvidence.isEmpty {
                 status = nil
             } else if tier12Refute.count >= 2, tier12Support.isEmpty, supportDomains.isEmpty {
                 status = .refutes
@@ -522,10 +527,15 @@ enum ReportValidator {
         verification.claims = claims
         verification.independentSources = independentDomainSet.count
 
-        let supportDomains = independentDomains(for: evidence, stance: .supports)
-        let refuteDomains = independentDomains(for: evidence, stance: .refutes)
-        let tier12Support = tier12Domains(evidence, stance: .supports)
-        let tier12Refute = tier12Domains(evidence, stance: .refutes)
+        // Only verified evidence actually cited by a claim may shape the
+        // verdict; uncited tier-1 pages must not upgrade an unrelated claim.
+        let citedIDs = Set(claims.flatMap(\.evidenceIDs))
+        let citedEvidence = evidence.filter { citedIDs.contains($0.id) && $0.quoteVerified }
+
+        let supportDomains = independentDomains(for: citedEvidence, stance: .supports)
+        let refuteDomains = independentDomains(for: citedEvidence, stance: .refutes)
+        let tier12Support = tier12Domains(citedEvidence, stance: .supports)
+        let tier12Refute = tier12Domains(citedEvidence, stance: .refutes)
         let otherSupport = supportDomains.subtracting(tier12Support)
 
         let keyClaims = claims
@@ -552,23 +562,26 @@ enum ReportValidator {
         }
 
         let tier12Independent = independentDomainSet.filter { domain in
-            evidence.contains { item in
+            citedEvidence.contains { item in
                 (item.domain.isEmpty ? item.canonicalURL : item.domain) == domain
                     && item.tier.rawValue <= 2
             }
         }.count
+        let hasPrimary = citedEvidence.contains { $0.tier == .primary }
 
         switch verification.verdict {
         case .confirmed, .mostlyConfirmed:
-            if tier12Independent >= 3 { verification.strength = 4 }
+            // Strength 4 requires a primary source plus at least three
+            // independent tier-1/2 domains; three tier-2 outlets alone cap at 3.
+            if hasPrimary, tier12Independent >= 3 { verification.strength = 4 }
             else if tier12Independent >= 2 { verification.strength = 3 }
             else if tier12Independent >= 1 { verification.strength = 2 }
             else { verification.strength = 1 }
-        case .mixed, .refuted, .unverified:
-            if tier12Independent >= 2 { verification.strength = 3 }
-            else if tier12Independent >= 1 { verification.strength = 2 }
-            else if !evidence.isEmpty { verification.strength = 1 }
-            else { verification.strength = 0 }
+        case .mixed, .refuted:
+            verification.strength = tier12Independent >= 2 ? 2 : (tier12Independent >= 1 ? 1 : 0)
+        case .unverified:
+            // Offline or unsupported runs never claim more than "unverified".
+            verification.strength = 0
         }
         return verification
     }

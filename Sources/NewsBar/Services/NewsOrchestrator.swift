@@ -768,7 +768,9 @@ final class NewsOrchestrator {
     /// Detects new Weibo "爆" topics and pushes a single notification each with
     /// AI research pre-generated. De-duplicates by title and respects a cooldown.
     private func handleBurstTopics(settings: AppSettings) async {
-        guard settings.burstPushEnabled, settings.researchAutoEnabled else { return }
+        // `researchAutoEnabled` is the single master switch. `burstPushEnabled`
+        // only decides whether the finished report also raises a notification.
+        guard settings.researchAutoEnabled else { return }
         let now = Date()
         let epoch = InterestController.shared.state.consentEpoch
 
@@ -799,7 +801,12 @@ final class NewsOrchestrator {
             let neverStarted = record.run.startedAt == nil
             let cooledDown = now.timeIntervalSince(record.updatedAt) >= 6 * 3_600
             if neverStarted || (!record.status.isActive && cooledDown) {
-                await scheduleResearch(recordID: record.id, settings: settings, forceSearch: false)
+                await scheduleResearch(
+                    recordID: record.id,
+                    settings: settings,
+                    forceSearch: false,
+                    notify: settings.burstPushEnabled
+                )
             }
         }
 
@@ -846,7 +853,9 @@ final class NewsOrchestrator {
             store: researchStore
         ) else { return nil }
 
-        if record.run.startedAt == nil || !record.status.isActive {
+        // A finished record opens as-is; re-running is an explicit action from
+        // the detail view, not a side effect of clicking "verify" again.
+        if record.run.startedAt == nil {
             await scheduleResearch(recordID: record.id, settings: settings, forceSearch: false)
         }
         await refreshResearchSummary()
@@ -862,10 +871,11 @@ final class NewsOrchestrator {
     private func scheduleResearch(
         recordID: String,
         settings: AppSettings,
-        forceSearch: Bool
+        forceSearch: Bool,
+        notify: Bool = true
     ) async {
         await ResearchCoordinator.shared.setMaxConcurrent(settings.researchMaxConcurrent)
-        await ResearchCoordinator.shared.schedule(recordID: recordID) { [weak self] record, progress in
+        await ResearchCoordinator.shared.schedule(recordID: recordID, notify: notify) { [weak self] record, progress in
             guard let self else {
                 return .failure(L10n.string("research.error.unavailable", language: settings.appLanguage))
             }
@@ -1023,7 +1033,7 @@ final class NewsOrchestrator {
     /// inline call and the shared 15-minute cooldown are gone, so a keyword
     /// match no longer blocks (or is blocked by) burst research.
     private func handleKeywordTopics(settings: AppSettings) async {
-        guard settings.keywordTrackingEnabled else { return }
+        guard settings.researchAutoEnabled, settings.keywordTrackingEnabled else { return }
         let active = settings.activeKeywords
         guard !active.isEmpty else { return }
 
