@@ -63,6 +63,7 @@ final class ResearchCenterModel {
     private let coordinator: ResearchCoordinator
     private let orchestrator: NewsOrchestrator
     private let settings: AppSettings
+    private let clearHistoryAction: @MainActor () async -> ResearchClearResult
 
     var entries: [ResearchIndexEntry] = []
     var selectedID: String? {
@@ -84,12 +85,16 @@ final class ResearchCenterModel {
         orchestrator: NewsOrchestrator,
         settings: AppSettings,
         store: any ResearchPersisting = ResearchStore.shared,
-        coordinator: ResearchCoordinator = .shared
+        coordinator: ResearchCoordinator = .shared,
+        clearHistoryAction: (@MainActor () async -> ResearchClearResult)? = nil
     ) {
         self.orchestrator = orchestrator
         self.settings = settings
         self.store = store
         self.coordinator = coordinator
+        self.clearHistoryAction = clearHistoryAction ?? { [orchestrator] in
+            await orchestrator.clearResearchHistory()
+        }
 
         observer = NotificationCenter.default.addObserver(
             forName: .researchRecordsChanged,
@@ -260,10 +265,8 @@ final class ResearchCenterModel {
     }
 
     func clearHistory() async {
-        coordinator.cancelAll()
-        do {
-            try await store.deleteAll()
-        } catch {
+        let result = await clearHistoryAction()
+        if !result.isComplete {
             errorMessage = L10n.string("research.error.delete", language: settings.appLanguage)
         }
         selectedID = nil

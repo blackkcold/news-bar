@@ -154,7 +154,7 @@ struct ResearchPipeline: Sendable {
         }
 
         func budgetMessage() -> String {
-            if ledger.snapshot().isCorrupt {
+            if !ledger.snapshot().availability.isUsable {
                 return L10n.string("research.error.ledger", language: language)
             }
             return L10n.string("research.error.budget", language: language)
@@ -228,6 +228,10 @@ struct ResearchPipeline: Sendable {
         var hits: [SearchHit] = []
         var anySearchSucceeded = false
         var anySearchFailed = false
+        var ledgerWriteFailed = false
+        /// A 403 is not retried for the rest of this research pass, but it is
+        /// not remembered across passes either.
+        var blockedProviders: Set<SearchProviderID> = []
 
         for planned in plannedQueries {
             if let reason = await checkStop() { return await fail(reason) }
@@ -242,31 +246,59 @@ struct ResearchPipeline: Sendable {
                 language: language.bcp47,
                 maxResults: 6
             )
+            // One ticket per query. Every dispatched request consumes a slot
+            // before it leaves the process; skips and cache hits cost nothing.
+            // The same ticket is read after success, failure and cancellation,
+            // so the pipeline never has to guess how many requests were sent.
+            let ticket = SearchAttemptTicket(limit: remainingCalls)
+            var settled = false
+            func settleSearchCalls() {
+                guard !settled else { return }
+                settled = true
+                let used = ticket.used
+                guard used > 0 else { return }
+                state.searchCalls += used
+                if !ledger.recordSearchCalls(used, origin: origin) {
+                    ledgerWriteFailed = true
+                }
+            }
+
+            var queryConfiguration = configuration.searchConfiguration
+            queryConfiguration.enabled.subtract(blockedProviders)
             do {
                 let batch = try await searchRouter.search(
                     query,
-                    configuration: configuration.searchConfiguration,
-                    maxAttempts: remainingCalls
+                    configuration: queryConfiguration,
+                    maxAttempts: remainingCalls,
+                    ticket: ticket
                 )
+                settleSearchCalls()
                 anySearchSucceeded = true
-                state.searchCalls += batch.attempts
                 state.failovers += batch.failovers
                 state.usedProviders.formUnion(batch.providers)
-                ledger.recordSearchCalls(batch.attempts, origin: origin)
+                for failure in batch.failures where failure.reason == .forbidden {
+                    if let provider = failure.provider {
+                        blockedProviders.insert(provider)
+                    }
+                }
                 hits.append(contentsOf: batch.hits)
             } catch is CancellationError {
+                settleSearchCalls()
                 return await fail(L10n.string("research.error.cancelled", language: language))
-            } catch {
+            } catch let unavailable as SearchUnavailableError {
+                settleSearchCalls()
                 anySearchFailed = true
-                // A failed query still sent HTTP requests to every enabled
-                // provider. Charge them, or the per-task cap is enforced only
-                // against successful calls.
-                let attempted = min(
-                    remainingCalls,
-                    max(1, configuration.searchConfiguration.enabled.count)
-                )
-                state.searchCalls += attempted
-                ledger.recordSearchCalls(attempted, origin: origin)
+                for failure in unavailable.failures where failure.reason == .forbidden {
+                    if let provider = failure.provider {
+                        blockedProviders.insert(provider)
+                    }
+                }
+            } catch {
+                settleSearchCalls()
+                anySearchFailed = true
+            }
+            if ledgerWriteFailed {
+                return await fail(budgetMessage())
             }
             state.queriesCompleted += 1
             await progress(snapshot(.searching))

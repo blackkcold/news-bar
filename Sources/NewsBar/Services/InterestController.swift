@@ -78,6 +78,9 @@ final class InterestController {
     @ObservationIgnored private var pendingSnapshot: LocalInterestState?
     @ObservationIgnored private var pendingReset = false
     @ObservationIgnored private var lastPruneAt = Date.distantPast
+    /// Highest revision confirmed written to disk. `flush(revision:)` reports
+    /// success only when this covers the caller's target.
+    @ObservationIgnored private var lastPersistedRevision = 0
     private var loading: Task<Void, Never>?
 
     init(store: LocalInterestStore = LocalInterestStore()) { self.store = store }
@@ -370,9 +373,14 @@ final class InterestController {
         persist()
     }
 
-    func flush() async {
+    @discardableResult
+    func flush(revision: Int? = nil) async -> Bool {
         flushPendingEvents()
         await writeTask?.value
+        if let revision {
+            return storageError == nil && lastPersistedRevision >= revision
+        }
+        return storageError == nil && pendingSnapshot == nil
     }
 
     @discardableResult
@@ -477,6 +485,7 @@ final class InterestController {
             do {
                 if reset { try await store.reset(snapshot) }
                 else { try await store.save(snapshot) }
+                lastPersistedRevision = max(lastPersistedRevision, snapshot.revision)
             } catch {
                 pendingSnapshot = nil
                 pendingReset = false

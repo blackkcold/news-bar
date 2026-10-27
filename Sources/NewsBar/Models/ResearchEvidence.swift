@@ -41,6 +41,47 @@ struct EvidenceItem: Codable, Hashable, Sendable, Identifiable {
     let fetchedAt: Date
 }
 
+extension EvidenceItem {
+    enum CodingKeys: String, CodingKey {
+        case id, url, canonicalURL, domain, title, publishedAt, quote
+        case quoteVerified, stance, tier, syndicationGroup, fetchedAt
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        // Identity and link are authoritative: without them the evidence
+        // cannot be attributed, so the record is not silently invented.
+        id = try container.decode(String.self, forKey: .id)
+        url = try container.decode(String.self, forKey: .url)
+        let rawCanonical = try container.decodeIfPresent(String.self, forKey: .canonicalURL)
+        canonicalURL = rawCanonical?.isEmpty == false
+            ? rawCanonical!
+            : ContentIdentity.canonicalURL(url)
+        let rawDomain = try container.decodeIfPresent(String.self, forKey: .domain)
+        if let rawDomain, !rawDomain.isEmpty {
+            domain = rawDomain
+        } else if let host = URL(string: url)?.host, !host.isEmpty {
+            domain = SourceTierCatalog.registrableDomain(host)
+        } else {
+            domain = ""
+        }
+        title = try container.decodeIfPresent(String.self, forKey: .title) ?? ""
+        publishedAt = try container.decodeIfPresent(Date.self, forKey: .publishedAt)
+        quote = try container.decodeIfPresent(String.self, forKey: .quote) ?? ""
+        // Missing verification flags are never upgraded to "verified".
+        quoteVerified = try container.decodeIfPresent(Bool.self, forKey: .quoteVerified) ?? false
+        stance = try container.decodeIfPresent(EvidenceStance.self, forKey: .stance) ?? .unclear
+        // A missing tier is derived from the URL with the bundled catalog and
+        // never defaults to `primary`. A present value is kept so a legitimate
+        // catalog result survives a round trip; the report validator still
+        // recomputes tiers when it builds a report.
+        tier = try container.decodeIfPresent(SourceTier.self, forKey: .tier)
+            ?? SourceTierCatalog.info(for: url).tier
+        syndicationGroup = try container.decodeIfPresent(String.self, forKey: .syndicationGroup)
+        fetchedAt = try container.decodeIfPresent(Date.self, forKey: .fetchedAt) ?? .distantPast
+    }
+}
+
 struct VerificationReport: Codable, Hashable, Sendable {
     enum Verdict: String, Codable, Sendable, CaseIterable {
         case confirmed, mostlyConfirmed, mixed, unverified, refuted
@@ -56,6 +97,25 @@ struct VerificationReport: Codable, Hashable, Sendable {
     var missing: [String] = []
 }
 
+extension VerificationReport {
+    enum CodingKeys: String, CodingKey {
+        case verdict, strength, independentSources, claims, conflicts, missing
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        verdict = try container.decodeIfPresent(Verdict.self, forKey: .verdict) ?? .unverified
+        strength = max(0, min(4, try container.decodeIfPresent(Int.self, forKey: .strength) ?? 0))
+        independentSources = max(
+            0,
+            try container.decodeIfPresent(Int.self, forKey: .independentSources) ?? 0
+        )
+        claims = try container.decodeIfPresent([ClaimCheck].self, forKey: .claims) ?? []
+        conflicts = try container.decodeIfPresent([String].self, forKey: .conflicts) ?? []
+        missing = try container.decodeIfPresent([String].self, forKey: .missing) ?? []
+    }
+}
+
 struct ClaimCheck: Codable, Hashable, Sendable, Identifiable {
     var id: String { claim }
     let claim: String
@@ -63,6 +123,20 @@ struct ClaimCheck: Codable, Hashable, Sendable, Identifiable {
     var status: EvidenceStance?
     var evidenceIDs: [String]
     var note: String
+}
+
+extension ClaimCheck {
+    enum CodingKeys: String, CodingKey {
+        case claim, status, evidenceIDs, note
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        claim = try container.decode(String.self, forKey: .claim)
+        status = try container.decodeIfPresent(EvidenceStance.self, forKey: .status)
+        evidenceIDs = try container.decodeIfPresent([String].self, forKey: .evidenceIDs) ?? []
+        note = try container.decodeIfPresent(String.self, forKey: .note) ?? ""
+    }
 }
 
 /// How a report was produced, shown in the report's method section.
@@ -74,4 +148,21 @@ struct ResearchMethod: Codable, Hashable, Sendable {
     var generatedAt: Date
     var promptVersion: Int
     var failovers: Int
+}
+
+extension ResearchMethod {
+    enum CodingKeys: String, CodingKey {
+        case providers, queries, pagesRead, recency, generatedAt, promptVersion, failovers
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        providers = try container.decodeIfPresent([String].self, forKey: .providers) ?? []
+        queries = try container.decodeIfPresent([String].self, forKey: .queries) ?? []
+        pagesRead = try container.decodeIfPresent(Int.self, forKey: .pagesRead) ?? 0
+        recency = try container.decodeIfPresent(String.self, forKey: .recency) ?? ""
+        generatedAt = try container.decodeIfPresent(Date.self, forKey: .generatedAt) ?? .distantPast
+        promptVersion = try container.decodeIfPresent(Int.self, forKey: .promptVersion) ?? 0
+        failovers = try container.decodeIfPresent(Int.self, forKey: .failovers) ?? 0
+    }
 }

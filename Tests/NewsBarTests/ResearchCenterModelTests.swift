@@ -51,7 +51,11 @@ final class ResearchCenterModelTests: XCTestCase {
             orchestrator: orchestrator,
             settings: settings,
             store: store,
-            coordinator: coordinator
+            coordinator: coordinator,
+            clearHistoryAction: {
+                try? await store.deleteAll()
+                return ResearchClearResult(isComplete: true)
+            }
         )
         return (model, store, orchestrator)
     }

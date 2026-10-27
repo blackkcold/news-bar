@@ -77,6 +77,14 @@ final class NewsOrchestrator {
     private let researchCacheStore = ResearchCacheStore.shared
     private let researchSearchRouter = SearchRouter()
     private let researchLedger = ResearchLedger.shared
+    private let researchClearIntentStore = ResearchClearIntentStore()
+    /// True from the moment a clear starts until every stage is verified. New
+    /// burst/keyword work is refused while it is set.
+    private(set) var isClearingResearchHistory = false
+    /// A damaged or future-version intent keeps automation paused rather than
+    /// risking a re-import of artifacts the user asked to delete.
+    private(set) var isResearchClearBlocked = false
+    private var researchClearGeneration = 0
     @ObservationIgnored private var researchObserver: NSObjectProtocol?
     private var legacyResearchImported = false
     private var aiSummaryCacheStore: AISummaryCacheStore {
@@ -770,7 +778,9 @@ final class NewsOrchestrator {
     private func handleBurstTopics(settings: AppSettings) async {
         // `researchAutoEnabled` is the single master switch. `burstPushEnabled`
         // only decides whether the finished report also raises a notification.
-        guard settings.researchAutoEnabled else { return }
+        guard settings.researchAutoEnabled,
+              !isClearingResearchHistory,
+              !isResearchClearBlocked else { return }
         let now = Date()
         let epoch = InterestController.shared.state.consentEpoch
 
@@ -831,6 +841,9 @@ final class NewsOrchestrator {
 
     func markResearchRead(recordID: String) async {
         guard var record = await researchStore.record(id: recordID) else { return }
+        // A corrupt or newer-version placeholder is read-only; writing it would
+        // destroy bytes this build does not understand.
+        guard record.status != .corrupt, record.loadIssue == nil else { return }
         guard !record.isRead else { return }
         record.isRead = true
         try? await researchStore.save(record)
@@ -972,6 +985,23 @@ final class NewsOrchestrator {
         return execution
     }
 
+    /// Settings-facing snapshot of the same router that runs research. It
+    /// contains no key, fingerprint, query or raw provider error.
+    func searchProviderStatuses(settings: AppSettings) async -> [SearchProviderStatus] {
+        let keys = await resolveSearchKeys(settings: settings)
+        let configuration = SearchRouterConfiguration(
+            enabled: settings.enabledSearchProviders,
+            keys: keys
+        )
+        return await researchSearchRouter.statusSnapshot(configuration: configuration)
+    }
+
+    /// Clears only this provider's auth block. Never sends a request, never
+    /// clears a quota cooldown and never touches the ledger.
+    func clearSearchAuthBlock(for provider: SearchProviderID) async {
+        await researchSearchRouter.clearAuthBlock(for: provider)
+    }
+
     /// Search keys live in the encrypted store, with the legacy Firecrawl
     /// UserDefaults value kept as a migration fallback.
     private func resolveSearchKeys(settings: AppSettings) async -> [SearchProviderID: String] {
@@ -1033,7 +1063,10 @@ final class NewsOrchestrator {
     /// inline call and the shared 15-minute cooldown are gone, so a keyword
     /// match no longer blocks (or is blocked by) burst research.
     private func handleKeywordTopics(settings: AppSettings) async {
-        guard settings.researchAutoEnabled, settings.keywordTrackingEnabled else { return }
+        guard settings.researchAutoEnabled,
+              settings.keywordTrackingEnabled,
+              !isClearingResearchHistory,
+              !isResearchClearBlocked else { return }
         let active = settings.activeKeywords
         guard !active.isEmpty else { return }
 
@@ -1697,6 +1730,32 @@ final class NewsOrchestrator {
         let interest = InterestController.shared
         await interest.prepare()
         if !researchStateLoaded, interest.isReady {
+            switch researchClearIntentStore.load() {
+            case .pending:
+                // Do not load legacy artifacts: the user already asked for
+                // them to be discarded. Finish that work first.
+                researchStateLoaded = true
+                let saved = interest.state.research
+                notifiedBurstTopics = saved.notifiedBursts
+                notifiedKeywordPairs = saved.notifiedKeywords
+                burstResearchCache = [:]
+                let clearResult = await clearResearchHistory()
+                if !clearResult.isComplete {
+                    // The intent file is still there; keep automation paused
+                    // so nothing can import artifacts back while it is pending.
+                    isResearchClearBlocked = true
+                }
+                await refreshResearchSummary()
+                return
+            case .unsupportedVersion:
+                researchStateLoaded = true
+                isResearchClearBlocked = true
+                burstResearchCache = [:]
+                await refreshResearchSummary()
+                return
+            case .none:
+                break
+            }
             let saved = interest.state.research
             burstResearchCache = saved.artifacts
             notifiedBurstTopics = saved.notifiedBursts
@@ -1725,7 +1784,9 @@ final class NewsOrchestrator {
             currentItems: weiboItems,
             store: researchStore
         )
-        guard !outcome.failed else { return }
+        // Conflicts and unverified writes keep both the artifacts and the
+        // marker so the next launch retries instead of losing history.
+        guard outcome.isComplete else { return }
 
         legacyResearchImported = true
         var research = saved
@@ -1749,6 +1810,82 @@ final class NewsOrchestrator {
         await InterestController.shared.flush()
     }
 
+    /// Single entry point for every "clear research history" action.
+    ///
+    /// Order matters: a durable intent is written first, then automation stops,
+    /// then the disposable cache, the authoritative records and the legacy
+    /// artifacts are cleared, each stage recorded. The intent is removed only
+    /// after the result is verified, so a crash resumes instead of re-importing.
+    @discardableResult
+    func clearResearchHistory() async -> ResearchClearResult {
+        let existingIntent: ResearchClearIntent?
+        switch researchClearIntentStore.load() {
+        case .pending(let intent):
+            existingIntent = intent
+        case .unsupportedVersion:
+            isResearchClearBlocked = true
+            return ResearchClearResult(error: "clear-intent-unsupported")
+        case .none:
+            existingIntent = nil
+        }
+        return await performClearResearchHistory(existing: existingIntent)
+    }
+
+    private func performClearResearchHistory(
+        existing: ResearchClearIntent?
+    ) async -> ResearchClearResult {
+        guard !isClearingResearchHistory else {
+            return ResearchClearResult(error: "clear already running")
+        }
+        isClearingResearchHistory = true
+        researchClearGeneration += 1
+        let generation = researchClearGeneration
+        defer { isClearingResearchHistory = false }
+
+        // Once the user has asked to clear history, no later persistence pass
+        // may write the in-memory artifacts back, even if a stage fails.
+        burstResearchCache = [:]
+        legacyResearchImported = true
+
+        await InterestController.shared.prepare()
+        let interest = InterestController.shared
+        let clearer = ResearchHistoryClearer(
+            store: researchStore,
+            cache: researchCacheStore,
+            intentStore: researchClearIntentStore,
+            cancelResearch: {
+                // Existing tasks are cancelled; late writes are additionally
+                // blocked by the coordinator's generation check and the
+                // store's deleted-ID tombstones.
+                ResearchCoordinator.shared.cancelAll()
+            },
+            clearArtifacts: {
+                let epoch = interest.state.consentEpoch
+                var research = interest.state.research
+                research.artifacts = [:]
+                interest.updateResearch(research, epoch: epoch)
+                let targetRevision = interest.state.revision
+                return await interest.flush(revision: targetRevision)
+            },
+            verifyArtifactsCleared: {
+                interest.state.research.artifacts.isEmpty
+            }
+        )
+
+        let result = await clearer.run(existing: existing, generation: generation)
+        guard result.isComplete else { return result }
+
+        isResearchClearBlocked = false
+        researchSummary = .zero
+        researchHighlights = []
+        postResearchRecordsChanged()
+        return result
+    }
+
+    private func postResearchRecordsChanged() {
+        NotificationCenter.default.post(name: .researchRecordsChanged, object: nil)
+    }
+
     func clearPersonalizedArtifacts() async {
         NotificationService.clearPersonalizedNotifications()
         for language in AppLanguage.allCases { await AISummaryCacheStore(language: language).clear() }
@@ -1767,8 +1904,7 @@ final class NewsOrchestrator {
         researchSummary = .zero
         researchHighlights = []
         legacyResearchImported = true
-        ResearchCoordinator.shared.cancelAll()
-        try? await researchStore.deleteAll()
+        _ = await clearResearchHistory()
     }
 
     func clearCache() async {

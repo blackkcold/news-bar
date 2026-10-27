@@ -2,13 +2,16 @@ import SwiftUI
 
 /// Compact three-column view of today's shared research ledger. The stacked bar
 /// shows consumption against the daily AI cap; the legend breaks it down by
-/// origin (burst / keyword / manual).
+/// origin (burst / keyword / manual). When the file cannot be read the view
+/// says so explicitly instead of painting a fake zero.
 struct ResearchLedgerView: View {
     @Environment(AppSettings.self) private var settings
     private let ledger: ResearchLedger
 
     @State private var snapshot = LedgerSnapshot.empty
     @State private var showsResetConfirmation = false
+    @State private var resetMessage: String?
+    @State private var resetMessageIsError = false
 
     init(ledger: ResearchLedger = .shared) {
         self.ledger = ledger
@@ -16,10 +19,34 @@ struct ResearchLedgerView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 9) {
-            if snapshot.isCorrupt {
-                corruptState
-            } else {
+            switch snapshot.availability {
+            case .loading:
+                loadingState
+            case .available:
                 usageState
+            case .corrupt:
+                unavailableState(
+                    titleKey: "research.error.ledger",
+                    hintKey: "research.ledger.corruptHint",
+                    allowsReset: true
+                )
+            case .ioUnavailable:
+                unavailableState(
+                    titleKey: "research.ledger.unavailable",
+                    hintKey: "research.ledger.unavailableHint",
+                    allowsReset: false
+                )
+            case .unsupportedVersion:
+                unavailableState(
+                    titleKey: "research.ledger.unsupported",
+                    hintKey: "research.ledger.unsupportedHint",
+                    allowsReset: false
+                )
+            }
+            if let resetMessage {
+                Text(resetMessage)
+                    .font(.caption2)
+                    .foregroundStyle(resetMessageIsError ? .red : .secondary)
             }
         }
         .task { refresh() }
@@ -32,12 +59,26 @@ struct ResearchLedgerView: View {
             titleVisibility: .visible
         ) {
             Button("research.ledger.reset".localized, role: .destructive) {
-                ledger.resetToday()
+                let succeeded = ledger.resetToday()
+                resetMessage = succeeded
+                    ? "research.ledger.reset.done".localized
+                    : "research.ledger.reset.failed".localized
+                resetMessageIsError = !succeeded
                 refresh()
             }
             Button("research.data.cancel".localized, role: .cancel) {}
         } message: {
             Text("research.ledger.reset.message".localized)
+        }
+    }
+
+    private var loadingState: some View {
+        HStack(spacing: 6) {
+            ProgressView()
+                .controlSize(.small)
+            Text("research.ledger.loading".localized)
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
     }
 
@@ -74,24 +115,40 @@ struct ResearchLedgerView: View {
         }
     }
 
-    private var corruptState: some View {
+    private func unavailableState(
+        titleKey: String,
+        hintKey: String,
+        allowsReset: Bool
+    ) -> some View {
         HStack(alignment: .top, spacing: 8) {
             Image(systemName: "exclamationmark.triangle.fill")
                 .font(.system(size: 12))
                 .foregroundStyle(.orange)
             VStack(alignment: .leading, spacing: 4) {
-                Text("research.error.ledger".localized)
+                Text(titleKey.localized)
                     .font(.system(size: 11, weight: .medium))
-                Text("research.ledger.corruptHint".localized)
+                Text(hintKey.localized)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
+                Text("research.ledger.usageUnknown".localized)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .accessibilityLabel("research.ledger.usageUnknown".localized)
             }
             Spacer(minLength: 0)
-            Button("research.ledger.reset".localized) {
-                showsResetConfirmation = true
+            if allowsReset {
+                Button("research.ledger.reset".localized) {
+                    showsResetConfirmation = true
+                }
+                .buttonStyle(EditorialActionButtonStyle(compact: true))
+                .controlSize(.small)
+                .disabled(ResearchActivity.isActive)
+                .help(
+                    ResearchActivity.isActive
+                        ? "research.ledger.reset.blocked".localized
+                        : ""
+                )
             }
-            .buttonStyle(EditorialActionButtonStyle(compact: true))
-            .controlSize(.small)
         }
     }
 

@@ -64,18 +64,15 @@ actor AISummaryCacheStore {
     }
 
     func load() -> AISummaryCacheEntry? {
+        _ = PrivateFile.tightenExistingFile(fileURL)
         guard let data = try? Data(contentsOf: fileURL) else { return nil }
         return try? JSONDecoder().decode(AISummaryCacheEntry.self, from: data)
     }
 
     func save(_ entry: AISummaryCacheEntry) {
         do {
-            try FileManager.default.createDirectory(
-                at: fileURL.deletingLastPathComponent(),
-                withIntermediateDirectories: true
-            )
             let data = try JSONEncoder().encode(entry)
-            try data.write(to: fileURL, options: .atomic)
+            try PrivateFile.write(data, to: fileURL, durable: false)
         } catch {
             NSLog("[AISummaryCacheStore] persist failed: %@", error.localizedDescription)
         }

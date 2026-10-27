@@ -4,10 +4,39 @@ private struct CacheClearActionKey: EnvironmentKey {
     static let defaultValue: (() -> Void)? = nil
 }
 
+private struct ResearchHistoryClearActionKey: EnvironmentKey {
+    static let defaultValue: (() async -> ResearchClearResult)? = nil
+}
+
+private struct SearchProviderStatusActionKey: EnvironmentKey {
+    static let defaultValue: (@MainActor (AppSettings) async -> [SearchProviderStatus])? = nil
+}
+
+private struct SearchAuthRetryActionKey: EnvironmentKey {
+    static let defaultValue: (@MainActor (SearchProviderID) async -> Void)? = nil
+}
+
 extension EnvironmentValues {
     var cacheClearAction: (() -> Void)? {
         get { self[CacheClearActionKey.self] }
         set { self[CacheClearActionKey.self] = newValue }
+    }
+
+    /// Settings and About both clear research history through the one
+    /// orchestrator-owned flow.
+    var researchHistoryClearAction: (() async -> ResearchClearResult)? {
+        get { self[ResearchHistoryClearActionKey.self] }
+        set { self[ResearchHistoryClearActionKey.self] = newValue }
+    }
+
+    var searchProviderStatusAction: (@MainActor (AppSettings) async -> [SearchProviderStatus])? {
+        get { self[SearchProviderStatusActionKey.self] }
+        set { self[SearchProviderStatusActionKey.self] = newValue }
+    }
+
+    var searchAuthRetryAction: (@MainActor (SearchProviderID) async -> Void)? {
+        get { self[SearchAuthRetryActionKey.self] }
+        set { self[SearchAuthRetryActionKey.self] = newValue }
     }
 }
 

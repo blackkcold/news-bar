@@ -18,6 +18,10 @@ enum ResearchPaths {
     static var ledgerFile: URL {
         researchDirectory.appendingPathComponent("ledger.json")
     }
+
+    static var clearIntentFile: URL {
+        researchDirectory.appendingPathComponent("clear-intent.json")
+    }
 }
 
 /// Lightweight projection of a record for list rendering and index rebuilds.
@@ -39,8 +43,12 @@ struct ResearchIndexEntry: Codable, Hashable, Sendable, Identifiable {
     let verdict: VerificationReport.Verdict?
     let hasReport: Bool
     let aliasCount: Int
+    var issue: ResearchEntryIssue?
+    /// Version recorded when the projection was written. `nil` means the index
+    /// predates the field, so the bootstrap probes that file once.
+    var schemaVersion: Int?
 
-    init(record: ResearchRecord) {
+    init(record: ResearchRecord, issue: ResearchEntryIssue? = nil) {
         id = record.id
         topicKey = record.topicKey
         origin = record.origin
@@ -58,6 +66,8 @@ struct ResearchIndexEntry: Codable, Hashable, Sendable, Identifiable {
         verdict = record.report?.verification?.verdict
         hasReport = record.report != nil
         aliasCount = record.aliases.count
+        self.issue = issue
+        schemaVersion = record.schemaVersion
     }
 }
 
@@ -65,13 +75,17 @@ struct ResearchStoreMeta: Codable, Hashable, Sendable {
     var version = 1
     var legacyImportVersion = 0
     var ledgerMigrationVersion = 0
+    /// 1 once the one-time owner-only tightening and temporary-file sweep has
+    /// completed. Without it, every launch would lstat every record.
+    var permissionsVersion = 0
     var lastMaintenanceAt: Date?
     var updatedAt: Date?
 
     init() {}
 
     enum CodingKeys: String, CodingKey {
-        case version, legacyImportVersion, ledgerMigrationVersion, lastMaintenanceAt, updatedAt
+        case version, legacyImportVersion, ledgerMigrationVersion, permissionsVersion
+        case lastMaintenanceAt, updatedAt
     }
 
     init(from decoder: Decoder) throws {
@@ -79,6 +93,7 @@ struct ResearchStoreMeta: Codable, Hashable, Sendable {
         version = try container.decodeIfPresent(Int.self, forKey: .version) ?? 1
         legacyImportVersion = try container.decodeIfPresent(Int.self, forKey: .legacyImportVersion) ?? 0
         ledgerMigrationVersion = try container.decodeIfPresent(Int.self, forKey: .ledgerMigrationVersion) ?? 0
+        permissionsVersion = try container.decodeIfPresent(Int.self, forKey: .permissionsVersion) ?? 0
         lastMaintenanceAt = try container.decodeIfPresent(Date.self, forKey: .lastMaintenanceAt)
         updatedAt = try container.decodeIfPresent(Date.self, forKey: .updatedAt)
     }
@@ -88,11 +103,25 @@ struct ResearchStoreBootstrap: Sendable, Equatable {
     var entries: [ResearchIndexEntry] = []
     var interruptedIDs: [String] = []
     var corruptIDs: [String] = []
+    var unsupportedVersionIDs: [String] = []
     var rebuiltIndex = false
+}
+
+enum ResearchMetaAvailability: Sendable, Equatable {
+    case available
+    case corrupt
+    case ioUnavailable
+    case unsupportedVersion
+
+    var isWritable: Bool { self == .available }
 }
 
 enum ResearchStoreError: Error, Equatable {
     case invalidRecordID
+    /// The record file was written by a newer build, or could not be read
+    /// reliably. Writing would destroy bytes this build does not understand.
+    case readOnlyRecord
+    case readOnlyMeta
 }
 
 protocol ResearchPersisting: Sendable {
@@ -119,6 +148,10 @@ protocol ResearchPersisting: Sendable {
         excluding: Set<String>
     ) async -> [String]
     func meta() async -> ResearchStoreMeta
+    func metaAvailability() async -> ResearchMetaAvailability
+    /// Bumped by `deleteAll`. A stale import that finishes afterwards can
+    /// notice the change and remove what it just wrote.
+    func dataEpoch() async -> Int
     @discardableResult
     func updateMeta(_ transform: @Sendable (inout ResearchStoreMeta) -> Void) async -> Bool
     /// Dry run for the settings confirmation: number of records the proposed
@@ -150,6 +183,10 @@ extension ResearchPersisting {
     }
 
     func meta() async -> ResearchStoreMeta { ResearchStoreMeta() }
+
+    func metaAvailability() async -> ResearchMetaAvailability { .available }
+
+    func dataEpoch() async -> Int { 0 }
 
     @discardableResult
     func updateMeta(_ transform: @Sendable (inout ResearchStoreMeta) -> Void) async -> Bool {
@@ -190,6 +227,13 @@ actor ResearchStore: ResearchPersisting {
     /// IDs removed by the user. A late progress callback or `touch` must not
     /// resurrect a record after deletion.
     private var deletedIDs: Set<String> = []
+    /// IDs whose file must not be written back: a newer schema, corrupt JSON,
+    /// or an unreadable file. Reading keeps working for corrupt files via a
+    /// placeholder; writing never silently replaces the original bytes.
+    private var readOnlyIDs: Set<String> = []
+    private var issues: [String: ResearchEntryIssue] = [:]
+    private var metaAvailabilityState: ResearchMetaAvailability = .available
+    private var epoch = 0
     private var lastIndexWrite: Date = .distantPast
 
     init(
@@ -217,9 +261,11 @@ actor ResearchStore: ResearchPersisting {
 
         ensureDirectories()
         loadMeta()
+        tightenExistingFilesIfNeeded()
 
         var result = ResearchStoreBootstrap()
         let files = recordFileURLs()
+        var indexUpdatedAt = now()
 
         if let data = try? Data(contentsOf: indexURL),
            let document = try? JSONDecoder().decode(IndexDocument.self, from: data),
@@ -227,17 +273,41 @@ actor ResearchStore: ResearchPersisting {
            Set(document.entries.map(\.id)) == Set(files.keys),
            Set(document.entries.map(\.id)).count == document.entries.count {
             entries = Dictionary(uniqueKeysWithValues: document.entries.map { ($0.id, $0) })
+            indexUpdatedAt = document.updatedAt
         } else {
             result.rebuiltIndex = true
             rebuildIndex(into: &result)
         }
 
+        // Probe after the index is available: a trusted projection carries
+        // each record's schema version, so a normal launch reads no record
+        // files at all.
+        probeFileIssues(files, newerThan: indexUpdatedAt)
+        if !issues.isEmpty {
+            for id in entries.keys {
+                entries[id]?.issue = issues[id]
+            }
+        }
+
         let activeIDs = entries.values.filter { $0.status.isActive }.map(\.id)
         var healedIndex = false
         for id in activeIDs {
+            if readOnlyIDs.contains(id) {
+                let date = modificationDate(of: recordURL(for: id)) ?? now()
+                entries[id] = ResearchIndexEntry(
+                    record: placeholder(id: id, date: date, issue: issues[id] ?? .corrupt),
+                    issue: issues[id] ?? .corrupt
+                )
+                healedIndex = true
+                continue
+            }
             guard var record = decodeRecord(id: id) else {
                 let date = modificationDate(of: recordURL(for: id)) ?? now()
-                entries[id] = ResearchIndexEntry(record: .corruptPlaceholder(id: id, date: date))
+                let issue = issues[id] ?? .corrupt
+                entries[id] = ResearchIndexEntry(
+                    record: placeholder(id: id, date: date, issue: issue),
+                    issue: issue
+                )
                 healedIndex = true
                 continue
             }
@@ -262,10 +332,20 @@ actor ResearchStore: ResearchPersisting {
             }
         }
 
-        result.corruptIDs = entries.values
-            .filter { $0.status == .corrupt }
-            .map(\.id)
-            .sorted()
+        var corrupt: [String] = []
+        var unsupported: [String] = []
+        for entry in entries.values {
+            switch entry.issue {
+            case .corrupt, .ioUnavailable:
+                corrupt.append(entry.id)
+            case .unsupportedVersion:
+                unsupported.append(entry.id)
+            case nil:
+                break
+            }
+        }
+        result.corruptIDs = corrupt.sorted()
+        result.unsupportedVersionIDs = unsupported.sorted()
         result.entries = sortedEntries()
 
         if result.rebuiltIndex || healedIndex || !result.interruptedIDs.isEmpty {
@@ -284,8 +364,12 @@ actor ResearchStore: ResearchPersisting {
         if !didBootstrap { _ = await bootstrap() }
         return sortedEntries().map { entry in
             if let pending = pending[entry.id] { return pending }
-            return decodeRecord(id: entry.id)
-                ?? .corruptPlaceholder(id: entry.id, date: entry.updatedAt)
+            if let record = decodeRecord(id: entry.id) { return record }
+            return placeholder(
+                id: entry.id,
+                date: entry.updatedAt,
+                issue: entry.issue ?? issues[entry.id] ?? .corrupt
+            )
         }
     }
 
@@ -295,7 +379,11 @@ actor ResearchStore: ResearchPersisting {
         if let pending = pending[id] { return pending }
         if let record = decodeRecord(id: id) { return record }
         guard let entry = entries[id] else { return nil }
-        return .corruptPlaceholder(id: id, date: entry.updatedAt)
+        return placeholder(
+            id: id,
+            date: entry.updatedAt,
+            issue: entry.issue ?? issues[id] ?? .corrupt
+        )
     }
 
     /// Latest record for an exact topic key. Used by auto-detection and the
@@ -332,6 +420,7 @@ actor ResearchStore: ResearchPersisting {
     /// to `ResearchCacheStore`, which owns their TTL and byte budget.
     func deleteAll() async throws {
         if !didBootstrap { _ = await bootstrap() }
+        epoch += 1
         flushTask?.cancel()
         flushTask = nil
         pending.removeAll()
@@ -350,6 +439,7 @@ actor ResearchStore: ResearchPersisting {
     func save(_ record: ResearchRecord) async throws {
         if !didBootstrap { _ = await bootstrap() }
         guard isSafeID(record.id) else { throw ResearchStoreError.invalidRecordID }
+        guard !isReadOnly(record.id) else { throw ResearchStoreError.readOnlyRecord }
         guard !deletedIDs.contains(record.id) else { return }
         try ensureDirectoriesThrowing()
         try writeRecord(record)
@@ -367,6 +457,9 @@ actor ResearchStore: ResearchPersisting {
         for record in records {
             guard isSafeID(record.id) else { throw ResearchStoreError.invalidRecordID }
         }
+        guard records.allSatisfy({ !isReadOnly($0.id) }) else {
+            throw ResearchStoreError.readOnlyRecord
+        }
         try ensureDirectoriesThrowing()
         for record in records {
             guard !deletedIDs.contains(record.id) else { continue }
@@ -380,7 +473,9 @@ actor ResearchStore: ResearchPersisting {
 
     func saveProgress(_ record: ResearchRecord) async {
         if !didBootstrap { _ = await bootstrap() }
-        guard isSafeID(record.id), !deletedIDs.contains(record.id) else { return }
+        guard isSafeID(record.id),
+              !deletedIDs.contains(record.id),
+              !isReadOnly(record.id) else { return }
 
         let terminal = record.status != .running || record.run.finishedAt != nil
         if terminal {
@@ -426,6 +521,8 @@ actor ResearchStore: ResearchPersisting {
         if !didBootstrap { _ = await bootstrap() }
         guard isSafeID(id) else { throw ResearchStoreError.invalidRecordID }
         deletedIDs.insert(id)
+        readOnlyIDs.remove(id)
+        issues.removeValue(forKey: id)
         trimTombstones()
         let url = recordURL(for: id)
         if fileManager.fileExists(atPath: url.path) {
@@ -453,6 +550,7 @@ actor ResearchStore: ResearchPersisting {
                 || excluding.contains(entry.id)
                 || entry.status.isActive
                 || entry.status == .corrupt
+                || entry.issue != nil
         }
 
         if retentionDays > 0 {
@@ -493,9 +591,13 @@ actor ResearchStore: ResearchPersisting {
             }
         }
 
-        metaState.lastMaintenanceAt = date
-        metaState.updatedAt = date
-        try? writeMeta(metaState)
+        if metaAvailabilityState.isWritable {
+            metaState.lastMaintenanceAt = date
+            metaState.updatedAt = date
+            if (try? writeMeta(metaState)) == nil {
+                metaAvailabilityState = .ioUnavailable
+            }
+        }
         if !removed.isEmpty { writeIndexBestEffort() }
         return removed
     }
@@ -510,6 +612,7 @@ actor ResearchStore: ResearchPersisting {
             entry.isPinned
                 || entry.status.isActive
                 || entry.status == .corrupt
+                || entry.issue != nil
         }
 
         var remainingIDs = Set(entries.keys)
@@ -534,22 +637,39 @@ actor ResearchStore: ResearchPersisting {
     }
 
     func meta() async -> ResearchStoreMeta {
+        reloadMetaAfterTransientFailure()
         loadMeta()
         return metaState
     }
 
+    func metaAvailability() async -> ResearchMetaAvailability {
+        reloadMetaAfterTransientFailure()
+        loadMeta()
+        return metaAvailabilityState
+    }
+
+    func dataEpoch() async -> Int {
+        epoch
+    }
+
     @discardableResult
     func updateMeta(_ transform: @Sendable (inout ResearchStoreMeta) -> Void) async -> Bool {
+        reloadMetaAfterTransientFailure()
         loadMeta()
         var next = metaState
         transform(&next)
         next.updatedAt = now()
+        guard metaAvailabilityState.isWritable else { return false }
         do {
             try ensureDirectoriesThrowing()
             try writeMeta(next)
             metaState = next
             return true
+        } catch ResearchStoreError.readOnlyMeta {
+            metaAvailabilityState = .unsupportedVersion
+            return false
         } catch {
+            metaAvailabilityState = .ioUnavailable
             return false
         }
     }
@@ -574,7 +694,13 @@ actor ResearchStore: ResearchPersisting {
                 scanned.append(ResearchIndexEntry(record: record))
             } else {
                 let date = modificationDate(of: url) ?? now()
-                scanned.append(ResearchIndexEntry(record: .corruptPlaceholder(id: id, date: date)))
+                let issue = issues[id] ?? .corrupt
+                scanned.append(
+                    ResearchIndexEntry(
+                        record: placeholder(id: id, date: date, issue: issue),
+                        issue: issue
+                    )
+                )
             }
         }
         // Every record file is visible. A truncated index used to hide files
@@ -628,8 +754,7 @@ actor ResearchStore: ResearchPersisting {
         try ensureDirectoriesThrowing()
         let document = IndexDocument(updatedAt: now(), entries: sortedEntries())
         let data = try JSONEncoder().encode(document)
-        try data.write(to: indexURL, options: .atomic)
-        try? fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: indexURL.path)
+        try PrivateFile.write(data, to: indexURL, durable: false)
     }
 
     // MARK: - Files
@@ -639,13 +764,48 @@ actor ResearchStore: ResearchPersisting {
     }
 
     private func ensureDirectoriesThrowing() throws {
-        try fileManager.createDirectory(
-            at: recordsURL,
-            withIntermediateDirectories: true,
-            attributes: [.posixPermissions: 0o700]
+        try PrivateFile.ensureDirectory(directoryURL)
+        try PrivateFile.ensureDirectory(recordsURL)
+    }
+
+    /// Owner-only tightening for files written before the atomic private
+    /// writer existed, plus a sweep of crash-left temporary files. Runs once
+    /// per store version; the marker keeps normal launches free of 1000-document
+    /// `lstat` walks.
+    private func tightenExistingFilesIfNeeded() {
+        guard metaState.permissionsVersion < 1 else { return }
+        var failures = 0
+        for url in [indexURL, metaURL] + recordFileURLs().values {
+            if !PrivateFile.tightenExistingFile(url) {
+                failures += 1
+            }
+        }
+        if failures > 0 {
+            NSLog(
+                "[ResearchStore] could not tighten %ld research file(s)",
+                failures
+            )
+        }
+        _ = PrivateFile.removeStaleTemporaries(
+            in: recordsURL,
+            olderThan: now().addingTimeInterval(-3_600),
+            now: now(),
+            fileManager: fileManager
         )
-        try? fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directoryURL.path)
-        try? fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: recordsURL.path)
+        // Ledger and clear-intent temporaries live in the research root.
+        _ = PrivateFile.removeStaleTemporaries(
+            in: directoryURL,
+            olderThan: now().addingTimeInterval(-3_600),
+            now: now(),
+            fileManager: fileManager
+        )
+        guard metaAvailabilityState.isWritable else { return }
+        var next = metaState
+        next.permissionsVersion = 1
+        next.updatedAt = now()
+        if (try? writeMeta(next)) != nil {
+            metaState = next
+        }
     }
 
     private func recordFileURLs() -> [String: URL] {
@@ -669,9 +829,7 @@ actor ResearchStore: ResearchPersisting {
 
     private func writeRecord(_ record: ResearchRecord) throws {
         let data = try JSONEncoder().encode(record)
-        let url = recordURL(for: record.id)
-        try data.write(to: url, options: .atomic)
-        try? fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+        try PrivateFile.write(data, to: recordURL(for: record.id), durable: false)
     }
 
     private func decodeRecord(id: String) -> ResearchRecord? {
@@ -679,8 +837,121 @@ actor ResearchStore: ResearchPersisting {
     }
 
     private func decodeRecord(at url: URL) -> ResearchRecord? {
-        guard let data = try? Data(contentsOf: url) else { return nil }
-        return try? JSONDecoder().decode(ResearchRecord.self, from: data)
+        let id = url.deletingPathExtension().lastPathComponent
+        guard let data = try? Data(contentsOf: url) else {
+            issues[id] = .ioUnavailable
+            readOnlyIDs.insert(id)
+            return nil
+        }
+        guard let version = Self.probeRecordSchemaVersion(data) else {
+            issues[id] = .corrupt
+            readOnlyIDs.insert(id)
+            return nil
+        }
+        guard version <= ResearchRecord.currentSchemaVersion else {
+            issues[id] = .unsupportedVersion
+            readOnlyIDs.insert(id)
+            return nil
+        }
+        guard let record = try? JSONDecoder().decode(ResearchRecord.self, from: data) else {
+            issues[id] = .corrupt
+            readOnlyIDs.insert(id)
+            return nil
+        }
+        issues.removeValue(forKey: id)
+        readOnlyIDs.remove(id)
+        return record.normalizedForRead()
+    }
+
+    private func isReadOnly(_ id: String) -> Bool {
+        readOnlyIDs.contains(id) || issues[id] != nil
+    }
+
+    private func placeholder(
+        id: String,
+        date: Date,
+        issue: ResearchEntryIssue
+    ) -> ResearchRecord {
+        var record = ResearchRecord.corruptPlaceholder(id: id, date: date)
+        record.loadIssue = issue
+        switch issue {
+        case .unsupportedVersion:
+            record.run.lastError = "Record was written by a newer app version"
+            record.isRead = true
+        case .ioUnavailable:
+            record.run.lastError = "Record file is temporarily unreadable"
+        case .corrupt:
+            break
+        }
+        return record
+    }
+
+    /// Eager, prefix-free version probe. Records are small; a full read keeps
+    /// the check exact instead of guessing from a truncated JSON prefix.
+    private func probeFileIssues(_ files: [String: URL], newerThan: Date) {
+        for (id, url) in files {
+            // A projection may already carry a read-only issue (for example
+            // after a rebuild). Restore the write gate before the fast path,
+            // otherwise a skipped probe would make the record writable again.
+            if let existingIssue = entries[id]?.issue {
+                issues[id] = existingIssue
+                readOnlyIDs.insert(id)
+            }
+
+            // The projection carries the version, so a normal launch does not
+            // re-read all record files. A file modified after the index was
+            // written (for example a newer build crashed before updating the
+            // projection) is always probed. A missing value is probed once and
+            // then written back by the next index update.
+            let modifiedAfterIndex = (modificationDate(of: url) ?? .distantPast) > newerThan
+            if let projected = entries[id]?.schemaVersion, !modifiedAfterIndex {
+                if projected > ResearchRecord.currentSchemaVersion {
+                    issues[id] = .unsupportedVersion
+                    readOnlyIDs.insert(id)
+                } else {
+                    issues.removeValue(forKey: id)
+                    readOnlyIDs.remove(id)
+                }
+                continue
+            }
+            guard let data = try? Data(contentsOf: url) else {
+                issues[id] = .ioUnavailable
+                readOnlyIDs.insert(id)
+                continue
+            }
+            guard let version = Self.probeRecordSchemaVersion(data) else {
+                issues[id] = .corrupt
+                readOnlyIDs.insert(id)
+                continue
+            }
+            if version > ResearchRecord.currentSchemaVersion {
+                issues[id] = .unsupportedVersion
+                readOnlyIDs.insert(id)
+            } else {
+                issues.removeValue(forKey: id)
+                readOnlyIDs.remove(id)
+            }
+        }
+    }
+
+    private static func probeRecordSchemaVersion(_ data: Data) -> Int? {
+        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return nil
+        }
+        if let version = object["schemaVersion"] as? Int { return version }
+        // Files written before the field existed are v1 only when their
+        // authoritative identity is present.
+        return object["id"] != nil && object["topicKey"] != nil
+            ? ResearchRecord.currentSchemaVersion
+            : nil
+    }
+
+    private static func probeMetaVersion(_ data: Data) -> Int? {
+        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return nil
+        }
+        if let version = object["version"] as? Int { return version }
+        return ResearchStoreMeta().version
     }
 
     private func removeRecord(id: String) -> Bool {
@@ -718,20 +989,48 @@ actor ResearchStore: ResearchPersisting {
 
     // MARK: - Meta
 
+    /// A missing or unreadable file may become readable later (permissions
+    /// repair, external volume). Corrupt or newer-version files are stable and
+    /// must not be re-read on every call.
+    private func reloadMetaAfterTransientFailure() {
+        guard metaAvailabilityState == .ioUnavailable else { return }
+        metaLoaded = false
+    }
+
     private func loadMeta() {
         guard !metaLoaded else { return }
-        if let data = try? Data(contentsOf: metaURL),
-           let meta = try? JSONDecoder().decode(ResearchStoreMeta.self, from: data),
-           meta.version <= ResearchStoreMeta().version {
-            metaState = meta
-        }
         metaLoaded = true
+        guard fileManager.fileExists(atPath: metaURL.path) else {
+            metaAvailabilityState = .available
+            return
+        }
+        _ = PrivateFile.tightenExistingFile(metaURL)
+        guard let data = try? Data(contentsOf: metaURL) else {
+            metaAvailabilityState = .ioUnavailable
+            return
+        }
+        guard let version = Self.probeMetaVersion(data) else {
+            metaAvailabilityState = .corrupt
+            return
+        }
+        guard version <= ResearchStoreMeta().version else {
+            metaAvailabilityState = .unsupportedVersion
+            return
+        }
+        guard let meta = try? JSONDecoder().decode(ResearchStoreMeta.self, from: data) else {
+            metaAvailabilityState = .corrupt
+            return
+        }
+        metaState = meta
+        metaAvailabilityState = .available
     }
 
     private func writeMeta(_ meta: ResearchStoreMeta) throws {
+        guard metaAvailabilityState.isWritable else {
+            throw ResearchStoreError.readOnlyMeta
+        }
         let data = try JSONEncoder().encode(meta)
-        try data.write(to: metaURL, options: .atomic)
-        try? fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: metaURL.path)
+        try PrivateFile.write(data, to: metaURL, durable: false)
     }
 
     private func scheduleFlush() {

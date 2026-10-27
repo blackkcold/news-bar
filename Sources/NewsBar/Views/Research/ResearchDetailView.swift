@@ -182,6 +182,13 @@ struct ResearchDetailView: View {
 
     @ViewBuilder
     private var banners: some View {
+        if let issue = record.loadIssue {
+            banner(
+                symbol: "lock.doc",
+                tint: .purple,
+                text: issueBannerText(issue)
+            )
+        }
         if let report {
             if record.status == .failed || record.status == .cancelled || record.status == .interrupted {
                 banner(
@@ -208,6 +215,17 @@ struct ResearchDetailView: View {
                     text: "research.oldReport".localized
                 )
             }
+        }
+    }
+
+    private func issueBannerText(_ issue: ResearchEntryIssue) -> String {
+        switch issue {
+        case .unsupportedVersion:
+            return "research.issue.unsupportedVersion".localized
+        case .corrupt:
+            return "research.issue.corrupt".localized
+        case .ioUnavailable:
+            return "research.issue.ioUnavailable".localized
         }
     }
 

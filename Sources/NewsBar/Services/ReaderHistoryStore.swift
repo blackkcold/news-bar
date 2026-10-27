@@ -26,20 +26,15 @@ struct FileReaderHistoryPersistence: ReaderHistoryPersisting {
     }
 
     func load() async throws -> Data? {
+        _ = PrivateFile.tightenExistingFile(fileURL)
         guard FileManager.default.fileExists(atPath: fileURL.path) else { return nil }
         return try Data(contentsOf: fileURL)
     }
 
     func save(_ data: Data) async throws {
-        let directory = fileURL.deletingLastPathComponent()
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        try? FileManager.default.setAttributes(
-            [.posixPermissions: 0o700], ofItemAtPath: directory.path
-        )
-        try data.write(to: fileURL, options: .atomic)
-        try? FileManager.default.setAttributes(
-            [.posixPermissions: 0o600], ofItemAtPath: fileURL.path
-        )
+        // The previous atomic write did not fsync either: keep the same
+        // durability while making the file owner-only from creation.
+        try PrivateFile.write(data, to: fileURL, durable: false)
         try? (fileURL as NSURL).setResourceValue(true, forKey: .isExcludedFromBackupKey)
     }
 

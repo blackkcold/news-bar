@@ -4,12 +4,17 @@ import SwiftUI
 /// search-provider switches, the encrypted search keys, and the shared ledger.
 struct ResearchSettingsSection: View {
     @Environment(AppSettings.self) private var settings
+    @Environment(\.searchProviderStatusAction) private var searchProviderStatusAction
+    @Environment(\.searchAuthRetryAction) private var searchAuthRetryAction
 
     @State private var keyInputs: [SearchProviderID: String] = [:]
     @State private var configured: [SearchProviderID: Bool] = [:]
     @State private var keyMessage: String?
     @State private var keyMessageIsError = false
     @State private var isSavingKey = false
+    @State private var statuses: [SearchProviderStatus] = []
+    @State private var statusesLoaded = false
+    @State private var lastStatusRefresh = Date.distantPast
 
     var body: some View {
         Group {
@@ -121,6 +126,22 @@ struct ResearchSettingsSection: View {
             }
 
             Section {
+                if statusesLoaded && statuses.isEmpty {
+                    Text("research.providerStatus.unavailable".localized)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(statuses, id: \.provider) { status in
+                        providerStatusRow(status)
+                    }
+                }
+            } header: {
+                Text("research.providerStatus.title".localized)
+            } footer: {
+                Text("research.providerStatus.footer".localized)
+            }
+
+            Section {
                 ResearchLedgerView()
             } header: {
                 Text("research.ledger.title".localized)
@@ -131,6 +152,16 @@ struct ResearchSettingsSection: View {
         .task {
             await migrateLegacyKeyIfNeeded()
             await refreshKeyStatus()
+            await refreshStatuses()
+        }
+        .onChange(of: settings.researchSearchProviders) { _, _ in
+            Task { await refreshStatuses() }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .researchRecordsChanged)) { _ in
+            let now = Date()
+            guard now.timeIntervalSince(lastStatusRefresh) > 2 else { return }
+            lastStatusRefresh = now
+            Task { await refreshStatuses() }
         }
     }
 
@@ -218,6 +249,106 @@ struct ResearchSettingsSection: View {
         )
     }
 
+    // MARK: - Provider status
+
+    private func providerStatusRow(_ status: SearchProviderStatus) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            HStack(spacing: 6) {
+                Text(status.provider.displayName)
+                    .font(.system(size: 12, weight: .medium))
+                Spacer(minLength: 0)
+                if status.state == .cooling, let until = status.cooldownUntil {
+                    TimelineView(.periodic(from: .now, by: 1)) { context in
+                        let remaining = max(0, until.timeIntervalSince(context.date))
+                        Text(
+                            L10n.string(
+                                "research.providerStatus.coolingFor",
+                                language: settings.appLanguage,
+                                Self.secondsLabel(remaining)
+                            )
+                        )
+                        .font(.caption2)
+                        .foregroundStyle(.orange)
+                    }
+                } else {
+                    Text(stateLabel(status.state))
+                        .font(.caption2)
+                        .foregroundStyle(stateColor(status.state))
+                }
+            }
+
+            if status.state == .authRejected {
+                HStack(spacing: 6) {
+                    Text("research.providerStatus.authHint".localized)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    Spacer(minLength: 0)
+                    Button("research.providerStatus.retryAuth".localized) {
+                        Task {
+                            await searchAuthRetryAction?(status.provider)
+                            await refreshStatuses()
+                        }
+                    }
+                    .buttonStyle(EditorialActionButtonStyle(compact: true))
+                    .controlSize(.small)
+                }
+            } else if status.state == .forbidden {
+                Text("research.providerStatus.forbiddenHint".localized)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            } else if status.state == .cooling {
+                Text("research.providerStatus.quotaHint".localized)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            } else if status.state == .transientFailure {
+                Text("research.providerStatus.transientHint".localized)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(.vertical, 2)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(
+            L10n.string(
+                "research.providerStatus.a11y",
+                language: settings.appLanguage,
+                status.provider.displayName,
+                stateLabel(status.state)
+            )
+        )
+    }
+
+    private func stateLabel(_ state: SearchProviderState) -> String {
+        L10n.string(
+            "research.providerStatus.\(state.rawValue)",
+            language: settings.appLanguage
+        )
+    }
+
+    private func stateColor(_ state: SearchProviderState) -> Color {
+        switch state {
+        case .succeeded: return .green
+        case .authRejected, .forbidden: return .red
+        case .cooling, .transientFailure: return .orange
+        case .disabled, .missingKey, .unattempted: return .secondary
+        }
+    }
+
+    private static func secondsLabel(_ interval: TimeInterval) -> String {
+        let total = max(0, Int(interval.rounded(.up)))
+        return String(format: "%d:%02d", total / 60, total % 60)
+    }
+
+    private func refreshStatuses() async {
+        guard let action = searchProviderStatusAction else {
+            statusesLoaded = true
+            return
+        }
+        statuses = await action(settings)
+        statusesLoaded = true
+        lastStatusRefresh = Date()
+    }
+
     private func saveKey(_ provider: SearchProviderID) async {
         let raw = keyInputs[provider] ?? ""
         let key = SecurityPolicies.sanitizeUserInput(raw)
@@ -231,6 +362,10 @@ struct ResearchSettingsSection: View {
         if saved {
             keyInputs[provider] = ""
             configured[provider] = true
+            // A new key ends an auth block but deliberately keeps any quota
+            // cooldown and never resets the ledger.
+            await searchAuthRetryAction?(provider)
+            await refreshStatuses()
             keyMessage = L10n.string(
                 "research.settings.keySaveSuccess",
                 language: settings.appLanguage,
@@ -252,6 +387,8 @@ struct ResearchSettingsSection: View {
         await SearchKeyStore.delete(for: provider)
         isSavingKey = false
         configured[provider] = false
+        await searchAuthRetryAction?(provider)
+        await refreshStatuses()
         keyMessage = L10n.string(
             "research.settings.keyCleared",
             language: settings.appLanguage,
@@ -272,6 +409,7 @@ struct ResearchSettingsSection: View {
         let result = await SearchKeyStore.migrateLegacyFirecrawlKey(settings: settings)
         switch result {
         case .migrated:
+            await searchAuthRetryAction?(.firecrawl)
             keyMessage = "research.settings.keyMigrated".localized
             keyMessageIsError = false
         case .failed:

@@ -171,6 +171,8 @@ final class ResearchCoordinator {
     private func execute(_ job: Job) async {
         let executionGeneration = generation
         guard executionGeneration == generation else { return }
+        ResearchActivity.begin()
+        defer { ResearchActivity.end() }
 
         guard var record = await store.record(id: job.recordID) else { return }
 

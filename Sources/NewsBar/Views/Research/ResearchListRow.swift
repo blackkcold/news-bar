@@ -69,7 +69,15 @@ struct ResearchListRow: View {
 
                     Spacer(minLength: 0)
 
-                    if entry.hasReport {
+                    if let issue = entry.issue {
+                        Text(issueLabel(issue))
+                            .font(.system(size: 8, weight: .semibold))
+                            .foregroundStyle(.purple)
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 2)
+                            .background(Color.purple.opacity(0.1))
+                            .editorialClipShape(cornerRadius: 4)
+                    } else if entry.hasReport {
                         reportBadge
                     } else {
                         Text(statusLabel)
@@ -103,8 +111,22 @@ struct ResearchListRow: View {
         L10n.string("research.status.\(entry.status.rawValue)", language: settings.appLanguage)
     }
 
+    private func issueLabel(_ issue: ResearchEntryIssue) -> String {
+        switch issue {
+        case .unsupportedVersion:
+            return L10n.string("research.issue.unsupportedVersionShort", language: settings.appLanguage)
+        case .corrupt:
+            return L10n.string("research.status.corrupt", language: settings.appLanguage)
+        case .ioUnavailable:
+            return L10n.string("research.issue.ioUnavailableShort", language: settings.appLanguage)
+        }
+    }
+
     private var accessibilityLabel: String {
         var parts = [displayTitle, entry.source.displayName, statusLabel]
+        if let issue = entry.issue {
+            parts.append(issueLabel(issue))
+        }
         if entry.strength > 0 {
             parts.append(L10n.string("research.strength", language: settings.appLanguage, entry.strength))
         }

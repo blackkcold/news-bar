@@ -44,8 +44,10 @@ enum SearchHTTPMapping {
         switch http.statusCode {
         case 200...299:
             return
-        case 401, 403:
+        case 401:
             throw SearchProviderError.unauthorized
+        case 403:
+            throw SearchProviderError.forbidden
         case 402, 429:
             throw SearchProviderError.quotaExhausted
         case 408:

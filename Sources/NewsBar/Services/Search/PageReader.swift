@@ -44,6 +44,7 @@ struct PageReader: Sendable {
     }
 
     func read(_ hit: SearchHit, apiKey: String) async -> ResearchDocument? {
+        let cacheEpoch = await cache.writeEpoch()
         if let inline = hit.inlineContent?.trimmingCharacters(in: .whitespacesAndNewlines),
            inline.count >= Self.minInlineCharacters {
             let document = ResearchDocument(
@@ -54,7 +55,7 @@ struct PageReader: Sendable {
                 fetchedAt: now(),
                 source: .inline
             )
-            await store(document)
+            await store(document, epoch: cacheEpoch)
             return document
         }
 
@@ -75,7 +76,7 @@ struct PageReader: Sendable {
                         fetchedAt: now(),
                         source: .firecrawl
                     )
-                    await store(document)
+                    await store(document, epoch: cacheEpoch)
                     return document
                 }
             } catch is CancellationError {
@@ -89,7 +90,7 @@ struct PageReader: Sendable {
         guard let document = try? await direct.read(urlString: hit.url) else {
             return nil
         }
-        await store(document)
+        await store(document, epoch: cacheEpoch)
         return document
     }
 
@@ -110,7 +111,7 @@ struct PageReader: Sendable {
         )
     }
 
-    private func store(_ document: ResearchDocument) async {
+    private func store(_ document: ResearchDocument, epoch: Int) async {
         let page = CachedPage(
             url: document.url,
             title: document.title,
@@ -120,6 +121,12 @@ struct PageReader: Sendable {
             source: document.source
         )
         guard let data = try? JSONEncoder().encode(page) else { return }
-        await cache.store(data, kind: .pages, key: document.canonicalURL, now: document.fetchedAt)
+        await cache.store(
+            data,
+            kind: .pages,
+            key: document.canonicalURL,
+            now: document.fetchedAt,
+            epoch: epoch
+        )
     }
 }

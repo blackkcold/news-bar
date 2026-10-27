@@ -1,6 +1,25 @@
 import Foundation
 import os
 
+/// Counts live research executions across the coordinator. Resetting today's
+/// usage while a task is spending it would make the cap meaningless, so the
+/// ledger refuses that reset at the execution layer too, not only in the UI.
+enum ResearchActivity {
+    private static let active = OSAllocatedUnfairLock(initialState: 0)
+
+    static func begin() {
+        active.withLock { $0 += 1 }
+    }
+
+    static func end() {
+        active.withLock { $0 = max(0, $0 - 1) }
+    }
+
+    static var isActive: Bool {
+        active.withLock { $0 > 0 }
+    }
+}
+
 enum LedgerKind: String, Codable, Sendable, CaseIterable {
     case ai, search, task
 }
@@ -34,16 +53,35 @@ struct LedgerCounts: Codable, Hashable, Sendable, Equatable {
     }
 }
 
+/// Why the ledger can or cannot be used. `loading` exists so the settings UI
+/// never paints a fake "0" before the file has been read.
+enum LedgerAvailability: String, Sendable, Equatable {
+    case loading
+    case available
+    case corrupt
+    case ioUnavailable
+    case unsupportedVersion
+
+    var isUsable: Bool { self == .available }
+}
+
 struct LedgerSnapshot: Sendable, Equatable {
     let day: Int
     let ai: LedgerCounts
     let search: LedgerCounts
     let tasks: LedgerCounts
-    let isCorrupt: Bool
+    let availability: LedgerAvailability
 
     static let empty = LedgerSnapshot(
-        day: 0, ai: LedgerCounts(), search: LedgerCounts(), tasks: LedgerCounts(), isCorrupt: false
+        day: 0,
+        ai: LedgerCounts(),
+        search: LedgerCounts(),
+        tasks: LedgerCounts(),
+        availability: .loading
     )
+
+    /// Kept for existing callers; new code should inspect `availability`.
+    var isCorrupt: Bool { availability == .corrupt }
 
     var totalAI: Int { ai.total }
     var totalSearch: Int { search.total }
@@ -51,26 +89,50 @@ struct LedgerSnapshot: Sendable, Equatable {
 }
 
 /// One shared AI ledger with three origin columns. Reserve before dispatch and
-/// never refund a possibly-sent request. A corrupt ledger fails closed: every
+/// never refund a possibly-sent request. An unusable ledger fails closed: every
 /// reservation is refused until the user explicitly resets today's usage.
 final class ResearchLedger: Sendable {
     static let shared = ResearchLedger()
+    static let currentVersion = 1
+
     private struct Record: Codable, Sendable {
+        var version = ResearchLedger.currentVersion
         var day: Int
         var ai = LedgerCounts()
         var search = LedgerCounts()
         var tasks = LedgerCounts()
 
         var isValid: Bool {
-            day >= 0 && ai.burst >= 0 && ai.keyword >= 0 && ai.manual >= 0
+            version == ResearchLedger.currentVersion
+                && day >= 0
+                && ai.burst >= 0 && ai.keyword >= 0 && ai.manual >= 0
                 && search.burst >= 0 && search.keyword >= 0 && search.manual >= 0
                 && tasks.burst >= 0 && tasks.keyword >= 0 && tasks.manual >= 0
+        }
+
+        enum CodingKeys: String, CodingKey {
+            case version, day, ai, search, tasks
+        }
+
+        init(day: Int) {
+            self.day = day
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            // Files written before the version field are v1 by definition.
+            version = try container.decodeIfPresent(Int.self, forKey: .version)
+                ?? ResearchLedger.currentVersion
+            day = try container.decode(Int.self, forKey: .day)
+            ai = try container.decode(LedgerCounts.self, forKey: .ai)
+            search = try container.decode(LedgerCounts.self, forKey: .search)
+            tasks = try container.decode(LedgerCounts.self, forKey: .tasks)
         }
     }
 
     private struct State: Sendable {
         var record: Record?
-        var corrupt = false
+        var availability: LedgerAvailability = .loading
     }
 
     private let fileURL: URL
@@ -80,18 +142,8 @@ final class ResearchLedger: Sendable {
     init(fileURL: URL = ResearchPaths.ledgerFile, calendar: Calendar? = nil) {
         self.fileURL = fileURL
         self.calendar = calendar ?? Self.defaultCalendar
-
-        var state = State()
-        if FileManager.default.fileExists(atPath: fileURL.path) {
-            if let data = try? Data(contentsOf: fileURL),
-               let record = try? JSONDecoder().decode(Record.self, from: data),
-               record.isValid {
-                state.record = record
-            } else {
-                state.corrupt = true
-            }
-        }
-        lock = OSAllocatedUnfairLock(initialState: state)
+        lock = OSAllocatedUnfairLock(initialState: State())
+        load()
     }
 
     /// Search calls are counted but not capped by the daily ledger; each task's
@@ -104,7 +156,7 @@ final class ResearchLedger: Sendable {
         at date: Date = Date()
     ) -> Bool {
         lock.withLock { state in
-            guard !state.corrupt else { return false }
+            guard state.availability.isUsable else { return false }
             let today = Self.dayKey(for: date, calendar: calendar)
             var record = state.record?.day == today ? state.record! : Record(day: today)
 
@@ -122,9 +174,10 @@ final class ResearchLedger: Sendable {
             do {
                 try write(record)
                 state.record = record
+                state.availability = .available
                 return true
             } catch {
-                state.corrupt = true
+                state.availability = Self.availability(for: error)
                 return false
             }
         }
@@ -137,7 +190,7 @@ final class ResearchLedger: Sendable {
     func seedLegacyBurstCalls(_ count: Int, at date: Date = Date()) -> Bool {
         guard count > 0 else { return true }
         return lock.withLock { state in
-            guard !state.corrupt else { return false }
+            guard state.availability.isUsable else { return false }
             let today = Self.dayKey(for: date, calendar: calendar)
             var record = state.record?.day == today ? state.record! : Record(day: today)
             guard record.ai.burst == 0 else { return true }
@@ -145,9 +198,10 @@ final class ResearchLedger: Sendable {
             do {
                 try write(record)
                 state.record = record
+                state.availability = .available
                 return true
             } catch {
-                state.corrupt = true
+                state.availability = Self.availability(for: error)
                 return false
             }
         }
@@ -163,16 +217,17 @@ final class ResearchLedger: Sendable {
     ) -> Bool {
         guard count > 0 else { return true }
         return lock.withLock { state in
-            guard !state.corrupt else { return false }
+            guard state.availability.isUsable else { return false }
             let today = Self.dayKey(for: date, calendar: calendar)
             var record = state.record?.day == today ? state.record! : Record(day: today)
             record.search[origin] += count
             do {
                 try write(record)
                 state.record = record
+                state.availability = .available
                 return true
             } catch {
-                state.corrupt = true
+                state.availability = Self.availability(for: error)
                 return false
             }
         }
@@ -181,22 +236,22 @@ final class ResearchLedger: Sendable {
     func snapshot(at date: Date = Date()) -> LedgerSnapshot {
         lock.withLock { state in
             let today = Self.dayKey(for: date, calendar: calendar)
-            guard !state.corrupt else {
+            guard state.availability.isUsable, let record = state.record else {
                 return LedgerSnapshot(
                     day: today,
                     ai: LedgerCounts(),
                     search: LedgerCounts(),
                     tasks: LedgerCounts(),
-                    isCorrupt: true
+                    availability: state.availability
                 )
             }
-            guard let record = state.record, record.day == today else {
+            guard record.day == today else {
                 return LedgerSnapshot(
                     day: today,
                     ai: LedgerCounts(),
                     search: LedgerCounts(),
                     tasks: LedgerCounts(),
-                    isCorrupt: false
+                    availability: .available
                 )
             }
             return LedgerSnapshot(
@@ -204,14 +259,15 @@ final class ResearchLedger: Sendable {
                 ai: record.ai,
                 search: record.search,
                 tasks: record.tasks,
-                isCorrupt: false
+                availability: .available
             )
         }
     }
 
-    func used(_ kind: LedgerKind, at date: Date = Date()) -> Int {
+    /// `nil` means "unknown", never zero and never `Int.max`.
+    func used(_ kind: LedgerKind, at date: Date = Date()) -> Int? {
         let snapshot = snapshot(at: date)
-        guard !snapshot.isCorrupt else { return Int.max }
+        guard snapshot.availability.isUsable else { return nil }
         switch kind {
         case .ai: return snapshot.totalAI
         case .search: return snapshot.totalSearch
@@ -219,19 +275,26 @@ final class ResearchLedger: Sendable {
         }
     }
 
-    /// Explicit recovery path for a corrupt ledger. Only this clears the
-    /// fail-closed state; a normal reservation never self-heals.
+    /// Explicit recovery path. A corrupt or unreadable file is archived first
+    /// with owner-only permissions, so a failed reset never silently discards
+    /// the only copy. A future-version file is never reset from here.
     @discardableResult
     func resetToday(at date: Date = Date()) -> Bool {
-        lock.withLock { state in
+        guard !ResearchActivity.isActive else { return false }
+        return lock.withLock { state in
+            guard state.availability != .unsupportedVersion else { return false }
             let record = Record(day: Self.dayKey(for: date, calendar: calendar))
             do {
+                try archiveExistingFile()
                 try write(record)
                 state.record = record
-                state.corrupt = false
+                state.availability = .available
                 return true
             } catch {
-                state.corrupt = true
+                if case .unsupportedVersion = state.availability {
+                    return false
+                }
+                state.availability = Self.availability(for: error)
                 return false
             }
         }
@@ -250,14 +313,81 @@ final class ResearchLedger: Sendable {
         return calendar
     }
 
+    // MARK: - File
+
+    private func load() {
+        let manager = FileManager.default
+        guard manager.fileExists(atPath: fileURL.path) else {
+            lock.withLock { $0.availability = .available }
+            return
+        }
+        _ = PrivateFile.tightenExistingFile(fileURL)
+        guard let data = try? Data(contentsOf: fileURL) else {
+            lock.withLock { $0.availability = .ioUnavailable }
+            return
+        }
+        guard let version = Self.probeVersion(data) else {
+            lock.withLock { $0.availability = .corrupt }
+            return
+        }
+        guard version <= Self.currentVersion else {
+            lock.withLock { $0.availability = .unsupportedVersion }
+            return
+        }
+        do {
+            let record = try JSONDecoder().decode(Record.self, from: data)
+            lock.withLock { state in
+                guard record.isValid else {
+                    state.availability = .corrupt
+                    return
+                }
+                state.record = record
+                state.availability = .available
+            }
+        } catch {
+            lock.withLock { $0.availability = .corrupt }
+        }
+    }
+
+    private static func probeVersion(_ data: Data) -> Int? {
+        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return nil
+        }
+        if let version = object["version"] as? Int { return version }
+        // A missing version is v1 only when the rest of the shape is present.
+        return object["day"] != nil ? currentVersion : nil
+    }
+
     private func write(_ record: Record) throws {
-        try FileManager.default.createDirectory(
-            at: fileURL.deletingLastPathComponent(),
-            withIntermediateDirectories: true,
-            attributes: [.posixPermissions: 0o700]
-        )
         let data = try JSONEncoder().encode(record)
-        try data.write(to: fileURL, options: .atomic)
-        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: fileURL.path)
+        try PrivateFile.write(data, to: fileURL, durable: true)
+    }
+
+    private func archiveExistingFile() throws {
+        let manager = FileManager.default
+        guard manager.fileExists(atPath: fileURL.path) else { return }
+        let stamp = Int(Date().timeIntervalSince1970)
+        let archive = fileURL
+            .deletingLastPathComponent()
+            .appendingPathComponent(
+                "\(fileURL.lastPathComponent).corrupt-\(stamp)-\(UUID().uuidString.prefix(8))"
+            )
+        if manager.fileExists(atPath: archive.path) {
+            try manager.removeItem(at: archive)
+        }
+        try manager.moveItem(at: fileURL, to: archive)
+        _ = PrivateFile.tightenExistingFile(archive)
+    }
+
+    private static func availability(for error: Error) -> LedgerAvailability {
+        if let error = error as? PrivateFileError {
+            switch error {
+            case .permissionMismatch, .invalidPath:
+                return .ioUnavailable
+            case .openFailed, .writeFailed, .syncFailed, .renameFailed:
+                return .ioUnavailable
+            }
+        }
+        return .ioUnavailable
     }
 }

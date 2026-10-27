@@ -147,13 +147,24 @@ struct SearchBatch: Sendable, Equatable {
     var attempts: Int
     var failovers: Int
     var fetchedAt: Date
+    /// Providers that were skipped or failed before the one that answered.
+    /// The pipeline uses this to stop re-trying a 403 provider for the rest of
+    /// the current research pass, even though the query succeeded elsewhere.
+    var failures: [SearchProviderFailure] = []
 
-    static let empty = SearchBatch(hits: [], providers: [], attempts: 0, failovers: 0, fetchedAt: .distantPast)
+    static let empty = SearchBatch(
+        hits: [],
+        providers: [],
+        attempts: 0,
+        failovers: 0,
+        fetchedAt: .distantPast
+    )
 }
 
 enum SearchProviderError: Error, Equatable, LocalizedError {
     case missingKey
     case unauthorized
+    case forbidden
     case quotaExhausted
     case server(Int)
     case timeout
@@ -165,6 +176,7 @@ enum SearchProviderError: Error, Equatable, LocalizedError {
         switch self {
         case .missingKey: return "Search provider API key is missing"
         case .unauthorized: return "Search provider rejected the API key"
+        case .forbidden: return "Search provider refused access"
         case .quotaExhausted: return "Search provider quota exhausted"
         case .server(let status): return "Search provider returned HTTP \(status)"
         case .timeout: return "Search request timed out"
@@ -182,13 +194,123 @@ enum SearchProviderError: Error, Equatable, LocalizedError {
     }
 }
 
+/// Why one provider produced no usable batch. Typed so callers never have to
+/// parse an English sentence to tell a bad key from a rate limit.
+enum SearchFailureReason: Sendable, Equatable {
+    case disabled
+    case missingKey
+    case authRejected
+    case forbidden
+    case quotaExhausted
+    case coolingDown(until: Date)
+    case budgetExhausted
+    case server(Int)
+    case timeout
+    case transport
+    case malformedResponse
+    case emptyQuery
+}
+
+struct SearchProviderFailure: Sendable, Equatable {
+    /// `nil` for router-level failures (for example budget exhaustion).
+    let provider: SearchProviderID?
+    let reason: SearchFailureReason
+
+    var description: String {
+        let name = provider?.rawValue ?? "search"
+        switch reason {
+        case .disabled: return "\(name): disabled"
+        case .missingKey: return "\(name): missing key"
+        case .authRejected: return "\(name): unauthorized"
+        case .forbidden: return "\(name): forbidden"
+        case .quotaExhausted: return "\(name): quota exhausted"
+        case .coolingDown: return "\(name): cooling down"
+        case .budgetExhausted: return "HTTP budget exhausted"
+        case .server(let status): return "\(name): HTTP \(status)"
+        case .timeout: return "\(name): timeout"
+        case .transport: return "\(name): transport failed"
+        case .malformedResponse: return "\(name): malformed response"
+        case .emptyQuery: return "\(name): empty query"
+        }
+    }
+}
+
 /// All providers failed. The pipeline degrades to an AI-only partial report
 /// instead of failing the whole task.
 struct SearchUnavailableError: Error, LocalizedError, Equatable {
-    let reasons: [String]
+    let failures: [SearchProviderFailure]
+
+    var reasons: [String] { failures.map(\.description) }
 
     var errorDescription: String? {
         reasons.isEmpty ? "All search providers are unavailable" : reasons.joined(separator: "; ")
+    }
+}
+
+/// Client-side accounting for a single search call site. A slot is consumed
+/// immediately before the HTTP request is dispatched, so a cancelled or failed
+/// attempt is still charged while cache hits and skipped providers are free.
+final class SearchAttemptTicket: @unchecked Sendable {
+    private let lock = NSLock()
+    private let limit: Int
+    private var consumed = 0
+
+    init(limit: Int) {
+        self.limit = max(0, limit)
+    }
+
+    var used: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return consumed
+    }
+
+    var remaining: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return max(0, limit - consumed)
+    }
+
+    /// `false` means the hard ceiling is already reached; nothing was sent.
+    func consume() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard consumed < limit else { return false }
+        consumed += 1
+        return true
+    }
+}
+
+/// Settings-facing provider state. Deliberately coarse: it explains why the
+/// next research pass will or will not ask this provider, without carrying a
+/// key, fingerprint, query or raw provider error.
+enum SearchProviderState: String, Sendable, Equatable, CaseIterable {
+    case disabled
+    case missingKey
+    case unattempted
+    case succeeded
+    case authRejected
+    case forbidden
+    case cooling
+    case transientFailure
+}
+
+struct SearchProviderStatus: Sendable, Equatable {
+    var provider: SearchProviderID
+    var state: SearchProviderState
+    var cooldownUntil: Date?
+    var lastFailure: SearchFailureReason?
+
+    init(
+        provider: SearchProviderID,
+        state: SearchProviderState,
+        cooldownUntil: Date? = nil,
+        lastFailure: SearchFailureReason? = nil
+    ) {
+        self.provider = provider
+        self.state = state
+        self.cooldownUntil = cooldownUntil
+        self.lastFailure = lastFailure
     }
 }
 

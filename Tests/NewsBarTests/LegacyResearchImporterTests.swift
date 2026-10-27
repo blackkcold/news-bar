@@ -36,11 +36,11 @@ private actor SpyResearchStore: ResearchPersisting {
     }
 
     func records() async -> [ResearchRecord] {
-        []
+        savedRecords
     }
 
     func record(id: String) async -> ResearchRecord? {
-        nil
+        savedRecords.first { $0.id == id }
     }
 
     func save(_ record: ResearchRecord) async throws {

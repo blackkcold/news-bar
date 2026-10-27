@@ -40,6 +40,10 @@ actor ResearchCacheStore {
     /// Page-cache lifetime. Defaults to 72 hours; the settings page may widen or
     /// narrow it. Search snapshots keep their fixed 12-hour window.
     private var pageTTL: TimeInterval = ResearchCacheStore.pagesTTL
+    private var didSweepTemporaries = false
+    /// Bumped by `clearAll`. A read that started before a history clear must
+    /// not repopulate the cache afterwards.
+    private var writeGeneration = 0
 
     init(directoryURL: URL? = nil, fileManager: FileManager = .default) {
         self.directoryURL = directoryURL ?? ResearchPaths.researchCacheDirectory
@@ -60,8 +64,10 @@ actor ResearchCacheStore {
         _ payload: Data,
         kind: ResearchCacheKind,
         key: String,
-        now: Date = Date()
+        now: Date = Date(),
+        epoch: Int? = nil
     ) {
+        if let epoch, epoch != writeGeneration { return }
         guard let url = try? ensureDirectories()
             .appendingPathComponent(kind.rawValue, isDirectory: true)
             .appendingPathComponent(fileKey(kind: kind, key: key) + ".json") else {
@@ -70,8 +76,9 @@ actor ResearchCacheStore {
         let entry = Entry(keyHash: ContentIdentity.digest(key), createdAt: now, payload: payload)
         guard let data = try? JSONEncoder().encode(entry) else { return }
         do {
-            try data.write(to: url, options: .atomic)
-            try? fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+            // Disposable, so no fsync; still created 0600 before the payload
+            // is written so a crash cannot leave a readable cache file.
+            try PrivateFile.write(data, to: url, durable: false)
             // Eviction uses the file timestamp; stamping it here keeps tests and
             // long-running sessions on the same clock.
             try? fileManager.setAttributes([.modificationDate: now], ofItemAtPath: url.path)
@@ -112,7 +119,18 @@ actor ResearchCacheStore {
     }
 
     func clearAll() {
+        writeGeneration += 1
         for kind in ResearchCacheKind.allCases { clear(kind: kind) }
+    }
+
+    func writeEpoch() -> Int {
+        writeGeneration
+    }
+
+    /// Used as a receipt after a clear: a non-empty cache means at least one
+    /// file could not be removed and the clear must not be reported as done.
+    func isEmpty() -> Bool {
+        allFiles().isEmpty
     }
 
     func totalBytes() -> Int64 {
@@ -223,23 +241,30 @@ actor ResearchCacheStore {
 
     @discardableResult
     private func ensureDirectories() throws -> URL {
-        try fileManager.createDirectory(
-            at: directoryURL,
-            withIntermediateDirectories: true,
-            attributes: [.posixPermissions: 0o700]
-        )
+        try PrivateFile.ensureDirectory(directoryURL)
         for kind in ResearchCacheKind.allCases {
-            try fileManager.createDirectory(
-                at: kindDirectory(kind),
-                withIntermediateDirectories: true,
-                attributes: [.posixPermissions: 0o700]
-            )
-            try? fileManager.setAttributes(
-                [.posixPermissions: 0o700],
-                ofItemAtPath: kindDirectory(kind).path
-            )
+            try PrivateFile.ensureDirectory(kindDirectory(kind))
         }
-        try? fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directoryURL.path)
+        if !didSweepTemporaries {
+            didSweepTemporaries = true
+            var failures = 0
+            for file in allFiles() where !PrivateFile.tightenExistingFile(file.url) {
+                failures += 1
+            }
+            for kind in ResearchCacheKind.allCases {
+                _ = PrivateFile.removeStaleTemporaries(
+                    in: kindDirectory(kind),
+                    olderThan: Date().addingTimeInterval(-3_600),
+                    fileManager: fileManager
+                )
+            }
+            if failures > 0 {
+                NSLog(
+                    "[ResearchCacheStore] could not tighten %ld cache file(s)",
+                    failures
+                )
+            }
+        }
 
         var directory = directoryURL
         var values = URLResourceValues()

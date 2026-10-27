@@ -578,6 +578,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                     guard let self, let orchestrator = self.orchestrator else { return }
                     Task { await orchestrator.clearCache() }
                 }
+                .environment(\.searchProviderStatusAction) { [weak self] settings in
+                    guard let orchestrator = self?.orchestrator else { return [] }
+                    return await orchestrator.searchProviderStatuses(settings: settings)
+                }
+                .environment(\.searchAuthRetryAction) { [weak self] provider in
+                    await self?.orchestrator?.clearSearchAuthBlock(for: provider)
+                }
+                .environment(\.researchHistoryClearAction) { [weak self] in
+                    guard let orchestrator = self?.orchestrator else {
+                        return ResearchClearResult(error: "orchestrator unavailable")
+                    }
+                    return await orchestrator.clearResearchHistory()
+                }
         )
         window.isReleasedWhenClosed = false
 

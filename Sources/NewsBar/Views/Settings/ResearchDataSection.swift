@@ -5,6 +5,7 @@ import SwiftUI
 struct ResearchDataSection: View {
     @Environment(AppSettings.self) private var settings
     @Environment(\.cacheClearAction) private var cacheClearAction
+    @Environment(\.researchHistoryClearAction) private var researchHistoryClearAction
 
     @State private var recordsBytes: Int64 = 0
     @State private var cacheBytes: Int64 = 0
@@ -284,17 +285,15 @@ struct ResearchDataSection: View {
     }
 
     private func clearHistory() {
-        ResearchCoordinator.shared.cancelAll()
         Task { @MainActor in
-            do {
-                // Search snapshots contain the queries that produced the
-                // records we are deleting; clear them too.
-                await ResearchCacheStore.shared.clear(kind: .search)
-                try await ResearchStore.shared.deleteAll()
-                message = "research.data.clearedHistory".localized
-            } catch {
+            guard let clear = researchHistoryClearAction else {
                 message = "research.data.clearFailed".localized
+                return
             }
+            let result = await clear()
+            message = result.isComplete
+                ? "research.data.clearedHistory".localized
+                : "research.data.clearFailed".localized
             NotificationCenter.default.post(name: .researchRecordsChanged, object: nil)
             await refreshStorage()
         }

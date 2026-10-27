@@ -193,7 +193,7 @@ actor ResearchFakeStore: ResearchPersisting {
 
     private func indexSnapshot() -> [ResearchIndexEntry] {
         recordMap.values
-            .map(ResearchIndexEntry.init(record:))
+            .map { ResearchIndexEntry(record: $0) }
             .sorted {
                 if $0.updatedAt != $1.updatedAt { return $0.updatedAt > $1.updatedAt }
                 return $0.id < $1.id

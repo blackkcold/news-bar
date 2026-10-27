@@ -22,10 +22,8 @@ actor TranslationCacheStore {
             self.cacheDirectory = appSupport
                 .appendingPathComponent(bundleID)
                 .appendingPathComponent("TranslationCache")
-            try? FileManager.default.createDirectory(
-                at: self.cacheDirectory, withIntermediateDirectories: true
-            )
         }
+        try? PrivateFile.ensureDirectory(self.cacheDirectory)
     }
 
     private func cacheURL(for key: String) -> URL {
@@ -36,6 +34,7 @@ actor TranslationCacheStore {
     func cachedTranslation(for title: String, targetLang: String) -> String? {
         let key = "\(targetLang)|\(title)"
         let url = cacheURL(for: key)
+        _ = PrivateFile.tightenExistingFile(url)
         guard let data = try? Data(contentsOf: url),
               let entry = try? JSONDecoder().decode(Entry.self, from: data) else {
             return nil
@@ -48,7 +47,7 @@ actor TranslationCacheStore {
         let url = cacheURL(for: key)
         let entry = Entry(translated: translated, timestamp: Date())
         guard let data = try? JSONEncoder().encode(entry) else { return }
-        try? data.write(to: url, options: .atomic)
+        try? PrivateFile.write(data, to: url, durable: false)
     }
 
     func clear() {
