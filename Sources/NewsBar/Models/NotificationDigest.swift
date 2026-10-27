@@ -3,6 +3,10 @@ import Foundation
 enum NotificationIdentifier {
     static let digestCategory = "newsbar.news"
     static let openDigestAction = "newsbar.openDigest"
+    static let researchCategory = "newsbar.research"
+    static let openResearchAction = "newsbar.openResearch"
+    static let markResearchReadAction = "newsbar.markResearchRead"
+
     /// Stable request identifiers. A fixed identifier makes the system replace
     /// the previous request and delivered banner instead of piling one up per
     /// hour or per launch.

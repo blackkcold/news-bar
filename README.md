@@ -30,6 +30,7 @@ Zero dependencies. Pure Swift. Free & open source (MIT).
 - **📺 Bilibili Trending** — Bilibili popular & trending content
 - **📡 Custom RSS Feeds** — Add any RSS/Atom source; fully extensible
 - **🤖 AI Summary** — One shared dual-category briefing (Trend Overview / Daily Essentials) served across Popup and Dashboard; cited rows open the original source. **Two-layer smart triggering**: a regular 1-hour baseline, plus an **immediate trigger when a Weibo "爆" (burst) label appears**, which forces the burst topic into the Trend Overview and prioritises it. Burst summaries are throttled to once per 15 minutes.
+- **🔎 Research Center** — Online verification with evidence and verbatim quote checks; manual runs, burst automation and keyword tracking, plus a one-sentence completion notification
 - **📊 Editorial Dashboard** — Responsive masthead, shared AI briefing, redesigned trend cards, and per-source RSS layout with individual refresh actions
 - **⏱ Adaptive Smart Refresh** — Startup fetch + visibility-aware hot-trend polling + adaptive RSS cadence
 - **🔄 Auto Update** — Check GitHub Releases, one-click download

@@ -36,23 +36,17 @@ actor EncryptedKeyStore {
         ).first!
         let bundleID = Bundle.main.bundleIdentifier ?? "com.newsbar"
         let dir = appSupport.appendingPathComponent(bundleID)
-        try? FileManager.default.createDirectory(
-            at: dir, withIntermediateDirectories: true
-        )
+        // 0700，且先于任何文件创建
+        try? PrivateFile.ensureDirectory(dir)
         // 排除 Time Machine 备份
         var mutableDir = dir
         var resourceValues = URLResourceValues()
         resourceValues.isExcludedFromBackup = true
         try? mutableDir.setResourceValues(resourceValues)
-        // 限制目录权限
-        try? FileManager.default.setAttributes(
-            [.posixPermissions: 0o700], ofItemAtPath: dir.path
-        )
         return dir
     }()
 
     private static let storeFile = storeDirectory.appendingPathComponent("apikeys.enc")
-    private static let tempFile = storeDirectory.appendingPathComponent("apikeys.enc.tmp")
     private static let uuidSnapshotFile = storeDirectory.appendingPathComponent(".machine-uuid")
 
     // MARK: - 密钥派生
@@ -103,6 +97,7 @@ actor EncryptedKeyStore {
     /// 如果 UUID 发生变更（硬件更换/系统升级），使用旧 UUID 解密已有数据
     private static func resolveMachineIdentifier() throws -> String {
         // 读取已保存的 UUID 快照
+        _ = PrivateFile.tightenExistingFile(uuidSnapshotFile)
         if let savedUUID = try? String(contentsOf: uuidSnapshotFile, encoding: .utf8),
            !savedUUID.isEmpty {
             let currentUUID = (try? currentPlatformUUID()) ?? savedUUID
@@ -113,7 +108,7 @@ actor EncryptedKeyStore {
         }
         // 首次启动：保存当前 UUID 快照
         let uuid = try currentPlatformUUID()
-        try Data(uuid.utf8).write(to: uuidSnapshotFile, options: .atomic)
+        try PrivateFile.write(Data(uuid.utf8), to: uuidSnapshotFile, durable: true)
         try? (uuidSnapshotFile as NSURL).setResourceValue(true, forKey: .isExcludedFromBackupKey)
         return uuid
     }
@@ -152,6 +147,7 @@ actor EncryptedKeyStore {
     // MARK: - Payload 读写
 
     private func readPayload() throws -> EncryptedPayload {
+        _ = PrivateFile.tightenExistingFile(Self.storeFile)
         guard FileManager.default.fileExists(atPath: Self.storeFile.path) else {
             return EncryptedPayload(version: Self.currentVersion, entries: [])
         }
@@ -166,25 +162,12 @@ actor EncryptedKeyStore {
     private func writePayload(_ payload: EncryptedPayload) throws {
         let data = try JSONEncoder().encode(payload)
 
-        // 原子写入: temp → F_FULLFSYNC → replaceItemAt → 设权限 → 读回验证
-        try data.write(to: Self.tempFile, options: .atomic)
-
-        if let fd = fopen(Self.tempFile.path, "a") {
-            _ = fcntl(fileno(fd), F_FULLFSYNC)
-            fclose(fd)
-        }
-
-        if FileManager.default.fileExists(atPath: Self.storeFile.path) {
-            _ = try FileManager.default.replaceItemAt(
-                Self.storeFile,
-                withItemAt: Self.tempFile
-            )
-        } else {
-            try FileManager.default.moveItem(at: Self.tempFile, to: Self.storeFile)
-        }
-
-        try FileManager.default.setAttributes(
-            [.posixPermissions: 0o600], ofItemAtPath: Self.storeFile.path
+        // 原子写入: 0600 临时文件 → F_FULLFSYNC → rename → 读回验证
+        try PrivateFile.write(
+            data,
+            to: Self.storeFile,
+            durable: true,
+            fullSync: true
         )
         // 排除 Time Machine 备份
         try? (Self.storeFile as NSURL).setResourceValue(true, forKey: .isExcludedFromBackupKey)

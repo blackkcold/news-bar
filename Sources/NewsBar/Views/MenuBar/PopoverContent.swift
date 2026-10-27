@@ -16,6 +16,7 @@ struct PopoverContent: View {
 
     var onOpenSettings: () -> Void
     var onOpenDashboard: () -> Void
+    var onOpenResearchCenter: () -> Void = {}
     var onConfigureKey: (() -> Void)?
 
     @State private var expandedRSSSourceIDs: Set<String> = []
@@ -39,7 +40,8 @@ struct PopoverContent: View {
                 orchestrator: orchestrator,
                 expandedRSSSourceIDs: $expandedRSSSourceIDs,
                 rssLoadedCounts: $rssLoadedCounts,
-                onConfigureKey: onConfigureKey
+                onConfigureKey: onConfigureKey,
+                onOpenResearchCenter: onOpenResearchCenter
             )
 
             if !expandedRSSSourceIDs.isEmpty {
@@ -173,6 +175,7 @@ private struct PopoverFeedList: View {
     @Binding var expandedRSSSourceIDs: Set<String>
     @Binding var rssLoadedCounts: [String: Int]
     let onConfigureKey: (() -> Void)?
+    let onOpenResearchCenter: () -> Void
 
     var body: some View {
         ScrollView(.vertical, showsIndicators: false) {
@@ -184,6 +187,13 @@ private struct PopoverFeedList: View {
                     orchestrator: orchestrator,
                     onConfigureKey: onConfigureKey
                 )
+
+                if settings.researchShowPopoverChip {
+                    PopoverResearchChip(
+                        summary: orchestrator.researchSummary,
+                        onOpen: onOpenResearchCenter
+                    )
+                }
 
                 EditorialSectionHeading(
                     index: "01",

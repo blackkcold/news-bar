@@ -48,6 +48,14 @@ final class NewsOrchestrator {
     var bilibiliItems: [NewsItem] = []
     var rssItemsMap: [String: [NewsItem]] = [:]
 
+    /// Weibo hot-search rows available to burst detection (up to 20). The
+    /// visible `weiboItems` list stays at five rows.
+    var weiboDetectionItems: [NewsItem] = []
+    /// Popover chip counts; refreshed from ResearchStore after record changes.
+    var researchSummary = ResearchSummary.zero
+    /// Three most recent records for the Dashboard sidebar.
+    var researchHighlights: [ResearchIndexEntry] = []
+
     // Shared summary context — Popup and Dashboard render the same generated result.
     var aiSummaryState = AISummaryState.idle
     var aiSummaryItems: [NewsItem] = []
@@ -65,6 +73,20 @@ final class NewsOrchestrator {
     private let translationCacheStore = TranslationCacheStore()
     private let trendHistoryStore = TrendHistoryStore.shared
     private let rateLimiter = RateLimiter()
+    private let researchStore = ResearchStore.shared
+    private let researchCacheStore = ResearchCacheStore.shared
+    private let researchSearchRouter = SearchRouter()
+    private let researchLedger = ResearchLedger.shared
+    private let researchClearIntentStore = ResearchClearIntentStore()
+    /// True from the moment a clear starts until every stage is verified. New
+    /// burst/keyword work is refused while it is set.
+    private(set) var isClearingResearchHistory = false
+    /// A damaged or future-version intent keeps automation paused rather than
+    /// risking a re-import of artifacts the user asked to delete.
+    private(set) var isResearchClearBlocked = false
+    private var researchClearGeneration = 0
+    @ObservationIgnored private var researchObserver: NSObjectProtocol?
+    private var legacyResearchImported = false
     private var aiSummaryCacheStore: AISummaryCacheStore {
         AISummaryCacheStore(language: L10n.currentLanguage)
     }
@@ -99,6 +121,24 @@ final class NewsOrchestrator {
     private var latestTrendSummary = TrendChangeSummary.none
     /// The shared result uses the detailed Dashboard prompt. Popup limits rows at render time.
     static let sharedSummaryTarget: SummaryTarget = .dashboard
+
+    init() {
+        researchObserver = NotificationCenter.default.addObserver(
+            forName: .researchRecordsChanged,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                await self?.refreshResearchSummary()
+            }
+        }
+    }
+
+    deinit {
+        if let researchObserver {
+            NotificationCenter.default.removeObserver(researchObserver)
+        }
+    }
 
     static func budgetBaseline(settings: AppSettings, target: SummaryTarget) -> Int {
         settings.aiBudgetMode == .shared
@@ -271,6 +311,7 @@ final class NewsOrchestrator {
         }
 
         if hotItems != weiboItems { weiboItems = hotItems }
+        if weiboDetectionItems.isEmpty { weiboDetectionItems = hotItems }
         if videoItems != bilibiliItems { bilibiliItems = videoItems }
         if feeds != rssItemsMap { rssItemsMap = feeds }
         if states != sourceStates { sourceStates = states }
@@ -512,17 +553,43 @@ final class NewsOrchestrator {
     }
 
     private func fetchWeibo(useCacheFallback: Bool) async -> Bool {
-        if let result = await fetchAndCache(
-            for: .weibo,
-            fetcher: { try await WeiboHotService.fetch() }
-        ) {
-            weiboItems = result.items
-            return result.changed
-        } else if useCacheFallback, weiboItems.isEmpty,
-                  let cached = await cacheManager.load(for: .weibo) {
-            weiboItems = cached.items
+        do {
+            let feed = try await WeiboHotService.fetchFeed()
+            guard !feed.displayItems.isEmpty else {
+                sourceStates[NewsSource.weibo.id] = .failed("error.noContent".localized)
+                return false
+            }
+            if !feed.hotLabelsAvailable {
+                NSLog("[NewsOrchestrator] Weibo hot labels unavailable (HTML fallback); burst detection disabled this round")
+            }
+
+            let now = Date()
+            let existing = await cacheManager.load(for: .weibo)
+            let contentHash = CacheEntry.contentIdentifier(for: feed.displayItems)
+            let hasNew = existing?.contentHash != contentHash
+            let entry = CacheEntry(
+                items: feed.displayItems,
+                timestamp: hasNew ? now : (existing?.timestamp ?? now),
+                contentHash: contentHash,
+                lastValidatedAt: now,
+                eTag: existing?.eTag,
+                lastModified: existing?.lastModified
+            )
+            await cacheManager.save(entry, for: .weibo)
+            weiboItems = feed.displayItems
+            weiboDetectionItems = feed.detectionItems
+            sourceStates[NewsSource.weibo.id] = .loaded
+            return hasNew
+        } catch {
+            NSLog("[NewsOrchestrator] 获取 \(NewsSource.weibo.displayName) 失败: \(error.localizedDescription)")
+            sourceStates[NewsSource.weibo.id] = .failed(sourceErrorMessage(error))
+            if useCacheFallback, weiboItems.isEmpty,
+               let cached = await cacheManager.load(for: .weibo) {
+                weiboItems = cached.items
+                weiboDetectionItems = cached.items
+            }
+            return false
         }
-        return false
     }
 
     private func fetchBilibili(useCacheFallback: Bool) async -> Bool {
@@ -690,13 +757,16 @@ final class NewsOrchestrator {
 
     /// Builds the burst research search config, honoring the given `forceSearch`
     /// flag (used by the developer test to always run web search) or the user's
-    /// realtime `webSearchEnabled` toggle.
-    private func makeSearchConfig(settings: AppSettings, forceSearch: Bool) -> WebSearchService.Config? {
+    /// realtime `webSearchEnabled` toggle. The Firecrawl key is read from the
+    /// encrypted store, with the legacy UserDefaults value as a fallback during
+    /// migration.
+    private func makeSearchConfig(settings: AppSettings, forceSearch: Bool) async -> WebSearchService.Config? {
         let enabled = forceSearch || settings.webSearchEnabled
         guard enabled else { return nil }
+        let key = await SearchKeyStore.key(for: .firecrawl, fallback: settings.firecrawlAPIKey)
         return WebSearchService.Config(
             provider: .firecrawl,
-            apiKey: settings.firecrawlAPIKey,
+            apiKey: key,
             maxResults: 6
         )
     }
@@ -706,61 +776,240 @@ final class NewsOrchestrator {
     /// Detects new Weibo "爆" topics and pushes a single notification each with
     /// AI research pre-generated. De-duplicates by title and respects a cooldown.
     private func handleBurstTopics(settings: AppSettings) async {
-        guard settings.burstPushEnabled else { return }
+        // `researchAutoEnabled` is the single master switch. `burstPushEnabled`
+        // only decides whether the finished report also raises a notification.
+        guard settings.researchAutoEnabled,
+              !isClearingResearchHistory,
+              !isResearchClearBlocked else { return }
         let now = Date()
         let epoch = InterestController.shared.state.consentEpoch
-        let cooldown = now.timeIntervalSince(lastResearchAt ?? .distantPast)
-        guard cooldown >= RefreshPolicy.burstSummaryCooldown else { return }
 
-        let newBursts = ResearchSelectionPolicy.select(items: weiboItems
-            .filter { $0.hotLabel == "爆" && !notifiedBurstTopics.contains($0.title) }, state: InterestController.shared.state, limit: 2).map(\.item)
-        guard !newBursts.isEmpty else { return }
-        let apiKey = await resolveAPIKey(settings: settings)
-        guard let configuration = await validatedConfiguration(settings: settings, apiKey: apiKey) else { return }
-        lastResearchAt = now
+        let candidates = weiboDetectionItems.filter { $0.hotLabel == "爆" }
+        guard !candidates.isEmpty else { return }
 
-        let trendContext = latestTrendSummary.context
-        for burst in newBursts.prefix(2) {
-            guard epoch == InterestController.shared.state.consentEpoch, settings.isCurrentAIConfiguration(configuration) else { return }
-            notifiedBurstTopics.insert(burst.title)
-            await persistResearchState(epoch: epoch)
-            guard InterestController.shared.storageError == nil else { return }
-            burstResearchInFlight.insert(burst.title)
-            defer { burstResearchInFlight.remove(burst.title) }
-            let research = await BurstResearchService.research(
-                BurstResearchService.ResearchInput(
-                    item: burst,
-                    trendContext: trendContext,
-                    apiKey: configuration.apiKey,
-                    connection: configuration.connection,
-                    model: configuration.model,
-                    summaryLanguage: settings.appLanguage,
-                    disableDeepSeekThinking: settings.aiDisableDeepSeekThinking,
-                    searchConfig: makeSearchConfig(settings: settings, forceSearch: false),
-                    dailyCap: settings.burstDailyCap,
-                    maxRefetchURLs: 3,
-                    isAllowed: { await MainActor.run { InterestController.shared.state.consentEpoch == epoch && settings.isCurrentAIConfiguration(configuration) } }
-                )
-            )
-            settings.recordBurstResearchRequests(BurstResearchService.readDailyCount())
-            guard epoch == InterestController.shared.state.consentEpoch, settings.isCurrentAIConfiguration(configuration) else { return }
-            if !research.summary.isEmpty {
-                burstResearchCache[burst.title] = research
-                let title = L10n.string("notif.burstTitle", language: settings.appLanguage)
-                    + " \(burst.title)"
-                NotificationService.sendBurstNotification(
-                    title: title,
-                    summary: research.summary,
-                    eventID: burst.title
+        let selected = ResearchSelectionPolicy.select(
+            items: candidates,
+            state: InterestController.shared.state,
+            limit: settings.researchDetectionLimit
+        ).map(\.item)
+
+        var notifiedChanged = false
+        for burst in selected {
+            guard epoch == InterestController.shared.state.consentEpoch else { return }
+            guard let record = await ResearchRecordProvisioner.ensureRecord(
+                for: burst,
+                origin: .burst,
+                store: researchStore,
+                now: now
+            ) else { continue }
+
+            if !notifiedBurstTopics.contains(burst.title) {
+                notifiedBurstTopics.insert(burst.title)
+                notifiedChanged = true
+            }
+
+            let neverStarted = record.run.startedAt == nil
+            let cooledDown = now.timeIntervalSince(record.updatedAt) >= 6 * 3_600
+            if neverStarted || (!record.status.isActive && cooledDown) {
+                await scheduleResearch(
+                    recordID: record.id,
+                    settings: settings,
+                    forceSearch: false,
+                    notify: settings.burstPushEnabled
                 )
             }
+        }
+
+        if notifiedChanged {
             await persistResearchState(epoch: epoch)
-            await RefreshLog.shared.recordBurst(
-                topic: burst.title,
-                searchStatus: research.searchStatus.rawValue,
-                requestCount: BurstResearchService.readDailyCount()
+        }
+        await refreshResearchSummary()
+    }
+
+    func refreshResearchSummary() async {
+        researchSummary = await researchStore.burstSummary()
+        let entries = await researchStore.index()
+        researchHighlights = entries
+            .sorted { lhs, rhs in
+                if lhs.isPinned != rhs.isPinned { return lhs.isPinned }
+                if lhs.updatedAt != rhs.updatedAt { return lhs.updatedAt > rhs.updatedAt }
+                return lhs.id < rhs.id
+            }
+            .prefix(3)
+            .map { $0 }
+    }
+
+    func markResearchRead(recordID: String) async {
+        guard var record = await researchStore.record(id: recordID) else { return }
+        // A corrupt or newer-version placeholder is read-only; writing it would
+        // destroy bytes this build does not understand.
+        guard record.status != .corrupt, record.loadIssue == nil else { return }
+        guard !record.isRead else { return }
+        record.isRead = true
+        try? await researchStore.save(record)
+        NotificationCenter.default.post(name: .researchRecordsChanged, object: nil)
+        await refreshResearchSummary()
+    }
+
+    /// Exact topic lookup used by the legacy burst notification shim.
+    func recordID(forTopic title: String) async -> String? {
+        await researchStore.latestRecord(topicKey: TopicFingerprint.key(for: title))?.id
+    }
+
+    /// Manual verification from any news row. Reuses an exact topic record and
+    /// re-runs research unless it is already queued or running.
+    func startManualResearch(item: NewsItem, settings: AppSettings) async -> String? {
+        await InterestController.shared.prepare()
+        guard let record = await ResearchRecordProvisioner.ensureRecord(
+            for: item,
+            origin: .manual,
+            store: researchStore
+        ) else { return nil }
+
+        // A finished record opens as-is; re-running is an explicit action from
+        // the detail view, not a side effect of clicking "verify" again.
+        if record.run.startedAt == nil {
+            await scheduleResearch(recordID: record.id, settings: settings, forceSearch: false)
+        }
+        await refreshResearchSummary()
+        return record.id
+    }
+
+    func startManualResearch(title: String, settings: AppSettings) async -> String? {
+        let item = weiboItems.first { $0.title == title }
+            ?? NewsItem(title: title, url: "https://s.weibo.com", source: .weibo)
+        return await startManualResearch(item: item, settings: settings)
+    }
+
+    private func scheduleResearch(
+        recordID: String,
+        settings: AppSettings,
+        forceSearch: Bool,
+        notify: Bool = true
+    ) async {
+        await ResearchCoordinator.shared.setMaxConcurrent(settings.researchMaxConcurrent)
+        await ResearchCoordinator.shared.schedule(recordID: recordID, notify: notify) { [weak self] record, progress in
+            guard let self else {
+                return .failure(L10n.string("research.error.unavailable", language: settings.appLanguage))
+            }
+            return await self.executeResearch(
+                record: record,
+                settings: settings,
+                forceSearch: forceSearch,
+                progress: progress
             )
         }
+    }
+
+    /// Runs the evidence-backed pipeline for one record. The coordinator owns
+    /// status/persistence; this method only resolves credentials and builds the
+    /// injected dependencies.
+    func executeResearch(
+        record: ResearchRecord,
+        settings: AppSettings,
+        forceSearch: Bool = false,
+        progress: @escaping @Sendable (ResearchRun) async -> Void
+    ) async -> ResearchExecution {
+        await InterestController.shared.prepare()
+        let epoch = InterestController.shared.state.consentEpoch
+        let item = weiboItems.first { $0.title == record.topic }
+            ?? NewsItem(
+                title: record.topic,
+                url: record.seed.url ?? "https://s.weibo.com",
+                source: record.seed.source,
+                publishedAt: record.seed.publishedAt
+            )
+
+        let apiKey = await resolveAPIKey(settings: settings)
+        guard let configuration = await validatedConfiguration(settings: settings, apiKey: apiKey) else {
+            return .failure(L10n.string("research.error.noAIKey", language: settings.appLanguage))
+        }
+
+        let keys = await resolveSearchKeys(settings: settings)
+        let searchConfiguration = SearchRouterConfiguration(
+            enabled: settings.enabledSearchProviders,
+            keys: keys
+        )
+        let pipeline = ResearchPipeline(
+            ai: HTTPAIChatClient(
+                connection: configuration.connection,
+                apiKey: configuration.apiKey,
+                model: configuration.model,
+                disableDeepSeekThinking: settings.aiDisableDeepSeekThinking
+            ),
+            searchRouter: researchSearchRouter,
+            pageReader: PageReader(
+                cache: researchCacheStore,
+                isScrapeEnabled: settings.enabledSearchProviders.contains(.firecrawl)
+                    && !(keys[.firecrawl] ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ),
+            ledger: researchLedger
+        )
+        let pipelineConfiguration = ResearchPipelineConfiguration(
+            record: record,
+            depth: settings.researchDepth,
+            language: settings.appLanguage,
+            trendContext: latestTrendSummary.context,
+            defaultRecency: settings.researchDefaultRecency,
+            searchConfiguration: searchConfiguration,
+            firecrawlAPIKey: keys[.firecrawl] ?? "",
+            aiDailyCap: settings.researchDailyAICap,
+            taskDailyCap: settings.researchDailyTaskCap,
+            seedSourceName: item.source.displayName,
+            isAllowed: {
+                await MainActor.run {
+                    InterestController.shared.state.consentEpoch == epoch
+                        && settings.isCurrentAIConfiguration(configuration)
+                        && !Task.isCancelled
+                }
+            }
+        )
+
+        let execution = await pipeline.run(
+            configuration: pipelineConfiguration,
+            progress: progress
+        )
+        NSLog(
+            "[ResearchPipeline] status=%@ pages=%ld queries=%ld ai=%ld search=%ld partial=%@",
+            execution.research.searchStatus.rawValue,
+            execution.pagesRead,
+            execution.queries.count,
+            execution.aiCalls,
+            execution.searchCalls,
+            execution.isPartial ? "yes" : "no"
+        )
+        guard epoch == InterestController.shared.state.consentEpoch,
+              settings.isCurrentAIConfiguration(configuration) else {
+            return .failure(L10n.string("research.error.cancelled", language: settings.appLanguage))
+        }
+        return execution
+    }
+
+    /// Settings-facing snapshot of the same router that runs research. It
+    /// contains no key, fingerprint, query or raw provider error.
+    func searchProviderStatuses(settings: AppSettings) async -> [SearchProviderStatus] {
+        let keys = await resolveSearchKeys(settings: settings)
+        let configuration = SearchRouterConfiguration(
+            enabled: settings.enabledSearchProviders,
+            keys: keys
+        )
+        return await researchSearchRouter.statusSnapshot(configuration: configuration)
+    }
+
+    /// Clears only this provider's auth block. Never sends a request, never
+    /// clears a quota cooldown and never touches the ledger.
+    func clearSearchAuthBlock(for provider: SearchProviderID) async {
+        await researchSearchRouter.clearAuthBlock(for: provider)
+    }
+
+    /// Search keys live in the encrypted store, with the legacy Firecrawl
+    /// UserDefaults value kept as a migration fallback.
+    private func resolveSearchKeys(settings: AppSettings) async -> [SearchProviderID: String] {
+        var keys = await SearchKeyStore.loadAll()
+        if keys[.firecrawl]?.isEmpty ?? true, !settings.firecrawlAPIKey.isEmpty {
+            keys[.firecrawl] = settings.firecrawlAPIKey
+        }
+        return keys
     }
 
     /// Returns cached research for a burst topic, or nil when none was pre-generated.
@@ -789,7 +1038,7 @@ final class NewsOrchestrator {
                 model: configuration.model,
                 summaryLanguage: settings.appLanguage,
                 disableDeepSeekThinking: settings.aiDisableDeepSeekThinking,
-                searchConfig: makeSearchConfig(settings: settings, forceSearch: false),
+                searchConfig: await makeSearchConfig(settings: settings, forceSearch: false),
                 dailyCap: settings.burstDailyCap,
                 maxRefetchURLs: 3,
                 isAllowed: { await MainActor.run { InterestController.shared.state.consentEpoch == epoch && settings.isCurrentAIConfiguration(configuration) } }
@@ -808,19 +1057,21 @@ final class NewsOrchestrator {
     /// re-notifying the same match across refreshes.
     private var notifiedKeywordPairs: Set<String> = []
 
-    /// Detects news items whose titles match a user keyword and pushes a single
-    /// notification with AI research pre-generated, reusing the burst pipeline.
-    /// Scans Weibo + Bilibili + all enabled RSS. De-duplicates by
-    /// (keyword,title) and applies a global research cooldown.
+    /// Detects news items whose titles match a user keyword and enqueues a
+    /// research record for each new match. Keyword research shares the same
+    /// coordinator, pipeline and budget ledger as burst research; the old
+    /// inline call and the shared 15-minute cooldown are gone, so a keyword
+    /// match no longer blocks (or is blocked by) burst research.
     private func handleKeywordTopics(settings: AppSettings) async {
-        guard settings.keywordTrackingEnabled else { return }
+        guard settings.researchAutoEnabled,
+              settings.keywordTrackingEnabled,
+              !isClearingResearchHistory,
+              !isResearchClearBlocked else { return }
         let active = settings.activeKeywords
         guard !active.isEmpty else { return }
 
         let now = Date()
         let epoch = InterestController.shared.state.consentEpoch
-        let cooldown = now.timeIntervalSince(lastResearchAt ?? .distantPast)
-        guard cooldown >= RefreshPolicy.burstSummaryCooldown else { return }
 
         var matches: [(keyword: String, item: NewsItem)] = []
         for item in allActiveItems(settings: settings) {
@@ -833,53 +1084,38 @@ final class NewsOrchestrator {
         }
         guard !matches.isEmpty else { return }
         let apiKey = await resolveAPIKey(settings: settings)
-        guard let configuration = await validatedConfiguration(settings: settings, apiKey: apiKey) else { return }
-        lastResearchAt = now
+        guard await validatedConfiguration(settings: settings, apiKey: apiKey) != nil else { return }
 
         let prioritizedIDs = ResearchSelectionPolicy.select(items: matches.map(\.item), state: InterestController.shared.state, limit: 2).map { $0.item.id }
         matches.sort { (prioritizedIDs.firstIndex(of: $0.item.id) ?? Int.max) < (prioritizedIDs.firstIndex(of: $1.item.id) ?? Int.max) }
 
-        let trendContext = latestTrendSummary.context
+        var notifiedChanged = false
         for match in matches.prefix(2) {
-            guard epoch == InterestController.shared.state.consentEpoch, settings.isCurrentAIConfiguration(configuration) else { return }
+            guard epoch == InterestController.shared.state.consentEpoch else { return }
+            guard let record = await ResearchRecordProvisioner.ensureRecord(
+                for: match.item,
+                origin: .keyword,
+                store: researchStore,
+                now: now
+            ) else { continue }
+
             let pair = "\(match.keyword)\n\(match.item.title)"
-            notifiedKeywordPairs.insert(pair)
-            await persistResearchState(epoch: epoch)
-            guard InterestController.shared.storageError == nil else { return }
-            let research = await BurstResearchService.research(
-                BurstResearchService.ResearchInput(
-                    item: match.item,
-                    trendContext: trendContext,
-                    apiKey: configuration.apiKey,
-                    connection: configuration.connection,
-                    model: configuration.model,
-                    summaryLanguage: settings.appLanguage,
-                    disableDeepSeekThinking: settings.aiDisableDeepSeekThinking,
-                    searchConfig: makeSearchConfig(settings: settings, forceSearch: false),
-                    dailyCap: settings.burstDailyCap,
-                    maxRefetchURLs: 3,
-                    isAllowed: { await MainActor.run { InterestController.shared.state.consentEpoch == epoch && settings.isCurrentAIConfiguration(configuration) } }
-                )
-            )
-            settings.recordBurstResearchRequests(BurstResearchService.readDailyCount())
-            guard epoch == InterestController.shared.state.consentEpoch, settings.isCurrentAIConfiguration(configuration) else { return }
-            if !research.summary.isEmpty {
-                burstResearchCache[match.item.title] = research
-                let title = L10n.string("notif.keywordTitle", language: settings.appLanguage)
-                    + " \(match.keyword) · \(match.item.title)"
-                NotificationService.sendBurstNotification(
-                    title: title,
-                    summary: research.summary,
-                    eventID: match.item.title
-                )
+            if !notifiedKeywordPairs.contains(pair) {
+                notifiedKeywordPairs.insert(pair)
+                notifiedChanged = true
             }
-            await persistResearchState(epoch: epoch)
-            await RefreshLog.shared.recordBurst(
-                topic: match.item.title,
-                searchStatus: research.searchStatus.rawValue,
-                requestCount: BurstResearchService.readDailyCount()
-            )
+
+            let neverStarted = record.run.startedAt == nil
+            let cooledDown = now.timeIntervalSince(record.updatedAt) >= 6 * 3_600
+            if neverStarted || (!record.status.isActive && cooledDown) {
+                await scheduleResearch(recordID: record.id, settings: settings, forceSearch: false)
+            }
         }
+
+        if notifiedChanged {
+            await persistResearchState(epoch: epoch)
+        }
+        await refreshResearchSummary()
     }
 
     // MARK: - Developer test: fake burst push
@@ -891,10 +1127,10 @@ final class NewsOrchestrator {
     /// exercised; the window polls for the result via `isBurstResearchInFlight`.
     func fireFakeBurstPush(settings: AppSettings) async {
         await InterestController.shared.prepare()
-        let epoch = InterestController.shared.state.consentEpoch
         guard settings.burstTestMode else { return }
         let trimmedTopic = settings.burstTestTopic.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedTopic.isEmpty else { return }
+
         let fake = NewsItem(
             title: trimmedTopic,
             url: "https://s.weibo.com",
@@ -902,46 +1138,15 @@ final class NewsOrchestrator {
             rank: 1,
             hotLabel: "爆"
         )
-        let apiKey = await resolveAPIKey(settings: settings)
-        guard let configuration = await validatedConfiguration(settings: settings, apiKey: apiKey) else { return }
+        guard let record = await ResearchRecordProvisioner.ensureRecord(
+            for: fake,
+            origin: .burst,
+            store: researchStore
+        ) else { return }
 
-        // 1) Open the detail window right away so the user sees the loading state.
+        await scheduleResearch(recordID: record.id, settings: settings, forceSearch: true)
         openBurstDetail(title: trimmedTopic)
-
-        // 2) Mark in-flight so the window's load() waits instead of re-researching.
-        burstResearchInFlight.insert(trimmedTopic)
-        defer { burstResearchInFlight.remove(trimmedTopic) }
-
-        let research = await BurstResearchService.research(
-            BurstResearchService.ResearchInput(
-                item: fake,
-                trendContext: latestTrendSummary.context,
-                apiKey: configuration.apiKey,
-                connection: configuration.connection,
-                model: configuration.model,
-                summaryLanguage: settings.appLanguage,
-                disableDeepSeekThinking: settings.aiDisableDeepSeekThinking,
-                searchConfig: makeSearchConfig(settings: settings, forceSearch: true),
-                dailyCap: settings.burstDailyCap,
-                maxRefetchURLs: 3,
-                isAllowed: { await MainActor.run { InterestController.shared.state.consentEpoch == epoch && settings.isCurrentAIConfiguration(configuration) } }
-            )
-        )
-        settings.recordBurstResearchRequests(BurstResearchService.readDailyCount())
-        guard epoch == InterestController.shared.state.consentEpoch, settings.isCurrentAIConfiguration(configuration) else { return }
-        burstResearchCache[trimmedTopic] = research
-        await persistResearchState(epoch: epoch)
-        let notifTitle = L10n.string("notif.burstTitle", language: settings.appLanguage) + " \(trimmedTopic)"
-        NotificationService.sendBurstNotification(
-            title: notifTitle,
-            summary: research.summary.isEmpty ? "burst.noSummary".localized : research.summary,
-            eventID: trimmedTopic
-        )
-        await RefreshLog.shared.recordBurst(
-            topic: trimmedTopic,
-            searchStatus: research.searchStatus.rawValue,
-            requestCount: BurstResearchService.readDailyCount()
-        )
+        await refreshResearchSummary()
     }
 
     /// Fills the test-mode topic field with the current Weibo #1 hot search title.
@@ -1525,23 +1730,160 @@ final class NewsOrchestrator {
         let interest = InterestController.shared
         await interest.prepare()
         if !researchStateLoaded, interest.isReady {
+            switch researchClearIntentStore.load() {
+            case .pending:
+                // Do not load legacy artifacts: the user already asked for
+                // them to be discarded. Finish that work first.
+                researchStateLoaded = true
+                let saved = interest.state.research
+                notifiedBurstTopics = saved.notifiedBursts
+                notifiedKeywordPairs = saved.notifiedKeywords
+                burstResearchCache = [:]
+                let clearResult = await clearResearchHistory()
+                if !clearResult.isComplete {
+                    // The intent file is still there; keep automation paused
+                    // so nothing can import artifacts back while it is pending.
+                    isResearchClearBlocked = true
+                }
+                await refreshResearchSummary()
+                return
+            case .unsupportedVersion:
+                researchStateLoaded = true
+                isResearchClearBlocked = true
+                burstResearchCache = [:]
+                await refreshResearchSummary()
+                return
+            case .none:
+                break
+            }
             let saved = interest.state.research
             burstResearchCache = saved.artifacts
             notifiedBurstTopics = saved.notifiedBursts
             notifiedKeywordPairs = saved.notifiedKeywords
             lastResearchAt = saved.lastResearchAt
             researchStateLoaded = true
+            await importLegacyResearchIfNeeded(saved)
+            await refreshResearchSummary()
         }
+    }
+
+    /// Copies legacy burst artifacts into `ResearchStore` once, then clears the
+    /// BLOB copy now that the research center owns history. A failed import
+    /// leaves both the artifacts and the version marker untouched so the next
+    /// launch retries; successful records are deduplicated by key+timestamp.
+    private func importLegacyResearchIfNeeded(_ saved: PersistedResearchState) async {
+        let meta = await researchStore.meta()
+        if meta.legacyImportVersion >= 1 {
+            legacyResearchImported = true
+        }
+        guard !saved.artifacts.isEmpty else { return }
+
+        let outcome = await LegacyResearchImporter.importArtifacts(
+            saved.artifacts,
+            stateUpdatedAt: saved.updatedAt,
+            currentItems: weiboItems,
+            store: researchStore
+        )
+        // Conflicts and unverified writes keep both the artifacts and the
+        // marker so the next launch retries instead of losing history.
+        guard outcome.isComplete else { return }
+
+        legacyResearchImported = true
+        var research = saved
+        research.artifacts = [:]
+        let epoch = InterestController.shared.state.consentEpoch
+        InterestController.shared.updateResearch(research, epoch: epoch)
+        await InterestController.shared.flush()
     }
 
     private func persistResearchState(epoch: UUID) async {
         var persisted = PersistedResearchState()
-        persisted.artifacts = Dictionary(uniqueKeysWithValues: burstResearchCache.sorted { $0.key < $1.key }.prefix(500).map { ($0.key, $0.value) })
+        if legacyResearchImported {
+            persisted.artifacts = [:]
+        } else {
+            persisted.artifacts = Dictionary(uniqueKeysWithValues: burstResearchCache.sorted { $0.key < $1.key }.prefix(500).map { ($0.key, $0.value) })
+        }
         persisted.notifiedBursts = Set(notifiedBurstTopics.sorted().prefix(2000))
         persisted.notifiedKeywords = Set(notifiedKeywordPairs.sorted().prefix(2000))
         persisted.lastResearchAt = lastResearchAt
         InterestController.shared.updateResearch(persisted, epoch: epoch)
         await InterestController.shared.flush()
+    }
+
+    /// Single entry point for every "clear research history" action.
+    ///
+    /// Order matters: a durable intent is written first, then automation stops,
+    /// then the disposable cache, the authoritative records and the legacy
+    /// artifacts are cleared, each stage recorded. The intent is removed only
+    /// after the result is verified, so a crash resumes instead of re-importing.
+    @discardableResult
+    func clearResearchHistory() async -> ResearchClearResult {
+        let existingIntent: ResearchClearIntent?
+        switch researchClearIntentStore.load() {
+        case .pending(let intent):
+            existingIntent = intent
+        case .unsupportedVersion:
+            isResearchClearBlocked = true
+            return ResearchClearResult(error: "clear-intent-unsupported")
+        case .none:
+            existingIntent = nil
+        }
+        return await performClearResearchHistory(existing: existingIntent)
+    }
+
+    private func performClearResearchHistory(
+        existing: ResearchClearIntent?
+    ) async -> ResearchClearResult {
+        guard !isClearingResearchHistory else {
+            return ResearchClearResult(error: "clear already running")
+        }
+        isClearingResearchHistory = true
+        researchClearGeneration += 1
+        let generation = researchClearGeneration
+        defer { isClearingResearchHistory = false }
+
+        // Once the user has asked to clear history, no later persistence pass
+        // may write the in-memory artifacts back, even if a stage fails.
+        burstResearchCache = [:]
+        legacyResearchImported = true
+
+        await InterestController.shared.prepare()
+        let interest = InterestController.shared
+        let clearer = ResearchHistoryClearer(
+            store: researchStore,
+            cache: researchCacheStore,
+            intentStore: researchClearIntentStore,
+            cancelResearch: {
+                // Existing tasks are cancelled; late writes are additionally
+                // blocked by the coordinator's generation check and the
+                // store's deleted-ID tombstones.
+                ResearchCoordinator.shared.cancelAll()
+            },
+            clearArtifacts: {
+                let epoch = interest.state.consentEpoch
+                var research = interest.state.research
+                research.artifacts = [:]
+                interest.updateResearch(research, epoch: epoch)
+                let targetRevision = interest.state.revision
+                return await interest.flush(revision: targetRevision)
+            },
+            verifyArtifactsCleared: {
+                interest.state.research.artifacts.isEmpty
+            }
+        )
+
+        let result = await clearer.run(existing: existing, generation: generation)
+        guard result.isComplete else { return result }
+
+        isResearchClearBlocked = false
+        researchSummary = .zero
+        researchHighlights = []
+        postResearchRecordsChanged()
+        return result
+    }
+
+    private func postResearchRecordsChanged() {
+        NotificationCenter.default.post(name: .researchRecordsChanged, object: nil)
     }
 
     func clearPersonalizedArtifacts() async {
@@ -1558,6 +1900,11 @@ final class NewsOrchestrator {
         burstResearchCache = [:]
         researchStateLoaded = false
         lastResearchAt = nil
+        weiboDetectionItems = []
+        researchSummary = .zero
+        researchHighlights = []
+        legacyResearchImported = true
+        _ = await clearResearchHistory()
     }
 
     func clearCache() async {
@@ -1565,6 +1912,7 @@ final class NewsOrchestrator {
         await aiSummaryCacheStore.clear()
         await trendHistoryStore.clear()
         weiboItems = []
+        weiboDetectionItems = []
         bilibiliItems = []
         rssItemsMap = [:]
         aiSummaryState = .idle

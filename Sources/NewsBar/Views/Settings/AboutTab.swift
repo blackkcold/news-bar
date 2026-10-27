@@ -4,18 +4,44 @@ private struct CacheClearActionKey: EnvironmentKey {
     static let defaultValue: (() -> Void)? = nil
 }
 
+private struct ResearchHistoryClearActionKey: EnvironmentKey {
+    static let defaultValue: (() async -> ResearchClearResult)? = nil
+}
+
+private struct SearchProviderStatusActionKey: EnvironmentKey {
+    static let defaultValue: (@MainActor (AppSettings) async -> [SearchProviderStatus])? = nil
+}
+
+private struct SearchAuthRetryActionKey: EnvironmentKey {
+    static let defaultValue: (@MainActor (SearchProviderID) async -> Void)? = nil
+}
+
 extension EnvironmentValues {
     var cacheClearAction: (() -> Void)? {
         get { self[CacheClearActionKey.self] }
         set { self[CacheClearActionKey.self] = newValue }
     }
+
+    /// Settings and About both clear research history through the one
+    /// orchestrator-owned flow.
+    var researchHistoryClearAction: (() async -> ResearchClearResult)? {
+        get { self[ResearchHistoryClearActionKey.self] }
+        set { self[ResearchHistoryClearActionKey.self] = newValue }
+    }
+
+    var searchProviderStatusAction: (@MainActor (AppSettings) async -> [SearchProviderStatus])? {
+        get { self[SearchProviderStatusActionKey.self] }
+        set { self[SearchProviderStatusActionKey.self] = newValue }
+    }
+
+    var searchAuthRetryAction: (@MainActor (SearchProviderID) async -> Void)? {
+        get { self[SearchAuthRetryActionKey.self] }
+        set { self[SearchAuthRetryActionKey.self] = newValue }
+    }
 }
 
 struct AboutTab: View {
     @Environment(AppSettings.self) private var settings
-    @Environment(\.cacheClearAction) private var cacheClearAction
-
-    @State private var showCacheClearConfirmation = false
 
     private let version = AppVersion.current
     private let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "1"
@@ -76,14 +102,7 @@ struct AboutTab: View {
                 Text("about.aiProviders".localized)
             }
 
-            Section {
-                Button("about.clearCache".localized) {
-                    showCacheClearConfirmation = true
-                }
-                .foregroundStyle(.red)
-            } header: {
-                Text("about.dataManagement".localized)
-            }
+            ResearchDataSection()
 
             Section {
                 VStack(alignment: .leading, spacing: 4) {
@@ -113,14 +132,6 @@ struct AboutTab: View {
         }
         .formStyle(.grouped)
         .scrollContentBackground(.hidden)
-        .confirmationDialog("about.clearCache.title".localized, isPresented: $showCacheClearConfirmation) {
-            Button("about.clearCache".localized, role: .destructive) {
-                cacheClearAction?()
-            }
-            Button("about.cancel".localized, role: .cancel) { }
-        } message: {
-            Text("about.clearCache.message".localized)
-        }
     }
 
     private func dataSourceRow(_ name: String, _ source: String) -> some View {

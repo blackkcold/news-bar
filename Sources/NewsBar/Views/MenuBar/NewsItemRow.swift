@@ -77,6 +77,17 @@ struct NewsItemRow: View, Equatable {
             .contentShape(rowShape)
         }
         .buttonStyle(.plain)
+        .contextMenu {
+            Button {
+                NotificationCenter.default.post(
+                    name: .researchRequested,
+                    object: nil,
+                    userInfo: ["item": item]
+                )
+            } label: {
+                Label("research.action.verify".localized, systemImage: "checkmark.seal")
+            }
+        }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(accessibilityLabel)
         .accessibilityHint("news.openInBrowser".localized)

@@ -18,6 +18,7 @@ extension Notification.Name {
     static let switchToInterestSettings = Notification.Name("switchToInterestSettings")
     static let browserSettingsRequested = Notification.Name("browserSettingsRequested")
     static let switchToBrowserTab = Notification.Name("switchToBrowserTab")
+    static let researchRequested = Notification.Name("researchRequested")
     static let fireTestNewsPush = Notification.Name("fireTestNewsPush")
 }
 
@@ -32,7 +33,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private static let settingsSize = NSSize(width: 640, height: 560)
     private static let dashboardSize = NSSize(width: 1180, height: 860)
     private static let dashboardMinimumSize = NSSize(width: 960, height: 720)
-    private static let burstWindowSize = NSSize(width: 640, height: 720)
+    private static let researchCenterSize = NSSize(width: 1120, height: 760)
+    private static let researchCenterMinimumSize = NSSize(width: 1000, height: 660)
 
     // MARK: - Properties
 
@@ -40,17 +42,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private var popover: NSPopover?
     private var settingsWindow: NSWindow?
     private var dashboardWindow: NSWindow?
-    private var burstWindow: NSWindow?
+    private var researchCenterWindow: NSWindow?
+    private var researchCenterModel: ResearchCenterModel?
 
     private var settings: AppSettings!
     private var orchestrator: NewsOrchestrator?
     private var updateChecker: UpdateChecker?
     private var autoRefreshTimer: Timer?
+    private var researchMaintenanceTimer: Timer?
+    private var researchMaintenanceTask: Task<Void, Never>?
     private var dashboardRefreshTask: Task<Void, Never>?
     private var popoverRefreshTask: Task<Void, Never>?
     private var workspaceObservers: [NSObjectProtocol] = []
     private var isSystemSleeping = false
     private var terminationReplyPending = false
+
+    private static let researchMaintenanceDelay: TimeInterval = 30
+    private static let researchMaintenanceDebounce: Duration = .seconds(5)
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         orchestrator = NewsOrchestrator()
@@ -71,6 +79,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         refreshAPIKeyIfNeeded()
         scheduleStartupAndAutoRefresh()
         scheduleAutoUpdateCheck()
+        scheduleResearchMaintenance()
 
         Task { _ = await NotificationService.requestAuthorization() }
         NotificationService.registerCategories()
@@ -154,6 +163,64 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         }
     }
 
+    // MARK: - Research maintenance
+
+    /// One-time ledger migration plus the periodic history/cache enforcement
+    /// pass: 30 seconds after launch, debounced after record changes, and daily
+    /// at 04:00. The settings page also triggers it immediately on limit changes.
+    private func scheduleResearchMaintenance() {
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            await ResearchMaintenance.shared.migrateLedgerIfNeeded(settings: self.settings)
+            _ = await SearchKeyStore.migrateLegacyFirecrawlKey(settings: self.settings)
+        }
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.researchMaintenanceDelay) { [weak self] in
+            self?.runResearchMaintenance()
+        }
+
+        NotificationCenter.default.addObserver(
+            forName: .researchRecordsChanged,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            guard let self else { return }
+            self.researchMaintenanceTask?.cancel()
+            self.researchMaintenanceTask = Task { @MainActor [weak self] in
+                try? await Task.sleep(for: Self.researchMaintenanceDebounce)
+                guard !Task.isCancelled else { return }
+                self?.runResearchMaintenance()
+            }
+        }
+
+        let calendar = Calendar.current
+        guard let next = calendar.nextDate(
+            after: Date(),
+            matching: DateComponents(hour: 4, minute: 0),
+            matchingPolicy: .nextTime
+        ) else { return }
+        let timer = Timer(fire: next, interval: 86_400, repeats: true) { [weak self] _ in
+            self?.runResearchMaintenance()
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        researchMaintenanceTimer = timer
+    }
+
+    private func runResearchMaintenance() {
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            var excluding = ResearchCoordinator.shared.activeRecordIDs()
+            if let selected = ResearchSelectionTracker.shared.selectedID {
+                excluding.insert(selected)
+            }
+            await ResearchMaintenance.shared.runEnforcement(
+                settings: self.settings,
+                excluding: excluding
+            )
+            await self.orchestrator?.refreshResearchSummary()
+        }
+    }
+
     private func setupNotificationObservers() {
         NotificationCenter.default.addObserver(forName: NSWindow.willCloseNotification, object: nil, queue: .main) { [weak self] notification in
             guard let self, let window = notification.object as? NSWindow, window === self.dashboardWindow else { return }
@@ -165,6 +232,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 InterestController.shared.endListSession()
                 DockPresence.hide()
             }
+        }
+        NotificationCenter.default.addObserver(forName: NSWindow.willCloseNotification, object: nil, queue: .main) { [weak self] notification in
+            guard let self, let window = notification.object as? NSWindow, window === self.researchCenterWindow else { return }
+            self.researchCenterWindow = nil
+            self.researchCenterModel = nil
+            if self.dashboardWindow?.isVisible != true { DockPresence.hide() }
         }
         NotificationCenter.default.addObserver(forName: .newsReaderRequested, object: nil, queue: .main) { [weak self] _ in
             self?.openDashboard(refresh: false)
@@ -181,9 +254,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         }
         NotificationCenter.default.addObserver(forName: .interestDataCleared, object: nil, queue: .main) { [weak self] _ in
             Task { @MainActor [weak self] in
-                self?.burstWindow?.close()
-                self?.burstWindow?.contentViewController = nil
-                self?.burstWindow = nil
+                self?.researchCenterWindow?.close()
+                self?.researchCenterWindow?.contentViewController = nil
+                self?.researchCenterWindow = nil
+                self?.researchCenterModel = nil
                 await self?.orchestrator?.clearPersonalizedArtifacts()
             }
         }
@@ -219,6 +293,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             guard let self,
                   let title = notification.userInfo?["title"] as? String else { return }
             Task { @MainActor [weak self] in self?.openBurstWindow(title: title) }
+        }
+
+        NotificationCenter.default.addObserver(
+            forName: .researchRequested,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            guard let self, let item = notification.userInfo?["item"] as? NewsItem else { return }
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                guard ResearchConsent.presentIfNeeded(settings: self.settings) else { return }
+                if let recordID = await self.orchestrator?.startManualResearch(item: item, settings: self.settings) {
+                    self.openResearchCenter(selecting: recordID)
+                }
+            }
         }
 
         NotificationCenter.default.addObserver(
@@ -446,6 +535,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             updateChecker: updateChecker,
             onOpenSettings: { [weak self] in self?.openSettings() },
             onOpenDashboard: { [weak self] in self?.openDashboard() },
+            onOpenResearchCenter: { [weak self] in
+                Task { @MainActor in self?.openResearchCenter() }
+            },
             onConfigureKey: { [weak self] in self?.openSettings(toAITab: true) }
         )
         .environment(settings)
@@ -485,6 +577,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 .environment(\.cacheClearAction) { [weak self] in
                     guard let self, let orchestrator = self.orchestrator else { return }
                     Task { await orchestrator.clearCache() }
+                }
+                .environment(\.searchProviderStatusAction) { [weak self] settings in
+                    guard let orchestrator = self?.orchestrator else { return [] }
+                    return await orchestrator.searchProviderStatuses(settings: settings)
+                }
+                .environment(\.searchAuthRetryAction) { [weak self] provider in
+                    await self?.orchestrator?.clearSearchAuthBlock(for: provider)
+                }
+                .environment(\.researchHistoryClearAction) { [weak self] in
+                    guard let orchestrator = self?.orchestrator else {
+                        return ResearchClearResult(error: "orchestrator unavailable")
+                    }
+                    return await orchestrator.clearResearchHistory()
                 }
         )
         window.isReleasedWhenClosed = false
@@ -556,7 +661,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             rootView: DashboardWindow(
                 orchestrator: orchestrator,
                 onOpenSettings: { [weak self] in self?.openSettings() },
-                onConfigureAI: { [weak self] in self?.openSettings(toAITab: true) }
+                onConfigureAI: { [weak self] in self?.openSettings(toAITab: true) },
+                onOpenResearchCenter: { [weak self] recordID in
+                    Task { @MainActor in self?.openResearchCenter(selecting: recordID) }
+                }
             )
             .environment(settings)
         )
@@ -603,52 +711,83 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     func applicationWillTerminate(_ notification: Notification) {
         dashboardRefreshTask?.cancel()
         popoverRefreshTask?.cancel()
+        researchMaintenanceTask?.cancel()
         autoRefreshTimer?.invalidate()
+        researchMaintenanceTimer?.invalidate()
         let workspaceCenter = NSWorkspace.shared.notificationCenter
         workspaceObservers.forEach { workspaceCenter.removeObserver($0) }
         workspaceObservers.removeAll()
         settingsWindow?.close()
         dashboardWindow?.close()
-        burstWindow?.close()
+        researchCenterWindow?.close()
         popover?.close()
         // Pending requests are deliberately left in place: the daily summary is a
         // calendar trigger meant to fire after the app is gone. Clearing all of
         // them here cancelled the daily push for good on every quit.
     }
 
-    // MARK: - Burst research window
+    // MARK: - Research center window
 
-    /// Opens the burst-topic detail window for the given Weibo topic title.
+    /// Legacy entry point: find the exact-topic record, or create a manual
+    /// record when the topic has no history. The research center is now the
+    /// single detail window.
     @MainActor
     func openBurstWindow(title: String) {
         guard let orchestrator else { return }
-        let item = orchestrator.weiboItems.first { $0.title == title }
-            ?? NewsItem(title: title, url: "https://s.weibo.com", source: .weibo)
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            await orchestrator.restoreResearchStateIfNeeded()
+            if let recordID = await orchestrator.recordID(forTopic: title) {
+                self.openResearchCenter(selecting: recordID)
+            } else if ResearchConsent.presentIfNeeded(settings: self.settings),
+                      let recordID = await orchestrator.startManualResearch(title: title, settings: self.settings) {
+                self.openResearchCenter(selecting: recordID)
+            } else {
+                self.openResearchCenter()
+            }
+        }
+    }
 
-        if let existing = burstWindow {
+    @MainActor
+    func openResearchCenter(selecting recordID: String? = nil) {
+        popover?.performClose(nil)
+
+        if let existing = researchCenterWindow {
             existing.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
+            if let recordID, let model = researchCenterModel {
+                Task { @MainActor in await model.select(recordID) }
+            }
             return
         }
 
+        guard let orchestrator else { return }
+        let model = ResearchCenterModel(orchestrator: orchestrator, settings: settings)
+        researchCenterModel = model
+
         let window = NSWindow(
-            contentRect: NSRect(origin: .zero, size: Self.burstWindowSize),
-            styleMask: [.titled, .closable, .resizable],
+            contentRect: NSRect(origin: .zero, size: Self.researchCenterSize),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
             defer: false
         )
-        window.title = "NewsBar — \(title)"
-        window.minSize = NSSize(width: 520, height: 520)
+        window.title = L10n.string("research.center.windowTitle")
+        window.minSize = Self.researchCenterMinimumSize
         window.center()
         window.contentViewController = NSHostingController(
-            rootView: BurstDetailView(orchestrator: orchestrator, burst: item)
+            rootView: ResearchCenterView(model: model)
                 .environment(settings)
         )
         window.isReleasedWhenClosed = false
 
-        burstWindow = window
+        researchCenterWindow = window
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+        MainActor.assumeIsolated { DockPresence.show() }
+
+        if let recordID {
+            Task { @MainActor in await model.select(recordID) }
+        }
     }
 
     // MARK: - UNUserNotificationCenterDelegate
@@ -672,8 +811,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             break
         case .burst(let eventID):
             Task { @MainActor [weak self] in
-                await self?.orchestrator?.restoreResearchStateIfNeeded()
-                self?.openBurstWindow(title: eventID)
+                guard let self else { return }
+                await self.orchestrator?.restoreResearchStateIfNeeded()
+                if let recordID = await self.orchestrator?.recordID(forTopic: eventID) {
+                    self.openResearchCenter(selecting: recordID)
+                } else {
+                    self.openResearchCenter()
+                }
+            }
+        case .research(let recordID):
+            Task { @MainActor [weak self] in
+                self?.openResearchCenter(selecting: recordID)
+            }
+        case .markResearchRead(let recordID):
+            Task { @MainActor [weak self] in
+                await self?.orchestrator?.markResearchRead(recordID: recordID)
             }
         case .digest(let digest):
             Task { @MainActor [weak self] in

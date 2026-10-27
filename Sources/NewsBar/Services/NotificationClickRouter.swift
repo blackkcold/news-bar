@@ -6,6 +6,8 @@ import UserNotifications
 enum NotificationRoute: Equatable {
     case dismiss
     case burst(eventID: String)
+    case research(recordID: String)
+    case markResearchRead(recordID: String)
     case digest(NotificationDigest)
     case news(url: String, title: String)
     case dashboard
@@ -15,6 +17,8 @@ enum NotificationRoute: Equatable {
         switch self {
         case .dismiss: return "dismiss"
         case .burst: return "burst"
+        case .research: return "research"
+        case .markResearchRead: return "markResearchRead"
         case .digest(let digest): return "digest(\(digest.items.count))"
         case .news: return "news"
         case .dashboard: return "dashboard"
@@ -29,6 +33,14 @@ enum NotificationClickRouter {
     ) -> NotificationRoute {
         if actionIdentifier == UNNotificationDismissActionIdentifier {
             return .dismiss
+        }
+
+        if let type = userInfo["type"] as? String, type == "research",
+           let recordID = userInfo["recordID"] as? String {
+            if actionIdentifier == NotificationIdentifier.markResearchReadAction {
+                return .markResearchRead(recordID: recordID)
+            }
+            return .research(recordID: recordID)
         }
 
         if let type = userInfo["type"] as? String, type == "burst",

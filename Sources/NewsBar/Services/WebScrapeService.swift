@@ -1,14 +1,46 @@
 import Foundation
 
 /// Scrapes a single URL into LLM-ready markdown via Firecrawl's /v2/scrape.
-/// Only used in the self-healing research loop when the AI reports it needs
-/// page content. URLs are validated (https-only) before any request.
+/// Only used by the research pipeline; URLs are validated as public HTTPS
+/// before any request, and the response body is bounded and type-checked.
 enum WebScrapeService {
+    typealias Transport = @Sendable (URLRequest) async throws -> (Data, URLResponse)
+
+    static let maxResponseBytes = 4 * 1024 * 1024
 
     static func scrape(urlString: String, apiKey: String) async throws -> String {
-        guard let url = SecurityPolicies.validateURL(urlString) else {
+        try await scrape(
+            urlString: urlString,
+            apiKey: apiKey,
+            transport: { request in
+                try await PrivateHTTP.data(
+                    for: request,
+                    maxBytes: maxResponseBytes,
+                    timeout: DepthProfile.pageTimeout
+                )
+            }
+        )
+    }
+
+    static func scrape(
+        urlString: String,
+        apiKey: String,
+        transport: Transport
+    ) async throws -> String {
+        let validatedURL: URL
+        switch SecurityPolicies.validatePublicHTTPURL(urlString) {
+        case .valid(let url):
+            validatedURL = url
+        case .blocked:
             throw NewsBarError.invalidURL
         }
+
+        // The keyless tier still contacts the third party, so an empty key means
+        // "do not call Firecrawl at all"; the caller falls back to direct reads.
+        guard !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw NewsBarError.apiKeyInvalid
+        }
+
         guard let endpoint = URL(string: "https://api.firecrawl.dev/v2/scrape") else {
             throw NewsBarError.invalidURL
         }
@@ -18,18 +50,36 @@ enum WebScrapeService {
         if !apiKey.isEmpty {
             request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         }
-        request.timeoutInterval = 25
+        request.timeoutInterval = DepthProfile.pageTimeout
         let body: [String: Any] = [
-            "url": url.absoluteString,
+            "url": validatedURL.absoluteString,
             "formats": ["markdown"],
-            "onlyMainContent": true
+            "onlyMainContent": true,
         ]
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await transport(request)
         guard let http = response as? HTTPURLResponse else { throw NewsBarError.requestFailed }
         guard (200...299).contains(http.statusCode) else {
             if http.statusCode == 401 { throw NewsBarError.apiKeyInvalid }
+            if http.statusCode == 402 || http.statusCode == 429 { throw NewsBarError.rateLimited }
+            throw NewsBarError.requestFailed
+        }
+
+        let contentType = (http.value(forHTTPHeaderField: "Content-Type") ?? "")
+            .split(separator: ";", maxSplits: 1)
+            .first
+            .map { $0.trimmingCharacters(in: .whitespaces).lowercased() } ?? ""
+        guard contentType == "application/json" || contentType == "text/json" else {
+            throw NewsBarError.requestFailed
+        }
+
+        let declaredLength = http.value(forHTTPHeaderField: "Content-Length").flatMap { Int($0) }
+        guard HTTPClient.validateResponseSize(
+            declaredContentLength: declaredLength,
+            receivedByteCount: data.count,
+            maxBodySize: maxResponseBytes
+        ) else {
             throw NewsBarError.requestFailed
         }
 
@@ -44,6 +94,6 @@ enum WebScrapeService {
               !markdown.isEmpty else {
             throw NewsBarError.parseFailed
         }
-        return String(markdown.prefix(12_000))
+        return String(markdown.prefix(DepthProfile.maxPageCharacters))
     }
 }

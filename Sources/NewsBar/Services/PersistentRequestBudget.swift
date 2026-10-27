@@ -18,6 +18,7 @@ final class PersistentRequestBudget: Sendable {
     init(fileURL: URL) {
         self.fileURL = fileURL
         var state = State()
+        _ = PrivateFile.tightenExistingFile(fileURL)
         if FileManager.default.fileExists(atPath: fileURL.path) {
             if let data = try? Data(contentsOf: fileURL), let record = try? JSONDecoder().decode(Record.self, from: data), record.count >= 0 {
                 state.record = record
@@ -43,10 +44,8 @@ final class PersistentRequestBudget: Sendable {
             guard record.count < cap else { return false }
             record.count += 1
             do {
-                try FileManager.default.createDirectory(at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
                 let data = try JSONEncoder().encode(record)
-                try data.write(to: fileURL, options: .atomic)
-                try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: fileURL.path)
+                try PrivateFile.write(data, to: fileURL, durable: false)
                 state.record = record
                 return true
             } catch {
