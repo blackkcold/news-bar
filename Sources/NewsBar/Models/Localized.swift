@@ -17,6 +17,15 @@ enum L10n {
         return String(format: format, locale: Locale(identifier: language?.bcp47 ?? currentLanguage.bcp47), arguments: args)
     }
 
+    /// Test-only view of the two tables so a missing translation is a test
+    /// failure instead of a raw key in the UI.
+    static var keyParity: (missingInEnglish: Set<String>, missingInChinese: Set<String>) {
+        (
+            Set(zhStrings.keys).subtracting(enStrings.keys),
+            Set(enStrings.keys).subtracting(zhStrings.keys)
+        )
+    }
+
     // MARK: - Chinese strings
 
     private static let zhStrings: [String: String] = [
@@ -432,6 +441,10 @@ enum L10n {
         "research.empty.detail": "选择一条记录查看详情。",
         "research.empty.body": "爆款会自动收录，也可以对任意新闻点「联网核查」。",
         "research.empty.detail.body": "这次研究没有留下可用内容。",
+        "research.empty.allFailed.title": "核查全部失败",
+        "research.empty.allFailed.body": "检查搜索 provider、Key 与网络后重试。",
+        "research.empty.interrupted.title": "研究被中断",
+        "research.empty.interrupted.body": "重新发起核查即可继续；已完成的报告仍可打开。",
         "research.status.queued": "排队中",
         "research.status.running": "研究中",
         "research.status.ready": "已完成",
@@ -1242,6 +1255,10 @@ enum L10n {
         "research.empty.detail": "Select a record to see its report.",
         "research.empty.body": "Burst stories are collected automatically; use “Verify Online” on any news item.",
         "research.empty.detail.body": "This research pass produced no usable content.",
+        "research.empty.allFailed.title": "All verifications failed",
+        "research.empty.allFailed.body": "Check providers, keys and network, then try again.",
+        "research.empty.interrupted.title": "Research was interrupted",
+        "research.empty.interrupted.body": "Run the verification again; finished reports are still available.",
         "research.status.queued": "Queued",
         "research.status.running": "Researching",
         "research.status.ready": "Ready",
