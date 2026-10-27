@@ -10,7 +10,7 @@
   "release_branch": true,
   "auto_merge": false,
   "release_note_style": "structured-cn",
-  "summary": "阅读器内嵌访问修复：Safari User-Agent 与 HTTP 412 风控处理",
-  "summary_en": "Reader embedded-access fixes: Safari user agent and HTTP 412 risk-control handling",
-  "validation": "swift test 612/612（1 skipped）+ scripts/build.sh + codesign verify + hdiutil verify 通过"
+  "summary": "来源浏览目录、聚合通知摘要与通知点击路由",
+  "summary_en": "Source browse catalog, aggregated notification digest, and notification click routing",
+  "validation": "swift test 651/651（2 skipped）+ scripts/build.sh + codesign verify + hdiutil verify 通过"
 }
