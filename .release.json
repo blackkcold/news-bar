@@ -10,7 +10,7 @@
   "release_branch": true,
   "auto_merge": false,
   "release_note_style": "structured-cn",
-  "summary": "热搜榜单回归右栏 02，阅读器侧窗保留热榜",
-  "summary_en": "Hot trends return to rail 02; hot trends stay visible beside the reader",
-  "validation": "swift test 651/651（2 skipped）+ scripts/build.sh + codesign verify + hdiutil verify 通过"
+  "summary": "阅读器跨短链登录态与 B 站阅读归因",
+  "summary_en": "Reader sign-in across short links and Bilibili read attribution",
+  "validation": "swift test 681/681（2 skipped）+ scripts/build.sh + codesign verify + hdiutil verify 通过"
 }
