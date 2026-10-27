@@ -1,6 +1,11 @@
 import AppKit
 import SwiftUI
 import UserNotifications
+import os
+
+/// Notification-click diagnostics. `NSLog` is not captured for a GUI app
+/// launched by `open`, so route decisions go to unified logging instead.
+private let notificationLog = Logger(subsystem: "com.newsbar.app", category: "notifications")
 
 extension Notification.Name {
     static let rssSourceAdded = Notification.Name("rssSourceAdded")
@@ -13,6 +18,7 @@ extension Notification.Name {
     static let switchToInterestSettings = Notification.Name("switchToInterestSettings")
     static let browserSettingsRequested = Notification.Name("browserSettingsRequested")
     static let switchToBrowserTab = Notification.Name("switchToBrowserTab")
+    static let fireTestNewsPush = Notification.Name("fireTestNewsPush")
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
@@ -69,9 +75,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         Task { _ = await NotificationService.requestAuthorization() }
         NotificationService.registerCategories()
         UNUserNotificationCenter.current().delegate = self
-        if settings.dailyPushEnabled {
-            NotificationService.scheduleDailyPush(hour: settings.dailyPushHour, minute: settings.dailyPushMinute)
-        }
+        // No launch-time rescheduling: pending requests survive quit now, and the
+        // startup refresh installs the digest-bearing daily request. Installing a
+        // plain template here could race that refresh and overwrite it.
     }
 
     private func scheduleStartupAndAutoRefresh() {
@@ -228,6 +234,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 }
             }
         }
+
+        NotificationCenter.default.addObserver(
+            forName: .fireTestNewsPush,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in await self?.sendTestNewsPush() }
+        }
+    }
+
+    /// Developer-tab hook: delivers a real aggregated push right now, so the
+    /// click → dashboard → digest-sheet path can be verified without waiting for
+    /// the hourly schedule.
+    @MainActor
+    private func sendTestNewsPush() async {
+        guard let orchestrator else { return }
+        await orchestrator.loadCached(settings: settings)
+        let items = NotificationSelectionPolicy.select(
+            items: orchestrator.allActiveItems(settings: settings),
+            state: InterestController.shared.state,
+            count: settings.pushCount
+        )
+        await NotificationService.sendHourlyPush(items: items, count: settings.pushCount)
     }
 
     private func preloadCachedNews() {
@@ -582,7 +611,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         dashboardWindow?.close()
         burstWindow?.close()
         popover?.close()
-        NotificationService.clearAllPending()
+        // Pending requests are deliberately left in place: the daily summary is a
+        // calendar trigger meant to fire after the app is gone. Clearing all of
+        // them here cancelled the daily push for good on every quit.
     }
 
     // MARK: - Burst research window
@@ -628,10 +659,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         withCompletionHandler completionHandler: @escaping () -> Void
     ) {
         let userInfo = response.notification.request.content.userInfo
-        switch NotificationClickRouter.route(
+        let route = NotificationClickRouter.route(
             userInfo: userInfo,
             actionIdentifier: response.actionIdentifier
-        ) {
+        )
+        let digestCount = NotificationDigest.decode(userInfo["digest"] as? String)?.items.count ?? -1
+        notificationLog.notice(
+            "[Notify] action=\(response.actionIdentifier, privacy: .public) type=\((userInfo["type"] as? String) ?? "-", privacy: .public) digestItems=\(digestCount, privacy: .public) route=\(route.label, privacy: .public)"
+        )
+        switch route {
         case .dismiss:
             break
         case .burst(let eventID):
@@ -654,9 +690,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 NewsNavigationRouter.shared.open(url: url, title: title, item: item, surface: "notification")
             }
         case .dashboard:
-            Task { @MainActor [weak self] in self?.openDashboard(refresh: false) }
+            Task { @MainActor [weak self] in self?.presentLiveDigestIfPossible() }
         }
         completionHandler()
+    }
+
+    /// Opens the dashboard for a click that carries no usable digest, then shows
+    /// the sheet from the items this app already has. Waiting on `loadCached`
+    /// covers the first click after launch, when the in-memory lists are still
+    /// empty; if nothing cached is available the click keeps the old behaviour.
+    private func presentLiveDigestIfPossible() {
+        openDashboard(refresh: false)
+        guard let orchestrator else { return }
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            await orchestrator.loadCached(settings: self.settings)
+            let items = NotificationDigestFallback.items(
+                from: orchestrator.allActiveItems(settings: self.settings),
+                limit: self.settings.pushCount
+            )
+            guard !items.isEmpty else { return }
+            NewsNavigationRouter.shared.presentDigest(
+                NewsDigestRequest(items: items, kind: NewsDigestRequest.liveKind)
+            )
+        }
     }
 
     func userNotificationCenter(

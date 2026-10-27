@@ -3,6 +3,11 @@ import Foundation
 enum NotificationIdentifier {
     static let digestCategory = "newsbar.news"
     static let openDigestAction = "newsbar.openDigest"
+    /// Stable request identifiers. A fixed identifier makes the system replace
+    /// the previous request and delivered banner instead of piling one up per
+    /// hour or per launch.
+    static let hourlyRequest = "hourly-summary"
+    static let dailyRequest = "daily-summary"
 }
 
 /// Payload embedded in a delivered notification so a click can list every

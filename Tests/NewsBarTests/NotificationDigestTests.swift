@@ -224,4 +224,52 @@ final class NotificationDigestTests: XCTestCase {
         XCTAssertEqual(content.userInfo["type"] as? String, "daily")
         XCTAssertNil(content.userInfo["digest"])
     }
+
+    func testFallbackNeedsAtLeastTwoItems() {
+        XCTAssertTrue(NotificationDigestFallback.items(from: [item("唯一一条")], limit: 3).isEmpty)
+
+        let pair = [item("一"), item("二")]
+        XCTAssertEqual(NotificationDigestFallback.items(from: pair, limit: 3).count, 2)
+    }
+
+    func testFallbackCapsToPushCount() {
+        let items = [item("一"), item("二"), item("三"), item("四")]
+
+        XCTAssertEqual(NotificationDigestFallback.items(from: items, limit: 2).count, 2)
+        // The service clamps to 1...3, so a corrupted limit never widens the sheet.
+        XCTAssertEqual(NotificationDigestFallback.items(from: items, limit: 99).count, 3)
+    }
+
+    func testRequestIdentifiersAreStable() {
+        XCTAssertEqual(NotificationIdentifier.hourlyRequest, "hourly-summary")
+        XCTAssertEqual(NotificationIdentifier.dailyRequest, "daily-summary")
+        XCTAssertFalse(
+            NotificationIdentifier.hourlyRequest.contains(where: \.isNumber),
+            "A timestamped identifier makes every push pile up instead of replacing the previous one"
+        )
+    }
+
+    func testLiveDigestRequestKeepsItsKind() {
+        let items = [item("一"), item("二")]
+        let request = NewsDigestRequest(items: items, kind: NewsDigestRequest.liveKind)
+
+        XCTAssertEqual(request.kind, "live")
+        XCTAssertEqual(request.items.map(\.id), items.map(\.id))
+    }
+
+    func testDigestRequestFromPayloadKeepsGeneratedAt() {
+        let digest = NotificationDigest(kind: "hourly", items: [item("一"), item("二")])
+        let request = NewsDigestRequest(digest: digest)
+
+        XCTAssertEqual(request.kind, "hourly")
+        XCTAssertEqual(request.generatedAt, digest.generatedAt)
+        XCTAssertEqual(request.items.count, 2)
+    }
+
+    func testRouteLabelsStayLogFriendly() {
+        let digest = NotificationDigest(kind: "hourly", items: [item("一"), item("二")])
+        XCTAssertEqual(NotificationRoute.digest(digest).label, "digest(2)")
+        XCTAssertEqual(NotificationRoute.dashboard.label, "dashboard")
+        XCTAssertEqual(NotificationRoute.news(url: "https://example.com", title: "t").label, "news")
+    }
 }
