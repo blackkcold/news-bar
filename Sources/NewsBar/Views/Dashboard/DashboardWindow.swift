@@ -241,6 +241,14 @@ struct DashboardWindow: View {
                 .frame(maxWidth: .infinity, alignment: .topLeading)
             }
             .scrollPosition($browseScroll)
+            .onChange(of: phase) { _, newPhase in
+                // The list narrows and gains the compact 02 block when the
+                // reader opens; a preserved offset would point past the
+                // reflowed content.
+                if newPhase == .presented {
+                    browseScroll.scrollTo(edge: .top)
+                }
+            }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .overlay(alignment: .top) {
                 // Floating status keeps the feed from shifting down 40pt every
@@ -271,8 +279,25 @@ struct DashboardWindow: View {
         )
     }
 
+    private var browseGroups: [DashboardBrowseGroup] {
+        DashboardBrowseCatalog.groups(
+            sources: settings.activeSources,
+            weiboItems: orchestrator.weiboItems,
+            bilibiliItems: orchestrator.bilibiliItems,
+            rssItems: orchestrator.rssItemsMap,
+            filter: sourceFilter,
+            query: normalizedSearchQuery
+        )
+    }
+
     @ViewBuilder
     private func contentLayout(isWideLayout: Bool, isReaderCompact: Bool) -> some View {
+        let groups = browseGroups
+        let hotGroups = groups.filter { $0.source.isBuiltIn }
+        let rssGroups = groups.filter { !$0.source.isBuiltIn }
+        let matchedHotGroups = hotGroups.filter { $0.matchCount > 0 }
+        let hotMatchCount = hotGroups.reduce(0) { $0 + $1.matchCount }
+
         if forYou {
             if isWideLayout && !isReaderCompact {
                 HStack(alignment: .top, spacing: 20) {
@@ -280,11 +305,9 @@ struct DashboardWindow: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                     DashboardSidebarRegion(
                         orchestrator: orchestrator,
-                        sourceFilter: sourceFilter,
+                        hotGroups: hotGroups,
                         searchQuery: normalizedSearchQuery,
-                        isSearchActive: isSearchActive,
-                        onConfigureAI: onConfigureAI ?? onOpenSettings,
-                        showsHotTrends: true
+                        onConfigureAI: onConfigureAI ?? onOpenSettings
                     )
                     .frame(width: sidebarWidth, alignment: .leading)
                 }
@@ -292,19 +315,29 @@ struct DashboardWindow: View {
                 recommendationsView()
             }
         } else if isReaderCompact {
-            sourceBrowserRegion
+            // The reader squeezes the list to 320–480pt. Keep 02 reachable
+            // without two full trend cards pushing 03 out of the first screen.
+            VStack(alignment: .leading, spacing: 20) {
+                if !matchedHotGroups.isEmpty {
+                    DashboardCompactHotTrends(
+                        groups: matchedHotGroups,
+                        orchestrator: orchestrator,
+                        searchQuery: normalizedSearchQuery
+                    )
+                }
+                sourceBrowserRegion(groups: rssGroups, hotMatchCount: hotMatchCount)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
         } else if isWideLayout {
             HStack(alignment: .top, spacing: 20) {
-                sourceBrowserRegion
+                sourceBrowserRegion(groups: rssGroups, hotMatchCount: hotMatchCount)
                     .frame(maxWidth: .infinity, alignment: .leading)
 
                 DashboardSidebarRegion(
                     orchestrator: orchestrator,
-                    sourceFilter: sourceFilter,
+                    hotGroups: hotGroups,
                     searchQuery: normalizedSearchQuery,
-                    isSearchActive: isSearchActive,
-                    onConfigureAI: onConfigureAI ?? onOpenSettings,
-                    showsHotTrends: false
+                    onConfigureAI: onConfigureAI ?? onOpenSettings
                 )
                 .frame(width: sidebarWidth, alignment: .leading)
             }
@@ -312,22 +345,22 @@ struct DashboardWindow: View {
             VStack(alignment: .leading, spacing: 20) {
                 DashboardSidebarRegion(
                     orchestrator: orchestrator,
-                    sourceFilter: sourceFilter,
+                    hotGroups: hotGroups,
                     searchQuery: normalizedSearchQuery,
-                    isSearchActive: isSearchActive,
-                    onConfigureAI: onConfigureAI ?? onOpenSettings,
-                    showsHotTrends: false
+                    onConfigureAI: onConfigureAI ?? onOpenSettings
                 )
-                sourceBrowserRegion
+                sourceBrowserRegion(groups: rssGroups, hotMatchCount: hotMatchCount)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 
-    private var sourceBrowserRegion: some View {
+    private func sourceBrowserRegion(groups: [DashboardBrowseGroup], hotMatchCount: Int) -> some View {
         DashboardSourceBrowserRegion(
             orchestrator: orchestrator,
             sourceFilter: sourceFilter,
+            groups: groups,
+            hotMatchCount: hotMatchCount,
             searchQuery: normalizedSearchQuery,
             hasAnyFilter: hasAnyFilter,
             collapsedSourceIDs: collapsedRSSSourceIDs,
@@ -722,14 +755,17 @@ private struct DashboardStatusOverlay: View {
 
 private struct DashboardSidebarRegion: View {
     let orchestrator: NewsOrchestrator
-    let sourceFilter: DashboardSourceFilter
+    let hotGroups: [DashboardBrowseGroup]
     let searchQuery: String?
-    let isSearchActive: Bool
     let onConfigureAI: () -> Void
-    let showsHotTrends: Bool
 
-    private func filtered(_ source: NewsSource, _ items: [NewsItem]) -> [NewsItem] {
-        guard sourceFilter.matches(source) else { return [] }
+    private func items(for source: NewsSource) -> [NewsItem] {
+        let items: [NewsItem]
+        switch source {
+        case .weibo: items = orchestrator.weiboItems
+        case .bilibili: items = orchestrator.bilibiliItems
+        case .rss: items = []
+        }
         return items.filter { DashboardSearch.matches($0, query: searchQuery) }
     }
 
@@ -737,8 +773,8 @@ private struct DashboardSidebarRegion: View {
         VStack(alignment: .leading, spacing: 16) {
             EditorialSectionHeading(
                 index: "01",
-                title: "每日简报",
-                subtitle: "AI 编辑部整理的重要线索"
+                title: L10n.string("dash.briefing.title"),
+                subtitle: L10n.string("dash.briefing.sectionSubtitle")
             )
 
             DashboardAIBriefingPanel(
@@ -746,18 +782,20 @@ private struct DashboardSidebarRegion: View {
                 onConfigureAI: onConfigureAI
             )
 
-            if showsHotTrends {
+            // A chip such as RSS empties this list; keeping the heading would
+            // leave an orphan "02" block with no cards above "03".
+            if !hotGroups.isEmpty {
                 EditorialSectionHeading(
                     index: "02",
-                    title: "实时热榜",
-                    subtitle: "社交平台正在发生"
+                    title: L10n.string("dash.hotTrends.title"),
+                    subtitle: L10n.string("dash.hotTrends.subtitle")
                 )
 
-                if sourceFilter.matches(.weibo) || !isSearchActive {
-                    DashboardHotTrendCard(source: .weibo, items: filtered(.weibo, orchestrator.weiboItems))
-                }
-                if sourceFilter.matches(.bilibili) || !isSearchActive {
-                    DashboardHotTrendCard(source: .bilibili, items: filtered(.bilibili, orchestrator.bilibiliItems))
+                ForEach(hotGroups) { group in
+                    DashboardHotTrendCard(
+                        source: group.source,
+                        items: items(for: group.source)
+                    )
                 }
             }
         }
@@ -771,6 +809,8 @@ private struct DashboardSourceBrowserRegion: View {
     @Environment(AppSettings.self) private var settings
     let orchestrator: NewsOrchestrator
     let sourceFilter: DashboardSourceFilter
+    let groups: [DashboardBrowseGroup]
+    let hotMatchCount: Int
     let searchQuery: String?
     let hasAnyFilter: Bool
     let collapsedSourceIDs: Set<NewsSource.ID>
@@ -779,81 +819,81 @@ private struct DashboardSourceBrowserRegion: View {
     let onOpenSettings: () -> Void
     let onResetFilters: () -> Void
 
-    private var selectedSources: [NewsSource] {
-        settings.activeSources.filter { !$0.isBuiltIn }
-    }
-
-    private var showsRSSOnboarding: Bool {
-        selectedSources.isEmpty && sourceFilter != .weibo && sourceFilter != .bilibili
+    private var hasRSSSources: Bool {
+        settings.activeSources.contains { !$0.isBuiltIn }
     }
 
     var body: some View {
-        let groups = DashboardBrowseCatalog.groups(
-            sources: settings.activeSources,
-            weiboItems: orchestrator.weiboItems,
-            bilibiliItems: orchestrator.bilibiliItems,
-            rssItems: orchestrator.rssItemsMap,
-            filter: sourceFilter,
-            query: searchQuery
-        )
         VStack(alignment: .leading, spacing: 16) {
             EditorialSectionHeading(
-                index: "02",
+                index: "03",
                 title: L10n.string("dash.browse.title"),
-                subtitle: subtitle(for: groups)
+                subtitle: subtitle
             )
 
-            if groups.isEmpty && !showsRSSOnboarding {
-                noMatchState
+            if groups.isEmpty {
+                if !hasRSSSources {
+                    rssOnboardingState
+                } else if hotMatchCount > 0 {
+                    hotElsewhereState
+                } else {
+                    noMatchState
+                }
             } else {
                 LazyVStack(alignment: .leading, spacing: 16) {
                     ForEach(groups) { group in
-                        if group.source.isBuiltIn {
-                            DashboardHotTrendCard(
-                                source: group.source,
-                                items: hotItems(for: group.source)
-                            )
-                        } else {
-                            DashboardRSSSourceCard(
-                                source: group.source,
-                                orchestrator: orchestrator,
-                                sourceFilter: sourceFilter,
-                                searchQuery: searchQuery,
-                                hasAnyFilter: hasAnyFilter,
-                                isExpanded: !collapsedSourceIDs.contains(group.source.id),
-                                onRefresh: { onRefresh(group.source) },
-                                onToggleExpansion: { onToggleExpansion(group.source) }
-                            )
-                        }
+                        DashboardRSSSourceCard(
+                            source: group.source,
+                            orchestrator: orchestrator,
+                            sourceFilter: sourceFilter,
+                            searchQuery: searchQuery,
+                            hasAnyFilter: hasAnyFilter,
+                            isExpanded: !collapsedSourceIDs.contains(group.source.id),
+                            onRefresh: { onRefresh(group.source) },
+                            onToggleExpansion: { onToggleExpansion(group.source) }
+                        )
                     }
-                }
-
-                if showsRSSOnboarding {
-                    rssOnboardingState
                 }
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    private func subtitle(for groups: [DashboardBrowseGroup]) -> String {
+    private var subtitle: String {
         guard !groups.isEmpty else {
-            return showsRSSOnboarding
-                ? L10n.string("dash.browse.rssEmptyTitle")
-                : L10n.string("dash.browse.empty")
+            if !hasRSSSources { return L10n.string("dash.browse.rssEmptyTitle") }
+            if hotMatchCount > 0 { return L10n.string("dash.browse.noRSSMatch") }
+            return L10n.string("dash.browse.empty")
         }
         let matchCount = groups.reduce(0) { $0 + $1.matchCount }
         return L10n.string("dash.browse.subtitle", groups.count, matchCount)
     }
 
-    private func hotItems(for source: NewsSource) -> [NewsItem] {
-        let items: [NewsItem]
-        switch source {
-        case .weibo: items = orchestrator.weiboItems
-        case .bilibili: items = orchestrator.bilibiliItems
-        case .rss: items = []
+    private var hotElsewhereState: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Image(systemName: "flame.fill")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.orange)
+                Text(L10n.string(
+                    "dash.browse.hotElsewhere",
+                    hotMatchCount,
+                    L10n.string("dash.hotTrends.title")
+                ))
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 0)
+            }
+
+            Button(L10n.string("dash.browse.reset")) {
+                onResetFilters()
+            }
+            .buttonStyle(EditorialActionButtonStyle(tone: .primary, compact: true))
+            .controlSize(.small)
         }
-        return items.filter { DashboardSearch.matches($0, query: searchQuery) }
+        .padding(14)
+        .newsCardSurface()
     }
 
     private var noMatchState: some View {
@@ -897,6 +937,130 @@ private struct DashboardSourceBrowserRegion: View {
         }
         .padding(14)
         .newsCardSurface()
+    }
+}
+
+// MARK: - Compact hot trends (reader side pane)
+
+/// The reader squeezes the list to 320–480pt. Two full trend cards would push
+/// the source list out of the first screen, so each source collapses to one
+/// row that expands to its top five items on demand.
+private struct DashboardCompactHotTrends: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    let groups: [DashboardBrowseGroup]
+    let orchestrator: NewsOrchestrator
+    let searchQuery: String?
+    @State private var expandedSourceIDs: Set<NewsSource.ID> = []
+
+    private func items(for source: NewsSource) -> [NewsItem] {
+        let items: [NewsItem]
+        switch source {
+        case .weibo: items = orchestrator.weiboItems
+        case .bilibili: items = orchestrator.bilibiliItems
+        case .rss: items = []
+        }
+        return items.filter { DashboardSearch.matches($0, query: searchQuery) }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            EditorialSectionHeading(
+                index: "02",
+                title: L10n.string("dash.hotTrends.title"),
+                subtitle: L10n.string("dash.hotTrends.subtitle")
+            )
+
+            ForEach(groups) { group in
+                sourceRow(group)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    @ViewBuilder
+    private func sourceRow(_ group: DashboardBrowseGroup) -> some View {
+        let presentation = DashboardTrendPresentation(for: group.source)
+        let isExpanded = expandedSourceIDs.contains(group.source.id)
+        let visibleItems = Array(items(for: group.source).prefix(5))
+
+        VStack(alignment: .leading, spacing: 0) {
+            Button {
+                toggle(group.source)
+            } label: {
+                HStack(spacing: 9) {
+                    EditorialSourceBadge(
+                        mark: presentation.mark,
+                        fallbackTint: presentation.accent,
+                        size: 24
+                    )
+
+                    Text(presentation.title)
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+
+                    EditorialTag(
+                        text: L10n.string("news.count", group.matchCount),
+                        fallbackTint: presentation.accent
+                    )
+
+                    Spacer(minLength: 8)
+
+                    Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 9)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(
+                isExpanded
+                    ? L10n.string("dash.collapseCard", presentation.title)
+                    : L10n.string("dash.expandCard", presentation.title)
+            )
+
+            if isExpanded, !visibleItems.isEmpty {
+                Divider().padding(.horizontal, 12)
+
+                LazyVStack(spacing: 0) {
+                    ForEach(Array(visibleItems.enumerated()), id: \.element.id) { index, item in
+                        DashboardTrendRow(
+                            item: item,
+                            sourceLabel: presentation.title,
+                            sourceMark: presentation.mark,
+                            accent: presentation.accent,
+                            rankFallback: index + 1,
+                            reduceMotion: reduceMotion
+                        )
+
+                        if index < visibleItems.count - 1 {
+                            Divider().padding(.horizontal, 12)
+                        }
+                    }
+                }
+            }
+        }
+        .newsCardSurface(cornerRadius: 12)
+    }
+
+    private func toggle(_ source: NewsSource) {
+        let update = {
+            if expandedSourceIDs.contains(source.id) {
+                expandedSourceIDs.remove(source.id)
+            } else {
+                expandedSourceIDs.insert(source.id)
+            }
+        }
+
+        if reduceMotion {
+            update()
+        } else {
+            withAnimation(.spring(response: 0.28, dampingFraction: 0.86)) {
+                update()
+            }
+        }
     }
 }
 
