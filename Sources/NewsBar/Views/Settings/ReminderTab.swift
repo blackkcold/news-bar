@@ -89,6 +89,8 @@ struct ReminderTab: View {
                 Text("notif.burst.footer".localized)
             }
 
+            ResearchAutomationSection()
+
             Section {
                 Toggle("notif.webSearch".localized, isOn: Binding(
                     get: { settings.webSearchEnabled },
@@ -96,11 +98,15 @@ struct ReminderTab: View {
                 ))
 
                 if settings.webSearchEnabled {
-                    SecureField("notif.firecrawlKey".localized, text: Binding(
-                        get: { settings.firecrawlAPIKey },
-                        set: { settings.firecrawlAPIKey = $0 }
-                    ))
-                    .textFieldStyle(.roundedBorder)
+                    Text("notif.webSearch.keyNotice".localized)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Button("notif.webSearch.configure".localized) {
+                        NotificationCenter.default.post(name: .switchToAITab, object: nil)
+                    }
+                    .buttonStyle(EditorialActionButtonStyle(compact: true))
+                    .controlSize(.small)
                 }
             } header: {
                 Text("notif.webSearchHeader".localized)

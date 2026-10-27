@@ -311,6 +311,8 @@ struct AITab: View {
                 Text("ai.limit.footer".localized)
             }
 
+            ResearchSettingsSection()
+
             Section {
                 VStack(alignment: .leading, spacing: 6) {
                     HStack(alignment: .top, spacing: 8) {

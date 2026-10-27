@@ -13,9 +13,6 @@ extension EnvironmentValues {
 
 struct AboutTab: View {
     @Environment(AppSettings.self) private var settings
-    @Environment(\.cacheClearAction) private var cacheClearAction
-
-    @State private var showCacheClearConfirmation = false
 
     private let version = AppVersion.current
     private let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "1"
@@ -76,14 +73,7 @@ struct AboutTab: View {
                 Text("about.aiProviders".localized)
             }
 
-            Section {
-                Button("about.clearCache".localized) {
-                    showCacheClearConfirmation = true
-                }
-                .foregroundStyle(.red)
-            } header: {
-                Text("about.dataManagement".localized)
-            }
+            ResearchDataSection()
 
             Section {
                 VStack(alignment: .leading, spacing: 4) {
@@ -113,14 +103,6 @@ struct AboutTab: View {
         }
         .formStyle(.grouped)
         .scrollContentBackground(.hidden)
-        .confirmationDialog("about.clearCache.title".localized, isPresented: $showCacheClearConfirmation) {
-            Button("about.clearCache".localized, role: .destructive) {
-                cacheClearAction?()
-            }
-            Button("about.cancel".localized, role: .cancel) { }
-        } message: {
-            Text("about.clearCache.message".localized)
-        }
     }
 
     private func dataSourceRow(_ name: String, _ source: String) -> some View {

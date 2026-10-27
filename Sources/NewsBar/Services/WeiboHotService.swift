@@ -8,18 +8,51 @@ enum WeiboHotService {
     // Tier 2: HTML page fallback
     private static let summaryURL = "https://s.weibo.com/top/summary"
 
+    /// Display rows and the wider detection pool are distinct: the popover and
+    /// interest ranking keep the five rows they have always used, while burst
+    /// detection may inspect the top twenty.
+    struct WeiboHotFeed: Sendable {
+        let displayItems: [NewsItem]
+        let detectionItems: [NewsItem]
+        let hotLabelsAvailable: Bool
+    }
+
+    /// Backward-compatible five-row view.
     static func fetch() async throws -> [NewsItem] {
+        try await fetchFeed().displayItems
+    }
+
+    static func fetchFeed() async throws -> WeiboHotFeed {
         // Tier 1: Try the web JSON API first
         if let items = try? await fetchFromAjaxAPI() {
-            return items
+            return makeFeed(items: items, hotLabelsAvailable: true)
         }
 
         // Tier 2: Fall back to HTML page parsing
         if let items = try? await fetchFromSummaryPage() {
-            return items
+            return makeFeed(items: items, hotLabelsAvailable: false)
         }
 
         throw NewsBarError.requestFailed
+    }
+
+    static func makeFeed(items: [NewsItem], hotLabelsAvailable: Bool) -> WeiboHotFeed {
+        let ranked = items.prefix(20).enumerated().map { index, item in
+            NewsItem(
+                title: item.title,
+                url: item.url,
+                source: .weibo,
+                rank: index + 1,
+                imageURL: item.imageURL,
+                hotLabel: item.hotLabel,
+                publishedAt: item.publishedAt
+            )
+        }
+        return WeiboHotFeed(
+            displayItems: Array(ranked.prefix(5)),
+            detectionItems: Array(ranked.prefix(20)),
+            hotLabelsAvailable: hotLabelsAvailable
+        )
     }
 
     // MARK: - Tier 1: weibo.com/ajax/side/hotSearch
@@ -34,7 +67,7 @@ enum WeiboHotService {
         return try parseAjaxResponse(data: data)
     }
 
-    private static func parseAjaxResponse(data: Data) throws -> [NewsItem] {
+    static func parseAjaxResponse(data: Data) throws -> [NewsItem] {
         guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             NSLog("[WeiboHotService] Response is not valid JSON")
             throw NewsBarError.parseFailed
@@ -73,15 +106,7 @@ enum WeiboHotService {
             throw NewsBarError.parseFailed
         }
 
-        return Array(items.prefix(5)).enumerated().map { index, item in
-            NewsItem(
-                title: item.title,
-                url: item.url,
-                source: .weibo,
-                rank: index + 1,
-                hotLabel: item.hotLabel
-            )
-        }
+        return Array(items.prefix(20))
     }
 
     /// Resolve trending status: `label_name` first, then boolean flags, else nil.
@@ -113,7 +138,7 @@ enum WeiboHotService {
         return try parseSummaryHTML(html)
     }
 
-    private static func parseSummaryHTML(_ html: String) throws -> [NewsItem] {
+    static func parseSummaryHTML(_ html: String) throws -> [NewsItem] {
         // Match: <a href="/weibo?q=..." ...>title</a>
         let pattern = #"<a\s+href="(/weibo\?q=[^"]+)"[^>]*>([^<]+)</a>"#
 
@@ -147,20 +172,13 @@ enum WeiboHotService {
                 rank: nil
             ))
 
-            if items.count >= 5 { break }
+            if items.count >= 20 { break }
         }
 
         guard !items.isEmpty else {
             throw NewsBarError.parseFailed
         }
 
-        return items.enumerated().map { index, item in
-            NewsItem(
-                title: item.title,
-                url: item.url,
-                source: .weibo,
-                rank: index + 1
-            )
-        }
+        return items
     }
 }

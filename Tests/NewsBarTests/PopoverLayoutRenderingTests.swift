@@ -113,4 +113,37 @@ final class PopoverLayoutRenderingTests: XCTestCase {
             window.contentView = nil
         }
     }
+
+    @MainActor
+    func testResearchChipFitsInOnePopoverRow() throws {
+        let settings = AppSettings()
+        let view = VStack(spacing: 0) {
+            PopoverResearchChip(
+                summary: ResearchSummary(burstCount: 3, unreadBurstCount: 2),
+                onOpen: {}
+            )
+        }
+        .frame(width: 400)
+        .environment(settings)
+        .preferredColorScheme(.light)
+
+        let host = NSHostingView(rootView: view)
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 400, height: 80),
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentView = host
+        host.frame = NSRect(x: 0, y: 0, width: 400, height: 80)
+        host.layoutSubtreeIfNeeded()
+
+        XCTAssertLessThanOrEqual(host.fittingSize.height, 40)
+
+        let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+        host.cacheDisplay(in: host.bounds, to: bitmap)
+        let data = try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
+        XCTAssertGreaterThan(data.count, 500)
+        window.contentView = nil
+    }
 }

@@ -204,6 +204,60 @@ final class AppSettings {
     var burstPushEnabled: Bool {
         didSet { UserDefaults.standard.set(burstPushEnabled, forKey: "burstPushEnabled") }
     }
+    /// Master toggle for automatic research records (burst detection). Manual
+    /// verification from a news item always remains available.
+    var researchAutoEnabled: Bool {
+        didSet { UserDefaults.standard.set(researchAutoEnabled, forKey: "researchAutoEnabled") }
+    }
+    /// Maximum new burst topics enqueued per refresh round.
+    var researchDetectionLimit: Int {
+        didSet { UserDefaults.standard.set(researchDetectionLimit, forKey: "researchDetectionLimit") }
+    }
+    /// Shows the compact research entry above the popover feed.
+    var researchShowPopoverChip: Bool {
+        didSet { UserDefaults.standard.set(researchShowPopoverChip, forKey: "researchShowPopoverChip") }
+    }
+    /// Research depth preset (quick / standard / deep).
+    var researchDepth: ResearchDepth {
+        didSet { UserDefaults.standard.set(researchDepth.rawValue, forKey: "researchDepth") }
+    }
+    /// Shared daily AI-call cap for all three research origins.
+    var researchDailyAICap: Int {
+        didSet { UserDefaults.standard.set(researchDailyAICap, forKey: "researchDailyAICap") }
+    }
+    /// Shared daily task cap, counted across origins.
+    var researchDailyTaskCap: Int {
+        didSet { UserDefaults.standard.set(researchDailyTaskCap, forKey: "researchDailyTaskCap") }
+    }
+    /// Maximum research tasks running at once.
+    var researchMaxConcurrent: Int {
+        didSet { UserDefaults.standard.set(researchMaxConcurrent, forKey: "researchMaxConcurrent") }
+    }
+    /// Default time window; `auto` derives it from the seed's publish date.
+    var researchDefaultRecency: ResearchDefaultRecency {
+        didSet { UserDefaults.standard.set(researchDefaultRecency.rawValue, forKey: "researchDefaultRecency") }
+    }
+    /// Enabled search providers, stored as raw values (Tavily → Firecrawl → Brave).
+    var researchSearchProviders: [String] {
+        didSet {
+            UserDefaults.standard.set(researchSearchProviders, forKey: "researchSearchProviders")
+        }
+    }
+    var researchHistoryLimit: Int {
+        didSet { UserDefaults.standard.set(researchHistoryLimit, forKey: "researchHistoryLimit") }
+    }
+    var researchRetentionDays: Int {
+        didSet { UserDefaults.standard.set(researchRetentionDays, forKey: "researchRetentionDays") }
+    }
+    var researchTempCacheMB: Int {
+        didSet { UserDefaults.standard.set(researchTempCacheMB, forKey: "researchTempCacheMB") }
+    }
+    var researchTempCacheTTLHours: Int {
+        didSet { UserDefaults.standard.set(researchTempCacheTTLHours, forKey: "researchTempCacheTTLHours") }
+    }
+    var researchConsentVersion: Int {
+        didSet { UserDefaults.standard.set(researchConsentVersion, forKey: "researchConsentVersion") }
+    }
     /// Enables the developer test-mode toggle that fires a fake burst push.
     var burstTestMode: Bool {
         didSet { UserDefaults.standard.set(burstTestMode, forKey: "burstTestMode") }
@@ -375,6 +429,32 @@ final class AppSettings {
         self.dailyPushMinute = defaults.integerIfPresent(forKey: "dailyPushMinute") ?? 0
 
         self.burstPushEnabled = defaults.boolIfPresent(forKey: "burstPushEnabled") ?? false
+        self.researchAutoEnabled = defaults.boolIfPresent(forKey: "researchAutoEnabled") ?? true
+        let rawDetectionLimit = defaults.integerIfPresent(forKey: "researchDetectionLimit") ?? 3
+        self.researchDetectionLimit = Self.validResearchDetectionLimits.contains(rawDetectionLimit) ? rawDetectionLimit : 3
+        self.researchShowPopoverChip = defaults.boolIfPresent(forKey: "researchShowPopoverChip") ?? true
+        let rawDepth = defaults.stringIfPresent(forKey: "researchDepth") ?? ResearchDepth.standard.rawValue
+        self.researchDepth = ResearchDepth(rawValue: rawDepth) ?? .standard
+        let rawResearchAICap = defaults.integerIfPresent(forKey: "researchDailyAICap") ?? 30
+        self.researchDailyAICap = Self.validResearchDailyAICaps.contains(rawResearchAICap) ? rawResearchAICap : 30
+        let rawResearchTaskCap = defaults.integerIfPresent(forKey: "researchDailyTaskCap") ?? 3
+        self.researchDailyTaskCap = Self.validResearchDailyTaskCaps.contains(rawResearchTaskCap) ? rawResearchTaskCap : 3
+        let rawResearchConcurrency = defaults.integerIfPresent(forKey: "researchMaxConcurrent") ?? 1
+        self.researchMaxConcurrent = Self.validResearchConcurrency.contains(rawResearchConcurrency) ? rawResearchConcurrency : 1
+        let rawRecency = defaults.stringIfPresent(forKey: "researchDefaultRecency") ?? ResearchDefaultRecency.auto.rawValue
+        self.researchDefaultRecency = ResearchDefaultRecency(rawValue: rawRecency) ?? .auto
+        let rawProviders = defaults.stringArray(forKey: "researchSearchProviders")
+            ?? SearchProviderID.allCases.map(\.rawValue)
+        self.researchSearchProviders = Self.normalizedSearchProviders(rawProviders)
+        let rawHistoryLimit = defaults.integerIfPresent(forKey: "researchHistoryLimit") ?? 200
+        self.researchHistoryLimit = Self.validResearchHistoryLimits.contains(rawHistoryLimit) ? rawHistoryLimit : 200
+        let rawRetention = defaults.integerIfPresent(forKey: "researchRetentionDays") ?? 90
+        self.researchRetentionDays = Self.validResearchRetentionDays.contains(rawRetention) ? rawRetention : 90
+        let rawCacheMB = defaults.integerIfPresent(forKey: "researchTempCacheMB") ?? 300
+        self.researchTempCacheMB = Self.validResearchTempCacheMB.contains(rawCacheMB) ? rawCacheMB : 300
+        let rawCacheTTL = defaults.integerIfPresent(forKey: "researchTempCacheTTLHours") ?? 72
+        self.researchTempCacheTTLHours = Self.validResearchTempCacheTTL.contains(rawCacheTTL) ? rawCacheTTL : 72
+        self.researchConsentVersion = defaults.integerIfPresent(forKey: "researchConsentVersion") ?? 0
         self.burstTestMode = defaults.boolIfPresent(forKey: "burstTestMode") ?? false
         self.burstTestTopic = defaults.stringIfPresent(forKey: "burstTestTopic") ?? ""
         self.burstTestWebSearchEnabled = defaults.boolIfPresent(forKey: "burstTestWebSearchEnabled") ?? false
@@ -723,6 +803,29 @@ final class AppSettings {
     static let validAICaps: Set<Int> = [20, 50, 100]
     /// Whitelisted burst-research daily caps. Any value outside this set is rejected.
     static let validBurstCaps: Set<Int> = [10, 20, 50]
+    /// Whitelisted automatic-detection limits.
+    static let validResearchDetectionLimits: Set<Int> = [1, 2, 3, 5]
+    /// Whitelisted shared research budgets and execution limits.
+    static let validResearchDailyAICaps: Set<Int> = [10, 20, 30, 50, 100]
+    static let validResearchDailyTaskCaps: Set<Int> = [1, 2, 3, 5, 10]
+    static let validResearchConcurrency: Set<Int> = [1, 2, 3]
+    static let validResearchHistoryLimits: Set<Int> = [50, 100, 200, 500, 1000]
+    static let validResearchRetentionDays: Set<Int> = [7, 30, 90, 180, 0]
+    static let validResearchTempCacheMB: Set<Int> = [100, 250, 300, 500, 1000]
+    static let validResearchTempCacheTTL: Set<Int> = [24, 72, 168]
+
+    /// Keeps only known providers in canonical order, and never leaves the list empty.
+    static func normalizedSearchProviders(_ raw: [String]) -> [String] {
+        let enabled = Set(raw)
+        let normalized = SearchProviderID.allCases
+            .map(\.rawValue)
+            .filter { enabled.contains($0) }
+        return normalized.isEmpty ? SearchProviderID.allCases.map(\.rawValue) : normalized
+    }
+
+    var enabledSearchProviders: Set<SearchProviderID> {
+        Set(researchSearchProviders.compactMap(SearchProviderID.init(rawValue:)))
+    }
     /// Whitelisted Popup AI summary lengths. Any value outside this set is rejected.
     static let validAIPopupMaxWords: Set<Int> = [80, 120, 160, 200]
     /// Whitelisted Dashboard AI summary lengths. Any value outside this set is rejected.

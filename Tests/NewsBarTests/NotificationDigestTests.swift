@@ -144,6 +144,33 @@ final class NotificationDigestTests: XCTestCase {
         XCTAssertEqual(route, .burst(eventID: "event-1"))
     }
 
+    func testResearchPayloadRoutesToRecord() {
+        let route = NotificationClickRouter.route(
+            userInfo: ["type": "research", "recordID": "record-1", "title": "Topic"],
+            actionIdentifier: UNNotificationDefaultActionIdentifier
+        )
+
+        XCTAssertEqual(route, .research(recordID: "record-1"))
+    }
+
+    func testMarkResearchReadActionRoutesToRecord() {
+        let route = NotificationClickRouter.route(
+            userInfo: ["type": "research", "recordID": "record-2"],
+            actionIdentifier: NotificationIdentifier.markResearchReadAction
+        )
+
+        XCTAssertEqual(route, .markResearchRead(recordID: "record-2"))
+    }
+
+    func testResearchPayloadWithoutRecordIDFallsBackToDashboard() {
+        let route = NotificationClickRouter.route(
+            userInfo: ["type": "research", "title": "Topic"],
+            actionIdentifier: UNNotificationDefaultActionIdentifier
+        )
+
+        XCTAssertEqual(route, .dashboard)
+    }
+
     func testDailyPayloadWithoutURLRoutesToDashboard() {
         let route = NotificationClickRouter.route(
             userInfo: ["type": "daily"],

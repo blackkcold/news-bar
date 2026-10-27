@@ -19,6 +19,7 @@ struct DashboardWindow: View {
 
     var onOpenSettings: () -> Void = {}
     var onConfigureAI: (() -> Void)? = nil
+    var onOpenResearchCenter: (String?) -> Void = { _ in }
 
     private let layoutBreakpoint: CGFloat = 960
     private let sidebarWidth: CGFloat = 336
@@ -134,6 +135,11 @@ struct DashboardWindow: View {
                 DashboardRefreshToolbarItem(orchestrator: orchestrator) {
                     Task { await orchestrator.manualRefresh(settings: settings) }
                 }
+                DashboardToolbarAction(
+                    title: L10n.string("research.center.title", language: settings.appLanguage),
+                    symbol: "sparkles",
+                    action: { onOpenResearchCenter(nil) }
+                )
                 DashboardToolbarAction(title: settings.appLanguage == .en ? "Settings" : "设置", symbol: "gearshape", action: onOpenSettings)
             }
         }
@@ -284,6 +290,7 @@ struct DashboardWindow: View {
                         searchQuery: normalizedSearchQuery,
                         isSearchActive: isSearchActive,
                         onConfigureAI: onConfigureAI ?? onOpenSettings,
+                        onOpenResearch: onOpenResearchCenter,
                         showsHotTrends: true
                     )
                     .frame(width: sidebarWidth, alignment: .leading)
@@ -304,6 +311,7 @@ struct DashboardWindow: View {
                     searchQuery: normalizedSearchQuery,
                     isSearchActive: isSearchActive,
                     onConfigureAI: onConfigureAI ?? onOpenSettings,
+                    onOpenResearch: onOpenResearchCenter,
                     showsHotTrends: false
                 )
                 .frame(width: sidebarWidth, alignment: .leading)
@@ -316,6 +324,7 @@ struct DashboardWindow: View {
                     searchQuery: normalizedSearchQuery,
                     isSearchActive: isSearchActive,
                     onConfigureAI: onConfigureAI ?? onOpenSettings,
+                    onOpenResearch: onOpenResearchCenter,
                     showsHotTrends: false
                 )
                 sourceBrowserRegion
@@ -726,6 +735,7 @@ private struct DashboardSidebarRegion: View {
     let searchQuery: String?
     let isSearchActive: Bool
     let onConfigureAI: () -> Void
+    let onOpenResearch: (String?) -> Void
     let showsHotTrends: Bool
 
     private func filtered(_ source: NewsSource, _ items: [NewsItem]) -> [NewsItem] {
@@ -760,8 +770,143 @@ private struct DashboardSidebarRegion: View {
                     DashboardHotTrendCard(source: .bilibili, items: filtered(.bilibili, orchestrator.bilibiliItems))
                 }
             }
+
+            DashboardResearchSection(
+                index: "03",
+                entries: orchestrator.researchHighlights,
+                onOpen: onOpenResearch
+            )
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+// MARK: - Research sidebar section
+
+private struct DashboardResearchSection: View {
+    @Environment(AppSettings.self) private var settings
+    let index: String
+    let entries: [ResearchIndexEntry]
+    let onOpen: (String?) -> Void
+
+    private static let relativeFormatter: RelativeDateTimeFormatter = {
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .short
+        return formatter
+    }()
+
+    var body: some View {
+        if !entries.isEmpty {
+            VStack(alignment: .leading, spacing: 10) {
+                EditorialSectionHeading(
+                    index: index,
+                    title: L10n.string("research.dashboard.title", language: settings.appLanguage),
+                    subtitle: L10n.string("research.dashboard.subtitle", language: settings.appLanguage)
+                )
+
+                VStack(spacing: 2) {
+                    ForEach(entries) { entry in
+                        Button {
+                            onOpen(entry.id)
+                        } label: {
+                            row(entry)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel(accessibilityLabel(entry))
+                    }
+                }
+
+                Button {
+                    onOpen(nil)
+                } label: {
+                    HStack(spacing: 4) {
+                        Text(L10n.string("research.dashboard.viewAll", language: settings.appLanguage))
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 8, weight: .semibold))
+                    }
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help(L10n.string("research.center.title", language: settings.appLanguage))
+            }
+        }
+    }
+
+    private func row(_ entry: ResearchIndexEntry) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Circle()
+                .fill(tint(entry))
+                .frame(width: 6, height: 6)
+                .padding(.top, 4)
+                .accessibilityHidden(true)
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(displayTitle(entry))
+                    .font(.system(size: 11, weight: entry.isRead ? .regular : .semibold))
+                    .foregroundStyle(.primary)
+                    .lineLimit(2)
+                    .multilineTextAlignment(.leading)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                HStack(spacing: 4) {
+                    Text(L10n.string("research.origin.\(entry.origin.rawValue)", language: settings.appLanguage))
+                    Text("·")
+                    Text(Self.relativeFormatter.localizedString(for: entry.updatedAt, relativeTo: Date()))
+                    Spacer(minLength: 0)
+                    badge(entry)
+                }
+                .font(.system(size: 9))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+            }
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 6)
+        .contentShape(Rectangle())
+    }
+
+    private func displayTitle(_ entry: ResearchIndexEntry) -> String {
+        entry.topic.isEmpty
+            ? L10n.string("research.status.\(entry.status.rawValue)", language: settings.appLanguage)
+            : entry.topic
+    }
+
+    @ViewBuilder
+    private func badge(_ entry: ResearchIndexEntry) -> some View {
+        if entry.status == .running || entry.status == .queued {
+            Text(L10n.string("research.status.\(entry.status.rawValue)", language: settings.appLanguage))
+                .font(.system(size: 9, weight: .semibold))
+                .foregroundStyle(tint(entry))
+        } else if let verdict = entry.verdict {
+            Text(L10n.string("research.verdict.short.\(verdict.rawValue)", language: settings.appLanguage))
+                .font(.system(size: 9, weight: .semibold))
+                .foregroundStyle(tint(entry))
+        } else if entry.strength > 0 {
+            Text("\(entry.strength)/4")
+                .font(.system(size: 9, weight: .semibold))
+                .foregroundStyle(tint(entry))
+        }
+    }
+
+    private func tint(_ entry: ResearchIndexEntry) -> Color {
+        switch entry.status {
+        case .ready: return .green
+        case .partial: return .orange
+        case .failed, .corrupt: return .red
+        case .running, .queued: return .accentColor
+        case .cancelled, .interrupted: return .secondary
+        }
+    }
+
+    private func accessibilityLabel(_ entry: ResearchIndexEntry) -> String {
+        let separator = settings.appLanguage == .en ? ", " : "，"
+        return [
+            displayTitle(entry),
+            L10n.string("research.status.\(entry.status.rawValue)", language: settings.appLanguage),
+            L10n.string("research.origin.\(entry.origin.rawValue)", language: settings.appLanguage),
+        ].joined(separator: separator)
     }
 }
 

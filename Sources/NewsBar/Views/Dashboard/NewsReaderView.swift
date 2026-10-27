@@ -755,6 +755,17 @@ struct ReaderContentView: View {
                 .help(english ? "Reload page (⌘R)" : "重新加载网页（⌘R）")
             if let item = model.request.item {
                 Button {
+                    NotificationCenter.default.post(
+                        name: .researchRequested,
+                        object: nil,
+                        userInfo: ["item": item]
+                    )
+                } label: {
+                    Image(systemName: "checkmark.seal").frame(width: 28, height: 28)
+                }
+                .accessibilityLabel(english ? "Verify online" : "联网核查")
+                .help(english ? "Cross-check this story with public sources" : "用公开来源核查这条新闻")
+                Button {
                     lastFeedback = controller.toggleBookmark(item)
                     feedbackMessage = isBookmarked ? (english ? "Article bookmarked" : "已收藏文章") : (english ? "Bookmark removed" : "已取消收藏")
                 } label: { Image(systemName: isBookmarked ? "bookmark.fill" : "bookmark").frame(width: 28, height: 28) }

@@ -3,6 +3,9 @@ import Foundation
 enum NotificationIdentifier {
     static let digestCategory = "newsbar.news"
     static let openDigestAction = "newsbar.openDigest"
+    static let researchCategory = "newsbar.research"
+    static let openResearchAction = "newsbar.openResearch"
+    static let markResearchReadAction = "newsbar.markResearchRead"
 }
 
 /// Payload embedded in a delivered notification so a click can list every

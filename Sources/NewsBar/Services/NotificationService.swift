@@ -51,13 +51,33 @@ enum NotificationService {
             title: L10n.string("notif.action.openDigest"),
             options: [.foreground]
         )
-        let category = UNNotificationCategory(
+        let digestCategory = UNNotificationCategory(
             identifier: NotificationIdentifier.digestCategory,
             actions: [openDigest],
             intentIdentifiers: [],
             options: [.customDismissAction]
         )
-        UNUserNotificationCenter.current().setNotificationCategories([category])
+
+        let openResearch = UNNotificationAction(
+            identifier: NotificationIdentifier.openResearchAction,
+            title: L10n.string("research.action.open"),
+            options: [.foreground]
+        )
+        let markRead = UNNotificationAction(
+            identifier: NotificationIdentifier.markResearchReadAction,
+            title: L10n.string("research.action.markRead"),
+            options: []
+        )
+        let researchCategory = UNNotificationCategory(
+            identifier: NotificationIdentifier.researchCategory,
+            actions: [openResearch, markRead],
+            intentIdentifiers: [],
+            options: [.customDismissAction]
+        )
+
+        // setNotificationCategories is replace-all; both categories must be
+        // registered together or the digest actions disappear.
+        UNUserNotificationCenter.current().setNotificationCategories([digestCategory, researchCategory])
     }
 
     /// "微博热搜 2 · B站热搜 1", keeping first-seen order and capping at three
@@ -192,6 +212,49 @@ enum NotificationService {
         UNUserNotificationCenter.current().add(request) { error in
             if let error = error {
                 NSLog("[NotificationService] sendBurstNotification failed: %@", error.localizedDescription)
+            }
+        }
+    }
+
+    /// Sends one notification when a research record reaches `ready`. The
+    /// record ID is the routing key; the title is only a display fallback.
+    static func sendResearchNotification(record: ResearchRecord) {
+        guard let report = record.report else { return }
+
+        let language = L10n.currentLanguage
+        let titlePrefix: String
+        switch record.origin {
+        case .burst:
+            titlePrefix = L10n.string("notif.burstTitle", language: language)
+        case .keyword:
+            titlePrefix = L10n.string("notif.keywordTitle", language: language)
+        case .manual:
+            titlePrefix = L10n.string("research.notifTitle", language: language)
+        }
+
+        let content = UNMutableNotificationContent()
+        content.title = "\(titlePrefix) \(record.topic)"
+        let body = report.summary.isEmpty ? report.overview : report.summary
+        content.body = SecurityPolicies.sanitizeHTMLContent(
+            body.isEmpty ? L10n.string("burst.noSummary", language: language) : body
+        )
+        content.sound = .default
+        content.threadIdentifier = "research"
+        content.categoryIdentifier = NotificationIdentifier.researchCategory
+        content.userInfo = [
+            "type": "research",
+            "recordID": record.id,
+            "title": record.topic,
+        ]
+
+        let request = UNNotificationRequest(
+            identifier: "research-\(record.id)",
+            content: content,
+            trigger: nil
+        )
+        UNUserNotificationCenter.current().add(request) { error in
+            if let error {
+                NSLog("[NotificationService] sendResearchNotification failed: %@", error.localizedDescription)
             }
         }
     }

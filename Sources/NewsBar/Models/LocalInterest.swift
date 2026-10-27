@@ -346,6 +346,8 @@ struct LocalInterestState: Codable, Sendable {
             let keep = Set(contents.sorted { $0.value.lastSeen > $1.value.lastSeen }.prefix(5_000).map(\.key)).union(bookmarked)
             contents = contents.filter { keep.contains($0.key) }
         }
-        if now.timeIntervalSince(research.updatedAt) > 7 * 86400 { research = PersistedResearchState() }
+        // Research history now belongs to ResearchStore. Never age-prune the
+        // legacy BLOB copy here: migrated records would lose their source data
+        // before the research center takes over in P1.
     }
 }
