@@ -35,6 +35,12 @@ enum WebScrapeService {
             throw NewsBarError.invalidURL
         }
 
+        // The keyless tier still contacts the third party, so an empty key means
+        // "do not call Firecrawl at all"; the caller falls back to direct reads.
+        guard !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw NewsBarError.apiKeyInvalid
+        }
+
         guard let endpoint = URL(string: "https://api.firecrawl.dev/v2/scrape") else {
             throw NewsBarError.invalidURL
         }

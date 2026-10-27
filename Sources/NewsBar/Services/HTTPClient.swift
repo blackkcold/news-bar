@@ -81,7 +81,8 @@ enum HTTPClient {
         for url: URL,
         config: Config,
         additionalHeaders: [String: String] = [:],
-        allowsNotModified: Bool = false
+        allowsNotModified: Bool = false,
+        restrictToPublicDestinations: Bool = false
     ) async throws -> (Data, HTTPURLResponse) {
         var request = URLRequest(url: url)
         request.setValue(config.userAgent, forHTTPHeaderField: "User-Agent")
@@ -93,9 +94,30 @@ enum HTTPClient {
         }
         request.timeoutInterval = config.timeout
 
-        let (data, response) = try await URLSession.shared.data(for: request)
-        guard let httpResponse = response as? HTTPURLResponse else {
-            throw NewsBarError.requestFailed
+        let data: Data
+        let httpResponse: HTTPURLResponse
+        if restrictToPublicDestinations {
+            guard SecurityPolicies.validatePublicHTTPURL(url.absoluteString).url != nil else {
+                throw NewsBarError.requestFailed
+            }
+            do {
+                (data, httpResponse) = try await PrivateHTTP.data(
+                    for: request,
+                    maxBytes: config.maxBodySize,
+                    timeout: config.timeout,
+                    redirectPolicy: .followValidatedPublic,
+                    session: URLSession.shared
+                )
+            } catch {
+                throw NewsBarError.requestFailed
+            }
+        } else {
+            let (rawData, rawResponse) = try await URLSession.shared.data(for: request)
+            guard let http = rawResponse as? HTTPURLResponse else {
+                throw NewsBarError.requestFailed
+            }
+            data = rawData
+            httpResponse = http
         }
         let isAccepted = (200...299).contains(httpResponse.statusCode)
             || (allowsNotModified && httpResponse.statusCode == 304)

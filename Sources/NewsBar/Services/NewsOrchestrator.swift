@@ -915,7 +915,11 @@ final class NewsOrchestrator {
                 disableDeepSeekThinking: settings.aiDisableDeepSeekThinking
             ),
             searchRouter: researchSearchRouter,
-            pageReader: PageReader(cache: researchCacheStore),
+            pageReader: PageReader(
+                cache: researchCacheStore,
+                isScrapeEnabled: settings.enabledSearchProviders.contains(.firecrawl)
+                    && !(keys[.firecrawl] ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ),
             ledger: researchLedger
         )
         let pipelineConfiguration = ResearchPipelineConfiguration(

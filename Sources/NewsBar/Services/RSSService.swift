@@ -198,7 +198,8 @@ enum RSSService {
                     for: url,
                     config: .rss,
                     additionalHeaders: additionalHeaders,
-                    allowsNotModified: true
+                    allowsNotModified: true,
+                    restrictToPublicDestinations: true
                 )
             }
             group.addTask {

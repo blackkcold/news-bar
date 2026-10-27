@@ -159,6 +159,10 @@ struct DirectHTMLReader: Sendable {
             }
             return
         }
+        // Residual risk: URLSession resolves the host again when it connects,
+        // so a rebinding resolver can still win this race. Closing it fully
+        // needs a pinned-IP connection layer; the per-hop URL and DNS checks
+        // remain the boundary for now and this is documented for users.
         let addresses: [String]
         do {
             addresses = try await resolver(host)

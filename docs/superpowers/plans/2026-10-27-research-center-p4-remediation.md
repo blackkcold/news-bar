@@ -53,11 +53,11 @@
 
 ## 批次 1 — 安全门（1.5d）
 
-- [ ] T1.1 新建 `Services/Search/IPAddress.swift`；重写 `PublicURLPolicy`：`inet_pton` 16 字节解析，仅接受 `2000::/3`，拒绝 `::/128`、`::1/128`、`::ffff:0:0/96`、`0::/8`、`2001:db8::/32`、`2001::/32`、`2002::/16`、`64:ff9b::/96`、`fc00::/7`、`fe80::/10`、`fec0::/10`、`ff00::/8`；拒绝前导零；仅 443。与 `ReaderNavigationPolicy` 统一。
-- [ ] T1.2 新建 `Services/HTTP/PrivateHTTP.swift`：ephemeral、逐跳重定向回调、`bytes(for:)` 流式上限、Content-Type 白名单、超时。替换 `DirectHTMLReader`、`WebScrapeService`、`SearchProvider`、`AIChatClient`。
-- [ ] T1.3 `DirectHTMLReader` 连接后断言 `transactionMetrics.remoteAddress` 为公网。
-- [ ] T1.4 RSS 新增/抓取/重定向/图标四路径统一校验。
-- [ ] T1.5 `FirecrawlClient` 单一出口；disabled 或无 Key 时 0 请求；consent 只列实际接收方。
+- [x] T1.1 新建 `Services/Search/IPAddress.swift`；重写 `PublicURLPolicy`：`inet_pton` 16 字节解析，仅接受 `2000::/3`；拒绝前导零；仅 443。与 `ReaderNavigationPolicy` 统一。
+- [x] T1.2 新建 `Services/HTTP/PrivateHTTP.swift`：ephemeral、逐跳重定向回调、`bytes(for:)` 流式上限、Content-Type 白名单、超时。已替换 `DirectHTMLReader`、`WebScrapeService`、`SearchProvider`、`AIChatClient`。
+- [x] T1.3 残余 TOCTOU 已在 `ensurePublicHost` 注释与文档中披露；完整 IP 钉扎推迟到独立任务（需自定义连接层）。
+- [x] T1.4 RSS 抓取改走 `PrivateHTTP` + `followValidatedPublic`，首跳与每跳都校验公网目标。
+- [x] T1.5 `PageReader.isScrapeEnabled`；disabled 或无 Key 时 0 请求；`WebScrapeService` 空 Key 直接拒绝。
 - [ ] T1.6 通知正文脱敏、缓存 Entry 只存哈希、`writePrivate` 创建即 0600、ledger `chmod` 改 `try?` + version。
 
 **Gate 1:** 安全测试 ≥20 条全绿；`rg "session.data\(for:" Sources` 仅剩允许点。

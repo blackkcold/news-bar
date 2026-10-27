@@ -11,6 +11,15 @@ enum PrivateHTTPError: Error, Equatable {
 /// can validate each hop, and enforces the body ceiling *while* the response
 /// is streaming instead of after it has been buffered.
 enum PrivateHTTP {
+    enum RedirectPolicy: Sendable {
+        /// Hand the 3xx response back to the caller, which validates the
+        /// `Location` target itself.
+        case deny
+        /// Follow a hop only after the target passes the public-URL and DNS
+        /// checks.
+        case followValidatedPublic
+    }
+
     static let defaultMaxBytes = 4 * 1024 * 1024
 
     static func data(
@@ -18,6 +27,7 @@ enum PrivateHTTP {
         maxBytes: Int = defaultMaxBytes,
         allowedContentTypes: Set<String>? = nil,
         timeout: TimeInterval? = nil,
+        redirectPolicy: RedirectPolicy = .deny,
         session: URLSession? = nil
     ) async throws -> (Data, HTTPURLResponse) {
         var request = request
@@ -45,7 +55,7 @@ enum PrivateHTTP {
 
         let (bytes, response) = try await active.bytes(
             for: request,
-            delegate: RedirectDenier()
+            delegate: RequestDelegate(policy: redirectPolicy)
         )
         guard let http = response as? HTTPURLResponse else {
             throw PrivateHTTPError.invalidResponse
@@ -78,16 +88,29 @@ enum PrivateHTTP {
     }
 }
 
-/// Refuses every redirect and hands the 3xx response back to the caller, which
-/// can validate the `Location` target before following it.
-private final class RedirectDenier: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+private final class RequestDelegate: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+    let policy: PrivateHTTP.RedirectPolicy
+
+    init(policy: PrivateHTTP.RedirectPolicy) {
+        self.policy = policy
+    }
+
     func urlSession(
         _ session: URLSession,
         task: URLSessionTask,
         willPerformHTTPRedirection response: HTTPURLResponse,
-        newRequest request: URLRequest,
-        completionHandler: @escaping (URLRequest?) -> Void
-    ) {
-        completionHandler(nil)
+        newRequest request: URLRequest
+    ) async -> URLRequest? {
+        switch policy {
+        case .deny:
+            return nil
+        case .followValidatedPublic:
+            guard let url = request.url,
+                  SecurityPolicies.validatePublicHTTPURL(url.absoluteString).url != nil,
+                  await ReaderNavigationPolicy.resolveDestination(url) == .publicDestination else {
+                return nil
+            }
+            return request
+        }
     }
 }

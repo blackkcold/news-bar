@@ -292,6 +292,40 @@ final class PageReaderTests: XCTestCase {
         let document = await reader.read(hit(), apiKey: "")
         XCTAssertNil(document)
     }
+
+    func testDisabledScrapeGoesStraightToDirectReader() async throws {
+        let html = "<html><head><title>Direct</title></head><body><p>禁用 Firecrawl 时直接读取到的正文，内容足够长以通过检查。这里再补充一段文字，确保可读正文超过四十个字符的限制。</p></body></html>"
+        let scrapeCalls = PageCallCounter()
+        let reader = PageReader(
+            cache: ResearchCacheStore(directoryURL: try researchTestDirectory()),
+            scrape: { _, _ in
+                scrapeCalls.increment()
+                return String(repeating: "不应调用", count: 100)
+            },
+            direct: DirectHTMLReader(
+                transport: { _ in
+                    (
+                        Data(html.utf8),
+                        HTTPURLResponse(
+                            url: URL(string: "https://www.reuters.com/story")!,
+                            statusCode: 200,
+                            httpVersion: nil,
+                            headerFields: ["Content-Type": "text/html"]
+                        )!
+                    )
+                },
+                resolver: { _ in ["93.184.216.34"] },
+                now: { Date() }
+            ),
+            isScrapeEnabled: false
+        )
+
+        let result = await reader.read(hit(), apiKey: "fc")
+        let document = try XCTUnwrap(result)
+
+        XCTAssertEqual(document.source, .direct)
+        XCTAssertEqual(scrapeCalls.count, 0)
+    }
 }
 
 final class WebScrapeServiceTests: XCTestCase {
@@ -337,7 +371,7 @@ final class WebScrapeServiceTests: XCTestCase {
         do {
             _ = try await WebScrapeService.scrape(
                 urlString: "https://www.reuters.com/story",
-                apiKey: "",
+                apiKey: "fc",
                 transport: { _ in (Data(), self.http(200, headers: ["Content-Type": "text/html"])) }
             )
             XCTFail("expected request failure")
@@ -349,7 +383,7 @@ final class WebScrapeServiceTests: XCTestCase {
         do {
             _ = try await WebScrapeService.scrape(
                 urlString: "https://www.reuters.com/story",
-                apiKey: "",
+                apiKey: "fc",
                 transport: { _ in
                     (Data(), self.http(200, headers: [
                         "Content-Type": "application/json",
@@ -362,5 +396,24 @@ final class WebScrapeServiceTests: XCTestCase {
         } catch {
             XCTFail("unexpected error \(error)")
         }
+    }
+
+    func testEmptyAPIKeyDoesNotContactFirecrawl() async {
+        let calls = PageCallCounter()
+        do {
+            _ = try await WebScrapeService.scrape(
+                urlString: "https://www.reuters.com/story",
+                apiKey: "",
+                transport: { _ in
+                    calls.increment()
+                    return (Data(), self.http(200))
+                }
+            )
+            XCTFail("expected apiKeyInvalid")
+        } catch NewsBarError.apiKeyInvalid {
+        } catch {
+            XCTFail("unexpected error \(error)")
+        }
+        XCTAssertEqual(calls.count, 0)
     }
 }
