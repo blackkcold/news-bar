@@ -18,6 +18,28 @@ enum ReaderNavigationPolicy {
         return c.url
     }
 
+    /// The destination a `window.open` request may navigate to in place.
+    ///
+    /// The reader never creates a second web view: a popup would escape the
+    /// ephemeral store and the content rule list. Returning `nil` drops a
+    /// scripted open that could not have loaded anyway.
+    static func popupDestination(_ rawURL: String?) -> URL? {
+        guard let rawURL else { return nil }
+        return allowedURL(rawURL)
+    }
+
+    /// A site's own log-out landing page.
+    ///
+    /// An empty cookie capture is ambiguous — a login redirect and a sign-out
+    /// look the same — so only a path segment that names the sign-out endpoint
+    /// may clear a saved site. Segment matching keeps `/exitpoll` out.
+    static func isLogoutDestination(_ rawURL: String?) -> Bool {
+        guard let rawURL, let url = URL(string: rawURL) else { return false }
+        let segments = url.path.lowercased().split(separator: "/").map(String.init)
+        let names: Set<String> = ["logout", "log-out", "log_out", "signout", "sign-out", "sign_out", "exit", "logoff"]
+        return segments.contains { names.contains($0) }
+    }
+
     static func isPublicAddress(_ address: String) -> Bool {
         let lower = address.lowercased()
         if lower.hasPrefix("::ffff:") { return isPublicAddress(String(lower.dropFirst(7))) }

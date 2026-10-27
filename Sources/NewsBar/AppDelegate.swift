@@ -44,6 +44,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private var popoverRefreshTask: Task<Void, Never>?
     private var workspaceObservers: [NSObjectProtocol] = []
     private var isSystemSleeping = false
+    private var terminationReplyPending = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         orchestrator = NewsOrchestrator()
@@ -537,6 +538,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         NSApp.activate(ignoringOtherApps: true)
         MainActor.assumeIsolated { DockPresence.show() }
         if refresh { scheduleDashboardRefresh() }
+    }
+
+    /// Give the open reader one last cookie capture before the process exits.
+    /// A hung cookie store must never keep the app from quitting, so the reply
+    /// is guarded and a watchdog answers after two seconds regardless.
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        MainActor.assumeIsolated {
+            guard let active = ReaderSessionRegistry.active,
+                  ReaderTerminationPolicy.needsCookieFlush(
+                      cookieMemoryEnabled: settings?.readerCookieMemoryEnabled ?? false,
+                      hasActiveReader: true
+                  ) else { return .terminateNow }
+
+            terminationReplyPending = true
+            Task { @MainActor in
+                let watchdog = Task { @MainActor in
+                    try? await Task.sleep(for: .seconds(2))
+                    replyToTerminationRequest()
+                }
+                await active.flushCookiesBeforeTermination()
+                watchdog.cancel()
+                replyToTerminationRequest()
+            }
+            return .terminateLater
+        }
+    }
+
+    private func replyToTerminationRequest() {
+        guard terminationReplyPending else { return }
+        terminationReplyPending = false
+        NSApp.reply(toApplicationShouldTerminate: true)
     }
 
     func applicationWillTerminate(_ notification: Notification) {
