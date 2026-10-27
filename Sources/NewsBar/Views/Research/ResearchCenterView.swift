@@ -287,6 +287,9 @@ private struct ResearchDetailPane: View {
         if model.entries.allSatisfy({ $0.status == .cancelled || $0.status == .interrupted }) {
             return "research.empty.interrupted.title".localized
         }
+        if model.entries.allSatisfy({ $0.status == .partial }) {
+            return "research.empty.partial.title".localized
+        }
         return "research.empty.detail".localized
     }
 
@@ -297,6 +300,9 @@ private struct ResearchDetailPane: View {
         }
         if model.entries.allSatisfy({ $0.status == .cancelled || $0.status == .interrupted }) {
             return "research.empty.interrupted.body".localized
+        }
+        if model.entries.allSatisfy({ $0.status == .partial }) {
+            return "research.empty.partial.body".localized
         }
         return "research.empty.body".localized
     }
