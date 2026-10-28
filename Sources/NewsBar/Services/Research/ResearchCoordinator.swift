@@ -1,8 +1,8 @@
 import Foundation
 
-/// Result of one research pass, independent of how it was produced. P1 uses
-/// the existing single-pass `BurstResearchService`; P2 will swap the executor
-/// without touching the coordinator or the record state machine.
+/// Result of one research pass, independent of how it was produced. The
+/// coordinator owns queueing and the record state machine; executors only
+/// produce this value.
 struct ResearchExecution: Sendable {
     let research: BurstResearch
     let error: String?
@@ -65,7 +65,7 @@ final class ResearchCoordinator {
     private var maxConcurrent: Int
     private let automaticStartInterval: TimeInterval
     private let automaticQueueLifetime: TimeInterval
-    private let automaticQueueLimit = 6
+    private let automaticQueueLimit = ResearchAutomationPolicy.maxActiveAutomaticRuns
     private let notifier: @MainActor (ResearchRecord) -> Void
     private var running: [String: RunningJob] = [:]
     private var queue: [Job] = []
@@ -180,6 +180,14 @@ final class ResearchCoordinator {
 
     func activeRecordIDs() -> Set<String> {
         Set(running.keys).union(queue.map(\.recordID))
+    }
+
+    /// Number of feed-triggered jobs that are running or waiting. The
+    /// orchestrator consults this before creating a candidate record so a
+    /// refresh cannot pile work onto the queue.
+    func activeAutomaticRunCount() -> Int {
+        running.values.filter(\.trigger.isAutomatic).count
+            + queue.filter { $0.trigger.isAutomatic }.count
     }
 
     /// Test and shutdown helper. Production never blocks on this.

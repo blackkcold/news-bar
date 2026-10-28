@@ -437,20 +437,90 @@ struct ResearchPipeline: Sendable {
                 }
                 await progress(snapshot(.extracting))
             }
+
+            // One simpler retry when the first pass produced nothing. Asking
+            // only for verbatim sentences is much easier to satisfy than the
+            // claim/stance schema, and it keeps a formatting miss from turning
+            // the whole report into "no evidence".
+            if candidates.isEmpty {
+                if let reason = await checkStop() { return await fail(reason) }
+                if let response = await callAI(
+                    AIChatRequest(
+                        messages: [
+                            AIChatMessage(
+                                role: .system,
+                                content: ResearchPrompts.extractionSystemPrompt(language: language)
+                            ),
+                            AIChatMessage(
+                                role: .user,
+                                content: ResearchPrompts.extractionFallbackUserPrompt(
+                                    documents: extractionDocuments,
+                                    language: language
+                                )
+                            ),
+                        ],
+                        maxTokens: 2_048,
+                        temperature: 0.1
+                    )
+                ), let items = ResearchReportParser.evidence(from: response.text, now: now()) {
+                    for item in items {
+                        guard let document = Self.resolveDocument(item, in: extractionDocuments) else { continue }
+                        candidates.append(
+                            EvidenceCandidate(
+                                url: document.url,
+                                title: document.title,
+                                quote: String(item.quote.prefix(300)),
+                                claim: item.claim,
+                                stance: item.stance,
+                                publishedAt: item.publishedAt ?? document.publishedAt,
+                                fetchedAt: document.fetchedAt
+                            )
+                        )
+                    }
+                }
+            }
         }
 
-        // Stage 6 — synthesize.
+        // No readable page and no snippet means there is nothing to synthesize.
+        // Failing here is what keeps a report made only of meta-commentary from
+        // being saved as a partial success.
+        if orderedDocuments.isEmpty {
+            let message = searchStatus == .failed
+                ? L10n.string("research.error.searchFailed", language: language)
+                : L10n.string("research.error.noSources", language: language)
+            return await fail(message)
+        }
+
+        // Stage 6 — synthesize. Evidence cards and the validator must use the
+        // exact same whitelist, deduplication and order, or the model's E-numbers
+        // point at different quotes after validation.
         await progress(snapshot(.synthesizing))
         if let reason = await checkStop() { return await fail(reason) }
-        let cards = Self.evidenceCards(from: candidates)
+        var allowedURLs = Set(hits.map(\.canonicalURL))
+        allowedURLs.formUnion(selected.map(\.canonicalURL))
+        allowedURLs.formUnion(documents.keys)
+        if let seedURL = configuration.record.seed.url {
+            allowedURLs.insert(ContentIdentity.canonicalURL(seedURL))
+        }
+        let eligibleCandidates = EvidenceIdentity.ordered(candidates, allowedURLs: allowedURLs)
+        let cards = Self.evidenceCards(from: eligibleCandidates)
         let claims = plannedClaims.isEmpty
-            ? Array(Self.unique(candidates.map(\.claim).filter { !$0.isEmpty }).prefix(5))
+            ? Array(Self.unique(eligibleCandidates.map(\.claim).filter { !$0.isEmpty }).prefix(5))
             : plannedClaims
-        let synthesisSystem = ResearchPrompts.synthesisSystemPrompt(language: language)
+        // The dossier restores the context the old single-pass research had.
+        // It is explicitly background-only: the model may use it to describe
+        // the chain of events, but only evidence cards can be cited.
+        let dossier = Self.cappedDocuments(orderedDocuments, maxCharacters: 9_000)
+        let hasEvidence = !cards.isEmpty
+        let synthesisSystem = ResearchPrompts.synthesisSystemPrompt(
+            language: language,
+            hasEvidence: hasEvidence
+        )
         let synthesisUser = ResearchPrompts.synthesisUserPrompt(
             seed: seed,
-            claims: claims,
+            claims: hasEvidence ? claims : [],
             evidence: cards,
+            dossier: dossier,
             trendContext: configuration.trendContext,
             language: language
         )
@@ -516,12 +586,6 @@ struct ResearchPipeline: Sendable {
         // Stage 7 — validate.
         await progress(snapshot(.validating))
         if let reason = await checkStop() { return await fail(reason) }
-        var allowedURLs = Set(hits.map(\.canonicalURL))
-        allowedURLs.formUnion(selected.map(\.canonicalURL))
-        allowedURLs.formUnion(documents.keys)
-        if let seedURL = configuration.record.seed.url {
-            allowedURLs.insert(ContentIdentity.canonicalURL(seedURL))
-        }
 
         let method = ResearchMethod(
             providers: SearchProviderID.failoverOrder
@@ -566,6 +630,8 @@ struct ResearchPipeline: Sendable {
                 || state.truncated
                 || searchStatus != .succeeded
                 || state.pagesRead == 0
+                || !report.hasGroundedContent
+                || report.evidence.isEmpty
         )
     }
 
@@ -654,15 +720,9 @@ struct ResearchPipeline: Sendable {
     }
 
     static func evidenceCards(from candidates: [EvidenceCandidate]) -> [ResearchPrompts.EvidenceCard] {
-        var seen: Set<String> = []
         var cards: [ResearchPrompts.EvidenceCard] = []
-        for candidate in candidates {
+        for candidate in EvidenceIdentity.ordered(candidates) {
             let quote = candidate.quote.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !quote.isEmpty else { continue }
-            let key = ContentIdentity.canonicalURL(candidate.url)
-                + "\n"
-                + QuoteVerifier.normalize(quote)
-            guard seen.insert(key).inserted else { continue }
             cards.append(
                 ResearchPrompts.EvidenceCard(
                     id: "E\(cards.count + 1)",

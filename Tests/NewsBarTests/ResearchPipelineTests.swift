@@ -258,7 +258,7 @@ final class ResearchPipelineTests: XCTestCase {
 
     // MARK: - Failures and degradation
 
-    func testAllSearchFailuresProduceUnverifiedPartialReport() async throws {
+    func testAllSearchFailuresFailBeforeSynthesis() async throws {
         let directory = try researchTestDirectory()
         let ai = ScriptedAIClient(responses: [
             .success(AIChatResponse(text: planningJSON, truncated: false)),
@@ -277,23 +277,55 @@ final class ResearchPipelineTests: XCTestCase {
             progress: { _ in }
         )
 
+        // No readable source means there is nothing to synthesize. Producing an
+        // AI-only "report" here is what made zero-evidence records look usable.
+        // The failure value zeroes the run counters, so the client itself is the
+        // evidence that only the planning call was made.
+        XCTAssertEqual(execution.error, L10n.string("research.error.searchFailed", language: .en))
+        XCTAssertEqual(execution.pagesRead, 0)
+        XCTAssertEqual(ai.callCount, 1)
+        XCTAssertEqual(provider.callCount, 1)
+        XCTAssertFalse(BurstResearchParser.hasUsableContent(execution.research))
+    }
+
+    func testZeroEvidenceKeepsSourceDossierAsBackgroundBrief() async throws {
+        let directory = try researchTestDirectory()
+        let backgroundBrief = #"{"summary":"背景梳理：公司预告十月发布新品。","overview":"公司先预告，媒体随后报道，具体日期尚未确认。","timeline":[{"date":"2026-10-01","title":"公司预告","detail":"公司确认十月发布新品","confidence":"low"}],"claims":[],"conflicts":[],"missing":[],"limitations":""}"#
+        let ai = ScriptedAIClient(responses: [
+            .success(AIChatResponse(text: planningJSON, truncated: false)),
+            .success(AIChatResponse(text: #"{"evidence":[]}"#, truncated: false)),
+            .success(AIChatResponse(text: #"{"evidence":[]}"#, truncated: false)),
+            .success(AIChatResponse(text: backgroundBrief, truncated: false)),
+        ])
+        let (pipeline, _) = makePipeline(
+            directory: directory,
+            ai: ai,
+            hits: [hit(reutersURL, title: "Reuters")],
+            scrape: { _, _ in self.reutersText }
+        )
+
+        let execution = await pipeline.run(
+            configuration: configuration(record: researchTestRecord(title: "Event", status: .queued)),
+            progress: { _ in }
+        )
+
+        // A page was read, so the run is not a hard failure: it keeps a short
+        // background brief from the dossier, but must not invent claims.
         XCTAssertNil(execution.error)
         XCTAssertTrue(execution.isPartial)
-        XCTAssertEqual(execution.pagesRead, 0)
-        XCTAssertEqual(execution.aiCalls, 2)
-        XCTAssertEqual(provider.callCount, 1)
-        XCTAssertEqual(execution.research.searchStatus, .failed)
-        XCTAssertEqual(execution.research.verification?.verdict, .unverified)
+        XCTAssertEqual(execution.aiCalls, 4)
+        XCTAssertEqual(execution.research.summary, "背景梳理：公司预告十月发布新品。")
         XCTAssertTrue(execution.research.evidence.isEmpty)
+        XCTAssertEqual(execution.research.verification?.claims.count, 0)
+        XCTAssertTrue(execution.research.timeline.allSatisfy { $0.evidenceIDs.isEmpty })
         XCTAssertTrue(
             execution.research.limitations.contains(
-                L10n.string("research.limitation.notOnline", language: .en)
+                L10n.string("research.limitation.noEvidence", language: .en)
             )
         )
     }
 
-    func testAIExhaustionStopsWithBudgetError() async throws {
-        let directory = try researchTestDirectory()
+    func testAIExhaustionStopsWithBudgetError() async throws {        let directory = try researchTestDirectory()
         let ai = ScriptedAIClient(responses: [
             .success(AIChatResponse(text: planningJSON, truncated: false)),
         ])

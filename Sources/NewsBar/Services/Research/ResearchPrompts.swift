@@ -142,6 +142,46 @@ enum ResearchPrompts {
 
     // MARK: - Extraction
 
+    /// Second, simpler extraction attempt. The first pass asks for claims and
+    /// stances, which some models answer with prose; this one only asks for
+    /// verbatim sentences, so a single failure cannot empty the report.
+    static func extractionFallbackUserPrompt(
+        documents: [ResearchDocument],
+        language: AppLanguage
+    ) -> String {
+        let sources = documents.enumerated().map { index, document in
+            let published = document.publishedAt.map { Self.dayString($0) } ?? "unknown"
+            return """
+            <untrusted_source id="S\(index + 1)" url="\(document.url)" published="\(published)">
+            \(String(document.text.prefix(12_000)))
+            </untrusted_source>
+            """
+        }.joined(separator: "\n\n")
+
+        if language == .en {
+            return """
+            Sources:
+            \(sources)
+
+            Copy 3–5 short sentences (≤300 characters each) that state a fact from these sources.
+            Each quote must be verbatim; do not paraphrase or translate. If a sentence names a date, keep the date.
+            JSON schema:
+            {"evidence":[{"source":1,"quote":"exact sentence","publishedAt":"YYYY-MM-DD or null"}]}
+            Return an empty array when nothing can be quoted.
+            """
+        }
+        return """
+        来源：
+        \(sources)
+
+        从上述来源中逐字复制 3–5 句陈述事实的短句（每句 ≤300 字）。
+        不得改写或翻译；句中出现日期时保留日期。
+        JSON schema：
+        {"evidence":[{"source":1,"quote":"原文句子","publishedAt":"YYYY-MM-DD 或 null"}]}
+        没有可引用内容时返回空数组。
+        """
+    }
+
     static func extractionSystemPrompt(language: AppLanguage) -> String {
         if language == .en {
             return """
@@ -205,19 +245,37 @@ enum ResearchPrompts {
 
     // MARK: - Synthesis
 
-    static func synthesisSystemPrompt(language: AppLanguage) -> String {
+    static func synthesisSystemPrompt(language: AppLanguage, hasEvidence: Bool = true) -> String {
         if language == .en {
+            if hasEvidence {
+                return """
+                You write a careful, source-grounded research report. Use only the seed, the evidence cards and the source dossier; never add facts, dates, names, or causal links that are absent from them.
+                Every timeline node must cite one or more evidence IDs (E1, E2…). The dossier is background context: never cite it directly and never treat it as verified.
+                If the evidence cannot support a timeline, return an empty timeline rather than inventing one.
+                Do not state a final truth verdict; the client computes it from evidence.
+                Return one JSON object only.
+                """
+            }
             return """
-            You write a careful, source-grounded research report. Use only the provided seed and evidence cards; never add facts, dates, names, or causal links.
-            Every timeline node must cite one or more evidence IDs. If the evidence cannot support a timeline, return an empty timeline.
-            Do not state a final truth verdict; the client computes it from evidence.
+            No evidence cards could be extracted. Write a short background brief from the seed and the source dossier only: what happened, who is involved, and what is still unknown.
+            Every timeline node is background context: omit evidenceIDs and never claim a fact is verified.
+            Return an empty claims array. Do not write about your inability to verify, about missing evidence, or about the research process itself.
             Return one JSON object only.
             """
         }
+        if hasEvidence {
+            return """
+            你撰写一份严谨、有来源依据的研究报告。只使用给定的种子信息、证据卡与来源档案；绝不添加其中没有的事实、日期、人名或因果。
+            每个时间线节点必须引用至少一个证据 ID（E1、E2…）。来源档案仅作背景，不得直接引用，也不得视为已核实。
+            证据不足以支撑时间线时返回空数组，不要编造。
+            不要给出最终真相裁定；客户端会依据证据重算结论。
+            只输出一个 JSON 对象。
+            """
+        }
         return """
-        你撰写一份严谨、有来源依据的研究报告。只使用给定的种子信息与证据卡，绝不添加事实、日期、人名或因果。
-        每个时间线节点必须引用至少一个证据 ID。证据不足以支撑时间线时返回空数组。
-        不要给出最终真相裁定；客户端会依据证据重算结论。
+        本次没有抽取到证据卡。请只依据种子信息与来源档案，写一份简短的背景梳理：发生了什么、涉及谁、还有哪些未知。
+        时间线节点属于背景信息：不要填写 evidenceIDs，也不要把任何内容说成已核实。
+        claims 返回空数组。不要描写“无法核查”“缺少证据”或研究过程本身。
         只输出一个 JSON 对象。
         """
     }
@@ -226,6 +284,7 @@ enum ResearchPrompts {
         seed: SeedContext,
         claims: [String],
         evidence: [EvidenceCard],
+        dossier: [ResearchDocument] = [],
         trendContext: String,
         language: AppLanguage
     ) -> String {
@@ -244,6 +303,15 @@ enum ResearchPrompts {
                 quote: \(card.quote)
                 """
             }.joined(separator: "\n\n")
+        let dossierBlock = dossier.isEmpty
+            ? (language == .en ? "(no source dossier)" : "（无来源档案）")
+            : dossier.enumerated().map { index, document in
+                let date = document.publishedAt.map { Self.dayString($0) } ?? "unknown"
+                return """
+                [S\(index + 1)] \(document.title) — \(document.url) — \(date)
+                \(String(document.text.prefix(3_000)))
+                """
+            }.joined(separator: "\n\n")
         let trend = trendContext.trimmingCharacters(in: .whitespacesAndNewlines)
 
         if language == .en {
@@ -259,8 +327,11 @@ enum ResearchPrompts {
             \(trend.isEmpty ? "(none)" : String(trend.prefix(1_200)))
             </untrusted_source>
 
-            Evidence cards:
+            Evidence cards (citable, verified quotes):
             \(evidenceBlock)
+
+            Source dossier (background only, not citable):
+            \(dossierBlock)
 
             JSON schema:
             {"summary":"1–2 sentences","overview":"the chain of events","timeline":[{"date":"display label","title":"","detail":"","evidenceIDs":["E1"],"confidence":"high|medium|low"}],"claims":[{"claim":"","status":"supports|refutes|unclear","evidenceIDs":["E1"],"note":""}],"conflicts":[],"missing":[],"limitations":""}
@@ -278,8 +349,11 @@ enum ResearchPrompts {
         \(trend.isEmpty ? "（无）" : String(trend.prefix(1_200)))
         </untrusted_source>
 
-        证据卡：
+        证据卡（可引用、引文已核对）：
         \(evidenceBlock)
+
+        来源档案（仅作背景，不可直接引用）：
+        \(dossierBlock)
 
         JSON schema：
         {"summary":"一到两句话","overview":"事件来龙去脉","timeline":[{"date":"展示用日期","title":"","detail":"","evidenceIDs":["E1"],"confidence":"high|medium|low"}],"claims":[{"claim":"","status":"supports|refutes|unclear","evidenceIDs":["E1"],"note":""}],"conflicts":[],"missing":[],"limitations":""}

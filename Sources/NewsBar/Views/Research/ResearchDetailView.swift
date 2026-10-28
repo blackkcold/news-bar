@@ -8,6 +8,7 @@ struct ResearchDetailView: View {
 
     @State private var copied = false
     @State private var showDeleteConfirmation = false
+    @State private var verificationExpanded = false
 
     private static let relativeFormatter: RelativeDateTimeFormatter = {
         let formatter = RelativeDateTimeFormatter()
@@ -18,6 +19,9 @@ struct ResearchDetailView: View {
     private var isRetro: Bool { settings.appTheme == .retroEditorial }
     private var accent: Color { isRetro ? RetroEditorialTokens.brick : .accentColor }
     private var report: BurstResearch? { record.report }
+    private var presentation: ReportPresentation? {
+        report.map { ReportPresentation(report: $0, isLegacy: record.reportVersion == 0) }
+    }
 
     var body: some View {
         ScrollView(.vertical, showsIndicators: true) {
@@ -32,8 +36,8 @@ struct ResearchDetailView: View {
 
                 banners
 
-                if let report {
-                    reportContent(report)
+                if let report, let presentation {
+                    reportContent(report, presentation: presentation)
                 } else if !record.status.isActive {
                     emptyReport
                 }
@@ -54,6 +58,12 @@ struct ResearchDetailView: View {
             Button("research.delete.cancel".localized, role: .cancel) {}
         } message: {
             Text("research.delete.message".localized)
+        }
+        .onAppear {
+            verificationExpanded = presentation?.expandsVerificationByDefault ?? false
+        }
+        .onChange(of: record.id) { _, _ in
+            verificationExpanded = presentation?.expandsVerificationByDefault ?? false
         }
     }
 
@@ -264,7 +274,7 @@ struct ResearchDetailView: View {
     // MARK: - Report
 
     @ViewBuilder
-    private func reportContent(_ report: BurstResearch) -> some View {
+    private func reportContent(_ report: BurstResearch, presentation: ReportPresentation) -> some View {
         if !report.summary.isEmpty {
             section(index: "01", titleKey: "burst.summary", subtitleKey: "burst.summary.subtitle") {
                 Text(report.summary)
@@ -275,8 +285,35 @@ struct ResearchDetailView: View {
             }
         }
 
+        section(index: "02", titleKey: "burst.timeline", subtitleKey: "burst.timeline.subtitle") {
+            VStack(alignment: .leading, spacing: 0) {
+                if presentation.isLegacy {
+                    Text("research.timeline.legacy".localized)
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                        .padding(.bottom, 8)
+                } else if presentation.nodes.isEmpty {
+                    timelineEmptyState
+                } else {
+                    timelineCoverage(presentation)
+                }
+
+                if !presentation.nodes.isEmpty {
+                    ForEach(Array(presentation.nodes.enumerated()), id: \.element.id) { index, item in
+                        timelineNode(
+                            item,
+                            isLast: index == presentation.nodes.count - 1,
+                            isLegacy: presentation.isLegacy
+                        )
+                    }
+                }
+            }
+            .padding(14)
+            .newsCardSurface(cornerRadius: 12)
+        }
+
         if !report.overview.isEmpty {
-            section(index: "02", titleKey: "burst.overview", subtitleKey: "burst.overview.subtitle") {
+            section(index: "03", titleKey: "burst.overview", subtitleKey: "burst.overview.subtitle") {
                 Text(report.overview)
                     .font(.system(size: 13))
                     .lineSpacing(4)
@@ -286,52 +323,54 @@ struct ResearchDetailView: View {
             }
         }
 
-        if !report.timeline.isEmpty {
-            section(index: "03", titleKey: "burst.timeline", subtitleKey: "burst.timeline.subtitle") {
-                VStack(alignment: .leading, spacing: 0) {
-                    ForEach(Array(report.timeline.enumerated()), id: \.element.id) { index, node in
-                        timelineNode(node, isLast: index == report.timeline.count - 1, evidence: report.evidence)
-                    }
-                }
-                .padding(14)
-                .newsCardSurface(cornerRadius: 12)
-            }
-        }
-
-        if let verification = report.verification {
+        if presentation.showsVerificationSection {
             section(
                 index: "04",
-                titleKey: "research.section.verification",
-                subtitleKey: "research.section.verification.subtitle"
+                titleKey: "research.section.verificationEvidence",
+                subtitleKey: "research.section.verificationEvidence.subtitle"
             ) {
-                VerificationPanel(
-                    verification: verification,
-                    method: report.method,
-                    evidence: report.evidence,
-                    recordID: record.id
-                )
+                VStack(alignment: .leading, spacing: 0) {
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.18)) {
+                            verificationExpanded.toggle()
+                        }
+                    } label: {
+                        verificationHeader(report, presentation: presentation)
+                    }
+                    .buttonStyle(.plain)
+
+                    if verificationExpanded {
+                        Divider().padding(.vertical, 10)
+                        verificationBody(report)
+                    }
+                }
                 .padding(14)
                 .newsCardSurface(cornerRadius: 12)
             }
-        }
-
-        if !report.evidence.isEmpty {
+        } else if presentation.isLegacy {
             section(
-                index: "05",
-                titleKey: "research.section.evidence",
-                subtitleKey: "research.section.evidence.subtitle"
+                index: "04",
+                titleKey: "research.section.verificationEvidence",
+                subtitleKey: "research.section.verificationEvidence.subtitle"
             ) {
                 VStack(alignment: .leading, spacing: 8) {
-                    ForEach(report.evidence) { item in
-                        ResearchEvidenceRow(item: item, contextID: record.id)
+                    Text("research.legacy.noVerification".localized)
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                    if !report.sources.isEmpty {
+                        sourceLinks(report.sources)
                     }
                 }
+                .padding(14)
+                .newsCardSurface(cornerRadius: 12)
             }
+        } else {
+            evidenceGap(report, presentation: presentation)
         }
 
         if !report.limitations.isEmpty {
             section(
-                index: "06",
+                index: "05",
                 titleKey: "research.section.limitations",
                 subtitleKey: "research.section.limitations.subtitle"
             ) {
@@ -345,43 +384,317 @@ struct ResearchDetailView: View {
             }
         }
 
-        if report.evidence.isEmpty, !report.sources.isEmpty {
-            section(index: "05", titleKey: "burst.sources", subtitleKey: "burst.sources.subtitle") {
-                VStack(alignment: .leading, spacing: 6) {
-                    ForEach(report.sources, id: \.self) { source in
-                        Button {
-                            NewsNavigationRouter.shared.open(
-                                url: source,
-                                surface: "researchSource",
-                                contextID: record.id
-                            )
-                        } label: {
-                            HStack(spacing: 6) {
-                                Image(systemName: "link")
-                                    .font(.system(size: 9))
-                                    .foregroundStyle(accent)
-                                Text(source)
-                                    .font(.system(size: 10))
-                                    .lineLimit(1)
-                                    .truncationMode(.middle)
-                                Spacer(minLength: 0)
-                                Image(systemName: "arrow.up.forward")
-                                    .font(.system(size: 8))
-                                    .foregroundStyle(.tertiary)
-                            }
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-                .padding(14)
-                .newsCardSurface(cornerRadius: 12)
-            }
-        }
-
         Text("research.disclaimer".localized)
             .font(.system(size: 9))
             .foregroundStyle(.tertiary)
             .padding(.top, 2)
+    }
+
+    /// Actionable empty state for runs that produced content but no evidence.
+    /// It replaces the verification disclosure entirely: there is nothing to
+    /// verify, and "0 claims · 0 evidence" is not a result.
+    private func evidenceGap(_ report: BurstResearch, presentation: ReportPresentation) -> some View {
+        let title: String
+        let body: String
+        switch presentation.outcome {
+        case .searchUnavailable:
+            title = "research.outcome.searchUnavailable.title".localized
+            body = "research.outcome.searchUnavailable.body".localized
+        case .insufficientEvidence, .legacy, .complete, .partialEvidence:
+            title = "research.outcome.insufficient.title".localized
+            body = "research.outcome.insufficient.body".localized
+        }
+
+        return section(
+            index: "04",
+            titleKey: "research.section.verificationEvidence",
+            subtitleKey: "research.section.verificationEvidence.subtitle"
+        ) {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(alignment: .top, spacing: 8) {
+                    Image(systemName: "doc.text.magnifyingglass")
+                        .font(.system(size: 13))
+                        .foregroundStyle(.orange)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(title)
+                            .font(.system(size: 12, weight: .semibold))
+                        Text(body)
+                            .font(.system(size: 10))
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+
+                if let error = record.run.lastError, !error.isEmpty {
+                    Text(error)
+                        .font(.system(size: 9))
+                        .foregroundStyle(.tertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                HStack(spacing: 8) {
+                    Button {
+                        Task { await model.retry(id: record.id) }
+                    } label: {
+                        Label("research.action.retry".localized, systemImage: "arrow.clockwise")
+                            .font(.system(size: 10, weight: .medium))
+                    }
+                    .buttonStyle(EditorialActionButtonStyle(tone: .secondary, compact: true))
+
+                    if let url = record.seed.url, !url.isEmpty {
+                        Button {
+                            NewsNavigationRouter.shared.open(
+                                url: url,
+                                surface: "researchGap",
+                                contextID: record.id
+                            )
+                        } label: {
+                            Label("research.action.openTopic".localized, systemImage: "arrow.up.forward.square")
+                                .font(.system(size: 10, weight: .medium))
+                        }
+                        .buttonStyle(EditorialActionButtonStyle(tone: .secondary, compact: true))
+                    }
+                }
+
+                if !report.sources.isEmpty {
+                    sourceLinks(report.sources)
+                }
+            }
+            .padding(14)
+            .newsCardSurface(cornerRadius: 12)
+        }
+    }
+
+    private var timelineEmptyState: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text("research.timeline.empty.title".localized)
+                .font(.system(size: 12, weight: .semibold))
+            Text("research.timeline.empty.body".localized)
+                .font(.system(size: 10))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(.vertical, 4)
+    }
+
+    private func timelineCoverage(_ presentation: ReportPresentation) -> some View {
+        var parts = [
+            L10n.string(
+                "research.timeline.coverage",
+                language: settings.appLanguage,
+                presentation.verifiedNodeCount,
+                presentation.nodes.count
+            ),
+        ]
+        if presentation.citedUnverifiedNodeCount > 0 {
+            parts.append(
+                L10n.string(
+                    "research.timeline.coverage.unverified",
+                    language: settings.appLanguage,
+                    presentation.citedUnverifiedNodeCount
+                )
+            )
+        }
+        if presentation.unsourcedNodeCount > 0 {
+            parts.append(
+                L10n.string(
+                    "research.timeline.coverage.unsourced",
+                    language: settings.appLanguage,
+                    presentation.unsourcedNodeCount
+                )
+            )
+        }
+        return Text(parts.joined(separator: " · "))
+            .font(.system(size: 9, weight: .medium))
+            .foregroundStyle(.secondary)
+            .padding(.bottom, 6)
+    }
+
+    private func nodeBadge(_ state: ReportPresentation.NodeState) -> some View {
+        let text: String
+        let color: Color
+        switch state {
+        case .citedUnverified:
+            text = "research.node.unverified".localized
+            color = .orange
+        case .unsourced:
+            text = "research.node.unsourced".localized
+            color = .secondary
+        case .verified:
+            return AnyView(EmptyView())
+        }
+        return AnyView(
+            Text(text)
+                .font(.system(size: 8, weight: .semibold))
+                .foregroundStyle(color)
+                .padding(.horizontal, 4)
+                .padding(.vertical, 1)
+                .background(color.opacity(0.1))
+                .clipShape(Capsule())
+        )
+    }
+
+    private func verificationHeader(
+        _ report: BurstResearch,
+        presentation: ReportPresentation
+    ) -> some View {
+        HStack(spacing: 7) {
+            if let verdict = report.verification?.verdict {
+                EditorialTag(
+                    text: L10n.string("research.verdict.short.\(verdict.rawValue)", language: settings.appLanguage),
+                    fallbackTint: verdictColor(verdict),
+                    filled: true
+                )
+            }
+
+            if presentation.hasVerification {
+                strengthBar(presentation.strength)
+            }
+
+            Text(
+                L10n.string(
+                    "research.verification.summary",
+                    language: settings.appLanguage,
+                    presentation.claimCount,
+                    presentation.evidenceCount
+                )
+            )
+            .font(.system(size: 9))
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
+
+            if presentation.conflictCount > 0 {
+                Text(
+                    L10n.string(
+                        "research.verification.conflictsBadge",
+                        language: settings.appLanguage,
+                        presentation.conflictCount
+                    )
+                )
+                .font(.system(size: 8, weight: .semibold))
+                .foregroundStyle(.orange)
+            }
+
+            if presentation.isUnverified {
+                Text("research.verification.unverifiedBadge".localized)
+                    .font(.system(size: 8, weight: .semibold))
+                    .foregroundStyle(.secondary)
+            }
+
+            Spacer(minLength: 0)
+
+            Image(systemName: "chevron.down")
+                .font(.system(size: 9, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .rotationEffect(.degrees(verificationExpanded ? 180 : 0))
+        }
+        .contentShape(Rectangle())
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("research.section.verificationEvidence".localized)
+        .accessibilityValue(
+            "\(L10n.string("research.timeline.coverage", language: settings.appLanguage, presentation.verifiedNodeCount, presentation.nodes.count))"
+        )
+    }
+
+    private func strengthBar(_ strength: Int) -> some View {
+        HStack(spacing: 2) {
+            ForEach(0..<4, id: \.self) { index in
+                Capsule()
+                    .fill(index < strength ? accent : Color.secondary.opacity(0.15))
+                    .frame(width: 12, height: 4)
+            }
+        }
+    }
+
+    private func verdictColor(_ verdict: VerificationReport.Verdict) -> Color {
+        switch verdict {
+        case .confirmed, .mostlyConfirmed: return .green
+        case .mixed: return .orange
+        case .unverified: return .secondary
+        case .refuted: return .red
+        }
+    }
+
+    @ViewBuilder
+    private func verificationBody(_ report: BurstResearch) -> some View {
+        if let verification = report.verification {
+            VerificationPanel(
+                verification: verification,
+                method: report.method,
+                evidence: report.evidence,
+                recordID: record.id
+            )
+        }
+
+        if !report.evidence.isEmpty {
+            VStack(alignment: .leading, spacing: 8) {
+                sourceTierLegend
+                ForEach(report.evidence) { item in
+                    ResearchEvidenceRow(item: item, contextID: record.id)
+                }
+            }
+            .padding(.top, report.verification == nil ? 0 : 8)
+        } else if !report.sources.isEmpty {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("research.evidence.sourcesOnly".localized)
+                    .font(.system(size: 9))
+                    .foregroundStyle(.secondary)
+                sourceLinks(report.sources)
+            }
+        }
+    }
+
+    private var sourceTierLegend: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text("research.timeline.legend.title".localized)
+                .font(.system(size: 9, weight: .semibold))
+                .foregroundStyle(.secondary)
+            Text("research.timeline.legend.note".localized)
+                .font(.system(size: 8))
+                .foregroundStyle(.tertiary)
+            HStack(spacing: 5) {
+                ForEach(SourceTier.allCases, id: \.rawValue) { tier in
+                    Text(L10n.string("research.tier.\(tier.rawValue)", language: settings.appLanguage))
+                        .font(.system(size: 8, weight: .medium))
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 4)
+                        .padding(.vertical, 1)
+                        .background(Color.secondary.opacity(0.08))
+                        .clipShape(Capsule())
+                }
+            }
+        }
+    }
+
+    private func sourceLinks(_ sources: [String]) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            ForEach(sources, id: \.self) { source in
+                Button {
+                    NewsNavigationRouter.shared.open(
+                        url: source,
+                        surface: "researchSource",
+                        contextID: record.id
+                    )
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "link")
+                            .font(.system(size: 9))
+                            .foregroundStyle(accent)
+                        Text(source)
+                            .font(.system(size: 10))
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        Spacer(minLength: 0)
+                        Image(systemName: "arrow.up.forward")
+                            .font(.system(size: 8))
+                            .foregroundStyle(.tertiary)
+                    }
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(10)
+        .newsCardSurface(cornerRadius: 8)
     }
 
     private func section<Content: View>(
@@ -401,23 +714,40 @@ struct ResearchDetailView: View {
     }
 
     private func timelineNode(
-        _ node: TimelineNode,
+        _ item: ReportPresentation.Node,
         isLast: Bool,
-        evidence: [EvidenceItem]
+        isLegacy: Bool
     ) -> some View {
-        HStack(alignment: .top, spacing: 12) {
+        let node = item.node
+        let verified = item.state == .verified
+        // Legacy nodes were never checked individually. Drawing them as dashed
+        // "unverified" markers would claim a verification that never ran.
+        let dotColor: Color = isLegacy
+            ? .secondary
+            : (verified ? accent : (item.state == .unsourced ? .secondary : .orange))
+
+        return HStack(alignment: .top, spacing: 12) {
             VStack(spacing: 0) {
                 Circle()
-                    .fill(accent)
+                    .fill(isLegacy || verified ? dotColor : Color.clear)
                     .frame(width: 10, height: 10)
                     .overlay {
-                        Circle().strokeBorder(.white.opacity(0.6), lineWidth: 1)
+                        if isLegacy {
+                            EmptyView()
+                        } else if verified {
+                            Circle().strokeBorder(.white.opacity(0.6), lineWidth: 1)
+                        } else {
+                            Circle().strokeBorder(
+                                dotColor,
+                                style: StrokeStyle(lineWidth: 1.2, dash: [2, 2])
+                            )
+                        }
                     }
                     .padding(.top, 5)
 
                 if !isLast {
                     Rectangle()
-                        .fill(accent.opacity(0.3))
+                        .fill(verified ? accent.opacity(0.3) : Color.secondary.opacity(0.18))
                         .frame(width: 2)
                         .frame(maxHeight: .infinity)
                 }
@@ -428,7 +758,7 @@ struct ResearchDetailView: View {
                 if !node.date.isEmpty {
                     Text(node.date)
                         .font(.system(size: 10, weight: .bold, design: isRetro ? .monospaced : .default))
-                        .foregroundStyle(accent)
+                        .foregroundStyle(verified ? accent : .secondary)
                 }
                 Text(node.title)
                     .font(.system(size: 12, weight: .semibold))
@@ -440,12 +770,15 @@ struct ResearchDetailView: View {
                         .lineSpacing(3)
                         .fixedSize(horizontal: false, vertical: true)
                 }
-                if !node.evidenceIDs.isEmpty {
+                if !isLegacy, !verified || !item.evidence.isEmpty {
                     HStack(spacing: 4) {
-                        ForEach(node.evidenceIDs, id: \.self) { id in
+                        if !isLegacy, !verified {
+                            nodeBadge(item.state)
+                        }
+                        ForEach(item.evidence) { evidence in
                             ResearchEvidenceChip(
-                                id: id,
-                                evidence: evidence.first { $0.id == id },
+                                id: evidence.id,
+                                evidence: evidence,
                                 contextID: record.id
                             )
                         }

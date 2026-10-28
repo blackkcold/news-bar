@@ -158,7 +158,7 @@ final class ReportValidatorTests: XCTestCase {
 
     // MARK: - Timeline
 
-    func testTimelineDropsNodesWithoutValidEvidence() {
+    func testTimelineKeepsNodesWithoutResolvableEvidenceAndLowersConfidence() {
         let url = "https://www.reuters.com/story"
         let candidates = [
             EvidenceCandidate(
@@ -187,8 +187,168 @@ final class ReportValidatorTests: XCTestCase {
             )
         )
 
-        XCTAssertEqual(report.timeline.map(\.title), ["发布"])
+        XCTAssertEqual(report.timeline.map(\.title), ["发布", "无据", "坏引用"])
+        XCTAssertEqual(report.timeline.first?.evidenceIDs, ["E1"])
+        XCTAssertEqual(report.timeline.dropFirst().map(\.confidence), [.low, .low])
         XCTAssertTrue(report.limitations.contains(L10n.string("research.limitation.noTimeline", language: .en)))
+        XCTAssertTrue(
+            report.limitations.contains(
+                L10n.string("research.limitation.unverifiedTimeline", language: .en, 2)
+            )
+        )
+    }
+
+    func testTimelineNormalizesModelEvidenceIDs() {
+        let url = "https://www.reuters.com/story"
+        let candidates = [
+            EvidenceCandidate(
+                url: url,
+                title: "Reuters",
+                quote: "公司确认新品将于十月发布。",
+                claim: "十月发布",
+                stance: .supports,
+                fetchedAt: now
+            ),
+        ]
+        var draft = ResearchDraft()
+        draft.summary = "摘要"
+        draft.overview = "概述"
+        draft.timeline = [
+            TimelineNode(date: "2026-10-01", title: "一", detail: "一", evidenceIDs: [" e1 "]),
+            TimelineNode(date: "2026-10-02", title: "二", detail: "二", evidenceIDs: ["1"]),
+            TimelineNode(date: "2026-10-03", title: "三", detail: "三", evidenceIDs: ["E01"]),
+        ]
+
+        let report = ReportValidator.validate(
+            input(
+                draft: draft,
+                candidates: candidates,
+                documents: [document(url, title: "Reuters", text: "公司确认新品将于十月发布。")]
+            )
+        )
+
+        XCTAssertEqual(report.timeline.map(\.evidenceIDs), [["E1"], ["E1"], ["E1"]])
+    }
+
+    func testTimelineDuplicatePrefersSourcedNode() {
+        let url = "https://www.reuters.com/story"
+        let candidates = [
+            EvidenceCandidate(
+                url: url,
+                title: "Reuters",
+                quote: "公司确认新品将于十月发布。",
+                claim: "十月发布",
+                stance: .supports,
+                fetchedAt: now
+            ),
+        ]
+        var draft = ResearchDraft()
+        draft.summary = "摘要"
+        draft.overview = "概述"
+        draft.timeline = [
+            TimelineNode(date: "2026-10-01", title: "发布", detail: "无来源版本", evidenceIDs: []),
+            TimelineNode(date: "2026-10-01", title: "发布", detail: "有来源版本", evidenceIDs: ["E1"]),
+        ]
+
+        let report = ReportValidator.validate(
+            input(
+                draft: draft,
+                candidates: candidates,
+                documents: [document(url, title: "Reuters", text: "公司确认新品将于十月发布。")]
+            )
+        )
+
+        XCTAssertEqual(report.timeline.count, 1)
+        XCTAssertEqual(report.timeline.first?.detail, "有来源版本")
+        XCTAssertEqual(report.timeline.first?.evidenceIDs, ["E1"])
+    }
+
+    func testOnlyUnverifiedTimelineIsInsufficient() {
+        let url = "https://www.reuters.com/story"
+        let candidates = [
+            EvidenceCandidate(
+                url: url,
+                title: "Reuters",
+                quote: "公司确认新品将于十月发布。",
+                claim: "十月发布",
+                stance: .supports,
+                fetchedAt: now
+            ),
+        ]
+        var draft = ResearchDraft()
+        draft.timeline = [
+            TimelineNode(date: "2026-10-01", title: "无据", detail: "无据", evidenceIDs: ["E404"]),
+        ]
+
+        let report = ReportValidator.validate(
+            input(
+                draft: draft,
+                candidates: candidates,
+                documents: [document(url, title: "Reuters", text: "公司确认新品将于十月发布。")]
+            )
+        )
+
+        XCTAssertEqual(report.timeline.count, 1)
+        XCTAssertTrue(report.timeline.first?.evidenceIDs.isEmpty == true)
+        XCTAssertTrue(
+            report.limitations.contains(
+                L10n.string("research.limitation.insufficient", language: .en)
+            )
+        )
+    }
+
+    func testEvidenceCardIDsStayAlignedWithValidatedEvidence() {
+        let validURL = "https://www.reuters.com/story"
+        let allowed = Set([ContentIdentity.canonicalURL(validURL)])
+        let candidates = [
+            EvidenceCandidate(
+                url: "https://evil.example.com/story",
+                title: "Untrusted",
+                quote: "这是一段足够长的引文内容。",
+                claim: "某事发生",
+                stance: .supports,
+                fetchedAt: now
+            ),
+            EvidenceCandidate(
+                url: "https://other.example.com/story",
+                title: "Empty quote",
+                quote: "\u{200B}",
+                claim: "某事发生",
+                stance: .supports,
+                fetchedAt: now
+            ),
+            EvidenceCandidate(
+                url: validURL,
+                title: "Reuters",
+                quote: "公司确认新品将于十月发布。",
+                claim: "十月发布",
+                stance: .supports,
+                fetchedAt: now
+            ),
+        ]
+        let eligible = EvidenceIdentity.ordered(candidates, allowedURLs: allowed)
+        let cards = ResearchPipeline.evidenceCards(from: eligible)
+        XCTAssertEqual(cards.map(\.id), ["E1"])
+        XCTAssertEqual(cards.first?.url, validURL)
+
+        var draft = ResearchDraft()
+        draft.summary = "摘要"
+        draft.overview = "概述"
+        draft.timeline = [
+            TimelineNode(date: "2026-10-01", title: "发布", detail: "发布", evidenceIDs: [cards[0].id]),
+        ]
+
+        let report = ReportValidator.validate(
+            input(
+                draft: draft,
+                candidates: candidates,
+                documents: [document(validURL, title: "Reuters", text: "公司确认新品将于十月发布。")],
+                allowedURLs: allowed
+            )
+        )
+
+        XCTAssertEqual(report.evidence.map(\.id), ["E1"])
+        XCTAssertEqual(report.timeline.first?.evidenceIDs, ["E1"])
     }
 
     func testTimelineSortsAndMergesSameDayTitle() {
@@ -418,5 +578,36 @@ final class ReportValidatorTests: XCTestCase {
         )
 
         XCTAssertTrue(report.limitations.contains(L10n.string("research.limitation.truncated", language: .en)))
+    }
+
+    func testZeroEvidenceProducesNoClaimsEvenWhenClaimsWerePlanned() {
+        var draft = ResearchDraft()
+        draft.summary = "背景梳理"
+        draft.overview = "公司预告新品，细节未确认。"
+        draft.claims = [
+            ClaimCheck(claim: "计划中的主张", status: nil, evidenceIDs: [], note: "")
+        ]
+
+        let report = ReportValidator.validate(
+            input(
+                draft: draft,
+                candidates: [],
+                documents: [],
+                searchStatus: .succeeded,
+                pagesRead: 0,
+                plannedClaims: ["计划中的主张"]
+            )
+        )
+
+        // A claim without evidence is a question, not a conclusion. The UI
+        // shows an evidence-gap card instead of "5 claims · 0 evidence".
+        XCTAssertEqual(report.verification?.claims.count, 0)
+        XCTAssertEqual(report.verification?.verdict, .unverified)
+        XCTAssertEqual(report.verification?.strength, 0)
+        XCTAssertTrue(
+            report.limitations.contains(
+                L10n.string("research.limitation.noEvidence", language: .en)
+            )
+        )
     }
 }

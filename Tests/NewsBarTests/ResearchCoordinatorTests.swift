@@ -223,7 +223,7 @@ final class ResearchCoordinatorTests: XCTestCase {
     }
 
     @MainActor
-    func testAutomaticQueueKeepsOnlySixNewestWaitingJobs() async throws {
+    func testAutomaticQueueKeepsOnlyOneWaitingJob() async throws {
         let records = (0..<8).map { index -> ResearchRecord in
             var record = researchTestRecord(title: "热点 \(index)", status: .queued, origin: .burst, updatedAt: Date())
             record.run.startedAt = nil
@@ -241,11 +241,13 @@ final class ResearchCoordinatorTests: XCTestCase {
             XCTAssertTrue(accepted)
         }
         await coordinator.waitForAll()
-        XCTAssertFalse(started.contains(records[1].id))
-        XCTAssertEqual(Set(started), Set([records[0].id] + records.dropFirst(2).map(\.id)))
-        let evictedRecord = await store.record(id: records[1].id)
-        let evicted = try XCTUnwrap(evictedRecord)
-        XCTAssertEqual(evicted.status, .interrupted)
+        // The first job is already running; each later automatic job replaces
+        // the single waiting slot, so only the last one survives.
+        XCTAssertEqual(Set(started), Set([records[0].id, records[7].id]))
+        for index in 1...6 {
+            let evicted = await store.record(id: records[index].id)
+            XCTAssertEqual(try XCTUnwrap(evicted).status, .interrupted, "record \(index)")
+        }
     }
 
     @MainActor

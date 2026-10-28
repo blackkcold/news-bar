@@ -114,10 +114,14 @@ final class NewsOrchestrator {
     private var lastHourlyPushAt: Date?
     /// Titles of Weibo "爆" topics already pushed, to avoid re-notifying the same one.
     private var notifiedBurstTopics: Set<String> = []
-    /// Latest research keyed by burst topic title, cached for the detail window.
-    private var burstResearchCache: [String: BurstResearch] = [:]
+    /// Staging buffer for legacy artifact migration only. Runtime detail views
+    /// read `ResearchRecord`; this cache is never a second source of truth.
+    private var legacyBurstArtifacts: [String: BurstResearch] = [:]
     private var researchStateLoaded = false
     private var lastResearchAt: Date?
+    /// Persisted start of the most recent feed-triggered run. The automatic
+    /// budget is global: burst and keyword share this one timestamp.
+    private var lastAutomaticStartedAt: Date?
     private var latestTrendSummary = TrendChangeSummary.none
     /// The shared result uses the detailed Dashboard prompt. Popup limits rows at render time.
     static let sharedSummaryTarget: SummaryTarget = .dashboard
@@ -753,10 +757,6 @@ final class NewsOrchestrator {
         return translated
     }
 
-    /// Titles currently being researched (avoids duplicate work when the detail
-    /// window opens while a fake push is still researching in the background).
-    private var burstResearchInFlight: Set<String> = []
-
     // MARK: - Burst (爆) topic push
 
     /// Detects new Weibo "爆" topics and pushes a single notification each with
@@ -779,16 +779,29 @@ final class NewsOrchestrator {
             limit: settings.researchDetectionLimit
         ).map(\.item)
 
+        // The hourly budget is checked before any record is created: a blocked
+        // candidate must not leave a queued ghost in the research center.
+        guard automaticBudgetAllows(now: now) else { return false }
+
         var notifiedChanged = false
         var scheduled = false
         for burst in selected {
             guard epoch == InterestController.shared.state.consentEpoch else { return scheduled }
+            guard automaticBudgetAllows(now: now) else { break }
             guard let record = await ResearchRecordProvisioner.ensureRecord(
                 for: burst,
                 origin: .burst,
                 store: researchStore,
                 now: now
             ) else { continue }
+
+            // A finished burst topic is researched once per exact title. Failed
+            // records still go through the admission retry policy below; ready
+            // or partial records do not silently run again every six hours.
+            if (record.status == .ready || record.status == .partial),
+               notifiedBurstTopics.contains(burst.title) {
+                continue
+            }
 
             guard ResearchAutoAdmission.allows(record, now: now) else { continue }
             scheduled = await scheduleResearch(
@@ -799,12 +812,13 @@ final class NewsOrchestrator {
                 trigger: .burst
             )
             if scheduled {
+                lastAutomaticStartedAt = now
                 if notifiedBurstTopics.insert(burst.title).inserted { notifiedChanged = true }
                 break
             }
         }
 
-        if notifiedChanged {
+        if notifiedChanged || scheduled {
             await persistResearchState(epoch: epoch)
         }
         await refreshResearchSummary()
@@ -999,56 +1013,6 @@ final class NewsOrchestrator {
         return keys
     }
 
-    /// Returns cached research for a burst topic, or nil when none was pre-generated.
-    func cachedBurstResearch(for title: String) -> BurstResearch? {
-        burstResearchCache[title]
-    }
-
-    /// True while a research pass for the title is still in progress.
-    func isBurstResearchInFlight(for title: String) -> Bool {
-        burstResearchInFlight.contains(title)
-    }
-
-    /// Force-recomputes research for a burst topic (used by the detail window's
-    /// retry action). It runs through the same coordinator, ledger and HTTP
-    /// budget as feed-triggered research, so this path cannot bypass the caps
-    /// that the settings page promises.
-    func regenerateBurstResearch(for burst: NewsItem, settings: AppSettings) async -> BurstResearch {
-        await InterestController.shared.prepare()
-        guard let record = await ResearchRecordProvisioner.ensureRecord(
-            for: burst,
-            origin: .burst,
-            store: researchStore
-        ), record.status != .corrupt, record.loadIssue == nil else {
-            return BurstResearch()
-        }
-
-        if !ResearchCoordinator.shared.isRunning(recordID: record.id) {
-            let accepted = await scheduleResearch(
-                recordID: record.id,
-                settings: settings,
-                forceSearch: false,
-                trigger: .manual
-            )
-            if !accepted, let existing = await researchStore.record(id: record.id)?.report {
-                return existing
-            }
-        }
-
-        // The detail window shows a loading state while this returns, so wait
-        // for the same job the center would show rather than running a second
-        // pass in parallel.
-        let deadline = Date().addingTimeInterval(120)
-        while ResearchCoordinator.shared.isRunning(recordID: record.id), Date() < deadline {
-            if let cached = burstResearchCache[burst.title] { return cached }
-            try? await Task.sleep(nanoseconds: 250_000_000)
-        }
-        guard let finished = await researchStore.record(id: record.id),
-              let report = finished.report else { return BurstResearch() }
-        burstResearchCache[burst.title] = report
-        return report
-    }
-
     // MARK: - Custom keyword topic push
 
     /// Tracks which (keyword,title) pairs have already been researched to avoid
@@ -1088,8 +1052,10 @@ final class NewsOrchestrator {
         matches.sort { (prioritizedIDs.firstIndex(of: $0.item.id) ?? Int.max) < (prioritizedIDs.firstIndex(of: $1.item.id) ?? Int.max) }
 
         var notifiedChanged = false
+        var scheduled = false
         for match in matches.prefix(2) {
             guard epoch == InterestController.shared.state.consentEpoch else { return }
+            guard automaticBudgetAllows(now: now) else { break }
             guard let record = await ResearchRecordProvisioner.ensureRecord(
                 for: match.item,
                 origin: .keyword,
@@ -1098,27 +1064,37 @@ final class NewsOrchestrator {
             ) else { continue }
 
             guard ResearchAutoAdmission.allows(record, now: now) else { continue }
-            let scheduled = await scheduleResearch(recordID: record.id, settings: settings, forceSearch: false, trigger: .keyword)
+            scheduled = await scheduleResearch(recordID: record.id, settings: settings, forceSearch: false, trigger: .keyword)
             if scheduled {
+                lastAutomaticStartedAt = now
                 let pair = "\(match.keyword)\n\(match.item.title)"
                 if notifiedKeywordPairs.insert(pair).inserted { notifiedChanged = true }
                 break
             }
         }
 
-        if notifiedChanged {
+        if notifiedChanged || scheduled {
             await persistResearchState(epoch: epoch)
         }
         await refreshResearchSummary()
     }
 
+    /// Single gate for every feed-triggered run. Callers must consult it before
+    /// creating a record, not after: an admission failure must never persist.
+    private func automaticBudgetAllows(now: Date) -> Bool {
+        ResearchAutomationPolicy.allows(
+            now: now,
+            lastStartedAt: lastAutomaticStartedAt,
+            activeAutomaticRuns: ResearchCoordinator.shared.activeAutomaticRunCount()
+        )
+    }
+
     // MARK: - Developer test: fake burst push
 
-    /// Fires a fake Weibo "爆" push (developer test mode). Opens the detail
-    /// window immediately (showing its loading state), then runs the research
-    /// pipeline in the background, fills the cache, and posts the notification.
-    /// The developer toggle always forces web search so the full pipeline is
-    /// exercised; the window polls for the result via `isBurstResearchInFlight`.
+    /// Fires a fake Weibo "爆" push (developer test mode). Queues the same
+    /// coordinator job a real burst uses, then opens its record in the research
+    /// center. The developer toggle always forces web search so the full
+    /// pipeline is exercised; the detail polls the record, not a side cache.
     func fireFakeBurstPush(settings: AppSettings) async {
         await InterestController.shared.prepare()
         guard settings.burstTestMode else { return }
@@ -1732,7 +1708,7 @@ final class NewsOrchestrator {
                 let saved = interest.state.research
                 notifiedBurstTopics = saved.notifiedBursts
                 notifiedKeywordPairs = saved.notifiedKeywords
-                burstResearchCache = [:]
+                legacyBurstArtifacts = [:]
                 let clearResult = await clearResearchHistory()
                 if !clearResult.isComplete {
                     // The intent file is still there; keep automation paused
@@ -1744,17 +1720,18 @@ final class NewsOrchestrator {
             case .unsupportedVersion:
                 researchStateLoaded = true
                 isResearchClearBlocked = true
-                burstResearchCache = [:]
+                legacyBurstArtifacts = [:]
                 await refreshResearchSummary()
                 return
             case .none:
                 break
             }
             let saved = interest.state.research
-            burstResearchCache = saved.artifacts
+            legacyBurstArtifacts = saved.artifacts
             notifiedBurstTopics = saved.notifiedBursts
             notifiedKeywordPairs = saved.notifiedKeywords
             lastResearchAt = saved.lastResearchAt
+            lastAutomaticStartedAt = saved.lastAutomaticStartedAt
             researchStateLoaded = true
             await importLegacyResearchIfNeeded(saved)
             await refreshResearchSummary()
@@ -1795,11 +1772,12 @@ final class NewsOrchestrator {
         if legacyResearchImported {
             persisted.artifacts = [:]
         } else {
-            persisted.artifacts = Dictionary(uniqueKeysWithValues: burstResearchCache.sorted { $0.key < $1.key }.prefix(500).map { ($0.key, $0.value) })
+            persisted.artifacts = Dictionary(uniqueKeysWithValues: legacyBurstArtifacts.sorted { $0.key < $1.key }.prefix(500).map { ($0.key, $0.value) })
         }
         persisted.notifiedBursts = Set(notifiedBurstTopics.sorted().prefix(2000))
         persisted.notifiedKeywords = Set(notifiedKeywordPairs.sorted().prefix(2000))
         persisted.lastResearchAt = lastResearchAt
+        persisted.lastAutomaticStartedAt = lastAutomaticStartedAt
         InterestController.shared.updateResearch(persisted, epoch: epoch)
         await InterestController.shared.flush()
     }
@@ -1838,7 +1816,7 @@ final class NewsOrchestrator {
 
         // Once the user has asked to clear history, no later persistence pass
         // may write the in-memory artifacts back, even if a stage fails.
-        burstResearchCache = [:]
+        legacyBurstArtifacts = [:]
         legacyResearchImported = true
 
         await InterestController.shared.prepare()
@@ -1891,9 +1869,10 @@ final class NewsOrchestrator {
         sharedSummaryLastTruncatedHash = nil
         notifiedBurstTopics = []
         notifiedKeywordPairs = []
-        burstResearchCache = [:]
+        legacyBurstArtifacts = [:]
         researchStateLoaded = false
         lastResearchAt = nil
+        lastAutomaticStartedAt = nil
         weiboDetectionItems = []
         researchSummary = .zero
         researchHighlights = []
@@ -1927,8 +1906,9 @@ final class NewsOrchestrator {
         latestTrendSummary = .none
         notifiedBurstTopics = []
         notifiedKeywordPairs = []
-        burstResearchCache = [:]
+        legacyBurstArtifacts = [:]
         researchStateLoaded = false
+        lastAutomaticStartedAt = nil
         aiSummaryManifest = nil
     }
 

@@ -178,4 +178,36 @@ final class ResearchMaintenanceTests: XCTestCase {
         let expired = await cache.load(kind: .pages, key: "p", now: now)
         XCTAssertNil(expired)
     }
+
+    func testReclaimOrphanedQueuedRecordsLeavesActiveAndFreshOnes() async throws {
+        let now = Date()
+        var stale = researchTestRecord(
+            title: "孤儿排队",
+            status: .queued,
+            updatedAt: now.addingTimeInterval(-3_600)
+        )
+        stale.run.startedAt = nil
+        var active = researchTestRecord(
+            title: "活跃排队",
+            status: .queued,
+            updatedAt: now.addingTimeInterval(-3_600)
+        )
+        active.run.startedAt = nil
+        var fresh = researchTestRecord(title: "新排队", status: .queued, updatedAt: now)
+        fresh.run.startedAt = nil
+        try await store.saveAll([stale, active, fresh])
+
+        let reclaimed = await maintenance.reclaimOrphanedQueuedRecords(
+            activeIDs: [active.id],
+            now: now
+        )
+
+        XCTAssertEqual(reclaimed, 1)
+        let staleAfter = await store.record(id: stale.id)
+        XCTAssertEqual(staleAfter?.status, .interrupted)
+        let activeAfter = await store.record(id: active.id)
+        XCTAssertEqual(activeAfter?.status, .queued)
+        let freshAfter = await store.record(id: fresh.id)
+        XCTAssertEqual(freshAfter?.status, .queued)
+    }
 }

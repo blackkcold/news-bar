@@ -138,13 +138,13 @@ enum ReportValidator {
             language: input.language
         )
 
-        var timeline = input.draft.timeline.compactMap { node -> TimelineNode? in
-            var mapped = node.evidenceIDs.compactMap { idRemap[$0] ?? ($0.isEmpty ? nil : $0) }
+        var timeline = input.draft.timeline.map { node -> TimelineNode in
+            let normalizedIDs = EvidenceIdentity.normalizedIDs(node.evidenceIDs)
+            var mapped = normalizedIDs.compactMap { id in idRemap[id] ?? id }
             mapped = Array(Set(mapped)).sorted { lhs, rhs in
                 evidenceOrder(lhs) < evidenceOrder(rhs)
             }
             mapped = mapped.filter { id in groupedEvidence.contains(where: { $0.id == id }) }
-            guard !mapped.isEmpty else { return nil }
 
             var sortDate = node.sortDate ?? TimelineDateParser.parse(node.date, now: input.now)?.date
             if let date = sortDate {
@@ -158,10 +158,16 @@ enum ReportValidator {
             }
 
             var confidence = node.confidence
-            if sortDate == nil { confidence = lowered(confidence) }
-            if mapped.contains(where: { id in
-                groupedEvidence.first(where: { $0.id == id })?.quoteVerified == false
-            }) {
+            if mapped.isEmpty {
+                // The node stays visible, but no UI may present it as sourced.
+                confidence = .low
+            } else if sortDate == nil {
+                confidence = lowered(confidence)
+            }
+            if !mapped.isEmpty,
+               mapped.contains(where: { id in
+                   groupedEvidence.first(where: { $0.id == id })?.quoteVerified == false
+               }) {
                 confidence = lowered(confidence)
             }
 
@@ -187,6 +193,26 @@ enum ReportValidator {
             }
         }
 
+        let citedTimelineCount = timeline.filter { !$0.evidenceIDs.isEmpty }.count
+        let unverifiedTimelineCount = timeline.count - citedTimelineCount
+        var unresolvedCitationCount = 0
+        for node in input.draft.timeline {
+            for rawID in Set(EvidenceIdentity.normalizedIDs(node.evidenceIDs)) {
+                let mappedID = idRemap[rawID] ?? rawID
+                if !groupedEvidence.contains(where: { $0.id == mappedID }) {
+                    unresolvedCitationCount += 1
+                }
+            }
+        }
+        NSLog(
+            "[ReportValidator] timelineDraft=%ld kept=%ld cited=%ld unresolvedIDs=%ld evidence=%ld",
+            originalTimelineCount,
+            timeline.count,
+            citedTimelineCount,
+            unresolvedCitationCount,
+            groupedEvidence.count
+        )
+
         if input.truncated {
             limitations.append(L10n.string("research.limitation.truncated", language: input.language))
         }
@@ -195,9 +221,22 @@ enum ReportValidator {
         if notOnline {
             limitations.append(L10n.string("research.limitation.notOnline", language: input.language))
         }
+        if groupedEvidence.isEmpty {
+            limitations.append(L10n.string("research.limitation.noEvidence", language: input.language))
+        }
 
-        if (originalTimelineCount > 0 || !groupedEvidence.isEmpty) && timeline.count < 3 {
+        if (originalTimelineCount > 0 || !groupedEvidence.isEmpty) && citedTimelineCount < 3 {
             limitations.append(L10n.string("research.limitation.noTimeline", language: input.language))
+        }
+
+        if unverifiedTimelineCount > 0 {
+            limitations.append(
+                L10n.string(
+                    "research.limitation.unverifiedTimeline",
+                    language: input.language,
+                    unverifiedTimelineCount
+                )
+            )
         }
 
         if !groupedEvidence.isEmpty,
@@ -234,7 +273,7 @@ enum ReportValidator {
         if verification.verdict == .unverified,
            input.draft.summary.isEmpty,
            input.draft.overview.isEmpty,
-           report.timeline.isEmpty {
+           citedTimelineCount == 0 {
             report.limitations = uniqueNonEmpty([
                 report.limitations,
                 L10n.string("research.limitation.insufficient", language: input.language),
@@ -251,17 +290,9 @@ enum ReportValidator {
         allowed: Set<String>
     ) -> [EvidenceItem] {
         var items: [EvidenceItem] = []
-        var seen: Set<String> = []
 
-        for candidate in candidates {
+        for candidate in EvidenceIdentity.ordered(candidates, allowedURLs: allowed) {
             let canonical = ContentIdentity.canonicalURL(candidate.url)
-            guard !canonical.isEmpty, allowed.contains(canonical) else { continue }
-            let normalizedQuote = QuoteVerifier.normalize(candidate.quote)
-            guard !normalizedQuote.isEmpty else { continue }
-            let key = canonical + "\n" + normalizedQuote
-            guard !seen.contains(key) else { continue }
-            seen.insert(key)
-
             let document = documents[canonical]
             let info = SourceTierCatalog.info(for: candidate.url)
             let title = [document?.title, candidate.title]
@@ -453,6 +484,11 @@ enum ReportValidator {
         idRemap: [String: String],
         language: AppLanguage
     ) -> [ClaimCheck] {
+        // A claim without evidence is not a conclusion. Keeping planned claims
+        // here is what produced "5 claims · 0 evidence" reports; the UI must
+        // show an evidence gap instead of a fake checklist.
+        guard !evidence.isEmpty else { return [] }
+
         var claims: [ClaimCheck]
 
         if !draftClaims.isEmpty {
@@ -470,7 +506,8 @@ enum ReportValidator {
         }
 
         return claims.map { claim in
-            var ids = claim.evidenceIDs.compactMap { idRemap[$0] ?? ($0.isEmpty ? nil : $0) }
+            let normalizedIDs = EvidenceIdentity.normalizedIDs(claim.evidenceIDs)
+            var ids = normalizedIDs.compactMap { id in idRemap[id] ?? id }
             ids = unique(ids).filter { id in evidence.contains(where: { $0.id == id }) }
 
             // Only the evidence cited by *this* claim counts, and only quotes
@@ -614,15 +651,47 @@ enum ReportValidator {
 
     private static func mergeTimeline(_ nodes: [TimelineNode]) -> [TimelineNode] {
         var output: [TimelineNode] = []
-        var keys: Set<String> = []
+        var indexByKey: [String: Int] = [:]
         for node in nodes {
             let title = TopicFingerprint.normalized(node.title)
             let key = (node.sortDate.map { TimelineDateParser.dayKey($0) } ?? "undated") + "\n" + title
-            guard !keys.contains(key) else { continue }
-            keys.insert(key)
-            output.append(node)
+            guard let index = indexByKey[key] else {
+                indexByKey[key] = output.count
+                output.append(node)
+                continue
+            }
+
+            let existing = output[index]
+            if existing.evidenceIDs.isEmpty, !node.evidenceIDs.isEmpty {
+                // A duplicate without evidence must never hide the sourced one.
+                output[index] = node
+            } else if !existing.evidenceIDs.isEmpty, !node.evidenceIDs.isEmpty {
+                let mergedIDs = Array(Set(existing.evidenceIDs + node.evidenceIDs)).sorted {
+                    evidenceOrder($0) < evidenceOrder($1)
+                }
+                output[index] = TimelineNode(
+                    date: existing.date,
+                    title: existing.title,
+                    detail: existing.detail,
+                    sortDate: existing.sortDate ?? node.sortDate,
+                    precision: existing.sortDate == nil ? node.precision : existing.precision,
+                    evidenceIDs: mergedIDs,
+                    confidence: higherConfidence(existing.confidence, node.confidence)
+                )
+            }
         }
         return output
+    }
+
+    private static func higherConfidence(_ lhs: Confidence, _ rhs: Confidence) -> Confidence {
+        func rank(_ value: Confidence) -> Int {
+            switch value {
+            case .high: return 3
+            case .medium: return 2
+            case .low: return 1
+            }
+        }
+        return rank(lhs) >= rank(rhs) ? lhs : rhs
     }
 
     private static func evidenceOrder(_ id: String) -> Int {
