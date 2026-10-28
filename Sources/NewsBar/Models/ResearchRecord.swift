@@ -130,6 +130,9 @@ struct ResearchRecord: Codable, Identifiable, Hashable, Sendable {
     /// Written on every new record. Missing means v1 (files written before the
     /// field existed). A higher value is read-only: the file is preserved.
     var schemaVersion: Int = ResearchRecord.currentSchemaVersion
+    /// Consecutive automatic attempts, persisted independently of progress snapshots.
+    var automaticAttempts: Int = 0
+    var lastAutomaticAttemptAt: Date? = nil
     /// In-memory only. Set by the store when the file is corrupt, unreadable or
     /// from a newer build; never encoded and never written back.
     var loadIssue: ResearchEntryIssue? = nil
@@ -190,7 +193,7 @@ extension ResearchRecord {
     enum CodingKeys: String, CodingKey {
         case id, topicKey, origin, topic, aliases, seed, createdAt, lastSeenAt
         case updatedAt, lastAccessedAt, isPinned, isRead, status, report, run
-        case reportVersion, schemaVersion
+        case reportVersion, schemaVersion, automaticAttempts, lastAutomaticAttemptAt
     }
 
     init(from decoder: Decoder) throws {
@@ -218,10 +221,13 @@ extension ResearchRecord {
         reportVersion = try container.decodeIfPresent(Int.self, forKey: .reportVersion) ?? 0
         schemaVersion = try container.decodeIfPresent(Int.self, forKey: .schemaVersion)
             ?? ResearchRecord.currentSchemaVersion
+        automaticAttempts = max(0, try container.decodeIfPresent(Int.self, forKey: .automaticAttempts) ?? 0)
+        lastAutomaticAttemptAt = try container.decodeIfPresent(Date.self, forKey: .lastAutomaticAttemptAt)
 
         var decodedRun = try container.decodeIfPresent(ResearchRun.self, forKey: .run)
             ?? ResearchRun()
-        if decodedRun.origin == .manual, origin != .manual {
+        let hasRunOrigin = (try? container.nestedContainer(keyedBy: ResearchRun.CodingKeys.self, forKey: .run).contains(.origin)) ?? false
+        if !hasRunOrigin {
             // Older files omitted run.origin; the record's origin is the truth.
             decodedRun.origin = origin
         }
@@ -248,6 +254,8 @@ extension ResearchRecord {
         try container.encode(reportVersion, forKey: .reportVersion)
         // All new and natural writes state the version explicitly.
         try container.encode(schemaVersion, forKey: .schemaVersion)
+        try container.encode(automaticAttempts, forKey: .automaticAttempts)
+        try container.encodeIfPresent(lastAutomaticAttemptAt, forKey: .lastAutomaticAttemptAt)
     }
 }
 

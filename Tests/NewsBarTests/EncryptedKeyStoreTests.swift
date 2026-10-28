@@ -4,10 +4,21 @@ import XCTest
 final class EncryptedKeyStoreTests: XCTestCase {
 
     var store = EncryptedKeyStore()
+    private var directory: URL!
 
-    override func setUp() {
-        super.setUp()
-        store = EncryptedKeyStore()
+    override func setUpWithError() throws {
+        try super.setUpWithError()
+        // Isolated store: these tests must never read or write the real
+        // encrypted credentials file, which holds the user's actual keys.
+        directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("NewsBarKeyStore-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        store = EncryptedKeyStore(directory: directory)
+    }
+
+    override func tearDownWithError() throws {
+        if let directory { try? FileManager.default.removeItem(at: directory) }
+        try super.tearDownWithError()
     }
 
     // MARK: - 基本 CRUD

@@ -15,6 +15,9 @@ actor SearchRouter {
     private let providers: [any SearchProvider]
     private let cache: ResearchCacheStore
     private let now: @Sendable () -> Date
+    /// Optional shared ledger. When present, a quota block survives a relaunch;
+    /// without it the router stays in-memory only, which keeps tests hermetic.
+    private let ledger: ResearchLedger?
 
     private var cooldownUntil: [SearchProviderID: Date] = [:]
     private var consecutiveQuotaFailures: [SearchProviderID: Int] = [:]
@@ -26,7 +29,8 @@ actor SearchRouter {
     init(
         providers: [any SearchProvider]? = nil,
         cache: ResearchCacheStore = ResearchCacheStore(),
-        now: @escaping @Sendable () -> Date = { Date() }
+        now: @escaping @Sendable () -> Date = { Date() },
+        ledger: ResearchLedger? = nil
     ) {
         self.providers = providers ?? [
             TavilySearchProvider(),
@@ -35,6 +39,7 @@ actor SearchRouter {
         ]
         self.cache = cache
         self.now = now
+        self.ledger = ledger
     }
 
     func search(
@@ -100,6 +105,18 @@ actor SearchRouter {
             }
 
             if let until = cooldownUntil[provider.id], until > current {
+                record(.cooling, for: provider.id, until: until)
+                failures.append(
+                    SearchProviderFailure(
+                        provider: provider.id,
+                        reason: .coolingDown(until: until)
+                    )
+                )
+                continue
+            }
+            // A quota block outlives this process; adopt it before dispatching.
+            if let until = ledger?.providerCooldown(provider.id, at: current), until > current {
+                cooldownUntil[provider.id] = until
                 record(.cooling, for: provider.id, until: until)
                 failures.append(
                     SearchProviderFailure(
@@ -247,8 +264,10 @@ actor SearchRouter {
     }
 
     func cooldownRemaining(for provider: SearchProviderID, at date: Date? = nil) -> TimeInterval {
-        guard let until = cooldownUntil[provider] else { return 0 }
-        return max(0, until.timeIntervalSince(date ?? now()))
+        let current = date ?? now()
+        let until = cooldownUntil[provider] ?? ledger?.providerCooldown(provider, at: current)
+        guard let until else { return 0 }
+        return max(0, until.timeIntervalSince(current))
     }
 
     /// Full settings snapshot. Reads configuration only; the current key never
@@ -267,7 +286,7 @@ actor SearchRouter {
             if requiresKey, key.isEmpty {
                 return SearchProviderStatus(provider: id, state: .missingKey)
             }
-            if let until = cooldownUntil[id], until > current {
+            if let until = cooldownUntil[id] ?? ledger?.providerCooldown(id, at: current), until > current {
                 return SearchProviderStatus(
                     provider: id,
                     state: .cooling,
@@ -322,6 +341,9 @@ actor SearchRouter {
         consecutiveQuotaFailures[provider] = failures
         let until = date.addingTimeInterval(failures >= 2 ? 30 * 60 : 15 * 60)
         cooldownUntil[provider] = until
+        // Persist the block so a relaunch cannot immediately re-spend a quota
+        // that the provider already refused.
+        ledger?.recordProviderCooldown(provider, until: until, at: date)
         return until
     }
 

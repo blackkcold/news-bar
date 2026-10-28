@@ -30,7 +30,7 @@ actor EncryptedKeyStore {
 
     // MARK: - 存储路径
 
-    private static let storeDirectory: URL = {
+    private static let defaultStoreDirectory: URL = {
         let appSupport = FileManager.default.urls(
             for: .applicationSupportDirectory, in: .userDomainMask
         ).first!
@@ -46,8 +46,18 @@ actor EncryptedKeyStore {
         return dir
     }()
 
-    private static let storeFile = storeDirectory.appendingPathComponent("apikeys.enc")
-    private static let uuidSnapshotFile = storeDirectory.appendingPathComponent(".machine-uuid")
+    /// Injected only by tests, so a test never reads or writes the real store.
+    private let storeDirectory: URL
+
+    private var storeFile: URL { storeDirectory.appendingPathComponent("apikeys.enc") }
+    private var uuidSnapshotFile: URL { storeDirectory.appendingPathComponent(".machine-uuid") }
+
+    init(directory: URL? = nil) {
+        storeDirectory = directory ?? Self.defaultStoreDirectory
+        if let directory {
+            try? PrivateFile.ensureDirectory(directory)
+        }
+    }
 
     // MARK: - 密钥派生
 
@@ -61,7 +71,7 @@ actor EncryptedKeyStore {
 
     /// 从机器标识 + app salt 派生 AES-256 密钥
     private func deriveKey() throws -> SymmetricKey {
-        let machineUUID = try Self.resolveMachineIdentifier()
+        let machineUUID = try resolveMachineIdentifier()
         var keyMaterial = Data(Self.appSalt)
         keyMaterial.append(Data(machineUUID.utf8))
         let info = (Bundle.main.bundleIdentifier ?? "com.newsbar").data(using: .utf8)!
@@ -95,10 +105,15 @@ actor EncryptedKeyStore {
 
     /// 解析机器标识 — 优先使用已保存的 UUID 快照
     /// 如果 UUID 发生变更（硬件更换/系统升级），使用旧 UUID 解密已有数据
-    private static func resolveMachineIdentifier() throws -> String {
+    private func resolveMachineIdentifier() throws -> String {
+        try Self.resolveMachineIdentifier(in: storeDirectory)
+    }
+
+    private static func resolveMachineIdentifier(in directory: URL) throws -> String {
+        let snapshotFile = directory.appendingPathComponent(".machine-uuid")
         // 读取已保存的 UUID 快照
-        _ = PrivateFile.tightenExistingFile(uuidSnapshotFile)
-        if let savedUUID = try? String(contentsOf: uuidSnapshotFile, encoding: .utf8),
+        _ = PrivateFile.tightenExistingFile(snapshotFile)
+        if let savedUUID = try? String(contentsOf: snapshotFile, encoding: .utf8),
            !savedUUID.isEmpty {
             let currentUUID = (try? currentPlatformUUID()) ?? savedUUID
             if savedUUID != currentUUID {
@@ -108,8 +123,8 @@ actor EncryptedKeyStore {
         }
         // 首次启动：保存当前 UUID 快照
         let uuid = try currentPlatformUUID()
-        try PrivateFile.write(Data(uuid.utf8), to: uuidSnapshotFile, durable: true)
-        try? (uuidSnapshotFile as NSURL).setResourceValue(true, forKey: .isExcludedFromBackupKey)
+        try PrivateFile.write(Data(uuid.utf8), to: snapshotFile, durable: true)
+        try? (snapshotFile as NSURL).setResourceValue(true, forKey: .isExcludedFromBackupKey)
         return uuid
     }
 
@@ -147,11 +162,11 @@ actor EncryptedKeyStore {
     // MARK: - Payload 读写
 
     private func readPayload() throws -> EncryptedPayload {
-        _ = PrivateFile.tightenExistingFile(Self.storeFile)
-        guard FileManager.default.fileExists(atPath: Self.storeFile.path) else {
+        _ = PrivateFile.tightenExistingFile(storeFile)
+        guard FileManager.default.fileExists(atPath: storeFile.path) else {
             return EncryptedPayload(version: Self.currentVersion, entries: [])
         }
-        let data = try Data(contentsOf: Self.storeFile)
+        let data = try Data(contentsOf: storeFile)
         do {
             return try JSONDecoder().decode(EncryptedPayload.self, from: data)
         } catch {
@@ -165,15 +180,15 @@ actor EncryptedKeyStore {
         // 原子写入: 0600 临时文件 → F_FULLFSYNC → rename → 读回验证
         try PrivateFile.write(
             data,
-            to: Self.storeFile,
+            to: storeFile,
             durable: true,
             fullSync: true
         )
         // 排除 Time Machine 备份
-        try? (Self.storeFile as NSURL).setResourceValue(true, forKey: .isExcludedFromBackupKey)
+        try? (storeFile as NSURL).setResourceValue(true, forKey: .isExcludedFromBackupKey)
 
         // 读回验证
-        let verifyData = try Data(contentsOf: Self.storeFile)
+        let verifyData = try Data(contentsOf: storeFile)
         guard verifyData == data else {
             throw EncryptedKeyStoreError.encryptionFailed
         }
@@ -303,6 +318,12 @@ actor EncryptedKeyStore {
 
     private static let onePasswordRefAccount = "one-password-ref"
 
+    /// One reference per credential account. A single shared value let saving a
+    /// key for one provider overwrite the reference used for another.
+    private static func onePasswordRefAccount(for account: String) -> String {
+        "one-password-ref.\(account)"
+    }
+
     @discardableResult
     func saveOnePasswordRef(_ ref: String) -> Bool {
         saveAPIKey(ref, account: Self.onePasswordRefAccount)
@@ -314,6 +335,25 @@ actor EncryptedKeyStore {
 
     func deleteOnePasswordRef() {
         deleteAPIKey(account: Self.onePasswordRefAccount)
+    }
+
+    @discardableResult
+    func saveOnePasswordRef(_ ref: String, account: String) -> Bool {
+        saveAPIKey(ref, account: Self.onePasswordRefAccount(for: account))
+    }
+
+    /// Scoped reference first, then the legacy single value so a reference
+    /// stored before this change keeps working until it is re-saved.
+    func readOnePasswordRef(account: String) -> String? {
+        if let scoped = readAPIKey(account: Self.onePasswordRefAccount(for: account)),
+           !scoped.isEmpty {
+            return scoped
+        }
+        return readOnePasswordRef()
+    }
+
+    func deleteOnePasswordRef(account: String) {
+        deleteAPIKey(account: Self.onePasswordRefAccount(for: account))
     }
 
     // MARK: - Keychain 迁移
@@ -328,7 +368,7 @@ actor EncryptedKeyStore {
         guard !defaults.bool(forKey: "didMigrateAPIKeysFromKeychain") else { return }
 
         // 确保 UUID 快照在迁移前已保存
-        _ = try? resolveMachineIdentifier()
+        _ = try? Self.resolveMachineIdentifier(in: Self.defaultStoreDirectory)
 
         // 收集所有需要迁移的 account
         let providerAccounts = AIProvider.allCases.map { $0.apiKeyAccount() }

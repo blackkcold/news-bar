@@ -174,4 +174,36 @@ final class ResearchLedgerTests: XCTestCase {
         XCTAssertTrue(availability == .ioUnavailable || availability == .available)
         XCTAssertNotEqual(availability, .corrupt)
     }
+
+    // MARK: - Provider cooldown
+
+    func testQuotaCooldownSurvivesRestartAndExpiresOnItsOwn() throws {
+        let (ledger, url) = try makeLedger()
+        let until = now.addingTimeInterval(15 * 60)
+        XCTAssertTrue(ledger.recordProviderCooldown(.tavily, until: until, at: now))
+
+        let reloaded = ResearchLedger(fileURL: url)
+        XCTAssertEqual(reloaded.providerCooldown(.tavily, at: now), until)
+        XCTAssertNil(reloaded.providerCooldown(.brave, at: now))
+        XCTAssertNil(reloaded.providerCooldown(.tavily, at: until))
+    }
+
+    func testEarlierCooldownIsNotShortenedByANewerFailure() throws {
+        let (ledger, _) = try makeLedger()
+        let later = now.addingTimeInterval(30 * 60)
+        XCTAssertTrue(ledger.recordProviderCooldown(.brave, until: later, at: now))
+        XCTAssertTrue(ledger.recordProviderCooldown(.brave, until: now.addingTimeInterval(60), at: now))
+        XCTAssertEqual(ledger.providerCooldown(.brave, at: now), later)
+    }
+
+    func testCooldownIsNeverWrittenToAnUnreadableLedger() throws {
+        let directory = try researchTestDirectory()
+        let url = directory.appendingPathComponent("ledger.json")
+        let original = Data(#"{"version":99,"day":20000101,"futureField":true}"#.utf8)
+        try original.write(to: url)
+
+        let ledger = ResearchLedger(fileURL: url)
+        XCTAssertFalse(ledger.recordProviderCooldown(.tavily, until: now, at: now))
+        XCTAssertEqual(try Data(contentsOf: url), original)
+    }
 }

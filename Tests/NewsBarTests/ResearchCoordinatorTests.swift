@@ -181,4 +181,141 @@ final class ResearchCoordinatorTests: XCTestCase {
         XCTAssertEqual(saved.status, .cancelled)
         XCTAssertNil(saved.run.lastError)
     }
+
+    @MainActor
+    func testAutomaticFailureIsPersistedAndManualRetryBypassesCooldown() async throws {
+        var record = researchTestRecord(title: "热点", status: .queued, origin: .burst, updatedAt: Date())
+        record.run.startedAt = nil
+        let store = ResearchFakeStore(records: [record])
+        let coordinator = ResearchCoordinator(store: store, notifier: { _ in })
+
+        let accepted = await coordinator.schedule(recordID: record.id, trigger: .burst) { record, progress in
+            var snapshot = ResearchRun()
+            snapshot.origin = record.run.origin
+            snapshot.phase = .searching
+            await progress(snapshot)
+            return .failure("failed")
+        }
+        XCTAssertTrue(accepted)
+        await coordinator.waitForAll()
+        let failedRecord = await store.record(id: record.id)
+        let failed = try XCTUnwrap(failedRecord)
+        XCTAssertEqual(failed.automaticAttempts, 1)
+        XCTAssertNotNil(failed.lastAutomaticAttemptAt)
+        XCTAssertEqual(failed.run.origin, .burst)
+
+        let blocked = await coordinator.schedule(recordID: record.id, trigger: .burst) { _, _ in
+            XCTFail("automatic retry ignored cooldown")
+            return .failure("unexpected")
+        }
+        XCTAssertFalse(blocked)
+        var manualOrigin: ResearchOrigin?
+        let manual = await coordinator.schedule(recordID: record.id, trigger: .manual) { record, _ in
+            manualOrigin = record.run.origin
+            return .failure("manual failure")
+        }
+        XCTAssertTrue(manual)
+        await coordinator.waitForAll()
+        XCTAssertEqual(manualOrigin, .manual)
+        let retriedRecord = await store.record(id: record.id)
+        let retried = try XCTUnwrap(retriedRecord)
+        XCTAssertEqual(retried.automaticAttempts, 1)
+    }
+
+    @MainActor
+    func testAutomaticQueueKeepsOnlySixNewestWaitingJobs() async throws {
+        let records = (0..<8).map { index -> ResearchRecord in
+            var record = researchTestRecord(title: "热点 \(index)", status: .queued, origin: .burst, updatedAt: Date())
+            record.run.startedAt = nil
+            return record
+        }
+        let store = ResearchFakeStore(records: records)
+        let coordinator = ResearchCoordinator(store: store, automaticStartInterval: 0, notifier: { _ in })
+        var started: [String] = []
+        for (index, record) in records.enumerated() {
+            let accepted = await coordinator.schedule(recordID: record.id, trigger: .burst) { record, _ in
+                started.append(record.id)
+                if index == 0 { try? await Task.sleep(nanoseconds: 200_000_000) }
+                return self.success()
+            }
+            XCTAssertTrue(accepted)
+        }
+        await coordinator.waitForAll()
+        XCTAssertFalse(started.contains(records[1].id))
+        XCTAssertEqual(Set(started), Set([records[0].id] + records.dropFirst(2).map(\.id)))
+        let evictedRecord = await store.record(id: records[1].id)
+        let evicted = try XCTUnwrap(evictedRecord)
+        XCTAssertEqual(evicted.status, .interrupted)
+    }
+
+    @MainActor
+    func testAutomaticJobsAreSerialAndSpacedEvenWithHigherConcurrency() async {
+        let records = (0..<2).map { index -> ResearchRecord in
+            var record = researchTestRecord(title: "热点 \(index)", status: .queued, origin: .keyword, updatedAt: Date())
+            record.run.startedAt = nil
+            return record
+        }
+        let store = ResearchFakeStore(records: records)
+        let probe = ConcurrencyProbe()
+        let coordinator = ResearchCoordinator(store: store, maxConcurrent: 3, automaticStartInterval: 0.12, notifier: { _ in })
+        var starts: [Date] = []
+        for record in records {
+            await coordinator.schedule(recordID: record.id, trigger: .keyword) { _, _ in
+                starts.append(Date())
+                await probe.begin()
+                try? await Task.sleep(nanoseconds: 40_000_000)
+                await probe.end()
+                return self.success()
+            }
+        }
+        await coordinator.waitForAll()
+        let maximum = await probe.maxActive
+        XCTAssertEqual(maximum, 1)
+        XCTAssertEqual(starts.count, 2)
+        if starts.count == 2 { XCTAssertGreaterThanOrEqual(starts[1].timeIntervalSince(starts[0]), 0.10) }
+    }
+
+    @MainActor
+    func testLegacyFailedRunCountsAsAnEarlierAttempt() async throws {
+        let old = Date().addingTimeInterval(-86_400)
+        let record = researchTestRecord(title: "旧失败", status: .failed, origin: .burst, updatedAt: old)
+        let store = ResearchFakeStore(records: [record])
+        let coordinator = ResearchCoordinator(store: store, notifier: { _ in })
+        let accepted = await coordinator.schedule(recordID: record.id, trigger: .burst) { _, _ in .failure("failed again") }
+        XCTAssertTrue(accepted)
+        await coordinator.waitForAll()
+        let stored = await store.record(id: record.id)
+        XCTAssertEqual(try XCTUnwrap(stored).automaticAttempts, 2)
+    }
+
+    func testExplicitManualRunOriginSurvivesRecordRoundTrip() throws {
+        var record = researchTestRecord(title: "手动重试", status: .failed, origin: .burst, updatedAt: Date())
+        record.run.origin = .manual
+        let decoded = try JSONDecoder().decode(ResearchRecord.self, from: JSONEncoder().encode(record))
+        XCTAssertEqual(decoded.origin, .burst)
+        XCTAssertEqual(decoded.run.origin, .manual)
+    }
+
+    @MainActor
+    func testExpiredAutomaticJobIsInterruptedWithoutStarting() async throws {
+        let records = (0..<2).map { index -> ResearchRecord in
+            var record = researchTestRecord(title: "过期 \(index)", status: .queued, origin: .burst, updatedAt: Date())
+            record.run.startedAt = nil
+            return record
+        }
+        let store = ResearchFakeStore(records: records)
+        let coordinator = ResearchCoordinator(store: store, automaticStartInterval: 0, automaticQueueLifetime: 0.05, notifier: { _ in })
+        await coordinator.schedule(recordID: records[0].id, trigger: .burst) { _, _ in
+            try? await Task.sleep(nanoseconds: 160_000_000)
+            return self.success()
+        }
+        await coordinator.schedule(recordID: records[1].id, trigger: .burst) { _, _ in
+            XCTFail("expired automatic job started")
+            return self.success()
+        }
+        await coordinator.waitForAll()
+        try? await Task.sleep(nanoseconds: 30_000_000)
+        let expired = await store.record(id: records[1].id)
+        XCTAssertEqual(try XCTUnwrap(expired).status, .interrupted)
+    }
 }

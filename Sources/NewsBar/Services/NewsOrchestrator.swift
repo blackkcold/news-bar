@@ -75,7 +75,7 @@ final class NewsOrchestrator {
     private let rateLimiter = RateLimiter()
     private let researchStore = ResearchStore.shared
     private let researchCacheStore = ResearchCacheStore.shared
-    private let researchSearchRouter = SearchRouter()
+    private let researchSearchRouter = SearchRouter(ledger: .shared)
     private let researchLedger = ResearchLedger.shared
     private let researchClearIntentStore = ResearchClearIntentStore()
     /// True from the moment a clear starts until every stage is verified. New
@@ -527,8 +527,10 @@ final class NewsOrchestrator {
             trendSummary: trendSummary
         )
 
-        await handleBurstTopics(settings: settings)
-        await handleKeywordTopics(settings: settings)
+        let burstScheduled = await handleBurstTopics(settings: settings)
+        if !burstScheduled {
+            await handleKeywordTopics(settings: settings)
+        }
 
         let allItems = allActiveItems(settings: settings)
         if !isManual {
@@ -755,37 +757,21 @@ final class NewsOrchestrator {
     /// window opens while a fake push is still researching in the background).
     private var burstResearchInFlight: Set<String> = []
 
-    /// Builds the burst research search config, honoring the given `forceSearch`
-    /// flag (used by the developer test to always run web search) or the user's
-    /// realtime `webSearchEnabled` toggle. The Firecrawl key is read from the
-    /// encrypted store, with the legacy UserDefaults value as a fallback during
-    /// migration.
-    private func makeSearchConfig(settings: AppSettings, forceSearch: Bool) async -> WebSearchService.Config? {
-        let enabled = forceSearch || settings.webSearchEnabled
-        guard enabled else { return nil }
-        let key = await SearchKeyStore.key(for: .firecrawl, fallback: settings.firecrawlAPIKey)
-        return WebSearchService.Config(
-            provider: .firecrawl,
-            apiKey: key,
-            maxResults: 6
-        )
-    }
-
     // MARK: - Burst (爆) topic push
 
     /// Detects new Weibo "爆" topics and pushes a single notification each with
     /// AI research pre-generated. De-duplicates by title and respects a cooldown.
-    private func handleBurstTopics(settings: AppSettings) async {
+    private func handleBurstTopics(settings: AppSettings) async -> Bool {
         // `researchAutoEnabled` is the single master switch. `burstPushEnabled`
         // only decides whether the finished report also raises a notification.
         guard settings.researchAutoEnabled,
               !isClearingResearchHistory,
-              !isResearchClearBlocked else { return }
+              !isResearchClearBlocked else { return false }
         let now = Date()
         let epoch = InterestController.shared.state.consentEpoch
 
         let candidates = weiboDetectionItems.filter { $0.hotLabel == "爆" }
-        guard !candidates.isEmpty else { return }
+        guard !candidates.isEmpty else { return false }
 
         let selected = ResearchSelectionPolicy.select(
             items: candidates,
@@ -794,8 +780,9 @@ final class NewsOrchestrator {
         ).map(\.item)
 
         var notifiedChanged = false
+        var scheduled = false
         for burst in selected {
-            guard epoch == InterestController.shared.state.consentEpoch else { return }
+            guard epoch == InterestController.shared.state.consentEpoch else { return scheduled }
             guard let record = await ResearchRecordProvisioner.ensureRecord(
                 for: burst,
                 origin: .burst,
@@ -803,20 +790,17 @@ final class NewsOrchestrator {
                 now: now
             ) else { continue }
 
-            if !notifiedBurstTopics.contains(burst.title) {
-                notifiedBurstTopics.insert(burst.title)
-                notifiedChanged = true
-            }
-
-            let neverStarted = record.run.startedAt == nil
-            let cooledDown = now.timeIntervalSince(record.updatedAt) >= 6 * 3_600
-            if neverStarted || (!record.status.isActive && cooledDown) {
-                await scheduleResearch(
-                    recordID: record.id,
-                    settings: settings,
-                    forceSearch: false,
-                    notify: settings.burstPushEnabled
-                )
+            guard ResearchAutoAdmission.allows(record, now: now) else { continue }
+            scheduled = await scheduleResearch(
+                recordID: record.id,
+                settings: settings,
+                forceSearch: false,
+                notify: settings.burstPushEnabled,
+                trigger: .burst
+            )
+            if scheduled {
+                if notifiedBurstTopics.insert(burst.title).inserted { notifiedChanged = true }
+                break
             }
         }
 
@@ -824,6 +808,7 @@ final class NewsOrchestrator {
             await persistResearchState(epoch: epoch)
         }
         await refreshResearchSummary()
+        return scheduled
     }
 
     func refreshResearchSummary() async {
@@ -881,14 +866,16 @@ final class NewsOrchestrator {
         return await startManualResearch(item: item, settings: settings)
     }
 
+    @discardableResult
     private func scheduleResearch(
         recordID: String,
         settings: AppSettings,
         forceSearch: Bool,
-        notify: Bool = true
-    ) async {
-        await ResearchCoordinator.shared.setMaxConcurrent(settings.researchMaxConcurrent)
-        await ResearchCoordinator.shared.schedule(recordID: recordID, notify: notify) { [weak self] record, progress in
+        notify: Bool = true,
+        trigger: ResearchOrigin = .manual
+    ) async -> Bool {
+        ResearchCoordinator.shared.setMaxConcurrent(settings.researchMaxConcurrent)
+        return await ResearchCoordinator.shared.schedule(recordID: recordID, notify: notify, trigger: trigger) { [weak self] record, progress in
             guard let self else {
                 return .failure(L10n.string("research.error.unavailable", language: settings.appLanguage))
             }
@@ -1023,32 +1010,43 @@ final class NewsOrchestrator {
     }
 
     /// Force-recomputes research for a burst topic (used by the detail window's
-    /// retry action). Returns a freshly generated research value.
+    /// retry action). It runs through the same coordinator, ledger and HTTP
+    /// budget as feed-triggered research, so this path cannot bypass the caps
+    /// that the settings page promises.
     func regenerateBurstResearch(for burst: NewsItem, settings: AppSettings) async -> BurstResearch {
         await InterestController.shared.prepare()
-        let epoch = InterestController.shared.state.consentEpoch
-        let apiKey = await resolveAPIKey(settings: settings)
-        guard let configuration = await validatedConfiguration(settings: settings, apiKey: apiKey) else { return BurstResearch() }
-        let research = await BurstResearchService.research(
-            BurstResearchService.ResearchInput(
-                item: burst,
-                trendContext: latestTrendSummary.context,
-                apiKey: configuration.apiKey,
-                connection: configuration.connection,
-                model: configuration.model,
-                summaryLanguage: settings.appLanguage,
-                disableDeepSeekThinking: settings.aiDisableDeepSeekThinking,
-                searchConfig: await makeSearchConfig(settings: settings, forceSearch: false),
-                dailyCap: settings.burstDailyCap,
-                maxRefetchURLs: 3,
-                isAllowed: { await MainActor.run { InterestController.shared.state.consentEpoch == epoch && settings.isCurrentAIConfiguration(configuration) } }
+        guard let record = await ResearchRecordProvisioner.ensureRecord(
+            for: burst,
+            origin: .burst,
+            store: researchStore
+        ), record.status != .corrupt, record.loadIssue == nil else {
+            return BurstResearch()
+        }
+
+        if !ResearchCoordinator.shared.isRunning(recordID: record.id) {
+            let accepted = await scheduleResearch(
+                recordID: record.id,
+                settings: settings,
+                forceSearch: false,
+                trigger: .manual
             )
-        )
-        settings.recordBurstResearchRequests(BurstResearchService.readDailyCount())
-        guard epoch == InterestController.shared.state.consentEpoch, settings.isCurrentAIConfiguration(configuration) else { return BurstResearch() }
-        burstResearchCache[burst.title] = research
-        await persistResearchState(epoch: epoch)
-        return research
+            if !accepted, let existing = await researchStore.record(id: record.id)?.report {
+                return existing
+            }
+        }
+
+        // The detail window shows a loading state while this returns, so wait
+        // for the same job the center would show rather than running a second
+        // pass in parallel.
+        let deadline = Date().addingTimeInterval(120)
+        while ResearchCoordinator.shared.isRunning(recordID: record.id), Date() < deadline {
+            if let cached = burstResearchCache[burst.title] { return cached }
+            try? await Task.sleep(nanoseconds: 250_000_000)
+        }
+        guard let finished = await researchStore.record(id: record.id),
+              let report = finished.report else { return BurstResearch() }
+        burstResearchCache[burst.title] = report
+        return report
     }
 
     // MARK: - Custom keyword topic push
@@ -1099,16 +1097,12 @@ final class NewsOrchestrator {
                 now: now
             ) else { continue }
 
-            let pair = "\(match.keyword)\n\(match.item.title)"
-            if !notifiedKeywordPairs.contains(pair) {
-                notifiedKeywordPairs.insert(pair)
-                notifiedChanged = true
-            }
-
-            let neverStarted = record.run.startedAt == nil
-            let cooledDown = now.timeIntervalSince(record.updatedAt) >= 6 * 3_600
-            if neverStarted || (!record.status.isActive && cooledDown) {
-                await scheduleResearch(recordID: record.id, settings: settings, forceSearch: false)
+            guard ResearchAutoAdmission.allows(record, now: now) else { continue }
+            let scheduled = await scheduleResearch(recordID: record.id, settings: settings, forceSearch: false, trigger: .keyword)
+            if scheduled {
+                let pair = "\(match.keyword)\n\(match.item.title)"
+                if notifiedKeywordPairs.insert(pair).inserted { notifiedChanged = true }
+                break
             }
         }
 

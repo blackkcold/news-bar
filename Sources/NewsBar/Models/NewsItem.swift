@@ -16,6 +16,8 @@ struct NewsItem: Identifiable, Hashable, Codable, Sendable {
     var translatedTitle: String? = nil
     /// Publication date from publisher metadata, never the fetch time.
     var publishedAt: Date? = nil
+    /// Optional direct reader destination; `url` remains the stable feed identity.
+    var readerURL: String? = nil
 
     init(
         title: String,
@@ -25,7 +27,8 @@ struct NewsItem: Identifiable, Hashable, Codable, Sendable {
         imageURL: String? = nil,
         hotLabel: String? = nil,
         translatedTitle: String? = nil,
-        publishedAt: Date? = nil
+        publishedAt: Date? = nil,
+        readerURL: String? = nil
     ) {
         let identity = "\(source.id)\n\(url)"
         let digest = SHA256.hash(data: Data(identity.utf8))
@@ -39,6 +42,7 @@ struct NewsItem: Identifiable, Hashable, Codable, Sendable {
         self.hotLabel = hotLabel
         self.translatedTitle = translatedTitle
         self.publishedAt = publishedAt
+        self.readerURL = readerURL
     }
 
     /// Title to display in the UI: translated when available, otherwise the original.

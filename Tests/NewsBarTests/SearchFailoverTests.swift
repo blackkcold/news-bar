@@ -177,6 +177,38 @@ final class SearchFailoverTests: XCTestCase {
         XCTAssertEqual(remaining, 30 * 60, accuracy: 1)
     }
 
+    func testQuotaCooldownSurvivesAFreshRouter() async throws {
+        let ledger = ResearchLedger(fileURL: try researchTestDirectory().appendingPathComponent("ledger.json"))
+        let tavily = ScriptedSearchProvider(
+            id: .tavily,
+            requiresKey: true,
+            script: [.failure(.quotaExhausted)]
+        )
+        let firecrawl = ScriptedSearchProvider(id: .firecrawl, script: [.success([]), .success([])])
+        let brave = ScriptedSearchProvider(id: .brave, requiresKey: true)
+        let first = SearchRouter(
+            providers: [tavily, firecrawl, brave],
+            cache: cache,
+            now: { [clock] in clock?.now ?? Date() },
+            ledger: ledger
+        )
+        _ = try await first.search(query(), configuration: configuration(), useCache: false)
+        XCTAssertEqual(tavily.callCount, 1)
+
+        // A relaunch builds a brand-new router with no in-memory cooldown.
+        let relaunched = SearchRouter(
+            providers: [tavily, firecrawl, brave],
+            cache: cache,
+            now: { [clock] in clock?.now ?? Date() },
+            ledger: ledger
+        )
+        _ = try await relaunched.search(query("第二个查询"), configuration: configuration(), useCache: false)
+
+        XCTAssertEqual(tavily.callCount, 1, "a persisted quota block must survive a restart")
+        let remaining = await relaunched.cooldownRemaining(for: .tavily)
+        XCTAssertEqual(remaining, 15 * 60, accuracy: 1)
+    }
+
     // MARK: - Retry and invalid keys
 
     func testServerFailureRetriesOnce() async throws {

@@ -48,19 +48,30 @@ final class ResearchCoordinator {
         let token: UUID
         let recordID: String
         let notify: Bool
+        let trigger: ResearchOrigin
+        let enqueuedAt: Date
+        let previousStatus: ResearchStatus
         let executor: Executor
+        var ready = false
     }
 
     private struct RunningJob {
         let token: UUID
+        let trigger: ResearchOrigin
         let task: Task<Void, Never>
     }
 
     private let store: any ResearchPersisting
     private var maxConcurrent: Int
+    private let automaticStartInterval: TimeInterval
+    private let automaticQueueLifetime: TimeInterval
+    private let automaticQueueLimit = 6
     private let notifier: @MainActor (ResearchRecord) -> Void
     private var running: [String: RunningJob] = [:]
     private var queue: [Job] = []
+    private var admitting: Set<String> = []
+    private var lastAutomaticStart: Date?
+    private var automaticWake: Task<Void, Never>?
     /// Bumped by `cancelAll` so a task that is already past the executor
     /// cannot write a record back after a history reset.
     private var generation = 0
@@ -68,12 +79,16 @@ final class ResearchCoordinator {
     init(
         store: any ResearchPersisting = ResearchStore.shared,
         maxConcurrent: Int = 1,
+        automaticStartInterval: TimeInterval = 120,
+        automaticQueueLifetime: TimeInterval = ResearchAutoAdmission.queueLifetime,
         notifier: @escaping @MainActor (ResearchRecord) -> Void = {
             NotificationService.sendResearchNotification(record: $0)
         }
     ) {
         self.store = store
         self.maxConcurrent = max(1, maxConcurrent)
+        self.automaticStartInterval = max(0, automaticStartInterval)
+        self.automaticQueueLifetime = max(0, automaticQueueLifetime)
         self.notifier = notifier
     }
 
@@ -84,29 +99,51 @@ final class ResearchCoordinator {
         startNextIfPossible()
     }
 
-    func schedule(recordID: String, notify: Bool = true, executor: @escaping Executor) async {
+    @discardableResult
+    func schedule(
+        recordID: String,
+        notify: Bool = true,
+        trigger: ResearchOrigin = .manual,
+        executor: @escaping Executor
+    ) async -> Bool {
         guard running[recordID] == nil,
-              !queue.contains(where: { $0.recordID == recordID }) else { return }
-        guard let record = await store.record(id: recordID) else { return }
-        guard record.status != .running else { return }
-
-        // Re-check after the awaits: two callers can both pass the first guard
-        // while waiting for the store, and the second must not enqueue a
-        // duplicate job for the same record.
+              !queue.contains(where: { $0.recordID == recordID }),
+              admitting.insert(recordID).inserted else { return false }
+        defer { admitting.remove(recordID) }
+        let admissionGeneration = generation
+        guard let record = await store.record(id: recordID),
+              admissionGeneration == generation,
+              record.status != .running,
+              record.loadIssue == nil,
+              record.status != .corrupt else { return false }
+        guard !trigger.isAutomatic || ResearchAutoAdmission.allows(record, now: Date()) else { return false }
         guard running[recordID] == nil,
-              !queue.contains(where: { $0.recordID == recordID }) else { return }
+              !queue.contains(where: { $0.recordID == recordID }) else { return false }
 
-        let job = Job(token: UUID(), recordID: recordID, notify: notify, executor: executor)
-        if running.count < maxConcurrent {
-            start(job)
-        } else {
-            var queued = record
-            queued.status = .queued
-            queued.run.phase = .idle
-            try? await store.save(queued)
-            postChanged()
-            queue.append(job)
+        if trigger.isAutomatic,
+           queue.filter({ $0.trigger.isAutomatic }).count >= automaticQueueLimit {
+            // Do not evict a job whose initial status write is still pending.
+            guard let oldest = queue.firstIndex(where: { $0.trigger.isAutomatic && $0.ready }) else { return false }
+            let evicted = queue.remove(at: oldest)
+            markDiscarded(evicted, generation: admissionGeneration)
         }
+        let job = Job(token: UUID(), recordID: recordID, notify: notify, trigger: trigger, enqueuedAt: Date(), previousStatus: record.status, executor: executor)
+        queue.append(job)
+        var queued = record
+        queued.status = .queued
+        queued.run.phase = .idle
+        do {
+            try await store.save(queued)
+        } catch {
+            queue.removeAll { $0.token == job.token }
+            return false
+        }
+        guard admissionGeneration == generation,
+              let index = queue.firstIndex(where: { $0.token == job.token }) else { return false }
+        queue[index].ready = true
+        postChanged()
+        startNextIfPossible()
+        return true
     }
 
     func cancel(recordID: String) {
@@ -130,6 +167,8 @@ final class ResearchCoordinator {
     func cancelAll() {
         generation += 1
         queue.removeAll()
+        automaticWake?.cancel()
+        automaticWake = nil
         let tasks = running.values.map(\.task)
         running.removeAll()
         for task in tasks { task.cancel() }
@@ -159,12 +198,61 @@ final class ResearchCoordinator {
             }
             self.startNextIfPossible()
         }
-        running[job.recordID] = RunningJob(token: job.token, task: task)
+        if job.trigger.isAutomatic { lastAutomaticStart = Date() }
+        running[job.recordID] = RunningJob(token: job.token, trigger: job.trigger, task: task)
     }
 
     private func startNextIfPossible() {
-        while running.count < maxConcurrent, !queue.isEmpty {
-            start(queue.removeFirst())
+        let now = Date()
+        let expired = queue.filter {
+            $0.ready && $0.trigger.isAutomatic && now.timeIntervalSince($0.enqueuedAt) > automaticQueueLifetime
+        }
+        let expiredTokens = Set(expired.map(\.token))
+        queue.removeAll { expiredTokens.contains($0.token) }
+        for job in expired { markDiscarded(job, generation: generation) }
+
+        while running.count < maxConcurrent {
+            let autoRunning = running.values.contains { $0.trigger.isAutomatic }
+            let elapsed = lastAutomaticStart.map { Date().timeIntervalSince($0) } ?? automaticStartInterval
+            guard let index = queue.firstIndex(where: { job in
+                job.ready && (!job.trigger.isAutomatic || (!autoRunning && elapsed >= automaticStartInterval))
+            }) else {
+                if !autoRunning, queue.contains(where: { $0.ready && $0.trigger.isAutomatic }), elapsed < automaticStartInterval {
+                    scheduleAutomaticWake(after: automaticStartInterval - elapsed)
+                }
+                return
+            }
+            start(queue.remove(at: index))
+        }
+    }
+
+    private func scheduleAutomaticWake(after delay: TimeInterval) {
+        guard automaticWake == nil else { return }
+        automaticWake = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(max(0, delay) * 1_000_000_000))
+            guard !Task.isCancelled, let self else { return }
+            self.automaticWake = nil
+            self.startNextIfPossible()
+        }
+    }
+
+    private func markDiscarded(_ job: Job, generation expectedGeneration: Int) {
+        Task { @MainActor [weak self] in
+            guard let self, self.generation == expectedGeneration,
+                  self.running[job.recordID] == nil,
+                  !self.queue.contains(where: { $0.recordID == job.recordID }),
+                  var record = await self.store.record(id: job.recordID),
+                  self.generation == expectedGeneration,
+                  self.running[job.recordID] == nil,
+                  !self.queue.contains(where: { $0.recordID == job.recordID }),
+                  record.status == .queued else { return }
+            record.status = .interrupted
+            record.run.phase = .done
+            record.run.finishedAt = Date()
+            do {
+                try await self.store.save(record)
+                self.postChanged()
+            } catch { return }
         }
     }
 
@@ -179,6 +267,7 @@ final class ResearchCoordinator {
         record.status = .running
         record.run.phase = .planning
         record.run.startedAt = Date()
+        record.run.origin = job.trigger
         record.run.finishedAt = nil
         record.run.lastError = nil
         record.run.queriesPlanned = 0
@@ -186,7 +275,18 @@ final class ResearchCoordinator {
         record.run.pagesRead = 0
         record.run.aiCalls = 0
         record.run.searchCalls = 0
-        try? await store.save(record)
+        if job.trigger.isAutomatic {
+            let isLegacyFailure = job.previousStatus == .failed && record.lastAutomaticAttemptAt == nil
+            let previousAttempts = isLegacyFailure ? max(1, record.automaticAttempts) : record.automaticAttempts
+            record.automaticAttempts = previousAttempts + 1
+            record.lastAutomaticAttemptAt = record.run.startedAt
+        }
+        do {
+            try await store.save(record)
+        } catch {
+            // Never issue requests when retry accounting could not be persisted.
+            return
+        }
 
         guard executionGeneration == generation else {
             // A reset happened while the running state was being written.
@@ -207,6 +307,7 @@ final class ResearchCoordinator {
             guard var latest = await store.record(id: recordID) else { return }
             guard latest.status == .running else { return }
             latest.run = run
+            latest.run.origin = job.trigger
             await store.saveProgress(latest)
             await MainActor.run { self.postChanged() }
         }
@@ -258,6 +359,7 @@ final class ResearchCoordinator {
         } else {
             current.report = execution.research
             current.updatedAt = finishedAt
+            current.automaticAttempts = 0
             current.status = execution.isPartial || execution.research.searchStatus == .failed
                 ? .partial
                 : .ready

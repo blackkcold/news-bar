@@ -10,8 +10,11 @@ struct AITab: View {
     @State private var testSucceeded = false
     @State private var isTesting = false
     @State private var isSaving = false
-    @State private var saveResult: String?
-    @State private var onePasswordResult: String?
+    @State private var isDeletingKey = false
+    @State private var keyFeedback: AIKeyFeedback?
+    @State private var onePasswordFeedback: AIKeyFeedback?
+    @State private var keyStatus: AIKeyStatus = .missing
+    @State private var pendingKeyDeletion = false
     @State private var isLoadingFrom1Password = false
     @State private var showCustomEditor = false
     @State private var editingCustom: CustomAIProviderConfig?
@@ -42,7 +45,8 @@ struct AITab: View {
                         settings.cachedAPIKey = nil
                         apiKeyInput = ""
                         testResult = nil
-                        saveResult = nil
+                        keyFeedback = nil
+                        onePasswordFeedback = nil
                     }
                 )) {
                     ForEach(settings.providerOptions, id: \.id) { option in
@@ -93,12 +97,23 @@ struct AITab: View {
             }
 
             Section {
+                HStack(spacing: 6) {
+                    Image(systemName: keyStatus == .saved ? "checkmark.seal.fill" : "exclamationmark.circle")
+                        .font(.system(size: 11))
+                        .foregroundStyle(keyStatus == .saved ? .green : .secondary)
+                    Text(keyStatus.label(language: settings.appLanguage))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                }
+
                 SecureField(settings.providerApiKeyPlaceholder(forID: selectedProviderID), text: $apiKeyInput)
                     .textFieldStyle(.roundedBorder)
                     .font(.system(size: 12, design: .monospaced))
                     .onChange(of: selectedProviderID) { _, _ in
                         apiKeyInput = ""
                     }
+                    .accessibilityLabel("ai.apiKey".localized)
 
                 HStack {
                     Button {
@@ -118,12 +133,24 @@ struct AITab: View {
                     .disabled((apiKeyInput.isEmpty && (settings.cachedAPIKey?.isEmpty ?? true)) || isTesting)
                     .buttonStyle(EditorialActionButtonStyle(compact: true))
                     .controlSize(.small)
+
+                    Spacer()
+
+                    Button {
+                        pendingKeyDeletion = true
+                    } label: {
+                        Text("ai.deleteKey".localized)
+                    }
+                    .disabled(keyStatus == .missing || isDeletingKey)
+                    .foregroundStyle(.red)
+                    .controlSize(.small)
                 }
 
-                if let result = saveResult {
-                    Text(result)
+                if let feedback = keyFeedback {
+                    Text(feedback.text(language: settings.appLanguage))
                         .font(.caption)
-                        .foregroundStyle(result.contains("ai.saved".localized) ? .green : .red)
+                        .foregroundStyle(feedback.color)
+                        .accessibilityLabel(feedback.text(language: settings.appLanguage))
                 }
 
                 if let result = testResult {
@@ -142,13 +169,9 @@ struct AITab: View {
                     TextField(settings.providerOnePasswordHint(forID: selectedProviderID), text: $onePasswordRef)
                         .textFieldStyle(.roundedBorder)
                         .font(.system(size: 12, design: .monospaced))
-                        .onAppear {
-                            if onePasswordRef.isEmpty {
-                                onePasswordRef = settings.onePasswordRef
-                            }
-                        }
+                        .accessibilityLabel("ai.1password".localized)
                         .onChange(of: selectedProviderID) { _, _ in
-                            onePasswordRef = settings.onePasswordRef
+                            Task { await loadScopedOnePasswordRef() }
                         }
 
                     HStack {
@@ -165,10 +188,10 @@ struct AITab: View {
                         .controlSize(.small)
                     }
 
-                    if let result = onePasswordResult {
-                        Text(result)
+                    if let feedback = onePasswordFeedback {
+                        Text(feedback.text(language: settings.appLanguage))
                             .font(.caption)
-                            .foregroundStyle(result.contains("ai.1p.success".localized) ? .green : .orange)
+                            .foregroundStyle(feedback.color)
                     }
                 }
             } header: {
@@ -311,6 +334,12 @@ struct AITab: View {
                 Text("ai.limit.footer".localized)
             }
 
+            Section {
+                Label("ai.researchSection".localized, systemImage: "globe")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
             ResearchSettingsSection()
 
             Section {
@@ -346,7 +375,8 @@ struct AITab: View {
                     settings.cachedAPIKey = nil
                     apiKeyInput = ""
                     testResult = nil
-                    saveResult = nil
+                    keyFeedback = nil
+                    onePasswordFeedback = nil
                 }
             }
             .environment(settings)
@@ -367,6 +397,21 @@ struct AITab: View {
         } message: { custom in
             Text(L10n.string("ai.deleteCustom.message", custom.name))
         }
+        .confirmationDialog(
+            "ai.deleteKey.title".localized,
+            isPresented: $pendingKeyDeletion
+        ) {
+            Button("ai.deleteKey.confirm".localized, role: .destructive) {
+                deleteAPIKey()
+            }
+            Button("ai.cancel".localized, role: .cancel) { }
+        } message: {
+            Text("ai.deleteKey.message".localized)
+        }
+        .task(id: settings.activeAPIKeyAccount) {
+            await refreshKeyStatus()
+            await loadScopedOnePasswordRef()
+        }
     }
 
     private func deleteCustomProvider(_ custom: CustomAIProviderConfig) {
@@ -382,40 +427,89 @@ struct AITab: View {
 
     private func saveAPIKey() {
         isSaving = true
-        saveResult = nil
+        keyFeedback = nil
         let sanitized = SecurityPolicies.sanitizeUserInput(apiKeyInput)
         let account = settings.activeAPIKeyAccount
         let providerID = settings.aiProvider
         let revision = settings.modelCatalogRevision
+        let reference = onePasswordRef
         Task {
             let store = EncryptedKeyStore()
             let success = await store.saveAPIKey(sanitized, account: account)
             await MainActor.run {
                 if success {
                     guard settings.activateAPIKey(sanitized, providerID: providerID, revision: revision) else { isSaving = false; return }
-                    settings.onePasswordRef = onePasswordRef
                     apiKeyInput = ""
-                    saveResult = "ai.saved".localized
+                    keyFeedback = .saved
+                    keyStatus = .saved
                     UserDefaults.standard.set(true, forKey: "hasAIKey-\(account)")
                     NotificationCenter.default.post(name: .apiKeyConfigured, object: nil)
+                    Task { await persistOnePasswordReference(reference, for: account) }
                 } else {
-                    saveResult = "ai.saveFailed".localized
+                    keyFeedback = .saveFailed
                 }
                 isSaving = false
             }
         }
     }
 
+    /// Removes the encrypted copy on this Mac. The 1Password item and the
+    /// provider-side key are deliberately left untouched.
+    private func deleteAPIKey() {
+        isDeletingKey = true
+        keyFeedback = nil
+        let account = settings.activeAPIKeyAccount
+        Task {
+            await EncryptedKeyStore().deleteAPIKey(account: account)
+            await MainActor.run {
+                settings.cachedAPIKey = nil
+                keyStatus = .missing
+                keyFeedback = .keyDeleted
+                isDeletingKey = false
+                NotificationCenter.default.post(name: .apiKeyConfigured, object: nil)
+            }
+        }
+    }
+
+    private func refreshKeyStatus() async {
+        let account = settings.activeAPIKeyAccount
+        let stored = await EncryptedKeyStore().readAPIKey(account: account)
+        let hasFlag = UserDefaults.standard.bool(forKey: "hasAIKey-\(account)")
+        await MainActor.run {
+            guard account == settings.activeAPIKeyAccount else { return }
+            keyStatus = AIKeyStatus.resolve(stored: stored, hasFlag: hasFlag)
+        }
+    }
+
+    private func loadScopedOnePasswordRef() async {
+        let account = settings.activeAPIKeyAccount
+        let reference = await EncryptedKeyStore().readOnePasswordRef(account: account) ?? ""
+        await MainActor.run {
+            guard account == settings.activeAPIKeyAccount else { return }
+            onePasswordRef = reference
+            onePasswordFeedback = nil
+        }
+    }
+
+    private func persistOnePasswordReference(_ reference: String, for account: String) async {
+        let trimmed = reference.trimmingCharacters(in: .whitespacesAndNewlines)
+        let store = EncryptedKeyStore()
+        if trimmed.isEmpty {
+            await store.deleteOnePasswordRef(account: account)
+        } else {
+            await store.saveOnePasswordRef(trimmed, account: account)
+        }
+    }
+
     private func loadFrom1Password() {
         guard !onePasswordRef.isEmpty else { return }
         guard OnePasswordService.isValidReference(onePasswordRef) else {
-            onePasswordResult = "ai.1p.invalidRef".localized
+            onePasswordFeedback = .invalidReference
             return
         }
 
-        settings.onePasswordRef = onePasswordRef
         isLoadingFrom1Password = true
-        onePasswordResult = nil
+        onePasswordFeedback = nil
         let providerID = settings.aiProvider
         let revision = settings.modelCatalogRevision
         let account = settings.activeAPIKeyAccount
@@ -429,36 +523,42 @@ struct AITab: View {
                 await MainActor.run {
                     if success {
                         guard settings.activateAPIKey(key, providerID: providerID, revision: revision) else { isLoadingFrom1Password = false; return }
-                        apiKeyInput = key
+                        // The secret stays in the encrypted store; never echo it
+                        // back into a field the user could re-save or screenshot.
+                        keyStatus = .saved
+                        keyFeedback = .saved
                         NotificationCenter.default.post(name: .apiKeyConfigured, object: nil)
                     }
-                    onePasswordResult = success ? "ai.1p.success".localized : "ai.1p.saveFailed".localized
+                    onePasswordFeedback = success ? .loaded : .loadedButNotSaved
                     isLoadingFrom1Password = false
+                }
+                if success {
+                    await persistOnePasswordReference(reference, for: account)
                 }
             } catch OnePasswordError.notInstalled {
                 await MainActor.run {
-                    onePasswordResult = "ai.1p.notInstalled".localized
+                    onePasswordFeedback = .notInstalled
                     isLoadingFrom1Password = false
                 }
             } catch OnePasswordError.timeout {
                 await MainActor.run {
-                    onePasswordResult = "ai.1p.timeout".localized
+                    onePasswordFeedback = .timedOut
                     isLoadingFrom1Password = false
                 }
             } catch OnePasswordError.readFailed {
                 await MainActor.run {
-                    onePasswordResult = "ai.1p.readFailed".localized
+                    onePasswordFeedback = .readFailed
                     isLoadingFrom1Password = false
                 }
             } catch OnePasswordError.invalidReference {
                 await MainActor.run {
-                    onePasswordResult = "ai.1p.invalidRef".localized
+                    onePasswordFeedback = .invalidReference
                     isLoadingFrom1Password = false
                 }
             } catch {
                 NSLog("[AITab] loadFrom1Password failed: %@", error.localizedDescription)
                 await MainActor.run {
-                    onePasswordResult = "ai.1p.unknown".localized
+                    onePasswordFeedback = .unknown
                     isLoadingFrom1Password = false
                 }
             }
