@@ -10,7 +10,10 @@ enum BilibiliHotService {
         }
 
         let (data, _) = try await HTTPClient.data(for: url, config: .bilibili)
+        return try decode(data)
+    }
 
+    static func decode(_ data: Data) throws -> [NewsItem] {
         struct BilibiliResponse: Decodable {
             struct DataBlock: Decodable {
                 struct Video: Decodable {
@@ -29,11 +32,16 @@ enum BilibiliHotService {
         return decoded.data.list.enumerated().map { index, video in
             let link = video.short_link_v2 ?? video.short_link ?? "https://www.bilibili.com/video/\(video.bvid ?? "")"
             let validatedURL = SecurityPolicies.validateURL(link)?.absoluteString ?? link
+            let directURL: String? = video.bvid.flatMap { bvid in
+                guard bvid.range(of: "^BV[A-Za-z0-9]{10}$", options: .regularExpression) != nil else { return nil }
+                return "https://www.bilibili.com/video/\(bvid)"
+            }
             return NewsItem(
                 title: SecurityPolicies.sanitizeUserInput(video.title),
                 url: validatedURL,
                 source: .bilibili,
-                rank: index + 1
+                rank: index + 1,
+                readerURL: directURL
             )
         }
     }

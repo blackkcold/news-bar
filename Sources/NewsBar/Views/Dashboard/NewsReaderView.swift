@@ -434,7 +434,7 @@ final class NewsReaderModel: NSObject, WKNavigationDelegate, WKUIDelegate, WKScr
         if loaded {
             notice = reason
             loading = false
-        } else { fail(reason, kind: reason == .networkUnavailable ? .failed : .blocked) }
+        } else { fail(reason, kind: reason.canRetry ? .failed : .blocked) }
     }
 
     func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction) async -> WKNavigationActionPolicy {
@@ -463,7 +463,7 @@ final class NewsReaderModel: NSObject, WKNavigationDelegate, WKUIDelegate, WKScr
         if proxySession == nil {
             let destination = await ReaderNavigationPolicy.resolveDestination(url)
             guard destination == .publicDestination else {
-                if !isSubframe { blockMainNavigation(destination == .privateDestination ? .privateDestination : .networkUnavailable) }
+                if !isSubframe { blockMainNavigation(destination == .privateDestination ? .privateDestination : .dnsUnavailable) }
                 return .cancel
             }
         }
@@ -606,11 +606,11 @@ final class NewsReaderModel: NSObject, WKNavigationDelegate, WKUIDelegate, WKScr
 
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
         guard !stopped else { return }
-        if (error as NSError).code != NSURLErrorCancelled { fail(proxySession == nil ? .networkUnavailable : .proxyUnavailable) }
+        if (error as NSError).code != NSURLErrorCancelled { fail(proxySession == nil ? ReaderFailure.networkError(error) : .proxyUnavailable) }
     }
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
         guard !stopped else { return }
-        if (error as NSError).code != NSURLErrorCancelled { fail(proxySession == nil ? .networkUnavailable : .proxyUnavailable) }
+        if (error as NSError).code != NSURLErrorCancelled { fail(proxySession == nil ? ReaderFailure.networkError(error) : .proxyUnavailable) }
     }
     func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
         guard !stopped, networkContextIsCurrent else { return }

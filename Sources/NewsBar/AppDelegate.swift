@@ -376,17 +376,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
 
     private func refreshAPIKeyIfNeeded() {
-        let ref = settings.onePasswordRef
         let account = settings.activeAPIKeyAccount
-        guard currentProviderHasSavedKeyFlag(),
-              !ref.isEmpty else { return }
+        let legacyRef = settings.onePasswordRef
+        guard currentProviderHasSavedKeyFlag() else { return }
         Task { [weak self] in
             guard let self else {
                 NSLog("[Keychain] AppDelegate deallocated before 1Password key save")
                 return
             }
             let store = EncryptedKeyStore()
-            guard await store.isKeyStale(account: account),
+            // A reference is scoped to the provider it was saved for; the legacy
+            // single value is only a migration fallback.
+            let ref = await store.readOnePasswordRef(account: account) ?? legacyRef
+            guard !ref.isEmpty,
+                  await store.isKeyStale(account: account),
                   OnePasswordService.isInstalled() else { return }
             do {
                 let key = try await OnePasswordService.readSecretAsync(reference: ref)

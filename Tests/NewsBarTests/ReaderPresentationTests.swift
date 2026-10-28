@@ -36,6 +36,21 @@ final class ReaderPresentationTests: XCTestCase {
     }
 
     @MainActor
+    func testDNSAndTimeoutFailuresProvideDifferentRecovery() {
+        let request = NewsReaderRequest(url: "https://www.bilibili.com/video/BV1xx411c7mD", title: "Video", item: nil, surface: "test", contextID: nil, consentEpoch: UUID(), privateSession: true)
+        let dnsReader = NewsReaderModel(request: request)
+        let timeoutReader = NewsReaderModel(request: request)
+        dnsReader.webView(WKWebView(), didFailProvisionalNavigation: nil, withError: URLError(.cannotFindHost))
+        timeoutReader.webView(WKWebView(), didFailProvisionalNavigation: nil, withError: URLError(.timedOut))
+
+        XCTAssertNotEqual(dnsReader.failure, timeoutReader.failure)
+        XCTAssertTrue(dnsReader.canRetry)
+        XCTAssertTrue(timeoutReader.canRetry)
+        XCTAssertTrue(dnsReader.canOpenExternally)
+        XCTAssertTrue(timeoutReader.canOpenExternally)
+    }
+
+    @MainActor
     func testUnsupportedURLDisablesBrowserHandoffAndFutileRetries() {
         let request = NewsReaderRequest(url: "file:///private/story.html", title: "Unsafe", item: nil, surface: "test", contextID: nil, consentEpoch: UUID(), privateSession: true)
         let model = NewsReaderModel(request: request)

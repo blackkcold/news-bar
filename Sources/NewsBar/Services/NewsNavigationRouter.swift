@@ -54,7 +54,7 @@ final class NewsNavigationRouter {
         position: Int? = nil
     ) {
         open(
-            url: item.url,
+            url: item.readerURL ?? item.url,
             title: item.displayTitle,
             item: item,
             surface: surface,

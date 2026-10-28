@@ -71,7 +71,9 @@ final class PrivateFileAdoptionTests: XCTestCase {
 
     func testEncryptedKeyStoreAndMachineUUIDAreOwnerOnly() async throws {
         let account = "test-private-file-\(UUID().uuidString)"
-        let store = EncryptedKeyStore()
+        // Injected directory: the production store holds real credentials.
+        let directory = temporaryDirectory()
+        let store = EncryptedKeyStore(directory: directory)
 
         let saved = await store.saveAPIKey("sk-test-private", account: account)
         XCTAssertTrue(saved)
@@ -83,11 +85,6 @@ final class PrivateFileAdoptionTests: XCTestCase {
             }
             cleanup.wait()
         }
-
-        let directory = FileManager.default.urls(
-            for: .applicationSupportDirectory,
-            in: .userDomainMask
-        )[0].appendingPathComponent(Bundle.main.bundleIdentifier ?? "com.newsbar")
 
         XCTAssertEqual(try mode(directory), 0o700)
         XCTAssertEqual(try mode(directory.appendingPathComponent("apikeys.enc")), 0o600)

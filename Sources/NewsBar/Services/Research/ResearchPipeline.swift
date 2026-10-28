@@ -88,7 +88,7 @@ struct ResearchPipeline: Sendable {
     ) async -> ResearchExecution {
         let depth = configuration.depth
         let profile = DepthProfile.profile(for: depth)
-        let origin = configuration.record.origin
+        let origin = configuration.record.run.origin
         let language = configuration.language
         let startedAt = now()
         let state = ResearchRunState()

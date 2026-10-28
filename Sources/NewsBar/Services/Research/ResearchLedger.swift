@@ -93,7 +93,9 @@ struct LedgerSnapshot: Sendable, Equatable {
 /// reservation is refused until the user explicitly resets today's usage.
 final class ResearchLedger: Sendable {
     static let shared = ResearchLedger()
-    static let currentVersion = 1
+    /// v1 stored only the three daily counters. v2 adds provider cooldowns and
+    /// still reads v1 files, upgrading them on the next write.
+    static let currentVersion = 2
 
     private struct Record: Codable, Sendable {
         var version = ResearchLedger.currentVersion
@@ -101,6 +103,9 @@ final class ResearchLedger: Sendable {
         var ai = LedgerCounts()
         var search = LedgerCounts()
         var tasks = LedgerCounts()
+        /// Provider id → the instant its quota block expires. Survives a
+        /// relaunch so a restart cannot immediately re-spend a limited quota.
+        var providerCooldowns: [String: Date] = [:]
 
         var isValid: Bool {
             version == ResearchLedger.currentVersion
@@ -111,7 +116,7 @@ final class ResearchLedger: Sendable {
         }
 
         enum CodingKeys: String, CodingKey {
-            case version, day, ai, search, tasks
+            case version, day, ai, search, tasks, providerCooldowns
         }
 
         init(day: Int) {
@@ -120,13 +125,22 @@ final class ResearchLedger: Sendable {
 
         init(from decoder: Decoder) throws {
             let container = try decoder.container(keyedBy: CodingKeys.self)
-            // Files written before the version field are v1 by definition.
-            version = try container.decodeIfPresent(Int.self, forKey: .version)
+            // Files written before the version field are the current version.
+            let stored = try container.decodeIfPresent(Int.self, forKey: .version)
                 ?? ResearchLedger.currentVersion
+            version = stored
             day = try container.decode(Int.self, forKey: .day)
             ai = try container.decode(LedgerCounts.self, forKey: .ai)
             search = try container.decode(LedgerCounts.self, forKey: .search)
             tasks = try container.decode(LedgerCounts.self, forKey: .tasks)
+            providerCooldowns = try container.decodeIfPresent(
+                [String: Date].self,
+                forKey: .providerCooldowns
+            ) ?? [:]
+            // A readable v1 file is upgraded in memory; the next write states v2.
+            if stored < ResearchLedger.currentVersion {
+                version = ResearchLedger.currentVersion
+            }
         }
     }
 
@@ -158,7 +172,7 @@ final class ResearchLedger: Sendable {
         lock.withLock { state in
             guard state.availability.isUsable else { return false }
             let today = Self.dayKey(for: date, calendar: calendar)
-            var record = state.record?.day == today ? state.record! : Record(day: today)
+            var record = Self.rolling(state.record, to: today)
 
             switch kind {
             case .ai:
@@ -183,6 +197,58 @@ final class ResearchLedger: Sendable {
         }
     }
 
+    /// Records a provider quota block. The later of the stored and new instants
+    /// wins, so a retried failure can never shorten an existing cooldown.
+    @discardableResult
+    func recordProviderCooldown(
+        _ provider: SearchProviderID,
+        until: Date,
+        at date: Date = Date()
+    ) -> Bool {
+        lock.withLock { state in
+            guard state.availability.isUsable else { return false }
+            let today = Self.dayKey(for: date, calendar: calendar)
+            var record = Self.rolling(state.record, to: today)
+            record.providerCooldowns = Self.pruned(record.providerCooldowns, at: date)
+            let existing = record.providerCooldowns[provider.rawValue]
+            if existing.map({ $0 >= until }) != true {
+                record.providerCooldowns[provider.rawValue] = until
+            }
+            do {
+                try write(record)
+                state.record = record
+                state.availability = .available
+                return true
+            } catch {
+                state.availability = Self.availability(for: error)
+                return false
+            }
+        }
+    }
+
+    /// `nil` when the provider is free to use. An unreadable ledger is not
+    /// treated as a cooldown: search already refuses on its own when unusable.
+    func providerCooldown(_ provider: SearchProviderID, at date: Date = Date()) -> Date? {
+        lock.withLock { state in
+            guard state.availability.isUsable, let record = state.record else { return nil }
+            guard let until = record.providerCooldowns[provider.rawValue], until > date else { return nil }
+            return until
+        }
+    }
+
+    /// Day rollover resets counters but must not discard a quota block that is
+    /// still in force.
+    private static func rolling(_ existing: Record?, to day: Int) -> Record {
+        guard let existing else { return Record(day: day) }
+        var record = existing.day == day ? existing : Record(day: day)
+        record.providerCooldowns = pruned(existing.providerCooldowns, at: Date())
+        return record
+    }
+
+    private static func pruned(_ cooldowns: [String: Date], at date: Date) -> [String: Date] {
+        cooldowns.filter { $0.value > date }
+    }
+
     /// One-time carry-over of the legacy burst-research counter into today's
     /// `ai.burst` column. No-op when today already has burst usage, so a partial
     /// migration retried on the next launch cannot double count.
@@ -192,7 +258,7 @@ final class ResearchLedger: Sendable {
         return lock.withLock { state in
             guard state.availability.isUsable else { return false }
             let today = Self.dayKey(for: date, calendar: calendar)
-            var record = state.record?.day == today ? state.record! : Record(day: today)
+            var record = Self.rolling(state.record, to: today)
             guard record.ai.burst == 0 else { return true }
             record.ai.burst = count
             do {
@@ -219,7 +285,7 @@ final class ResearchLedger: Sendable {
         return lock.withLock { state in
             guard state.availability.isUsable else { return false }
             let today = Self.dayKey(for: date, calendar: calendar)
-            var record = state.record?.day == today ? state.record! : Record(day: today)
+            var record = Self.rolling(state.record, to: today)
             record.search[origin] += count
             do {
                 try write(record)
