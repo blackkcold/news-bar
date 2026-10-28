@@ -35,20 +35,43 @@ enum ResearchRecordProvisioner {
         }
         if let existing = await store.latestRecord(topicKey: topicKey),
            shouldReuse(existing, origin: origin, now: now) {
-            var record = existing
-            if record.topic != item.title {
-                record.addAlias(record.topic)
-                record.topic = item.title
-            }
-            record.lastSeenAt = now
-            if record.seed.title.isEmpty { record.seed.title = item.title }
-            if record.seed.url == nil { record.seed.url = item.url }
-            if record.seed.publishedAt == nil { record.seed.publishedAt = item.publishedAt }
+            let record = adopt(existing, for: item, topicKey: topicKey, now: now)
             do {
                 try await store.save(record)
                 return record
             } catch {
                 return nil
+            }
+        }
+
+        // Exact keys miss when a hot-search headline evolves. Reuse a recent
+        // automatic record only when the title/alias similarity and source
+        // domain pass TopicFingerprint's strict fuzzy policy; manual records
+        // stay exact-only so the user's history is never merged implicitly.
+        // Filter by the lightweight index first: decoding every full record on
+        // each burst miss would be a needless I/O spike.
+        if origin.isAutomatic {
+            let recent = await store.index().filter {
+                $0.origin.isAutomatic
+                    && abs(now.timeIntervalSince($0.lastSeenAt)) <= TopicFingerprint.fuzzyMergeWindow
+            }
+            for entry in recent {
+                guard let candidate = await store.record(id: entry.id),
+                      TopicFingerprint.shouldFuzzyMerge(
+                          title: item.title,
+                          seedURL: item.url,
+                          source: item.source,
+                          origin: origin,
+                          with: candidate,
+                          now: now
+                      ) else { continue }
+                let record = adopt(candidate, for: item, topicKey: topicKey, now: now)
+                do {
+                    try await store.save(record)
+                    return record
+                } catch {
+                    return nil
+                }
             }
         }
 
@@ -89,6 +112,29 @@ enum ResearchRecordProvisioner {
         } catch {
             return nil
         }
+    }
+
+    private static func adopt(
+        _ existing: ResearchRecord,
+        for item: NewsItem,
+        topicKey: String,
+        now: Date
+    ) -> ResearchRecord {
+        var record = existing
+        if record.topic != item.title {
+            let previousTitle = record.topic
+            record.topic = item.title
+            record.addAlias(previousTitle)
+            // Keep exact-topic lookup working after a title evolves; otherwise
+            // the next notification opens a new record and starts a duplicate
+            // research pass.
+            record.topicKey = topicKey
+        }
+        record.lastSeenAt = now
+        if record.seed.title.isEmpty { record.seed.title = item.title }
+        if record.seed.url == nil { record.seed.url = item.url }
+        if record.seed.publishedAt == nil { record.seed.publishedAt = item.publishedAt }
+        return record
     }
 
     private static func shouldReuse(

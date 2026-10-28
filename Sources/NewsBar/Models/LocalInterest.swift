@@ -137,6 +137,9 @@ struct PersistedResearchState: Codable, Sendable {
     var notifiedBursts: Set<String> = []
     var notifiedKeywords: Set<String> = []
     var lastResearchAt: Date?
+    /// Start of the most recent feed-triggered research run. Persisted so a
+    /// relaunch cannot bypass the one-per-hour automatic budget.
+    var lastAutomaticStartedAt: Date?
     var updatedAt: Date = Date()
 }
 

@@ -48,6 +48,43 @@ struct ResearchMaintenance: Sendable {
         return updated
     }
 
+    /// Clears queued records that no coordinator slot owns. A crash or a
+    /// history reset can leave `.queued` behind; those records would otherwise
+    /// sit in the research center forever and look like work in progress.
+    /// Records younger than `ResearchAutoAdmission.queueLifetime` are kept
+    /// because their initial status write may still be in flight.
+    @discardableResult
+    func reclaimOrphanedQueuedRecords(
+        activeIDs: Set<String>,
+        now: Date? = nil
+    ) async -> Int {
+        let current = now ?? self.now()
+        let stale = await store.index().filter { entry in
+            entry.status == .queued
+                && !activeIDs.contains(entry.id)
+                && current.timeIntervalSince(entry.createdAt) > ResearchAutoAdmission.queueLifetime
+        }
+        guard !stale.isEmpty else { return 0 }
+
+        var reclaimed = 0
+        for entry in stale {
+            guard var record = await store.record(id: entry.id),
+                  record.status == .queued,
+                  record.run.startedAt == nil else { continue }
+            record.status = .interrupted
+            record.run.phase = .done
+            record.run.finishedAt = current
+            record.run.lastError = nil
+            do {
+                try await store.save(record)
+                reclaimed += 1
+            } catch {
+                continue
+            }
+        }
+        return reclaimed
+    }
+
     /// Applies the user's history/cache limits. Active research is protected by
     /// the caller through `excluding`; pinned records are protected by the store.
     @MainActor

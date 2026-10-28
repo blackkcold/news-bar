@@ -163,6 +163,21 @@ struct BurstResearch: Codable, Hashable, Sendable {
     }
 }
 
+extension BurstResearch {
+    /// Nodes that cite at least one evidence ID. This is the denominator for
+    /// "has the model grounded its timeline?"; quote-level verification is a
+    /// stricter check performed by the presentation layer.
+    var citedTimelineCount: Int {
+        timeline.filter { !$0.evidenceIDs.isEmpty }.count
+    }
+
+    /// A report with only unsourced timeline prose must not be presented as a
+    /// completed, ready research result.
+    var hasGroundedContent: Bool {
+        !summary.isEmpty || !overview.isEmpty || citedTimelineCount > 0
+    }
+}
+
 struct WebSearchResult: Codable, Hashable, Sendable {
     let url: String
     let title: String

@@ -213,6 +213,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             if let selected = ResearchSelectionTracker.shared.selectedID {
                 excluding.insert(selected)
             }
+            await ResearchMaintenance.shared.reclaimOrphanedQueuedRecords(activeIDs: excluding)
             await ResearchMaintenance.shared.runEnforcement(
                 settings: self.settings,
                 excluding: excluding

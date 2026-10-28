@@ -38,6 +38,24 @@ final class ResearchCenterRenderingTests: XCTestCase {
                         output: output
                     )
                     try await render(
+                        state: "empty-timeline",
+                        records: [readyWithEmptyTimelineRecord()],
+                        selectFirst: true,
+                        theme: theme,
+                        language: language,
+                        size: size,
+                        output: output
+                    )
+                    try await render(
+                        state: "unverified-timeline",
+                        records: [readyWithUnverifiedTimelineRecord()],
+                        selectFirst: true,
+                        theme: theme,
+                        language: language,
+                        size: size,
+                        output: output
+                    )
+                    try await render(
                         state: "failed",
                         records: [failedRecord()],
                         selectFirst: true,
@@ -132,6 +150,67 @@ final class ResearchCenterRenderingTests: XCTestCase {
                     ),
                 ],
                 searchStatus: .succeeded
+            )
+        )
+    }
+
+    private func readyWithEmptyTimelineRecord() -> ResearchRecord {
+        var verification = VerificationReport()
+        verification.verdict = .unverified
+        verification.claims = [
+            ClaimCheck(claim: "公开来源不足", status: nil, evidenceIDs: [], note: ""),
+        ]
+        return researchTestRecord(
+            title: "暂无可回溯时间线",
+            status: .ready,
+            report: BurstResearch(
+                summary: "现有来源不足以支撑时间线。",
+                overview: "只保留了摘要与核查结论。",
+                timeline: [],
+                searchStatus: .succeeded,
+                verification: verification
+            )
+        )
+    }
+
+    private func readyWithUnverifiedTimelineRecord() -> ResearchRecord {
+        let evidence = EvidenceItem(
+            id: "E1",
+            url: "https://example.com/story",
+            canonicalURL: "https://example.com/story",
+            domain: "example.com",
+            title: "来源",
+            publishedAt: Date(),
+            quote: "未能在正文中找到的引文。",
+            quoteVerified: false,
+            stance: .supports,
+            tier: .major,
+            syndicationGroup: nil,
+            fetchedAt: Date()
+        )
+        var verification = VerificationReport()
+        verification.verdict = .unverified
+        verification.claims = [
+            ClaimCheck(claim: "待核实", status: nil, evidenceIDs: ["E1"], note: ""),
+        ]
+        return researchTestRecord(
+            title: "未核实时间线",
+            status: .ready,
+            report: BurstResearch(
+                summary: "有一段时间线，但引文未通过逐字校验。",
+                overview: "保留节点并明确标注未核实。",
+                timeline: [
+                    TimelineNode(
+                        date: "2026-10-01",
+                        title: "待核实节点",
+                        detail: "渠道消息尚未确认",
+                        evidenceIDs: ["E1"],
+                        confidence: .low
+                    ),
+                ],
+                searchStatus: .succeeded,
+                evidence: [evidence],
+                verification: verification
             )
         )
     }

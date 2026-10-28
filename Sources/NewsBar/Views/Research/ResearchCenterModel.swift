@@ -202,26 +202,6 @@ final class ResearchCenterModel {
         await reloadEntries()
     }
 
-    @discardableResult
-    func createManual(item: NewsItem) async -> String? {
-        guard ResearchConsent.presentIfNeeded(settings: settings) else { return nil }
-        guard let record = await ResearchRecordProvisioner.ensureRecord(
-            for: item,
-            origin: .manual,
-            store: store
-        ) else {
-            errorMessage = L10n.string("research.error.create", language: settings.appLanguage)
-            return nil
-        }
-
-        if record.run.startedAt == nil || !record.status.isActive {
-            await schedule(record)
-        }
-        await refresh()
-        await select(record.id)
-        return record.id
-    }
-
     func retry(id: String) async {
         guard let record = await store.record(id: id), record.status != .corrupt else { return }
         guard !record.status.isActive else { return }
@@ -287,13 +267,31 @@ final class ResearchCenterModel {
         }
         if !report.timeline.isEmpty {
             lines += ["## \(L10n.string("burst.timeline", language: language))", ""]
-            for node in report.timeline {
-                let date = node.date.isEmpty ? "" : "\(node.date) "
-                lines.append("- \(date)\(node.title)：\(node.detail)")
+            let presentation = ReportPresentation(
+                report: report,
+                isLegacy: record.reportVersion == 0
+            )
+            if presentation.isLegacy {
+                lines += [L10n.string("research.timeline.legacy", language: language), ""]
+            }
+            for item in presentation.nodes {
+                let date = item.node.date.isEmpty ? "" : "\(item.node.date) "
+                let ids = item.node.evidenceIDs.isEmpty
+                    ? ""
+                    : " [\(item.node.evidenceIDs.joined(separator: ", "))]"
+                let state: String
+                if presentation.isLegacy || item.state == .verified {
+                    state = ""
+                } else if item.state == .citedUnverified {
+                    state = "（\(L10n.string("research.node.unverified", language: language))）"
+                } else {
+                    state = "（\(L10n.string("research.node.unsourced", language: language))）"
+                }
+                lines.append("- \(date)\(item.node.title)：\(item.node.detail)\(ids)\(state)")
             }
             lines.append("")
         }
-        if let verification = report.verification {
+        if let verification = report.verification, !report.evidence.isEmpty {
             lines += [
                 "## \(L10n.string("research.section.verification", language: language))",
                 "",
@@ -301,6 +299,31 @@ final class ResearchCenterModel {
                 L10n.string("research.independentSources", language: language, verification.independentSources),
                 "",
             ]
+            if !verification.claims.isEmpty {
+                for claim in verification.claims {
+                    let status = claim.status.map {
+                        L10n.string("research.stance.\($0.rawValue)", language: language)
+                    } ?? L10n.string("research.node.unverified", language: language)
+                    let ids = claim.evidenceIDs.isEmpty
+                        ? ""
+                        : " [\(claim.evidenceIDs.joined(separator: ", "))]"
+                    lines.append("- [\(status)] \(claim.claim)\(ids)")
+                    if !claim.note.isEmpty {
+                        lines.append("  \(claim.note)")
+                    }
+                }
+                lines.append("")
+            }
+            if !verification.conflicts.isEmpty {
+                lines += ["### \(L10n.string("research.conflicts", language: language))", ""]
+                lines += verification.conflicts.map { "- \($0)" }
+                lines.append("")
+            }
+            if !verification.missing.isEmpty {
+                lines += ["### \(L10n.string("research.missing", language: language))", ""]
+                lines += verification.missing.map { "- \($0)" }
+                lines.append("")
+            }
         }
         if !report.evidence.isEmpty {
             lines += ["## \(L10n.string("research.section.evidence", language: language))", ""]
