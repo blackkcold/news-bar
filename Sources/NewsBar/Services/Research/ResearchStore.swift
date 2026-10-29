@@ -45,6 +45,8 @@ struct ResearchIndexEntry: Codable, Hashable, Sendable, Identifiable {
     let verdict: VerificationReport.Verdict?
     let hasReport: Bool
     let aliasCount: Int
+    let seedItemID: String?
+    let seedURL: String?
     var issue: ResearchEntryIssue?
     /// Version recorded when the projection was written. `nil` means the index
     /// predates the field, so the bootstrap probes that file once.
@@ -68,6 +70,8 @@ struct ResearchIndexEntry: Codable, Hashable, Sendable, Identifiable {
         verdict = record.report?.verification?.verdict
         hasReport = record.report != nil
         aliasCount = record.aliases.count
+        seedItemID = record.seed.itemID
+        seedURL = record.seed.url
         self.issue = issue
         schemaVersion = record.schemaVersion
     }
@@ -217,7 +221,9 @@ actor ResearchStore: ResearchPersisting {
     static let shared = ResearchStore()
 
     private struct IndexDocument: Codable {
-        var version = 1
+        // Version 2 adds seed identity to the rebuildable projection. An old
+        // index must be rebuilt even when both seed fields legitimately are nil.
+        var version = 2
         var updatedAt: Date
         var entries: [ResearchIndexEntry]
     }
@@ -281,7 +287,7 @@ actor ResearchStore: ResearchPersisting {
 
         if let data = try? Data(contentsOf: indexURL),
            let document = try? JSONDecoder().decode(IndexDocument.self, from: data),
-           document.version == 1,
+           document.version == 2,
            Set(document.entries.map(\.id)) == Set(files.keys),
            Set(document.entries.map(\.id)).count == document.entries.count {
             entries = Dictionary(uniqueKeysWithValues: document.entries.map { ($0.id, $0) })
@@ -370,6 +376,26 @@ actor ResearchStore: ResearchPersisting {
     func index() async -> [ResearchIndexEntry] {
         if !didBootstrap { _ = await bootstrap() }
         return sortedEntries()
+    }
+
+    /// Prefer exact item identity over canonical URL, then exact topic key.
+    /// Each tier returns the latest matching projection, without reading reports.
+    func indexEntry(matchingItemID itemID: String?, url: String?, topicKey: String?) async -> ResearchIndexEntry? {
+        if !didBootstrap { _ = await bootstrap() }
+        let candidates = sortedEntries().filter { $0.issue == nil && $0.status != .corrupt }
+        if let itemID, !itemID.isEmpty,
+           let match = candidates.first(where: { $0.seedItemID == itemID }) { return match }
+        if let url, !url.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            let canonical = ContentIdentity.canonicalURL(url)
+            if let match = candidates.first(where: { entry in
+                guard let seedURL = entry.seedURL, !seedURL.isEmpty else { return false }
+                return ContentIdentity.canonicalURL(seedURL) == canonical
+            }) { return match }
+        }
+        if let topicKey, !topicKey.isEmpty {
+            return candidates.first { $0.topicKey == topicKey }
+        }
+        return nil
     }
 
     func records() async -> [ResearchRecord] {
