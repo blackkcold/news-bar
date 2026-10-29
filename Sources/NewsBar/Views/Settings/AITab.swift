@@ -420,9 +420,7 @@ struct AITab: View {
                         Text(L10n.string(
                             "ai.cost.perCall",
                             AICostFormat.yuan(perCall),
-                            200,
                             AICostFormat.yuan(perCall * 200),
-                            500,
                             AICostFormat.yuan(perCall * 500)
                         ))
                         .font(.caption2)
@@ -453,9 +451,7 @@ struct AITab: View {
                         Text(L10n.string(
                             "ai.cost.perCall",
                             AICostFormat.yuan(perCall),
-                            200,
                             AICostFormat.yuan(perCall * 200),
-                            500,
                             AICostFormat.yuan(perCall * 500)
                         ))
                         .font(.caption2)

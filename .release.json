@@ -15,5 +15,5 @@
   "release_note_style": "structured-cn",
   "summary": "六家搜索 provider、限流治理与隐私一致性",
   "summary_en": "Six search providers, rate-limit governance, and privacy consistency",
-  "validation": "swift test 1088/1088（2 skipped）+ scripts/build.sh + codesign verify + DMG verify 通过"
+  "validation": "swift test 1090/1090（2 skipped）+ scripts/build.sh + codesign verify + DMG verify 通过"
 }

@@ -75,4 +75,18 @@ final class LocalizationParityTests: XCTestCase {
             "3/500 this month"
         )
     }
+
+    func testPricedModelCostLineUsesThreeAmounts() {
+        let text = L10n.string(
+            "ai.cost.perCall",
+            language: .zh,
+            "¥0.10",
+            "¥20.00",
+            "¥50.00"
+        )
+        XCTAssertEqual(
+            text,
+            "按当前模型约 ¥0.10/次；200 次约 ¥20.00，500 次约 ¥50.00"
+        )
+    }
 }
