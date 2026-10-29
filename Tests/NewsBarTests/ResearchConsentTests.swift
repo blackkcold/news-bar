@@ -4,8 +4,9 @@ import XCTest
 final class ResearchConsentTests: XCTestCase {
     func testConsentVersionPolicy() {
         XCTAssertTrue(ResearchConsent.requiresConsent(storedVersion: 0))
-        XCTAssertFalse(ResearchConsent.requiresConsent(storedVersion: 1))
+        XCTAssertTrue(ResearchConsent.requiresConsent(storedVersion: 1))
         XCTAssertFalse(ResearchConsent.requiresConsent(storedVersion: 2))
+        XCTAssertFalse(ResearchConsent.requiresConsent(storedVersion: 3))
     }
 
     func testDisclosureListsEnabledProvidersAndAIModel() {

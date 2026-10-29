@@ -196,7 +196,7 @@ final class PageReaderTests: XCTestCase {
             )
         )
 
-        let readResult = await reader.read(
+        let readResult = try await reader.read(
             hit(inline: String(repeating: "内联正文内容", count: 100)),
             apiKey: ""
         )
@@ -215,7 +215,7 @@ final class PageReaderTests: XCTestCase {
             direct: failingDirect()
         )
 
-        let shortInlineResult = await reader.read(hit(inline: "太短"), apiKey: "")
+        let shortInlineResult = try await reader.read(hit(inline: "太短"), apiKey: "")
         let document = try XCTUnwrap(shortInlineResult)
         XCTAssertEqual(document.source, .firecrawl)
     }
@@ -233,7 +233,7 @@ final class PageReaderTests: XCTestCase {
             direct: failingDirect()
         )
 
-        let firstResult = await first.read(hit(), apiKey: "")
+        let firstResult = try await first.read(hit(), apiKey: "")
         let firstDocument = try XCTUnwrap(firstResult)
         XCTAssertEqual(firstDocument.source, .firecrawl)
         XCTAssertEqual(firstScrapeCalls.count, 1)
@@ -247,7 +247,7 @@ final class PageReaderTests: XCTestCase {
             },
             direct: failingDirect()
         )
-        let cachedResult = await second.read(hit(), apiKey: "")
+        let cachedResult = try await second.read(hit(), apiKey: "")
         let cached = try XCTUnwrap(cachedResult)
 
         XCTAssertEqual(cached.source, .firecrawl)
@@ -277,7 +277,7 @@ final class PageReaderTests: XCTestCase {
             )
         )
 
-        let directResult = await reader.read(hit(), apiKey: "")
+        let directResult = try await reader.read(hit(), apiKey: "")
         let document = try XCTUnwrap(directResult)
         XCTAssertEqual(document.source, .direct)
         XCTAssertTrue(document.text.contains("直连抓取到的正文"))
@@ -289,7 +289,7 @@ final class PageReaderTests: XCTestCase {
             scrape: { _, _ in throw NewsBarError.requestFailed },
             direct: failingDirect()
         )
-        let document = await reader.read(hit(), apiKey: "")
+        let document = try await reader.read(hit(), apiKey: "")
         XCTAssertNil(document)
     }
 
@@ -320,11 +320,81 @@ final class PageReaderTests: XCTestCase {
             isScrapeEnabled: false
         )
 
-        let result = await reader.read(hit(), apiKey: "fc")
+        let result = try await reader.read(hit(), apiKey: "fc")
         let document = try XCTUnwrap(result)
 
         XCTAssertEqual(document.source, .direct)
         XCTAssertEqual(scrapeCalls.count, 0)
+    }
+
+    // MARK: - Cancellation
+
+    func testScrapeCancellationPropagatesInsteadOfBecomingNil() async throws {
+        let reader = PageReader(
+            cache: ResearchCacheStore(directoryURL: try researchTestDirectory()),
+            scrape: { _, _ in throw CancellationError() },
+            direct: DirectHTMLReader(
+                transport: { _ in throw PageReadError.http(500) },
+                resolver: { _ in ["93.184.216.34"] },
+                now: { Date() }
+            ),
+            isScrapeEnabled: true
+        )
+
+        do {
+            _ = try await reader.read(hit(), apiKey: "fc")
+            XCTFail("expected cancellation")
+        } catch is CancellationError {
+            // Expected: a cancelled run must not look like an unreadable page.
+        }
+    }
+
+    func testDirectReadCancellationPropagates() async throws {
+        let reader = PageReader(
+            cache: ResearchCacheStore(directoryURL: try researchTestDirectory()),
+            scrape: { _, _ in throw PageReadError.http(500) },
+            direct: DirectHTMLReader(
+                transport: { _ in throw CancellationError() },
+                resolver: { _ in ["93.184.216.34"] },
+                now: { Date() }
+            ),
+            isScrapeEnabled: false
+        )
+
+        do {
+            _ = try await reader.read(hit(), apiKey: "")
+            XCTFail("expected cancellation")
+        } catch is CancellationError {
+            // Expected.
+        }
+    }
+
+    func testCancelledTaskStopsBeforeAnyRequest() async throws {
+        let scrapeCalls = PageCallCounter()
+        let reader = PageReader(
+            cache: ResearchCacheStore(directoryURL: try researchTestDirectory()),
+            scrape: { _, _ in
+                scrapeCalls.increment()
+                return String(repeating: "正文", count: 300)
+            },
+            direct: DirectHTMLReader(
+                transport: { _ in throw PageReadError.http(500) },
+                resolver: { _ in ["93.184.216.34"] },
+                now: { Date() }
+            ),
+            isScrapeEnabled: true
+        )
+
+        let task = Task {
+            try await reader.read(hit(), apiKey: "fc")
+        }
+        task.cancel()
+        do {
+            _ = try await task.value
+            XCTFail("expected cancellation")
+        } catch is CancellationError {}
+
+        XCTAssertEqual(scrapeCalls.count, 0, "a cancelled read must not send a request")
     }
 }
 

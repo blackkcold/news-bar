@@ -192,8 +192,3 @@ struct WebSearchResult: Codable, Hashable, Sendable {
         self.snippet = snippet
     }
 }
-
-/// Extensible for future Bing/DDG providers; only Firecrawl (keyless) is shipped.
-enum WebSearchProvider: String, CaseIterable, Codable, Sendable {
-    case firecrawl
-}

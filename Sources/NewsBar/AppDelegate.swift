@@ -87,6 +87,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         // No launch-time rescheduling: pending requests survive quit now, and the
         // startup refresh installs the digest-bearing daily request. Installing a
         // plain template here could race that refresh and overwrite it.
+
+        // Local QA hook: `open NewsBar.app --args --show-settings` opens the
+        // settings window without menu-bar interaction. Normal launches are
+        // unaffected.
+        if CommandLine.arguments.contains("--show-settings") {
+            DispatchQueue.main.async { [weak self] in
+                self?.openSettings(toAITab: true)
+            }
+        }
     }
 
     private func scheduleStartupAndAutoRefresh() {

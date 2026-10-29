@@ -75,7 +75,7 @@ final class NewsOrchestrator {
     private let rateLimiter = RateLimiter()
     private let researchStore = ResearchStore.shared
     private let researchCacheStore = ResearchCacheStore.shared
-    private let researchSearchRouter = SearchRouter(ledger: .shared)
+    private let researchSearchRouter = SearchRouter(ledger: .shared, quota: .shared)
     private let researchLedger = ResearchLedger.shared
     private let researchClearIntentStore = ResearchClearIntentStore()
     /// True from the moment a clear starts until every stage is verified. New
@@ -1064,7 +1064,6 @@ final class NewsOrchestrator {
         let scheduled = await scheduleResearch(
             recordID: record.id,
             settings: settings,
-            forceSearch: false,
             notify: settings.burstPushEnabled,
             trigger: origin
         )
@@ -1131,7 +1130,7 @@ final class NewsOrchestrator {
         // A finished record opens as-is; re-running is an explicit action from
         // the detail view, not a side effect of clicking "verify" again.
         if record.run.startedAt == nil {
-            await scheduleResearch(recordID: record.id, settings: settings, forceSearch: false)
+            await scheduleResearch(recordID: record.id, settings: settings)
         }
         await refreshResearchSummary()
         return record.id
@@ -1147,7 +1146,6 @@ final class NewsOrchestrator {
     private func scheduleResearch(
         recordID: String,
         settings: AppSettings,
-        forceSearch: Bool,
         notify: Bool = true,
         trigger: ResearchOrigin = .manual
     ) async -> Bool {
@@ -1159,7 +1157,6 @@ final class NewsOrchestrator {
             return await self.executeResearch(
                 record: record,
                 settings: settings,
-                forceSearch: forceSearch,
                 progress: progress
             )
         }
@@ -1172,7 +1169,6 @@ final class NewsOrchestrator {
     func executeResearch(
         record: ResearchRecord,
         settings: AppSettings,
-        forceSearch: Bool = false,
         progress: @escaping @Sendable (ResearchRun) async -> Void
     ) async -> ResearchExecution {
         await InterestController.shared.prepare()
@@ -1328,7 +1324,7 @@ final class NewsOrchestrator {
             ) else { continue }
 
             guard ResearchAutoAdmission.allows(record, now: now) else { continue }
-            scheduled = await scheduleResearch(recordID: record.id, settings: settings, forceSearch: false, trigger: .keyword)
+            scheduled = await scheduleResearch(recordID: record.id, settings: settings, trigger: .keyword)
             if scheduled {
                 lastAutomaticStartedAt = now
                 let pair = "\(match.keyword)\n\(match.item.title)"
@@ -1378,7 +1374,7 @@ final class NewsOrchestrator {
             store: researchStore
         ) else { return }
 
-        await scheduleResearch(recordID: record.id, settings: settings, forceSearch: true)
+        await scheduleResearch(recordID: record.id, settings: settings)
         openBurstDetail(title: trimmedTopic)
         await refreshResearchSummary()
     }

@@ -18,6 +18,8 @@ actor SearchRouter {
     /// Optional shared ledger. When present, a quota block survives a relaunch;
     /// without it the router stays in-memory only, which keeps tests hermetic.
     private let ledger: ResearchLedger?
+    /// Local per-provider request guards. `nil` in tests that do not care.
+    private let quota: SearchQuotaStore?
 
     private var cooldownUntil: [SearchProviderID: Date] = [:]
     private var consecutiveQuotaFailures: [SearchProviderID: Int] = [:]
@@ -26,31 +28,43 @@ actor SearchRouter {
     private var invalidKeyFingerprints: [SearchProviderID: String] = [:]
     private var statuses: [SearchProviderID: SearchProviderStatus] = [:]
 
+    private static var utcCalendar: Calendar {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0) ?? .current
+        return calendar
+    }
+
     init(
         providers: [any SearchProvider]? = nil,
         cache: ResearchCacheStore = ResearchCacheStore(),
         now: @escaping @Sendable () -> Date = { Date() },
-        ledger: ResearchLedger? = nil
+        ledger: ResearchLedger? = nil,
+        quota: SearchQuotaStore? = nil
     ) {
         self.providers = providers ?? [
             TavilySearchProvider(),
             FirecrawlSearchProvider(),
+            TinyFishSearchProvider(),
+            ExaSearchProvider(),
+            ParallelSearchProvider(),
             BraveSearchProvider(),
         ]
         self.cache = cache
         self.now = now
         self.ledger = ledger
+        self.quota = quota
     }
 
     func search(
         _ query: SearchQuery,
         configuration: SearchRouterConfiguration,
         maxAttempts: Int = DepthProfile.maxSearchHTTPCallsPerTask,
+        maxProviderAttempts: Int = 3,
         useCache: Bool = true,
         ticket: SearchAttemptTicket? = nil
     ) async throws -> SearchBatch {
         let current = now()
-        let cacheKey = Self.cacheKey(for: query)
+        let cacheKey = Self.cacheKey(for: query, configuration: configuration)
         let attempts = ticket ?? SearchAttemptTicket(limit: maxAttempts)
         let cacheEpoch = await cache.writeEpoch()
 
@@ -77,6 +91,7 @@ actor SearchRouter {
 
         var failures: [SearchProviderFailure] = []
         var failovers = 0
+        var providerAttempts = 0
 
         for provider in ordered {
             try Task.checkCancellation()
@@ -86,7 +101,7 @@ actor SearchRouter {
             }
 
             let key = configuration.key(for: provider.id)
-            if provider.requiresKey, key.isEmpty {
+            if provider.authMode.needsKeyToDispatch, key.isEmpty {
                 record(.missingKey, for: provider.id)
                 failures.append(SearchProviderFailure(provider: provider.id, reason: .missingKey))
                 continue
@@ -126,6 +141,26 @@ actor SearchRouter {
                 )
                 continue
             }
+
+            // A single query must not spend the whole task budget walking six
+            // providers. Skips above are free; this cap counts real dispatches.
+            guard providerAttempts < maxProviderAttempts else {
+                failures.append(SearchProviderFailure(provider: nil, reason: .attemptLimit))
+                break
+            }
+
+            let keyed = !key.isEmpty
+            if let quota {
+                let allowed = await quota.consume(for: provider.id, keyed: keyed)
+                if !allowed {
+                    record(.quotaExhausted, for: provider.id)
+                    failures.append(
+                        SearchProviderFailure(provider: provider.id, reason: .quotaExhausted)
+                    )
+                    continue
+                }
+            }
+            providerAttempts += 1
 
             var retried = false
             while true {
@@ -192,9 +227,31 @@ actor SearchRouter {
                         break
                     }
 
+                    if case .rateLimited(let retryAfter) = mapped {
+                        let until = recordRateLimit(
+                            for: provider.id,
+                            at: now(),
+                            retryAfter: retryAfter
+                        )
+                        record(.cooling, for: provider.id, until: until, failure: .rateLimited)
+                        failures.append(
+                            SearchProviderFailure(
+                                provider: provider.id,
+                                reason: .rateLimited
+                            )
+                        )
+                        failovers += 1
+                        break
+                    }
+
                     if mapped == .quotaExhausted {
-                        let until = recordQuotaFailure(for: provider.id, at: now())
-                        record(.cooling, for: provider.id, until: until)
+                        let until = recordQuotaExhaustion(
+                            for: provider.id,
+                            keyed: keyed,
+                            at: now()
+                        )
+                        await quota?.exhaust(for: provider.id, keyed: keyed)
+                        record(.quotaExhausted, for: provider.id, until: until)
                         failures.append(
                             SearchProviderFailure(
                                 provider: provider.id,
@@ -275,48 +332,89 @@ actor SearchRouter {
     func statusSnapshot(
         configuration: SearchRouterConfiguration,
         at date: Date? = nil
-    ) -> [SearchProviderStatus] {
+    ) async -> [SearchProviderStatus] {
         let current = date ?? now()
-        return SearchProviderID.failoverOrder.map { id in
+        var result: [SearchProviderStatus] = []
+        for id in SearchProviderID.failoverOrder {
             guard configuration.enabled.contains(id) else {
-                return SearchProviderStatus(provider: id, state: .disabled)
+                result.append(SearchProviderStatus(provider: id, state: .disabled))
+                continue
             }
-            let requiresKey = providers.first { $0.id == id }?.requiresKey ?? id.requiresAPIKey
             let key = configuration.key(for: id)
-            if requiresKey, key.isEmpty {
-                return SearchProviderStatus(provider: id, state: .missingKey)
-            }
-            if let until = cooldownUntil[id] ?? ledger?.providerCooldown(id, at: current), until > current {
-                return SearchProviderStatus(
-                    provider: id,
-                    state: .cooling,
-                    cooldownUntil: until,
-                    lastFailure: .quotaExhausted
+            let snapshot = await quota?.snapshot(for: id, keyed: !key.isEmpty, at: current)
+            if id.authMode.needsKeyToDispatch, key.isEmpty {
+                result.append(
+                    SearchProviderStatus(provider: id, state: .missingKey, quota: snapshot)
                 )
+                continue
+            }
+            let persisted = ledger?.providerCooldown(id, at: current)
+            if let until = cooldownUntil[id] ?? persisted, until > current {
+                result.append(
+                    SearchProviderStatus(
+                        provider: id,
+                        state: .cooling,
+                        cooldownUntil: until,
+                        lastFailure: .quotaExhausted,
+                        quota: snapshot
+                    )
+                )
+                continue
             }
             let fingerprint = Self.fingerprint(key)
             if invalidKeyFingerprints[id] == fingerprint {
-                return SearchProviderStatus(
-                    provider: id,
-                    state: .authRejected,
-                    lastFailure: .authRejected
+                result.append(
+                    SearchProviderStatus(
+                        provider: id,
+                        state: .authRejected,
+                        lastFailure: .authRejected,
+                        quota: snapshot
+                    )
                 )
+                continue
             }
-            return statuses[id] ?? SearchProviderStatus(provider: id, state: .unattempted)
+            let base = statuses[id] ?? SearchProviderStatus(provider: id, state: .unattempted)
+            result.append(
+                SearchProviderStatus(
+                    provider: id,
+                    state: base.state,
+                    cooldownUntil: base.cooldownUntil,
+                    lastFailure: base.lastFailure,
+                    quota: snapshot
+                )
+            )
         }
+        return result
     }
 
-    static func cacheKey(for query: SearchQuery) -> String {
+    /// The cache key includes the dispatchable provider set. Without it, a
+    /// cached batch can be replayed after a provider is disabled and the report
+    /// would still credit the closed provider.
+    static func cacheKey(
+        for query: SearchQuery,
+        configuration: SearchRouterConfiguration? = nil
+    ) -> String {
         let normalized = query.text
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .folding(options: [.caseInsensitive, .widthInsensitive], locale: Locale(identifier: "en_US_POSIX"))
             .lowercased()
-        return [
+        var parts = [
             normalized,
             query.recency.rawValue,
             query.language ?? "",
             String(query.maxResults),
-        ].joined(separator: "\u{001F}")
+        ]
+        if let configuration {
+            let dispatchable = configuration.enabled
+                .filter { provider in
+                    !provider.authMode.needsKeyToDispatch || !configuration.key(for: provider).isEmpty
+                }
+                .map(\.rawValue)
+                .sorted()
+                .joined(separator: ",")
+            parts.append("providers:\(dispatchable)")
+        }
+        return parts.joined(separator: "\u{001F}")
     }
 
     private func store(_ batch: SearchBatch, cacheKey: String, epoch: Int) async {
@@ -336,13 +434,37 @@ actor SearchRouter {
     }
 
     @discardableResult
-    private func recordQuotaFailure(for provider: SearchProviderID, at date: Date) -> Date {
+    private func recordRateLimit(
+        for provider: SearchProviderID,
+        at date: Date,
+        retryAfter: TimeInterval?
+    ) -> Date {
         let failures = (consecutiveQuotaFailures[provider] ?? 0) + 1
         consecutiveQuotaFailures[provider] = failures
-        let until = date.addingTimeInterval(failures >= 2 ? 30 * 60 : 15 * 60)
+        let ladder: [TimeInterval] = [60, 300, 900, 3600]
+        let backoff = ladder[min(failures - 1, ladder.count - 1)]
+        // Honour the provider's hint, but bound it: a bad header must not park
+        // a provider for a day, and a zero must not hammer it.
+        let delay = retryAfter.map { min(max($0, 60), 24 * 3600) } ?? backoff
+        let until = date.addingTimeInterval(delay)
         cooldownUntil[provider] = until
-        // Persist the block so a relaunch cannot immediately re-spend a quota
+        // Persist the block so a relaunch cannot immediately re-spend a limit
         // that the provider already refused.
+        ledger?.recordProviderCooldown(provider, until: until, at: date)
+        return until
+    }
+
+    /// `402` means the allowance is gone, not that we were too fast. Park the
+    /// provider until its own window resets instead of retrying in 15 minutes.
+    @discardableResult
+    private func recordQuotaExhaustion(
+        for provider: SearchProviderID,
+        keyed: Bool,
+        at date: Date
+    ) -> Date {
+        let limit = SearchRateLimits.limit(for: provider, keyed: keyed)
+        let until = limit.resetDate(after: date, calendar: Self.utcCalendar)
+        cooldownUntil[provider] = until
         ledger?.recordProviderCooldown(provider, until: until, at: date)
         return until
     }
@@ -366,6 +488,7 @@ actor SearchRouter {
         case .missingKey: return .missingKey
         case .unauthorized: return .authRejected
         case .forbidden: return .forbidden
+        case .rateLimited: return .rateLimited
         case .quotaExhausted: return .quotaExhausted
         case .server(let status): return .server(status)
         case .timeout: return .timeout

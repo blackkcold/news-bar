@@ -190,6 +190,10 @@ struct DirectHTMLReader: Sendable {
             throw PageReadError.tooLarge
         } catch let error as PageReadError {
             throw error
+        } catch let error as CancellationError {
+            throw error
+        } catch let error as URLError where error.code == .cancelled {
+            throw CancellationError()
         } catch {
             throw PageReadError.http(0)
         }

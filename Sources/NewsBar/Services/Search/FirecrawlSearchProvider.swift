@@ -4,7 +4,6 @@ import Foundation
 /// higher limits. It returns snippets only; page bodies come from `PageReader`.
 struct FirecrawlSearchProvider: SearchProvider {
     let id: SearchProviderID = .firecrawl
-    let requiresKey = false
 
     private let transport: SearchHTTPTransport
     private let endpoint: URL
@@ -39,7 +38,7 @@ struct FirecrawlSearchProvider: SearchProvider {
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
         let (data, response) = try await send(request)
-        try SearchHTTPMapping.validate(response)
+        try SearchHTTPMapping.validate(response, data: data)
 
         struct FirecrawlResponse: Decodable {
             struct Result: Decodable {

@@ -4,7 +4,6 @@ import Foundation
 /// when the index knows a publish date.
 struct BraveSearchProvider: SearchProvider {
     let id: SearchProviderID = .brave
-    let requiresKey = true
 
     private let transport: SearchHTTPTransport
     private let endpoint: URL
@@ -18,7 +17,7 @@ struct BraveSearchProvider: SearchProvider {
     }
 
     func search(_ query: SearchQuery, key: String) async throws -> [SearchHit] {
-        guard requiresKey, !key.isEmpty else { throw SearchProviderError.missingKey }
+        guard !key.isEmpty else { throw SearchProviderError.missingKey }
         let text = query.text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { throw SearchProviderError.emptyQuery }
 
@@ -43,7 +42,7 @@ struct BraveSearchProvider: SearchProvider {
         request.timeoutInterval = 20
 
         let (data, response) = try await send(request)
-        try SearchHTTPMapping.validate(response)
+        try SearchHTTPMapping.validate(response, data: data)
 
         struct BraveResponse: Decodable {
             struct Web: Decodable {

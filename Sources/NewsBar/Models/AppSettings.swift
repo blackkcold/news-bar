@@ -315,19 +315,14 @@ final class AppSettings {
     var burstTestTopic: String {
         didSet { UserDefaults.standard.set(burstTestTopic, forKey: "burstTestTopic") }
     }
-    /// Developer-only toggle controlling whether the simulated burst push runs
-    /// web search. Independent from `webSearchEnabled` so the test pipeline can
-    /// be exercised with search even when the realtime burst search is off.
-    var burstTestWebSearchEnabled: Bool {
-        didSet { UserDefaults.standard.set(burstTestWebSearchEnabled, forKey: "burstTestWebSearchEnabled") }
-    }
-    /// Optional web search for burst research. Off ⇒ pure-AI fallback.
-    var webSearchEnabled: Bool {
-        didSet { UserDefaults.standard.set(webSearchEnabled, forKey: "webSearchEnabled") }
-    }
-    /// Optional Firecrawl API key. Empty ⇒ keyless free tier.
+    /// Legacy Firecrawl key, kept only for the one-time migration into the
+    /// encrypted store. New values are never written back as plaintext;
+    /// clearing the property removes any leftover legacy value.
     var firecrawlAPIKey: String {
-        didSet { UserDefaults.standard.set(firecrawlAPIKey, forKey: "firecrawlAPIKey") }
+        didSet {
+            guard firecrawlAPIKey.isEmpty else { return }
+            UserDefaults.standard.removeObject(forKey: "firecrawlAPIKey")
+        }
     }
     /// Independent daily cap for burst research AI requests.
     var burstDailyCap: Int {
@@ -503,7 +498,9 @@ final class AppSettings {
         let rawRecency = defaults.stringIfPresent(forKey: "researchDefaultRecency") ?? ResearchDefaultRecency.auto.rawValue
         self.researchDefaultRecency = ResearchDefaultRecency(rawValue: rawRecency) ?? .auto
         let rawProviders = defaults.stringArray(forKey: "researchSearchProviders")
-            ?? SearchProviderID.allCases.map(\.rawValue)
+            ?? SearchProviderID.failoverOrder
+                .filter { $0.authMode != .requiredKey }
+                .map(\.rawValue)
         self.researchSearchProviders = Self.normalizedSearchProviders(rawProviders)
         let rawHistoryLimit = defaults.integerIfPresent(forKey: "researchHistoryLimit") ?? 200
         self.researchHistoryLimit = Self.validResearchHistoryLimits.contains(rawHistoryLimit) ? rawHistoryLimit : 200
@@ -516,8 +513,6 @@ final class AppSettings {
         self.researchConsentVersion = defaults.integerIfPresent(forKey: "researchConsentVersion") ?? 0
         self.burstTestMode = defaults.boolIfPresent(forKey: "burstTestMode") ?? false
         self.burstTestTopic = defaults.stringIfPresent(forKey: "burstTestTopic") ?? ""
-        self.burstTestWebSearchEnabled = defaults.boolIfPresent(forKey: "burstTestWebSearchEnabled") ?? false
-        self.webSearchEnabled = defaults.boolIfPresent(forKey: "webSearchEnabled") ?? false
         self.firecrawlAPIKey = defaults.stringIfPresent(forKey: "firecrawlAPIKey") ?? ""
         let rawBurstCap = defaults.integerIfPresent(forKey: "burstDailyCap") ?? 20
         self.burstDailyCap = Self.validBurstCaps.contains(rawBurstCap) ? rawBurstCap : 20

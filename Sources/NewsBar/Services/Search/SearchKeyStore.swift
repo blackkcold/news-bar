@@ -78,13 +78,15 @@ enum SearchKeyStore {
     /// Clears the plaintext UserDefaults value only after the encrypted write
     /// succeeded. A failure keeps both copies so the next launch can retry.
     @MainActor
-    static func migrateLegacyFirecrawlKey(settings: AppSettings) async -> SearchKeyMigrationResult {
+    static func migrateLegacyFirecrawlKey(
+        settings: AppSettings,
+        store: EncryptedKeyStore = EncryptedKeyStore()
+    ) async -> SearchKeyMigrationResult {
         let legacy = settings.firecrawlAPIKey
         guard !legacy.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             return .notNeeded
         }
 
-        let store = EncryptedKeyStore()
         let account = account(for: .firecrawl)
         let existing = await store.readAPIKey(account: account) ?? ""
         if !existing.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {

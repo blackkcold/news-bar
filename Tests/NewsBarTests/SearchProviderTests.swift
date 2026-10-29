@@ -159,7 +159,7 @@ final class SearchProviderTests: XCTestCase {
         for (status, expected) in [
             (401, SearchProviderError.unauthorized),
             (402, .quotaExhausted),
-            (429, .quotaExhausted),
+            (429, .rateLimited(retryAfter: nil)),
             (500, .server(500)),
         ] {
             let provider = TavilySearchProvider(transport: { _ in (Data(), self.http(status)) })

@@ -106,7 +106,7 @@ final class SearchAttemptAccountingTests: XCTestCase {
         let missingKeyTicket = SearchAttemptTicket(limit: 4)
         _ = try? await subject.search(
             query(),
-            configuration: configuration(enabled: [.tavily], keys: [:]),
+            configuration: configuration(enabled: [.brave], keys: [:]),
             useCache: false,
             ticket: missingKeyTicket
         )
@@ -219,8 +219,13 @@ final class SearchAttemptAccountingTests: XCTestCase {
         XCTAssertEqual(initial.first { $0.provider == .firecrawl }?.state, .unattempted)
         XCTAssertEqual(initial.first { $0.provider == .brave }?.state, .disabled)
 
-        let missing = await router.statusSnapshot(configuration: configuration(keys: [:]))
-        XCTAssertEqual(missing.first { $0.provider == .tavily }?.state, .missingKey)
+        let missing = await router.statusSnapshot(
+            configuration: configuration(enabled: [.tavily, .firecrawl, .exa], keys: [:])
+        )
+        XCTAssertEqual(missing.first { $0.provider == .exa }?.state, .missingKey)
+        // Tavily and Firecrawl remain usable without a key.
+        XCTAssertEqual(missing.first { $0.provider == .tavily }?.state, .unattempted)
+        XCTAssertEqual(missing.first { $0.provider == .firecrawl }?.state, .unattempted)
     }
 
     func testForbiddenProviderIsNotRetriedWithinTheSameResearch() async throws {

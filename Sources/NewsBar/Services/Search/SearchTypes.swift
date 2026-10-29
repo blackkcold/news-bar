@@ -1,8 +1,25 @@
 import Foundation
 
+/// How a provider authenticates. This is the single source of truth: the
+/// protocol no longer carries its own `requiresKey` flag, so adding a provider
+/// cannot silently disagree with its settings UI.
+enum SearchAuthMode: String, Sendable, Codable, Equatable {
+    /// Always usable without a key.
+    case keyless
+    /// Works without a key on a stricter free allowance; a key raises the limits.
+    case optionalKey
+    /// Not contacted at all until a key is supplied.
+    case requiredKey
+
+    var needsKeyToDispatch: Bool { self == .requiredKey }
+}
+
 enum SearchProviderID: String, Codable, Sendable, CaseIterable, Identifiable {
     case tavily
     case firecrawl
+    case tinyfish
+    case exa
+    case parallel
     case brave
 
     var id: String { rawValue }
@@ -11,16 +28,36 @@ enum SearchProviderID: String, Codable, Sendable, CaseIterable, Identifiable {
         switch self {
         case .tavily: return "Tavily"
         case .firecrawl: return "Firecrawl"
+        case .tinyfish: return "TinyFish"
+        case .exa: return "Exa"
+        case .parallel: return "Parallel"
         case .brave: return "Brave"
         }
     }
 
-    /// Fixed product order: Tavily → Firecrawl → Brave. Users cannot reorder it;
-    /// the only variation is which providers are enabled and keyed.
-    static let failoverOrder: [SearchProviderID] = [.tavily, .firecrawl, .brave]
+    /// Fixed product order. Keyless-capable providers come first so a fresh
+    /// install works with no setup; keyed providers follow in free-quota order.
+    /// Users cannot reorder it; the only variation is which providers are
+    /// enabled and keyed.
+    static let failoverOrder: [SearchProviderID] = [
+        .tavily,
+        .firecrawl,
+        .tinyfish,
+        .exa,
+        .parallel,
+        .brave,
+    ]
 
-    /// Firecrawl has a keyless free tier; the other two require a key.
-    var requiresAPIKey: Bool { self != .firecrawl }
+    var authMode: SearchAuthMode {
+        switch self {
+        case .firecrawl, .tavily:
+            // Firecrawl keyless REST search is live (IP-limited); Tavily uses
+            // the `X-Tavily-Access-Mode: keyless` header when no key is set.
+            return .optionalKey
+        case .tinyfish, .exa, .parallel, .brave:
+            return .requiredKey
+        }
+    }
 }
 
 enum SearchRecency: String, Codable, Sendable, CaseIterable {
@@ -63,6 +100,13 @@ enum SearchRecency: String, Codable, Sendable, CaseIterable {
         case .year: return "py"
         case .all: return nil
         }
+    }
+
+    /// TinyFish takes a freshness window in minutes; it cannot be combined
+    /// with absolute date bounds.
+    var tinyfishRecencyMinutes: Int? {
+        guard let days else { return nil }
+        return days * 24 * 60
     }
 }
 
@@ -165,6 +209,9 @@ enum SearchProviderError: Error, Equatable, LocalizedError {
     case missingKey
     case unauthorized
     case forbidden
+    /// 429. `retryAfter` is the provider's own hint when it sent one.
+    case rateLimited(retryAfter: TimeInterval?)
+    /// 402: the account or free allowance is exhausted, not a short burst limit.
     case quotaExhausted
     case server(Int)
     case timeout
@@ -177,6 +224,7 @@ enum SearchProviderError: Error, Equatable, LocalizedError {
         case .missingKey: return "Search provider API key is missing"
         case .unauthorized: return "Search provider rejected the API key"
         case .forbidden: return "Search provider refused access"
+        case .rateLimited: return "Search provider rate limit reached"
         case .quotaExhausted: return "Search provider quota exhausted"
         case .server(let status): return "Search provider returned HTTP \(status)"
         case .timeout: return "Search request timed out"
@@ -188,7 +236,7 @@ enum SearchProviderError: Error, Equatable, LocalizedError {
 
     var isQuotaFailure: Bool {
         switch self {
-        case .quotaExhausted: return true
+        case .quotaExhausted, .rateLimited: return true
         default: return false
         }
     }
@@ -201,9 +249,11 @@ enum SearchFailureReason: Sendable, Equatable {
     case missingKey
     case authRejected
     case forbidden
+    case rateLimited
     case quotaExhausted
     case coolingDown(until: Date)
     case budgetExhausted
+    case attemptLimit
     case server(Int)
     case timeout
     case transport
@@ -223,9 +273,11 @@ struct SearchProviderFailure: Sendable, Equatable {
         case .missingKey: return "\(name): missing key"
         case .authRejected: return "\(name): unauthorized"
         case .forbidden: return "\(name): forbidden"
+        case .rateLimited: return "\(name): rate limited"
         case .quotaExhausted: return "\(name): quota exhausted"
         case .coolingDown: return "\(name): cooling down"
         case .budgetExhausted: return "HTTP budget exhausted"
+        case .attemptLimit: return "Per-query provider attempt limit reached"
         case .server(let status): return "\(name): HTTP \(status)"
         case .timeout: return "\(name): timeout"
         case .transport: return "\(name): transport failed"
@@ -292,6 +344,7 @@ enum SearchProviderState: String, Sendable, Equatable, CaseIterable {
     case authRejected
     case forbidden
     case cooling
+    case quotaExhausted
     case transientFailure
 }
 
@@ -300,17 +353,21 @@ struct SearchProviderStatus: Sendable, Equatable {
     var state: SearchProviderState
     var cooldownUntil: Date?
     var lastFailure: SearchFailureReason?
+    /// Today's / this month's dispatched request counts and local guards.
+    var quota: SearchQuotaSnapshot?
 
     init(
         provider: SearchProviderID,
         state: SearchProviderState,
         cooldownUntil: Date? = nil,
-        lastFailure: SearchFailureReason? = nil
+        lastFailure: SearchFailureReason? = nil,
+        quota: SearchQuotaSnapshot? = nil
     ) {
         self.provider = provider
         self.state = state
         self.cooldownUntil = cooldownUntil
         self.lastFailure = lastFailure
+        self.quota = quota
     }
 }
 

@@ -43,7 +43,11 @@ struct PageReader: Sendable {
         self.now = now
     }
 
-    func read(_ hit: SearchHit, apiKey: String) async -> ResearchDocument? {
+    func read(_ hit: SearchHit, apiKey: String) async throws -> ResearchDocument? {
+        // Cancellation is a first-class outcome: it must never look like an
+        // unreadable page, otherwise the pipeline keeps scheduling work after
+        // the user closed the panel.
+        try Task.checkCancellation()
         let cacheEpoch = await cache.writeEpoch()
         if let inline = hit.inlineContent?.trimmingCharacters(in: .whitespacesAndNewlines),
            inline.count >= Self.minInlineCharacters {
@@ -80,14 +84,21 @@ struct PageReader: Sendable {
                     return document
                 }
             } catch is CancellationError {
-                return nil
+                throw CancellationError()
             } catch {
                 // Firecrawl is a paid third party; a failure is expected when
                 // its quota is exhausted, so fall through to the direct reader.
             }
         }
 
-        guard let document = try? await direct.read(urlString: hit.url) else {
+        try Task.checkCancellation()
+        let document: ResearchDocument
+        do {
+            document = try await direct.read(urlString: hit.url)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            // A failed direct read is an unavailable page, not a failed run.
             return nil
         }
         await store(document, epoch: cacheEpoch)
