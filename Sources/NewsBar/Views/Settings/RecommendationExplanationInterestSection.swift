@@ -10,9 +10,14 @@ struct ExplanationInterestsSection: View {
     private var selectedID: String? { selection ?? model.dimensions.first?.id }
 
     var body: some View {
-        // Wide sheets get a two-column reading layout; narrow ones stay a single
-        // scrolling column, driven by one measured width from the root.
-        Group {
+        // The graph card spans the full width above both column layouts: its
+        // ring needs horizontal room, and it must stay independent from the
+        // frozen ranking snapshot.
+        VStack(alignment: .leading, spacing: 12) {
+            InterestNetworkCard(model: model, palette: palette, selection: $selection)
+            // Wide sheets get a two-column reading layout; narrow ones stay a
+            // single scrolling column, driven by one measured width from the
+            // root.
             if wide {
                 HStack(alignment: .top, spacing: 12) {
                     VStack(alignment: .leading, spacing: 12) {

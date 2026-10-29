@@ -251,7 +251,10 @@ struct AITab: View {
             Section {
                 Picker("ai.model".localized, selection: Binding(
                     get: { settings.aiModel },
-                    set: { settings.aiModel = $0 }
+                    set: {
+                        settings.aiModel = $0
+                        settings.aiModelManuallyEntered = false
+                    }
                 )) {
                     if !settings.currentAIModels.contains(settings.aiModel) {
                         Text("ai.models.unselected".localized).tag(settings.aiModel)
@@ -260,7 +263,30 @@ struct AITab: View {
                         Text(model).tag(model)
                     }
                 }
-                .disabled(settings.currentAIModels.isEmpty || settings.isLoadingModelCatalog)
+                .disabled((settings.currentAIModels.isEmpty && !settings.aiModelManuallyEntered) || settings.isLoadingModelCatalog)
+
+                Toggle("ai.model.manual".localized, isOn: Binding(
+                    get: { settings.aiModelManuallyEntered },
+                    set: { settings.aiModelManuallyEntered = $0 }
+                ))
+
+                if settings.aiModelManuallyEntered {
+                    HStack(spacing: 6) {
+                        TextField("ai.model.manualPlaceholder".localized, text: Binding(
+                            get: { settings.aiModel },
+                            set: { settings.aiModel = $0 }
+                        ))
+                        .textFieldStyle(.roundedBorder)
+                        .font(.system(size: 12, design: .monospaced))
+                        .accessibilityLabel("ai.model.manual".localized)
+                        Text(settings.isAIModelCatalogValidated ? "ai.model.verified".localized : "ai.model.unverified".localized)
+                            .font(.caption2.weight(.bold))
+                            .foregroundStyle(settings.isAIModelCatalogValidated ? .green : .orange)
+                            .accessibilityLabel(settings.isAIModelCatalogValidated
+                                ? "ai.model.verified".localized
+                                : "ai.model.unverified".localized)
+                    }
+                }
 
                 HStack {
                     if settings.isLoadingModelCatalog {
@@ -291,16 +317,80 @@ struct AITab: View {
             } header: {
                 Text("ai.modelSettings".localized)
             } footer: {
-                Text("ai.model.footer".localized)
+                Text(settings.aiModelManuallyEntered ? "ai.model.manual.footer".localized : "ai.model.footer".localized)
             }
 
             Section {
-                Toggle("ai.disableThinking".localized, isOn: Binding(
-                    get: { settings.aiDisableDeepSeekThinking },
-                    set: { settings.aiDisableDeepSeekThinking = $0 }
-                ))
+                // The legacy switch is only meaningful for a connection that
+                // actually exposes a DeepSeek-style binary toggle. Other
+                // providers get a capability note instead of a misleading knob.
+                if settings.resolvedAIConnection.thinkingStyle == .deepseekToggle {
+                    Toggle("ai.disableThinking".localized, isOn: Binding(
+                        get: { settings.aiDisableDeepSeekThinking },
+                        set: { settings.aiDisableDeepSeekThinking = $0 }
+                    ))
+                }
+                if let note = settings.resolvedAIConnection.thinkingStyle.capabilityNote(settings.appLanguage) {
+                    Text(note)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             } footer: {
-                Text("ai.disableThinking.footer".localized)
+                if settings.resolvedAIConnection.thinkingStyle == .deepseekToggle {
+                    Text("ai.disableThinking.footer".localized)
+                }
+            }
+
+            Section {
+                Toggle("ai.search.enabled".localized, isOn: Binding(
+                    get: { settings.aiSearchEnabled },
+                    set: { settings.aiSearchEnabled = $0 }
+                ))
+                if settings.aiSearchEnabled {
+                    Toggle("ai.search.web".localized, isOn: Binding(
+                        get: { settings.aiSearchUseWeb },
+                        set: { settings.aiSearchUseWeb = $0 }
+                    ))
+                    Picker("ai.search.pages".localized, selection: Binding(
+                        get: { settings.aiSearchPageCount },
+                        set: { settings.aiSearchPageCount = $0 }
+                    )) {
+                        ForEach(Array(AppSettings.validAISearchPageCounts).sorted(), id: \.self) { value in
+                            Text("\(value)").tag(value)
+                        }
+                    }
+                    Picker("ai.search.model".localized, selection: Binding(
+                        get: { settings.aiSearchModel },
+                        set: { settings.aiSearchModel = $0 }
+                    )) {
+                        Text(L10n.string(
+                            "ai.search.inherit",
+                            settings.effectiveAISearchModel.isEmpty ? "—" : settings.effectiveAISearchModel
+                        )).tag("")
+                        if !settings.aiSearchModel.isEmpty,
+                           !settings.currentAIModels.contains(settings.aiSearchModel) {
+                            Text(settings.aiSearchModel).tag(settings.aiSearchModel)
+                        }
+                        ForEach(settings.currentAIModels, id: \.self) { model in
+                            Text(model).tag(model)
+                        }
+                    }
+                    .disabled(settings.isLoadingModelCatalog)
+                    Picker("ai.search.thinking".localized, selection: Binding(
+                        get: { settings.aiSearchThinking },
+                        set: { settings.aiSearchThinking = $0 }
+                    )) {
+                        Text(AIThinkingLevel.off.title(settings.appLanguage)).tag(AIThinkingLevel.off)
+                        Text(AIThinkingLevel.low.title(settings.appLanguage)).tag(AIThinkingLevel.low)
+                        Text(AIThinkingLevel.medium.title(settings.appLanguage)).tag(AIThinkingLevel.medium)
+                        Text(AIThinkingLevel.high.title(settings.appLanguage)).tag(AIThinkingLevel.high)
+                    }
+                }
+            } header: {
+                Text("ai.search.section".localized)
+            } footer: {
+                Text("ai.search.footer".localized)
             }
 
             Section {
@@ -774,6 +864,7 @@ private struct CustomAIProviderEditor: View {
     @State private var authHeaderName: String
     @State private var authHeaderPrefix: String
     @State private var apiVersion: String
+    @State private var thinkingStyle: AIThinkingStyle
     @State private var pricingNote: String
     @State private var inputPrice: String
     @State private var outputPrice: String
@@ -789,6 +880,7 @@ private struct CustomAIProviderEditor: View {
         _authHeaderName = State(initialValue: provider?.authHeaderName ?? "Authorization")
         _authHeaderPrefix = State(initialValue: provider?.authHeaderPrefix ?? "Bearer ")
         _apiVersion = State(initialValue: provider?.apiVersion ?? "")
+        _thinkingStyle = State(initialValue: provider?.thinkingStyle ?? .none)
         _pricingNote = State(initialValue: provider?.pricingNote ?? "")
         _inputPrice = State(initialValue: Self.priceText(provider?.inputPricePerMTok))
         _outputPrice = State(initialValue: Self.priceText(provider?.outputPricePerMTok))
@@ -837,6 +929,18 @@ private struct CustomAIProviderEditor: View {
                     .textFieldStyle(.roundedBorder)
                 TextField("ai.custom.authPrefixOpenAI".localized, text: $authHeaderPrefix)
                     .textFieldStyle(.roundedBorder)
+            }
+
+            VStack(alignment: .leading, spacing: 4) {
+                Picker("ai.custom.thinking".localized, selection: $thinkingStyle) {
+                    ForEach(AIThinkingStyle.allCases) { style in
+                        Text(style.title(settings.appLanguage)).tag(style)
+                    }
+                }
+                Text("ai.custom.thinking.footer".localized)
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
             TextField("ai.custom.pricing".localized, text: $pricingNote)
@@ -907,6 +1011,7 @@ private struct CustomAIProviderEditor: View {
             authHeaderName: authHeaderName.isEmpty ? (isAnthropicFormat ? "x-api-key" : "Authorization") : authHeaderName,
             authHeaderPrefix: authHeaderPrefix,
             apiVersion: apiVersion.isEmpty ? nil : apiVersion,
+            thinkingStyle: thinkingStyle,
             pricingNote: pricingNote.trimmingCharacters(in: .whitespacesAndNewlines),
             inputPricePerMTok: Self.priceValue(inputPrice),
             outputPricePerMTok: Self.priceValue(outputPrice),

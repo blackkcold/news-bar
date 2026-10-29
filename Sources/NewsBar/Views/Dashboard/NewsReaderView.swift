@@ -64,6 +64,14 @@ final class NewsReaderModel: NSObject, WKNavigationDelegate, WKUIDelegate, WKScr
     private(set) var pageTitle: String
     private(set) var notice: ReaderFailure?
     private(set) var selectionExplainRequest: SelectionExplainRequest?
+    /// Reader mode is a native re-layout of the current page. It is cleared on
+    /// every navigation and on close, so a stale article can never be shown for
+    /// a different URL.
+    private(set) var readerModeDocument: ReaderModeDocument?
+    private(set) var isReaderModeActive = false
+    private(set) var isReaderModeExtracting = false
+    private(set) var readerModeNotice: String?
+    private let readerModeExtractor = ReaderModeExtractor()
     var currentURL: String
     var canGoBack = false
     var canGoForward = false
@@ -158,6 +166,7 @@ final class NewsReaderModel: NSObject, WKNavigationDelegate, WKUIDelegate, WKScr
         web.uiDelegate = self
         web.allowsBackForwardNavigationGestures = true
         webView = web
+        readerModeExtractor.attach(to: web, world: world)
         progressObserver = web.observe(\.estimatedProgress, options: [.new]) { [weak self] web, _ in
             let value = web.estimatedProgress
             Task { @MainActor [weak self] in self?.progress = value }
@@ -244,6 +253,10 @@ final class NewsReaderModel: NSObject, WKNavigationDelegate, WKUIDelegate, WKScr
         webView?.stopLoading()
         webView?.configuration.userContentController.removeScriptMessageHandler(forName: "aggregate", contentWorld: world)
         webView?.configuration.userContentController.removeScriptMessageHandler(forName: "selectionMenu", contentWorld: world)
+        readerModeExtractor.detach()
+        readerModeDocument = nil
+        isReaderModeActive = false
+        isReaderModeExtracting = false
         webView?.navigationDelegate = nil
         webView?.uiDelegate = nil
         if ReaderSessionRegistry.active === self { ReaderSessionRegistry.active = nil }
@@ -270,6 +283,56 @@ final class NewsReaderModel: NSObject, WKNavigationDelegate, WKUIDelegate, WKScr
     }
 
     func dismissNotice() { notice = nil }
+
+    // MARK: - Reader mode
+
+    /// Extracts the current document into a native re-layout. Failure never
+    /// blanks the reader: the web view stays visible and one line explains why.
+    func toggleReaderMode() async {
+        if isReaderModeActive {
+            exitReaderMode()
+            return
+        }
+        guard !isReaderModeExtracting, !loading, loaded, webView?.url != nil else { return }
+        isReaderModeExtracting = true
+        readerModeNotice = nil
+        let extraction = await readerModeExtractor.extract()
+        isReaderModeExtracting = false
+        if let document = extraction.document {
+            readerModeDocument = document
+            isReaderModeActive = true
+        } else {
+            readerModeDocument = nil
+            isReaderModeActive = false
+            readerModeNotice = (extraction.error ?? .tooShort).message(language: L10n.currentLanguage)
+        }
+    }
+
+    func exitReaderMode() {
+        readerModeDocument = nil
+        isReaderModeActive = false
+        isReaderModeExtracting = false
+        readerModeNotice = nil
+    }
+
+    func dismissReaderModeNotice() { readerModeNotice = nil }
+
+    /// Links inside the native layout reuse the reader's own web session and
+    /// leave reader mode, so the destination is checked by the same navigation
+    /// policy as every other page.
+    func openReaderModeLink(_ url: URL) {
+        guard ReaderNavigationPolicy.allowedURL(url.absoluteString) != nil else { return }
+        exitReaderMode()
+        webView?.load(URLRequest(url: url))
+    }
+
+    /// Plain text for the AI search panel's "current page" scope. It reuses the
+    /// same extractor instead of a second text pipeline.
+    func currentPagePlainText() async -> String? {
+        if let readerModeDocument { return readerModeDocument.plainText }
+        let extraction = await readerModeExtractor.extract()
+        return extraction.document?.plainText
+    }
 
     var initialHost: String? {
         ReaderCookieHost.normalize(URL(string: request.url)?.host)
@@ -544,6 +607,11 @@ final class NewsReaderModel: NSObject, WKNavigationDelegate, WKUIDelegate, WKScr
         adapted = false
         failure = nil
         notice = nil
+        // A native re-layout belongs to exactly one document. Leaving it up
+        // while the web view navigates would show text from another page.
+        readerModeDocument = nil
+        isReaderModeActive = false
+        readerModeNotice = nil
     }
 
     func webView(_ webView: WKWebView, didReceiveServerRedirectForProvisionalNavigation navigation: WKNavigation!) {
@@ -769,6 +837,8 @@ struct ReaderContentView: View {
     @State private var showResearch = false
     @State private var research = ReaderResearchPanelModel()
     @State private var explainModel = SelectionExplainModel()
+    @State private var searchModel = AISearchPanelModel()
+    @State private var showAISearch = false
     @State private var browserData = BrowserDataController.shared
     @Environment(AppSettings.self) private var settings
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -801,6 +871,9 @@ struct ReaderContentView: View {
                 readerContent
                 if let notice = model.notice {
                     noticeView(notice)
+                }
+                if let message = model.readerModeNotice {
+                    readerModeNoticeView(message)
                 }
                 if showResearch {
                     HStack(spacing: 0) {
@@ -841,6 +914,31 @@ struct ReaderContentView: View {
                 }
             }
             .animation(reduceMotion ? nil : DashboardMotion.micro, value: explainModel.state)
+            .overlay(alignment: .topTrailing) {
+                if showAISearch {
+                    AISearchPanel(
+                        model: searchModel,
+                        language: settings.appLanguage,
+                        providerName: settings.providerDisplayName(forID: settings.aiProvider),
+                        modelName: settings.effectiveAISearchModel,
+                        webEnabled: settings.aiSearchUseWeb,
+                        onSubmit: { searchModel.submit(settings: settings) },
+                        onRetry: { searchModel.retry(settings: settings) },
+                        onClose: { closeAISearch() },
+                        onOpenCitation: { url in
+                            closeAISearch()
+                            model.openReaderModeLink(url)
+                        },
+                        onOpenSettings: {
+                            closeAISearch()
+                            onConfigureAI()
+                        }
+                    )
+                    .padding(16)
+                    .transition(.move(edge: .trailing).combined(with: .opacity))
+                }
+            }
+            .animation(reduceMotion ? nil : DashboardMotion.micro, value: showAISearch)
             .overlay(alignment: .bottom) {
                 ZStack {
                     if let message = feedbackMessage {
@@ -855,12 +953,23 @@ struct ReaderContentView: View {
         }
         .readerSurface(cornerRadius: 12)
         .task(id: model.currentURL + "\n" + model.pageTitle + "\n\(model.loading)") { await refreshResearch() }
+        .onAppear {
+            searchModel.pageContextProvider = { [model] in
+                if let document = model.readerModeDocument {
+                    return AISearchPageContext(url: document.url, title: document.title, text: document.plainText)
+                }
+                guard let text = await model.currentPagePlainText(), !text.isEmpty else { return nil }
+                return AISearchPageContext(url: model.currentURL, title: model.pageTitle, text: text)
+            }
+        }
         .onChange(of: model.selectionExplainRequest) { _, request in
             guard let request else { return }
             explainModel.explain(request.text, settings: settings)
         }
         .onChange(of: model.currentURL) { _, _ in
             explainModel.dismiss()
+            // A page-scoped answer must not survive navigation.
+            if showAISearch { closeAISearch() }
         }
         .onReceive(NotificationCenter.default.publisher(for: .researchRecordsChanged)) { _ in
             Task { await refreshResearch() }
@@ -881,6 +990,13 @@ struct ReaderContentView: View {
     private var readerContent: some View {
         if let failure = model.failure {
             failureContent(failure)
+        } else if let document = model.readerModeDocument {
+            ReaderModeView(
+                document: document,
+                language: settings.appLanguage,
+                onOpenLink: { url in model.openReaderModeLink(url) },
+                onExit: { model.exitReaderMode() }
+            )
         } else if let web = model.webView {
             ReaderWebSurface(webView: web)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -892,6 +1008,22 @@ struct ReaderContentView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+    }
+
+    private func readerModeNoticeView(_ message: String) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: "doc.plaintext")
+                .foregroundStyle(.secondary)
+            Text(message)
+                .font(.caption)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+            Button { model.dismissReaderModeNotice() } label: { Image(systemName: "xmark") }
+                .accessibilityLabel(english ? "Dismiss notice" : "关闭提示")
+        }
+        .padding(12)
+        .background(.quaternary.opacity(0.4))
+        .transition(.move(edge: .top).combined(with: .opacity))
     }
 
     private func noticeView(_ notice: ReaderFailure) -> some View {
@@ -963,6 +1095,34 @@ struct ReaderContentView: View {
                 .keyboardShortcut("r", modifiers: .command)
                 .accessibilityLabel(english ? "Reload page" : "重新加载网页")
                 .help(english ? "Reload page (⌘R)" : "重新加载网页（⌘R）")
+            if settings.aiSearchEnabled {
+                Button {
+                    toggleAISearch()
+                } label: {
+                    Image(systemName: "magnifyingglass")
+                        .frame(width: 28, height: 28)
+                }
+                .keyboardShortcut("k", modifiers: .command)
+                .accessibilityLabel(L10n.string("reader.search.toolbar", language: settings.appLanguage))
+                .help(L10n.string("reader.search.toolbar.help", language: settings.appLanguage))
+            }
+            Button {
+                Task { await model.toggleReaderMode() }
+            } label: {
+                if model.isReaderModeExtracting {
+                    ProgressView().controlSize(.mini).frame(width: 28, height: 28)
+                } else {
+                    Image(systemName: model.isReaderModeActive ? "doc.plaintext.fill" : "doc.plaintext")
+                        .frame(width: 28, height: 28)
+                }
+            }
+            .disabled((model.loading && !model.isReaderModeActive) || model.isReaderModeExtracting)
+            .accessibilityLabel(model.isReaderModeActive
+                ? (english ? "Leave reader mode" : "退出阅读模式")
+                : (english ? "Reader mode" : "阅读模式"))
+            .help(model.isReaderModeActive
+                ? (english ? "Back to the web page" : "返回网页")
+                : (english ? "Re-layout this article as text" : "以原生排版阅读正文"))
             Button { showResearch.toggle() } label: {
                 Image(systemName: "sidebar.trailing")
                     .frame(width: 28, height: 28)
@@ -1023,6 +1183,20 @@ struct ReaderContentView: View {
         }
         .buttonStyle(.borderless)
         .controlSize(.regular)
+    }
+
+    private func toggleAISearch() {
+        if showAISearch {
+            closeAISearch()
+        } else {
+            showAISearch = true
+            searchModel.present()
+        }
+    }
+
+    private func closeAISearch() {
+        showAISearch = false
+        searchModel.dismiss()
     }
 
     private func refreshResearch() async {

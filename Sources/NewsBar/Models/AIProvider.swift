@@ -74,6 +74,17 @@ enum AIProvider: String, CaseIterable, Codable {
         responseFormat == .anthropic ? "2023-06-01" : nil
     }
 
+    /// How this provider accepts reasoning control. Declared per provider — never
+    /// inferred from a model id, which is just a name the endpoint chose.
+    var thinkingStyle: AIThinkingStyle {
+        switch self {
+        case .deepseek: return .deepseekToggle
+        case .minimaxTokenPlan, .minimaxAPI, .opencodeGo, .opencodeZen: return .anthropicBudget
+        case .googleAIStudio: return .openAIReasoningEffort
+        case .ollamaCloud: return .ollamaThink
+        }
+    }
+
     func resolvedConnection() -> ResolvedAIConnection {
         ResolvedAIConnection(
             baseURL: baseURL,
@@ -81,7 +92,8 @@ enum AIProvider: String, CaseIterable, Codable {
             authHeaderName: authHeaderName,
             authHeaderPrefix: authHeaderPrefix,
             apiVersion: apiVersion,
-            providerID: rawValue
+            providerID: rawValue,
+            thinkingStyle: thinkingStyle
         )
     }
 

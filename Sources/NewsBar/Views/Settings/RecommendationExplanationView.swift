@@ -179,6 +179,17 @@ struct RecommendationExplanationCloseButton: View {
 
 // MARK: - Root sheet
 
+/// Identity-bearing payload for the explanation sheet.
+///
+/// The sheet is presented with `.sheet(item:)` so SwiftUI derives both the
+/// presentation and the content from one stored value. There is no separate
+/// boolean that could flip before the model is assigned, and no optional
+/// branch inside the sheet that could render an empty view.
+struct RecommendationExplanationPresentation: Identifiable {
+    let id = UUID()
+    let model: RecommendationExplanationModel
+}
+
 struct RecommendationExplanationView: View {
     let model: RecommendationExplanationModel
     let theme: AppTheme

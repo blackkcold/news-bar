@@ -1,0 +1,66 @@
+{
+  "ok": true,
+  "reason": null,
+  "url": "https://www.bbc.com/news/articles/example-story",
+  "title": "Why cities are rethinking their night-time economies",
+  "byline": "Jane Doe",
+  "siteName": "BBC News",
+  "publishedAt": "2026-10-28T22:10:00Z",
+  "lang": "en",
+  "wordCount": 320,
+  "score": 1200,
+  "selector": "heuristic",
+  "blocks": [
+    {
+      "type": "p",
+      "text": "For decades, city centres emptied out after the last train. Now a growing number of municipalities are treating the night as an economy in its own right, with dedicated officials, licensing rules and public transport timetables built around bars, clubs and late-shift workers."
+    },
+    {
+      "type": "h2",
+      "text": "A mayor for the night"
+    },
+    {
+      "type": "p",
+      "text": "The idea is not new. Amsterdam appointed a night mayor more than a decade ago, and several European cities followed. What has changed is the scope: the role now often covers noise complaints, safety, waste collection and the interests of people who work while everyone else sleeps."
+    },
+    {
+      "type": "p",
+      "text": "Critics say the title flatters a narrow group of venue owners. Residents' associations argue that a night-time economy policy should start with sleep, not with opening hours. Both sides agree that the old approach, which treated nightlife mainly as a policing problem, did not work."
+    },
+    {
+      "type": "figure",
+      "src": "https://ichef.bbci.co.uk/news/800/example-night.jpg",
+      "alt": "A street at night",
+      "caption": "Late-night workers are often left out of consultations."
+    },
+    {
+      "type": "h3",
+      "text": "Who counts as a night worker?"
+    },
+    {
+      "type": "p",
+      "text": "Cleaners, nurses, delivery drivers and security staff all work at night, but they rarely appear in the same meetings as club owners. Some cities now reserve seats on night-time boards for unions and hospital staff, arguing that a policy built only around leisure will miss most of the people affected."
+    },
+    {
+      "type": "ul",
+      "items": [
+        "Later trains on weekends",
+        "Noise limits measured at the facade",
+        "A single licence for events and alcohol"
+      ]
+    },
+    {
+      "type": "p",
+      "text": "The results are mixed. Transport improvements are popular, while noise rules remain contested. Officials say the point is not to make everyone agree, but to give the argument a regular place to happen."
+    },
+    {
+      "type": "p",
+      "text": "Sign up for our newsletter"
+    },
+    {
+      "type": "p",
+      "text": "Related articles",
+      "href": "https://www.bbc.com/news/topics/night-economy"
+    }
+  ]
+}

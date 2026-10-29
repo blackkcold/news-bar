@@ -1,0 +1,185 @@
+{
+  "ok": true,
+  "reason": null,
+  "url": "https://images.example.com/gallery/city-skyline",
+  "title": "城市天际线：从清晨到深夜",
+  "byline": null,
+  "siteName": "Example Gallery",
+  "publishedAt": null,
+  "lang": "zh-CN",
+  "wordCount": 320,
+  "score": 1200,
+  "selector": "heuristic",
+  "blocks": [
+    {
+      "type": "p",
+      "text": "这是一组关于城市天际线的照片。拍摄时间从清晨到深夜，地点集中在江边和几座天桥。每张照片都保留了原始的比例，没有做过度裁切，方便读者比较不同时间的光线。清晨的江面常有薄雾，太阳升高后雾会迅速散开，建筑的轮廓变得清晰；傍晚则相反，光线从侧面打过来，玻璃幕墙会反射出很亮的色块。为了保留这些差异，同一机位在一天里会拍很多次，最后再挑出层次最完整的几张。"
+    },
+    {
+      "type": "h2",
+      "text": "清晨"
+    },
+    {
+      "type": "img",
+      "src": "https://images.example.com/gallery/00.jpg",
+      "alt": "天际线 1"
+    },
+    {
+      "type": "img",
+      "src": "https://images.example.com/gallery/01.jpg",
+      "alt": "天际线 2"
+    },
+    {
+      "type": "img",
+      "src": "https://images.example.com/gallery/02.jpg",
+      "alt": "天际线 3"
+    },
+    {
+      "type": "img",
+      "src": "https://images.example.com/gallery/03.jpg",
+      "alt": "天际线 4"
+    },
+    {
+      "type": "img",
+      "src": "https://images.example.com/gallery/04.jpg",
+      "alt": "天际线 5"
+    },
+    {
+      "type": "img",
+      "src": "https://images.example.com/gallery/05.jpg",
+      "alt": "天际线 6"
+    },
+    {
+      "type": "img",
+      "src": "https://images.example.com/gallery/06.jpg",
+      "alt": "天际线 7"
+    },
+    {
+      "type": "img",
+      "src": "https://images.example.com/gallery/07.jpg",
+      "alt": "天际线 8"
+    },
+    {
+      "type": "img",
+      "src": "https://images.example.com/gallery/08.jpg",
+      "alt": "天际线 9"
+    },
+    {
+      "type": "img",
+      "src": "https://images.example.com/gallery/09.jpg",
+      "alt": "天际线 10"
+    },
+    {
+      "type": "img",
+      "src": "https://images.example.com/gallery/10.jpg",
+      "alt": "天际线 11"
+    },
+    {
+      "type": "img",
+      "src": "https://images.example.com/gallery/11.jpg",
+      "alt": "天际线 12"
+    },
+    {
+      "type": "img",
+      "src": "https://images.example.com/gallery/12.jpg",
+      "alt": "天际线 13"
+    },
+    {
+      "type": "img",
+      "src": "https://images.example.com/gallery/13.jpg",
+      "alt": "天际线 14"
+    },
+    {
+      "type": "img",
+      "src": "https://images.example.com/gallery/14.jpg",
+      "alt": "天际线 15"
+    },
+    {
+      "type": "img",
+      "src": "https://images.example.com/gallery/15.jpg",
+      "alt": "天际线 16"
+    },
+    {
+      "type": "img",
+      "src": "https://images.example.com/gallery/16.jpg",
+      "alt": "天际线 17"
+    },
+    {
+      "type": "img",
+      "src": "https://images.example.com/gallery/17.jpg",
+      "alt": "天际线 18"
+    },
+    {
+      "type": "img",
+      "src": "https://images.example.com/gallery/18.jpg",
+      "alt": "天际线 19"
+    },
+    {
+      "type": "img",
+      "src": "https://images.example.com/gallery/19.jpg",
+      "alt": "天际线 20"
+    },
+    {
+      "type": "img",
+      "src": "https://images.example.com/gallery/20.jpg",
+      "alt": "天际线 21"
+    },
+    {
+      "type": "img",
+      "src": "https://images.example.com/gallery/21.jpg",
+      "alt": "天际线 22"
+    },
+    {
+      "type": "img",
+      "src": "https://images.example.com/gallery/22.jpg",
+      "alt": "天际线 23"
+    },
+    {
+      "type": "img",
+      "src": "https://images.example.com/gallery/23.jpg",
+      "alt": "天际线 24"
+    },
+    {
+      "type": "img",
+      "src": "https://images.example.com/gallery/24.jpg",
+      "alt": "天际线 25"
+    },
+    {
+      "type": "img",
+      "src": "https://images.example.com/gallery/25.jpg",
+      "alt": "天际线 26"
+    },
+    {
+      "type": "img",
+      "src": "https://images.example.com/gallery/26.jpg",
+      "alt": "天际线 27"
+    },
+    {
+      "type": "img",
+      "src": "https://images.example.com/gallery/27.jpg",
+      "alt": "天际线 28"
+    },
+    {
+      "type": "img",
+      "src": "https://images.example.com/gallery/28.jpg",
+      "alt": "天际线 29"
+    },
+    {
+      "type": "img",
+      "src": "https://images.example.com/gallery/29.jpg",
+      "alt": "天际线 30"
+    },
+    {
+      "type": "p",
+      "text": "拍摄时使用了三脚架和手动曝光，后期只调整了白平衡。江面上的船会留下很长的光轨，所以曝光时间控制在两秒以内，避免画面过曝。遇到风向变化时，云层的形状会在几分钟内完全不同。"
+    },
+    {
+      "type": "p",
+      "text": "这组照片里最满意的一张是在雨后拍的。地面还有积水，建筑的倒影被拉得很长，行人的伞刚好停在画面右下角。为了等这个瞬间，我在天桥上站了大约四十分钟，期间换了三次机位。"
+    },
+    {
+      "type": "p",
+      "text": "如果你也拍过同一段江岸，欢迎在评论区留下链接。下次我会整理一组雨天的照片，重点看玻璃上的水珠和街灯的反射。拍摄这类题材时，建议把相机固定在三脚架上，关闭防抖，用定时或遥控快门减少震动；如果风很大，可以适当提高快门速度，再在后期把暗部提亮一点。"
+    }
+  ]
+}

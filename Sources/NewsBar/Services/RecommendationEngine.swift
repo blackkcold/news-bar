@@ -87,6 +87,12 @@ struct InterestProfile: Sendable {
     var topics: [String: Double] = [:]
     var shortTermTopics: [String: Double] = [:]
     var sources: [String: Double] = [:]
+    /// tag → sourceID → decayed weight, collected in the same pass as `topics`.
+    ///
+    /// This is display-only evidence for the interest network graph. It is
+    /// never read by scoring, normalization or ranking, so adding it cannot
+    /// change a recommendation.
+    var topicSources: [String: [String: Double]] = [:]
     var confidence: Double = 0
     // Negative evidence uses the same decay clock as the positive side. Each
     // value is the raw decayed sum; the scorer clamps and caps it.
@@ -101,9 +107,13 @@ struct InterestProfile: Sendable {
         func add(_ item: NewsItem, strength: Double, age: Double) {
             let long = strength * pow(0.5, max(0, age) / (30 * 86400))
             let short = strength * pow(0.5, max(0, age) / (2 * 86400))
-            for topic in TitleFeatures.tags(item.title) {
+            let tags = TitleFeatures.tags(item.title)
+            for topic in tags {
                 profile.topics[topic, default: 0] += long
                 profile.shortTermTopics[topic, default: 0] += short
+                // Same pass, same decay as the topic weight. Display-only:
+                // `topicSources` never feeds the scorer.
+                profile.topicSources[topic, default: [:]][item.source.id, default: 0] += long
             }
             profile.sources[item.source.id, default: 0] += long
         }

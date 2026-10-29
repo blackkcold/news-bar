@@ -13,7 +13,7 @@
   "release_branch": true,
   "auto_merge": false,
   "release_note_style": "structured-cn",
-  "summary": "六家搜索 provider、限流治理与隐私一致性",
-  "summary_en": "Six search providers, rate-limit governance, and privacy consistency",
-  "validation": "swift test 1090/1090（2 skipped）+ scripts/build.sh + codesign verify + DMG verify 通过"
+  "summary": "阅读模式、兴趣网络图与阅读器 AI 搜索",
+  "summary_en": "Reader mode, interest network graph, and reader AI search",
+  "validation": "swift test 1148/1148（2 skipped）+ swift build -c release + scripts/build.sh + codesign verify 通过"
 }

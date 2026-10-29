@@ -8,6 +8,9 @@ struct ResolvedAIConnection: Sendable {
     var apiVersion: String?
     /// Provider id used by the price catalog (`deepseek`, `ollamaCloud`, …).
     var providerID: String = ""
+    /// Reasoning-control wire shape. Custom endpoints default to `none`: sending
+    /// an undocumented field could make every request fail.
+    var thinkingStyle: AIThinkingStyle = .none
     /// User-entered unit prices for a custom provider, already CNY per 1M tokens.
     var customPrice: ModelPrice? = nil
 }
@@ -22,6 +25,8 @@ struct CustomAIProviderConfig: Identifiable, Hashable, Codable {
     var authHeaderName: String
     var authHeaderPrefix: String
     var apiVersion: String?
+    /// Explicit capability for custom endpoints. Never guessed from the model id.
+    var thinkingStyle: AIThinkingStyle
     var pricingNote: String?
     /// Optional unit prices entered by the user, CNY per million tokens.
     var inputPricePerMTok: Double?
@@ -38,6 +43,7 @@ struct CustomAIProviderConfig: Identifiable, Hashable, Codable {
         authHeaderName: String = "Authorization",
         authHeaderPrefix: String = "Bearer ",
         apiVersion: String? = nil,
+        thinkingStyle: AIThinkingStyle = .none,
         pricingNote: String? = nil,
         inputPricePerMTok: Double? = nil,
         outputPricePerMTok: Double? = nil,
@@ -52,6 +58,7 @@ struct CustomAIProviderConfig: Identifiable, Hashable, Codable {
         self.authHeaderName = authHeaderName
         self.authHeaderPrefix = authHeaderPrefix
         self.apiVersion = apiVersion
+        self.thinkingStyle = thinkingStyle
         self.pricingNote = pricingNote
         self.inputPricePerMTok = inputPricePerMTok
         self.outputPricePerMTok = outputPricePerMTok
@@ -72,6 +79,8 @@ struct CustomAIProviderConfig: Identifiable, Hashable, Codable {
         authHeaderName = (try? c.decode(String.self, forKey: .authHeaderName)) ?? "Authorization"
         authHeaderPrefix = (try? c.decode(String.self, forKey: .authHeaderPrefix)) ?? "Bearer "
         apiVersion = try? c.decodeIfPresent(String.self, forKey: .apiVersion)
+        let rawThinking = (try? c.decodeIfPresent(String.self, forKey: .thinkingStyle)) ?? nil
+        thinkingStyle = rawThinking.flatMap(AIThinkingStyle.init(rawValue:)) ?? .none
         pricingNote = try? c.decodeIfPresent(String.self, forKey: .pricingNote)
         inputPricePerMTok = try? c.decodeIfPresent(Double.self, forKey: .inputPricePerMTok)
         outputPricePerMTok = try? c.decodeIfPresent(Double.self, forKey: .outputPricePerMTok)
@@ -94,6 +103,7 @@ struct CustomAIProviderConfig: Identifiable, Hashable, Codable {
             authHeaderPrefix: authHeaderPrefix,
             apiVersion: apiVersion ?? (responseFormat == .anthropic ? "2023-06-01" : nil),
             providerID: "custom:\(id)",
+            thinkingStyle: thinkingStyle,
             customPrice: unitPrice
         )
     }
