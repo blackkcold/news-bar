@@ -22,7 +22,46 @@ actor LocalInterestStore {
 
     private func open() throws -> OpaquePointer {
         if let database { return database }
-        try FileManager.default.createDirectory(at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        let directory = fileURL.deletingLastPathComponent()
+        try PrivateFile.ensureDirectory(directory)
+
+        // `sqlite3_open` creates the database 0644 before the schema write, and
+        // the first journal inherits that mode. Pre-create it owner-only so
+        // there is no window where interest data is readable by other users.
+        // A directory or symlink at this path is a hard error, not a database
+        // that recovery is allowed to delete.
+        var info = stat()
+        let inspected = fileURL.withUnsafeFileSystemRepresentation { path -> Int32 in
+            guard let path else { return -1 }
+            return lstat(path, &info)
+        }
+        if inspected == 0 {
+            guard (info.st_mode & S_IFMT) == S_IFREG else {
+                throw StoreError.operationFailed
+            }
+            if (info.st_mode & 0o777) != 0o600 {
+                let tightened = fileURL.withUnsafeFileSystemRepresentation { path in
+                    guard let path else { return Int32(-1) }
+                    return chmod(path, 0o600)
+                }
+                guard tightened == 0 else { throw StoreError.operationFailed }
+            }
+        } else if errno != ENOENT {
+            throw StoreError.operationFailed
+        } else {
+            guard FileManager.default.createFile(
+                atPath: fileURL.path,
+                contents: nil,
+                attributes: [.posixPermissions: 0o600]
+            ) else {
+                throw StoreError.operationFailed
+            }
+        }
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o600],
+            ofItemAtPath: fileURL.path
+        )
+
         var db: OpaquePointer?
         let opened = sqlite3_open(fileURL.path, &db)
         guard opened == SQLITE_OK, let db else {

@@ -15,8 +15,11 @@ actor EncryptedKeyStore {
 
     // MARK: - Debug Gate
 
-    /// 当启用时，所有操作被跳过 — 读取返回 nil，写入假装成功。
+    /// 当启用时，所有操作被跳过 — 读取返回 nil，写入返回失败。
     /// 开发期间避免反复操作加密文件。
+    ///
+    /// 迁移代码依赖这个返回值：若这里假装成功，调用方会清掉唯一一份明文
+    /// 凭据，而加密文件里什么也没有，等于静默丢 Key。
     ///
     /// 启用: `defaults write com.newsbar.app debugDisableEncryptedStore -bool YES`
     /// 禁用: `defaults delete com.newsbar.app debugDisableEncryptedStore`
@@ -200,7 +203,7 @@ actor EncryptedKeyStore {
     /// - Returns: true 表示保存成功
     @discardableResult
     func saveAPIKey(_ key: String, account: String) -> Bool {
-        guard !Self.isDisabled else { return true }
+        guard !Self.isDisabled else { return false }
         guard !key.isEmpty,
               let plaintext = key.data(using: .utf8) else { return false }
 

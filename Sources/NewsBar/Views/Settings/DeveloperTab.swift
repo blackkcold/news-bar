@@ -58,11 +58,6 @@ struct DeveloperTab: View {
                         }
                     }
 
-                    Toggle("burst.testWebSearch".localized, isOn: Binding(
-                        get: { settings.burstTestWebSearchEnabled },
-                        set: { settings.burstTestWebSearchEnabled = $0 }
-                    ))
-
                     HStack {
                         Button {
                             NotificationCenter.default.post(name: .fillBurstTestTopic, object: nil)

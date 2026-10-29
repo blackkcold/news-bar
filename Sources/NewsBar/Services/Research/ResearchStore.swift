@@ -19,6 +19,10 @@ enum ResearchPaths {
         researchDirectory.appendingPathComponent("ledger.json")
     }
 
+    static var searchQuotaFile: URL {
+        researchDirectory.appendingPathComponent("search-quota.json")
+    }
+
     static var clearIntentFile: URL {
         researchDirectory.appendingPathComponent("clear-intent.json")
     }

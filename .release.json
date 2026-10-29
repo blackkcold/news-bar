@@ -4,13 +4,16 @@
   "build_command": "scripts/build.sh",
   "release_command": "scripts/release.sh",
   "test_command": null,
-  "docs": ["RELEASE_NOTES.md", "README.md"],
+  "docs": [
+    "RELEASE_NOTES.md",
+    "README.md"
+  ],
   "changelog_format": "keep-a-changelog",
   "ci_mode": "local",
   "release_branch": true,
   "auto_merge": false,
   "release_note_style": "structured-cn",
-  "summary": "研究中心、联网核查与隐私加固",
-  "summary_en": "Research center, online verification, and privacy hardening",
-  "validation": "swift test 929/929（2 skipped）+ scripts/build.sh + codesign verify + hdiutil verify 通过"
+  "summary": "六家搜索 provider、限流治理与隐私一致性",
+  "summary_en": "Six search providers, rate-limit governance, and privacy consistency",
+  "validation": "swift test 1088/1088（2 skipped）+ scripts/build.sh + codesign verify + DMG verify 通过"
 }

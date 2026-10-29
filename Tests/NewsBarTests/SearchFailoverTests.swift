@@ -111,28 +111,33 @@ final class SearchFailoverTests: XCTestCase {
     }
 
     func testSkipsProviderWithoutRequiredKey() async throws {
-        let tavily = ScriptedSearchProvider(id: .tavily, requiresKey: true, script: [])
-        let firecrawl = ScriptedSearchProvider(
-            id: .firecrawl,
-            script: [.success([hit("https://www.bbc.com/a", provider: .firecrawl)])]
+        let exa = ScriptedSearchProvider(id: .exa)
+        let router = SearchRouter(
+            providers: [exa],
+            cache: cache,
+            now: { [clock] in clock?.now ?? Date() }
         )
-        let brave = ScriptedSearchProvider(id: .brave, requiresKey: true)
 
-        let batch = try await router(tavily: tavily, firecrawl: firecrawl, brave: brave)
-            .search(query(), configuration: configuration(keys: [.brave: "b"]))
-
-        XCTAssertEqual(batch.providers, [.firecrawl])
-        XCTAssertEqual(tavily.callCount, 0)
-        XCTAssertEqual(firecrawl.callCount, 1)
+        do {
+            _ = try await router.search(
+                query(),
+                configuration: SearchRouterConfiguration(enabled: [.exa], keys: [:]),
+                useCache: false
+            )
+            XCTFail("expected unavailable")
+        } catch let error as SearchUnavailableError {
+            XCTAssertEqual(error.failures.map(\.reason), [.missingKey])
+        }
+        XCTAssertEqual(exa.callCount, 0)
     }
 
     // MARK: - Quota
 
-    func testQuotaFailureCoolsDownAndFailsOver() async throws {
+    func testRateLimitCoolsDownAndFailsOver() async throws {
         let tavily = ScriptedSearchProvider(
             id: .tavily,
             requiresKey: true,
-            script: [.failure(.quotaExhausted)]
+            script: [.failure(.rateLimited(retryAfter: nil))]
         )
         let firecrawl = ScriptedSearchProvider(
             id: .firecrawl,
@@ -150,7 +155,7 @@ final class SearchFailoverTests: XCTestCase {
         XCTAssertEqual(first.attempts, 2)
 
         let remaining = await router.cooldownRemaining(for: .tavily)
-        XCTAssertEqual(remaining, 15 * 60, accuracy: 1)
+        XCTAssertEqual(remaining, 60, accuracy: 1)
 
         // Cached results would hide the cooldown behavior.
         let second = try await router.search(query(), configuration: configuration(), useCache: false)
@@ -159,30 +164,30 @@ final class SearchFailoverTests: XCTestCase {
         XCTAssertEqual(firecrawl.callCount, 2)
     }
 
-    func testSecondQuotaFailureExtendsCooldownToThirtyMinutes() async throws {
+    func testSecondRateLimitExtendsCooldownToFiveMinutes() async throws {
         let tavily = ScriptedSearchProvider(
             id: .tavily,
             requiresKey: true,
-            script: [.failure(.quotaExhausted), .failure(.quotaExhausted)]
+            script: [.failure(.rateLimited(retryAfter: nil)), .failure(.rateLimited(retryAfter: nil))]
         )
         let firecrawl = ScriptedSearchProvider(id: .firecrawl, script: [.success([]), .success([]), .success([])])
         let brave = ScriptedSearchProvider(id: .brave, requiresKey: true)
         let router = router(tavily: tavily, firecrawl: firecrawl, brave: brave)
 
         _ = try await router.search(query(), configuration: configuration(), useCache: false)
-        clock.advance(16 * 60)
+        clock.advance(2 * 60)
         _ = try await router.search(query("另一个查询"), configuration: configuration(), useCache: false)
 
         let remaining = await router.cooldownRemaining(for: .tavily)
-        XCTAssertEqual(remaining, 30 * 60, accuracy: 1)
+        XCTAssertEqual(remaining, 5 * 60, accuracy: 1)
     }
 
-    func testQuotaCooldownSurvivesAFreshRouter() async throws {
+    func testRateLimitCooldownSurvivesAFreshRouter() async throws {
         let ledger = ResearchLedger(fileURL: try researchTestDirectory().appendingPathComponent("ledger.json"))
         let tavily = ScriptedSearchProvider(
             id: .tavily,
             requiresKey: true,
-            script: [.failure(.quotaExhausted)]
+            script: [.failure(.rateLimited(retryAfter: nil))]
         )
         let firecrawl = ScriptedSearchProvider(id: .firecrawl, script: [.success([]), .success([])])
         let brave = ScriptedSearchProvider(id: .brave, requiresKey: true)
@@ -206,7 +211,7 @@ final class SearchFailoverTests: XCTestCase {
 
         XCTAssertEqual(tavily.callCount, 1, "a persisted quota block must survive a restart")
         let remaining = await relaunched.cooldownRemaining(for: .tavily)
-        XCTAssertEqual(remaining, 15 * 60, accuracy: 1)
+        XCTAssertEqual(remaining, 60, accuracy: 1)
     }
 
     // MARK: - Retry and invalid keys

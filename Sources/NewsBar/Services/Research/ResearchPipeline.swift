@@ -370,15 +370,28 @@ struct ResearchPipeline: Sendable {
         for start in stride(from: 0, to: selected.count, by: 3) {
             if let reason = await checkStop() { return await fail(reason) }
             let chunk = Array(selected[start..<min(start + 3, selected.count)])
-            await withTaskGroup(of: ResearchDocument?.self) { group in
-                for hit in chunk {
-                    group.addTask {
-                        await pageReader.read(hit, apiKey: configuration.firecrawlAPIKey)
+            do {
+                try await withThrowingTaskGroup(of: ResearchDocument?.self) { group in
+                    for hit in chunk {
+                        group.addTask {
+                            try await pageReader.read(
+                                hit,
+                                apiKey: configuration.firecrawlAPIKey
+                            )
+                        }
+                    }
+                    for try await document in group {
+                        if let document { readDocuments.append(document) }
                     }
                 }
-                for await document in group {
-                    if let document { readDocuments.append(document) }
-                }
+            } catch is CancellationError {
+                return await fail(
+                    L10n.string("research.error.cancelled", language: language)
+                )
+            } catch {
+                // Page reading only throws cancellation; anything else is a
+                // chunk-level failure and degrades to snippet documents below.
+                continue
             }
         }
 

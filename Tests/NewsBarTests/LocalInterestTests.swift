@@ -260,4 +260,41 @@ final class LocalInterestTests: XCTestCase {
         XCTAssertEqual(controller.state.feedbacks.count, 1)
         XCTAssertTrue(InterestProfile.build(state: controller.state).topics.isEmpty)
     }
+
+    func testDatabaseAndDirectoryAreOwnerOnly() async throws {
+        let directory = try researchTestDirectory()
+            .appendingPathComponent("interest", isDirectory: true)
+        let file = directory.appendingPathComponent("interest.sqlite")
+        let store = LocalInterestStore(fileURL: file)
+
+        _ = try await store.load()
+
+        let manager = FileManager.default
+        let directoryMode = try manager.attributesOfItem(atPath: directory.path)[.posixPermissions] as? Int
+        let fileMode = try manager.attributesOfItem(atPath: file.path)[.posixPermissions] as? Int
+        XCTAssertEqual(directoryMode.map { $0 & 0o777 }, 0o700)
+        XCTAssertEqual(fileMode.map { $0 & 0o777 }, 0o600)
+    }
+
+    func testExistingLoosePermissionsAreTightenedBeforeOpen() async throws {
+        let directory = try researchTestDirectory()
+            .appendingPathComponent("interest-existing", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o755]
+        )
+        let file = directory.appendingPathComponent("interest.sqlite")
+        FileManager.default.createFile(atPath: file.path, contents: nil)
+        try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: file.path)
+
+        let store = LocalInterestStore(fileURL: file)
+        _ = try await store.load()
+
+        let manager = FileManager.default
+        let directoryMode = try manager.attributesOfItem(atPath: directory.path)[.posixPermissions] as? Int
+        let fileMode = try manager.attributesOfItem(atPath: file.path)[.posixPermissions] as? Int
+        XCTAssertEqual(directoryMode.map { $0 & 0o777 }, 0o700)
+        XCTAssertEqual(fileMode.map { $0 & 0o777 }, 0o600)
+    }
 }

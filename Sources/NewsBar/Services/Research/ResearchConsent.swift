@@ -6,7 +6,7 @@ import Foundation
 /// because manual verification is the first moment a user knowingly sends a
 /// specific story to third-party search services.
 enum ResearchConsent {
-    static let currentVersion = 1
+    static let currentVersion = 2
 
     static func requiresConsent(storedVersion: Int) -> Bool {
         storedVersion < currentVersion

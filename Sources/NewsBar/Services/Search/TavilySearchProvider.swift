@@ -4,7 +4,6 @@ import Foundation
 /// Firecrawl scrape for the highest-value pages.
 struct TavilySearchProvider: SearchProvider {
     let id: SearchProviderID = .tavily
-    let requiresKey = true
 
     private let transport: SearchHTTPTransport
     private let endpoint: URL
@@ -18,14 +17,18 @@ struct TavilySearchProvider: SearchProvider {
     }
 
     func search(_ query: SearchQuery, key: String) async throws -> [SearchHit] {
-        guard requiresKey, !key.isEmpty else { throw SearchProviderError.missingKey }
         let text = query.text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { throw SearchProviderError.emptyQuery }
 
         var request = URLRequest(url: endpoint)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
+        if key.isEmpty {
+            // Tavily's keyless tier is selected by a header, not by omission.
+            request.setValue("keyless", forHTTPHeaderField: "X-Tavily-Access-Mode")
+        } else {
+            request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
+        }
         request.timeoutInterval = 20
 
         var body: [String: Any] = [
@@ -42,7 +45,7 @@ struct TavilySearchProvider: SearchProvider {
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
         let (data, response) = try await send(request)
-        try SearchHTTPMapping.validate(response)
+        try SearchHTTPMapping.validate(response, data: data)
 
         struct TavilyResponse: Decodable {
             struct Result: Decodable {

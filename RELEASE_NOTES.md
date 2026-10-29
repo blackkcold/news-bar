@@ -1,5 +1,25 @@
 ## [Unreleased]
 
+## [v2.10.1] - 2026-10-29
+
+### ✨ 新增
+- **六家搜索 provider**：Tavily、Firecrawl、TinyFish、Exa、Parallel、Brave 统一注册与故障转移。Tavily 与 Firecrawl 无 Key 时走受限的免费通道；TinyFish、Exa、Parallel 需免费 Key；Brave 保留在末位。
+- **限流治理**：429 优先按 `Retry-After` 冷却，缺失时按 1/5/15/60 分钟阶梯退避；402 直接停到该 provider 的日/月额度窗口重置。本地额外维护分钟/小时/日/月保守上限，跨重启保留。
+- **每查询尝试上限**：单个查询最多派发 3 家 provider，避免六家把 12 次任务预算一次烧光。
+- **设置页 provider 卡片**：状态、冷却倒计时、今日/本月本地用量与内联 Key 管理合并到一张卡片。
+
+### 🛠 修复
+- **Firecrawl 无 Key 的搜索语义**：v2.8.0 的发布说明写成「无 Key 时不发出任何 Firecrawl 请求」，实际只对抓取成立。搜索自 2026-06 起支持 keyless REST，本次按真实能力接入并在界面与文档中区分搜索/抓取。
+- **取消传播**：`PageReader.read` 改为 `throws`，取消不再被吞成「页面不可读」；直抓 transport 把 `URLError.cancelled` 还原为 `CancellationError`；阅读阶段改用可取消的 task group。
+- **密钥迁移不再静默丢 Key**：DEBUG 关闭加密存储时 `saveAPIKey` 返回失败而不是假成功；`firecrawlAPIKey` 不再把新值明文写回 UserDefaults，迁移失败时保留旧值以便重试。
+- **本地化补全**：`research.providerStatus.retryAuth`、`rss.validationProgress` 及新增 provider 状态文案；新增「使用了但未定义」的 lint 测试。
+- **搜索缓存键**：加入可派发 provider 集合，关闭 provider 或移除 Key 后不会命中旧来源并错误归因。
+- **LocalInterestStore 权限**：数据库在 `sqlite3_open` 之前以 0600 预创建，目录权限重新确认；目录或符号链接占位时报错而不是被恢复流程删除。
+- **死代码与假开关**：删除 `WebSearchService`、`WebSearchProvider`、`webSearchEnabled`、`burstTestWebSearchEnabled` 以及从未被读取的 `forceSearch` 参数。
+
+### ✅ 测试
+- `swift test`：1088 项通过，0 失败，2 项需显式开启的公网测试跳过。
+
 ## [v2.10.0] - 2026-10-29
 
 ### ✨ 新增
