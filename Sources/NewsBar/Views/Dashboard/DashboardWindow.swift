@@ -155,7 +155,12 @@ struct DashboardWindow: View {
     }
 
     private func readerPane(_ request: NewsReaderRequest) -> some View {
-        NewsReaderView(request: request, onOpenSettings: openInterestSettings)
+        NewsReaderView(
+            request: request,
+            onOpenSettings: openInterestSettings,
+            onOpenResearch: { onOpenResearchCenter($0) },
+            onConfigureAI: onConfigureAI ?? {}
+        )
             .id(request.id)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
     }

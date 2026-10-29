@@ -44,6 +44,13 @@ final class NewsReaderModel: NSObject, WKNavigationDelegate, WKUIDelegate, WKScr
         var historyEnabled = false
     }
 
+    /// A right-click on selected page text. The view owns presentation; the
+    /// model only reports what the user selected.
+    struct SelectionExplainRequest: Identifiable, Equatable {
+        let id = UUID()
+        let text: String
+    }
+
     let request: NewsReaderRequest
     private(set) var webView: WKWebView?
     var loading = true
@@ -56,6 +63,7 @@ final class NewsReaderModel: NSObject, WKNavigationDelegate, WKUIDelegate, WKScr
     private(set) var progress: Double = 0
     private(set) var pageTitle: String
     private(set) var notice: ReaderFailure?
+    private(set) var selectionExplainRequest: SelectionExplainRequest?
     var currentURL: String
     var canGoBack = false
     var canGoForward = false
@@ -66,6 +74,9 @@ final class NewsReaderModel: NSObject, WKNavigationDelegate, WKUIDelegate, WKScr
     private var attributed = false
     private var adapted = false
     private var nonce = UUID().uuidString
+    /// Fixed for the reader session. The user script survives navigations, so a
+    /// per-navigation nonce would reject the first link the reader follows.
+    private let selectionToken = UUID().uuidString
     private var timer: Timer?
     private var lastTick = ProcessInfo.processInfo.systemUptime
     private var lastMessageAt: TimeInterval = 0
@@ -128,6 +139,15 @@ final class NewsReaderModel: NSObject, WKNavigationDelegate, WKUIDelegate, WKScr
         guard !stopped else { return }
         guard networkContextIsCurrent else { fail(.proxyTrustRequired); return }
         configuration.userContentController.add(self, contentWorld: world, name: "aggregate")
+        configuration.userContentController.add(self, contentWorld: world, name: "selectionMenu")
+        configuration.userContentController.addUserScript(
+            WKUserScript(
+                source: Self.selectionMenuScript(token: selectionToken),
+                injectionTime: .atDocumentEnd,
+                forMainFrameOnly: true,
+                in: world
+            )
+        )
         // Give the opening transition a chance to paint before WebKit's
         // synchronous construction and first layout land on the main thread.
         try? await Task.sleep(for: .milliseconds(50))
@@ -223,6 +243,7 @@ final class NewsReaderModel: NSObject, WKNavigationDelegate, WKUIDelegate, WKScr
         forwardObserver?.invalidate()
         webView?.stopLoading()
         webView?.configuration.userContentController.removeScriptMessageHandler(forName: "aggregate", contentWorld: world)
+        webView?.configuration.userContentController.removeScriptMessageHandler(forName: "selectionMenu", contentWorld: world)
         webView?.navigationDelegate = nil
         webView?.uiDelegate = nil
         if ReaderSessionRegistry.active === self { ReaderSessionRegistry.active = nil }
@@ -590,6 +611,10 @@ final class NewsReaderModel: NSObject, WKNavigationDelegate, WKUIDelegate, WKScr
     }
 
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+        if message.name == "selectionMenu" {
+            handleSelectionMenu(message)
+            return
+        }
         let now = ProcessInfo.processInfo.systemUptime
         guard !stopped, message.frameInfo.isMainFrame, loaded, attributed,
               InterestController.shared.canLearn, !request.privateSession,
@@ -602,6 +627,81 @@ final class NewsReaderModel: NSObject, WKNavigationDelegate, WKUIDelegate, WKScr
         adapted = true
         evidence.estimatedReadingSeconds = max(30, min(1200, Double(length) / 8))
         evidence.setScroll(scroll)
+    }
+
+    // MARK: - Selected-text menu
+
+    private static func selectionMenuScript(token: String) -> String {
+        """
+        (() => {
+          if (window.__newsbarSelectionMenuInstalled) return;
+          window.__newsbarSelectionMenuInstalled = true;
+          const token = '\(token)';
+          document.addEventListener('contextmenu', (event) => {
+            const selection = window.getSelection();
+            const text = (selection ? selection.toString() : '').trim();
+            if (!text) return;
+            const active = document.activeElement;
+            if (active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA' || active.isContentEditable)) return;
+            event.preventDefault();
+            event.stopPropagation();
+            window.webkit.messageHandlers.selectionMenu.postMessage({
+              token: token,
+              text: text.slice(0, 4000),
+              url: location.href
+            });
+          }, true);
+        })();
+        """
+    }
+
+    private func handleSelectionMenu(_ message: WKScriptMessage) {
+        guard !stopped, message.frameInfo.isMainFrame, loaded,
+              let body = message.body as? [String: Any],
+              body["token"] as? String == selectionToken,
+              let raw = body["url"] as? String,
+              ContentIdentity.canonicalURL(raw) == ContentIdentity.canonicalURL(webView?.url?.absoluteString ?? ""),
+              let text = (body["text"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !text.isEmpty, text.count <= 4_000,
+              let web = webView, let window = web.window else { return }
+        // The JS bridge carries no reliable view coordinate: WebKit delivers it
+        // after hit testing. The pointer is still where the user right-clicked.
+        let inWindow = window.convertPoint(fromScreen: NSEvent.mouseLocation)
+        let point = web.convert(inWindow, from: nil)
+        let menu = NSMenu()
+        menu.autoenablesItems = false
+        let english = L10n.currentLanguage == .en
+        let explain = NSMenuItem(
+            title: english ? "Explain with AI" : "用 AI 解释",
+            action: #selector(explainSelection(_:)),
+            keyEquivalent: ""
+        )
+        explain.target = self
+        explain.representedObject = text
+        explain.isEnabled = true
+        menu.addItem(explain)
+        menu.addItem(.separator())
+        let copy = NSMenuItem(
+            title: english ? "Copy" : "复制",
+            action: #selector(copySelection(_:)),
+            keyEquivalent: ""
+        )
+        copy.target = self
+        copy.representedObject = text
+        copy.isEnabled = true
+        menu.addItem(copy)
+        menu.popUp(positioning: nil, at: point, in: web)
+    }
+
+    @objc private func explainSelection(_ sender: NSMenuItem) {
+        guard let text = sender.representedObject as? String else { return }
+        selectionExplainRequest = SelectionExplainRequest(text: text)
+    }
+
+    @objc private func copySelection(_ sender: NSMenuItem) {
+        guard let text = sender.representedObject as? String else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
     }
 
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
@@ -628,14 +728,18 @@ struct NewsReaderView: View {
     @State private var model: NewsReaderModel
     @Environment(AppSettings.self) private var settings
     var onOpenSettings: () -> Void = {}
+    var onOpenResearch: (String) -> Void = { _ in }
+    var onConfigureAI: () -> Void = {}
 
-    init(request: NewsReaderRequest, onOpenSettings: @escaping () -> Void = {}) {
+    init(request: NewsReaderRequest, onOpenSettings: @escaping () -> Void = {}, onOpenResearch: @escaping (String) -> Void = { _ in }, onConfigureAI: @escaping () -> Void = {}) {
         _model = State(initialValue: NewsReaderModel(request: request))
         self.onOpenSettings = onOpenSettings
+        self.onOpenResearch = onOpenResearch
+        self.onConfigureAI = onConfigureAI
     }
 
     var body: some View {
-        ReaderContentView(model: model, onClose: { ReaderTransitionCoordinator.shared.requestClose() }, onOpenSettings: onOpenSettings)
+        ReaderContentView(model: model, onClose: { ReaderTransitionCoordinator.shared.requestClose() }, onOpenSettings: onOpenSettings, onOpenResearch: onOpenResearch, onConfigureAI: onConfigureAI)
             .task {
                 await model.start(options: NewsReaderModel.SessionOptions(
                     cookieMemoryEnabled: settings.readerCookieMemoryEnabled,
@@ -656,10 +760,15 @@ struct ReaderContentView: View {
     @Bindable var model: NewsReaderModel
     var onClose: () -> Void
     var onOpenSettings: () -> Void = {}
+    var onOpenResearch: (String) -> Void = { _ in }
+    var onConfigureAI: () -> Void = {}
     @State private var lastFeedback: UUID?
     @State private var feedbackMessage: String?
     @State private var askExternal = false
     @State private var showPrivacy = false
+    @State private var showResearch = false
+    @State private var research = ReaderResearchPanelModel()
+    @State private var explainModel = SelectionExplainModel()
     @State private var browserData = BrowserDataController.shared
     @Environment(AppSettings.self) private var settings
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -693,8 +802,45 @@ struct ReaderContentView: View {
                 if let notice = model.notice {
                     noticeView(notice)
                 }
+                if showResearch {
+                    HStack(spacing: 0) {
+                        Color.clear
+                            .contentShape(Rectangle())
+                            .onTapGesture { showResearch = false }
+                        ReaderResearchPanel(
+                            model: research,
+                            language: settings.appLanguage,
+                            onClose: { showResearch = false },
+                            onOpen: onOpenResearch,
+                            onVerify: verifyCurrentPage,
+                            canVerify: !model.loading && ReaderNavigationPolicy.allowedURL(model.currentURL) != nil
+                        )
+                    }
+                }
             }
             .animation(reduceMotion ? nil : DashboardMotion.micro, value: model.notice != nil)
+            .overlay(alignment: .bottomTrailing) {
+                if explainModel.state != .idle {
+                    SelectionExplainPanel(
+                        model: explainModel,
+                        language: settings.appLanguage,
+                        providerName: settings.providerDisplayName(forID: settings.aiProvider),
+                        onClose: { explainModel.dismiss() },
+                        onCopy: { answer in
+                            NSPasteboard.general.clearContents()
+                            NSPasteboard.general.setString(answer, forType: .string)
+                        },
+                        onRetry: { explainModel.retry(settings: settings) },
+                        onOpenSettings: {
+                            explainModel.dismiss()
+                            onConfigureAI()
+                        }
+                    )
+                    .padding(16)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+                }
+            }
+            .animation(reduceMotion ? nil : DashboardMotion.micro, value: explainModel.state)
             .overlay(alignment: .bottom) {
                 ZStack {
                     if let message = feedbackMessage {
@@ -708,6 +854,17 @@ struct ReaderContentView: View {
             footer
         }
         .readerSurface(cornerRadius: 12)
+        .task(id: model.currentURL + "\n" + model.pageTitle + "\n\(model.loading)") { await refreshResearch() }
+        .onChange(of: model.selectionExplainRequest) { _, request in
+            guard let request else { return }
+            explainModel.explain(request.text, settings: settings)
+        }
+        .onChange(of: model.currentURL) { _, _ in
+            explainModel.dismiss()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .researchRecordsChanged)) { _ in
+            Task { await refreshResearch() }
+        }
         .confirmationDialog(english ? "Open in your browser?" : "在系统浏览器打开？", isPresented: $askExternal) {
             Button(english ? "Open" : "打开") {
                 let url = model.currentURL
@@ -779,7 +936,7 @@ struct ReaderContentView: View {
                 }
                 .frame(minWidth: 28, minHeight: 28)
             }
-            .keyboardShortcut(.escape, modifiers: [])
+            .keyboardShortcut(showResearch || explainModel.state != .idle ? nil : KeyboardShortcut(.escape, modifiers: []))
             .accessibilityLabel(english ? "Back to list" : "返回列表")
             .help(english ? "Back to list (Esc)" : "返回列表（Esc）")
             HStack(spacing: 2) {
@@ -806,6 +963,17 @@ struct ReaderContentView: View {
                 .keyboardShortcut("r", modifiers: .command)
                 .accessibilityLabel(english ? "Reload page" : "重新加载网页")
                 .help(english ? "Reload page (⌘R)" : "重新加载网页（⌘R）")
+            Button { showResearch.toggle() } label: {
+                Image(systemName: "sidebar.trailing")
+                    .frame(width: 28, height: 28)
+                    .overlay(alignment: .topTrailing) {
+                        if research.match != nil {
+                            Circle().fill(Color.accentColor).frame(width: 6, height: 6)
+                        }
+                    }
+            }
+            .accessibilityLabel(english ? "Toggle research sidebar" : "切换研究侧栏")
+            .help(english ? "Research for this page" : "查看当前页面的研究")
             if let item = model.request.item {
                 Button {
                     NotificationCenter.default.post(
@@ -855,6 +1023,18 @@ struct ReaderContentView: View {
         }
         .buttonStyle(.borderless)
         .controlSize(.regular)
+    }
+
+    private func refreshResearch() async {
+        await research.refresh(item: model.request.item, requestURL: model.request.url, currentURL: model.currentURL, title: model.loading ? "" : model.pageTitle)
+    }
+
+    private func verifyCurrentPage() {
+        guard !model.loading, let item = ReaderResearchPanelModel.verificationItem(
+            original: model.request.item, requestURL: model.request.url,
+            currentURL: model.currentURL, title: model.pageTitle
+        ) else { return }
+        NotificationCenter.default.post(name: .researchRequested, object: nil, userInfo: ["item": item])
     }
 
     private var cookieMenu: some View {

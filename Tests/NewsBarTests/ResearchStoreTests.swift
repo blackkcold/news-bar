@@ -4,6 +4,54 @@ import XCTest
 final class ResearchStoreTests: XCTestCase {
     private let now = Date(timeIntervalSince1970: 1_800_000_000)
 
+    func testReaderMatchingPrefersItemThenCanonicalURLThenTopic() async throws {
+        let store = ResearchStore(directoryURL: try researchTestDirectory())
+        var itemMatch = researchTestRecord(title: "Item", updatedAt: now.addingTimeInterval(-100))
+        itemMatch.seed.itemID = "item-1"
+        itemMatch.seed.url = "https://example.org/item"
+        var urlMatch = researchTestRecord(title: "URL", updatedAt: now)
+        urlMatch.seed.itemID = "item-2"
+        urlMatch.seed.url = "https://example.org/story?id=1&utm_source=feed"
+        var topicMatch = researchTestRecord(title: "Topic", updatedAt: now.addingTimeInterval(100))
+        topicMatch.topicKey = "topic-key"
+        try await store.saveAll([itemMatch, urlMatch, topicMatch])
+
+        let exact = await store.indexEntry(matchingItemID: "item-1", url: "https://example.org/story?id=1#section", topicKey: "topic-key")
+        let byURL = await store.indexEntry(matchingItemID: nil, url: "https://example.org/story?id=1#section", topicKey: "topic-key")
+        let byTopic = await store.indexEntry(matchingItemID: nil, url: nil, topicKey: "topic-key")
+        let empty = await store.indexEntry(matchingItemID: "", url: "", topicKey: "")
+        XCTAssertEqual(exact?.id, itemMatch.id)
+        XCTAssertEqual(byURL?.id, urlMatch.id)
+        XCTAssertEqual(byTopic?.id, topicMatch.id)
+        XCTAssertNil(empty)
+    }
+
+    func testLegacyIndexRebuildsSeedProjectionWithoutChangingRecord() async throws {
+        let directory = try researchTestDirectory()
+        let store = ResearchStore(directoryURL: directory)
+        var record = researchTestRecord(title: "Legacy", updatedAt: now)
+        record.seed.itemID = "legacy-item"
+        record.seed.url = "https://example.org/legacy"
+        try await store.save(record)
+        let recordURL = directory.appendingPathComponent("records/\(record.id).json")
+        let original = try Data(contentsOf: recordURL)
+        let indexURL = directory.appendingPathComponent("index.json")
+        var index = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: indexURL)) as? [String: Any])
+        index["version"] = 1
+        var entries = try XCTUnwrap(index["entries"] as? [[String: Any]])
+        entries[0].removeValue(forKey: "seedItemID")
+        entries[0].removeValue(forKey: "seedURL")
+        index["entries"] = entries
+        try JSONSerialization.data(withJSONObject: index).write(to: indexURL)
+
+        let reloaded = ResearchStore(directoryURL: directory)
+        let bootstrap = await reloaded.bootstrap()
+        let match = await reloaded.indexEntry(matchingItemID: "legacy-item", url: nil, topicKey: nil)
+        XCTAssertTrue(bootstrap.rebuiltIndex)
+        XCTAssertEqual(match?.id, record.id)
+        XCTAssertEqual(try Data(contentsOf: recordURL), original)
+    }
+
     func testSaveLoadAndIndexRebuild() async throws {
         let directory = try researchTestDirectory()
         let store = ResearchStore(directoryURL: directory)
