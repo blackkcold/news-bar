@@ -382,14 +382,9 @@ enum AISummaryService {
             prompt += "\n" + formatEnforcementSuffix
         }
 
-        guard let url = URL(string: connection.baseURL) else {
-            throw NewsBarError.invalidURL
-        }
-
         let result = try await withRetry {
             guard await requestAllowed() else { throw CancellationError() }
             return try await makeRequest(
-                url: url,
                 connection: connection,
                 apiKey: apiKey,
                 model: model,
@@ -411,7 +406,6 @@ enum AISummaryService {
         let retryResult = try await withRetry {
             guard await requestAllowed() else { throw CancellationError() }
             return try await makeRequest(
-                url: url,
                 connection: connection,
                 apiKey: apiKey,
                 model: model,
@@ -431,7 +425,6 @@ enum AISummaryService {
     }
 
     private static func makeRequest(
-        url: URL,
         connection: ResolvedAIConnection,
         apiKey: String,
         model: String,
@@ -462,21 +455,31 @@ enum AISummaryService {
             reservedCostMicros: reserved
         )
 
-        let result: SummaryResult
-        switch connection.responseFormat {
-        case .openAI:
-            result = try await makeOpenAIRequest(
-                url: url, connection: connection, apiKey: apiKey, model: model,
-                systemPrompt: systemPrompt, userPrompt: userPrompt, maxTokens: maxTokens,
-                disableDeepSeekThinking: disableDeepSeekThinking
+        let built: AIBuiltRequest
+        do {
+            built = try AIRequestBuilder.build(
+                connection: connection,
+                apiKey: apiKey,
+                model: model,
+                messages: [
+                    AIChatMessage(role: .system, content: systemPrompt),
+                    AIChatMessage(role: .user, content: userPrompt),
+                ],
+                maxTokens: maxTokens,
+                temperature: 0.3,
+                thinking: AIRequestBuilder.thinkingLevel(
+                    connection: connection,
+                    disableDeepSeekThinking: disableDeepSeekThinking
+                ),
+                timeout: timeout,
+                userAgent: "NewsBar/1.0 (macOS; Summary)"
             )
-        case .anthropic:
-            result = try await makeAnthropicRequest(
-                url: url, connection: connection, apiKey: apiKey, model: model,
-                systemPrompt: systemPrompt, userPrompt: userPrompt, maxTokens: maxTokens
-            )
+        } catch {
+            throw NewsBarError.invalidURL
         }
 
+        let (data, response) = try await URLSession.shared.data(for: built.request)
+        let result = try parseSummary(data: data, response: response, format: connection.responseFormat)
         quotaStore.settle(
             reservedCostMicros: reserved,
             usage: result.usage,
@@ -485,56 +488,26 @@ enum AISummaryService {
         return result
     }
 
-    // MARK: - OpenAI-format request
-
-    private static func makeOpenAIRequest(
-        url: URL,
-        connection: ResolvedAIConnection,
-        apiKey: String,
-        model: String,
-        systemPrompt: String,
-        userPrompt: String,
-        maxTokens: Int,
-        disableDeepSeekThinking: Bool
-    ) async throws -> SummaryResult {
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("\(connection.authHeaderPrefix)\(apiKey)", forHTTPHeaderField: connection.authHeaderName)
-        request.timeoutInterval = timeout
-
-        var body: [String: Any] = [
-            "model": model,
-            "messages": [
-                ["role": "system", "content": systemPrompt],
-                ["role": "user", "content": userPrompt],
-            ],
-            "max_tokens": maxTokens,
-            "temperature": 0.3,
-        ]
-        // DeepSeek V4 enables thinking mode by default; the reasoning trace
-        // consumes the max_tokens budget and adds latency, which truncates and
-        // slows summaries. Opt out for fast, non-truncated briefings.
-        if disableDeepSeekThinking, model.contains("deepseek") {
-            body["thinking"] = ["type": "disabled"]
-        }
-        request.httpBody = try JSONSerialization.data(withJSONObject: body)
-
-        let (data, response) = try await URLSession.shared.data(for: request)
-
-        guard let httpResponse = response as? HTTPURLResponse else {
+    /// Parses both wire formats. The Anthropic branch keeps its OpenAI decode
+    /// fallback for proxies that answer in the other shape.
+    private static func parseSummary(
+        data: Data,
+        response: URLResponse,
+        format: AIProvider.ResponseFormat
+    ) throws -> SummaryResult {
+        guard let http = response as? HTTPURLResponse else {
             throw NewsBarError.requestFailed
         }
-        guard (200...299).contains(httpResponse.statusCode) else {
-            if httpResponse.statusCode == 401 {
+        guard (200...299).contains(http.statusCode) else {
+            if http.statusCode == 401 {
                 throw NewsBarError.apiKeyInvalid
             }
-            if httpResponse.statusCode == 429 || (500...599).contains(httpResponse.statusCode) {
-                throw TransientHTTPError(statusCode: httpResponse.statusCode)
+            if http.statusCode == 429 || (500...599).contains(http.statusCode) {
+                throw TransientHTTPError(statusCode: http.statusCode)
             }
             throw NewsBarError.requestFailed
         }
-        let contentType = httpResponse.value(forHTTPHeaderField: "Content-Type") ?? ""
+        let contentType = http.value(forHTTPHeaderField: "Content-Type") ?? ""
         // Accept JSON, SSE, or a missing/blank header. Some proxies omit the
         // Content-Type even on a successful JSON body; the decoder below is the
         // authoritative check.
@@ -544,106 +517,49 @@ enum AISummaryService {
             throw NewsBarError.requestFailed
         }
 
-        let decoded = try JSONDecoder().decode(OAIResponse.self, from: data)
-        guard let choice = decoded.choices.first else {
-            throw NewsBarError.parseFailed
-        }
-
-        let content = choice.message.content.trimmingCharacters(in: .whitespacesAndNewlines)
-        let truncated = choice.finish_reason == "length"
-        return SummaryResult(
-            summary: content,
-            isTruncated: truncated,
-            usage: AIUsage.from(openAI: decoded.usage)
-        )
-    }
-
-    // MARK: - Anthropic-format request
-
-    private static func makeAnthropicRequest(
-        url: URL,
-        connection: ResolvedAIConnection,
-        apiKey: String,
-        model: String,
-        systemPrompt: String,
-        userPrompt: String,
-        maxTokens: Int
-    ) async throws -> SummaryResult {
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("\(connection.authHeaderPrefix)\(apiKey)", forHTTPHeaderField: connection.authHeaderName)
-        if let version = connection.apiVersion {
-            request.setValue(version, forHTTPHeaderField: "anthropic-version")
-        }
-        request.timeoutInterval = timeout
-
-        let body: [String: Any] = [
-            "model": model,
-            "system": systemPrompt,
-            "messages": [
-                ["role": "user", "content": userPrompt],
-            ],
-            "max_tokens": maxTokens,
-            "temperature": 0.3,
-        ]
-        request.httpBody = try JSONSerialization.data(withJSONObject: body)
-
-        let (data, response) = try await URLSession.shared.data(for: request)
-
-        guard let httpResponse = response as? HTTPURLResponse else {
-            throw NewsBarError.requestFailed
-        }
-        guard (200...299).contains(httpResponse.statusCode) else {
-            if httpResponse.statusCode == 401 {
-                throw NewsBarError.apiKeyInvalid
+        switch format {
+        case .openAI:
+            let decoded = try JSONDecoder().decode(OAIResponse.self, from: data)
+            guard let choice = decoded.choices.first else {
+                throw NewsBarError.parseFailed
             }
-            if httpResponse.statusCode == 429 || (500...599).contains(httpResponse.statusCode) {
-                throw TransientHTTPError(statusCode: httpResponse.statusCode)
-            }
-            throw NewsBarError.requestFailed
-        }
-        let contentType = httpResponse.value(forHTTPHeaderField: "Content-Type") ?? ""
-        guard contentType.isEmpty
-            || contentType.contains("application/json")
-            || contentType.contains("text/event-stream") else {
-            throw NewsBarError.requestFailed
-        }
+            return SummaryResult(
+                summary: choice.message.content.trimmingCharacters(in: .whitespacesAndNewlines),
+                isTruncated: choice.finish_reason == "length",
+                usage: AIUsage.from(openAI: decoded.usage)
+            )
 
-        let decoded: AnthropicResponse
-        do {
-            decoded = try JSONDecoder().decode(AnthropicResponse.self, from: data)
-        } catch let anthropicDecodeError as DecodingError {
-            NSLog("[AISummaryService] Anthropic decode failed, trying OpenAI format fallback")
+        case .anthropic:
+            let decoded: AnthropicResponse
             do {
-                let fallback = try JSONDecoder().decode(OAIResponse.self, from: data)
-                guard let choice = fallback.choices.first else {
-                    throw NewsBarError.parseFailed
+                decoded = try JSONDecoder().decode(AnthropicResponse.self, from: data)
+            } catch let anthropicDecodeError as DecodingError {
+                NSLog("[AISummaryService] Anthropic decode failed, trying OpenAI format fallback")
+                do {
+                    let fallback = try JSONDecoder().decode(OAIResponse.self, from: data)
+                    guard let choice = fallback.choices.first else {
+                        throw NewsBarError.parseFailed
+                    }
+                    return SummaryResult(
+                        summary: choice.message.content.trimmingCharacters(in: .whitespacesAndNewlines),
+                        isTruncated: choice.finish_reason == "length",
+                        usage: AIUsage.from(openAI: fallback.usage)
+                    )
+                } catch let fallbackError as DecodingError {
+                    NSLog("[AISummaryService] OpenAI fallback also failed: %@", fallbackError.localizedDescription)
+                    throw anthropicDecodeError
                 }
-                let content = choice.message.content.trimmingCharacters(in: .whitespacesAndNewlines)
-                let truncated = choice.finish_reason == "length"
-                return SummaryResult(
-                    summary: content,
-                    isTruncated: truncated,
-                    usage: AIUsage.from(openAI: fallback.usage)
-                )
-            } catch let fallbackError as DecodingError {
-                NSLog("[AISummaryService] OpenAI fallback also failed: %@", fallbackError.localizedDescription)
-                throw anthropicDecodeError
             }
+            guard let textBlock = decoded.content.first(where: { $0.type == "text" }),
+                  let text = textBlock.text else {
+                throw NewsBarError.parseFailed
+            }
+            return SummaryResult(
+                summary: text.trimmingCharacters(in: .whitespacesAndNewlines),
+                isTruncated: decoded.stop_reason == "max_tokens",
+                usage: AIUsage.from(anthropic: decoded.usage)
+            )
         }
-        guard let textBlock = decoded.content.first(where: { $0.type == "text" }),
-              let text = textBlock.text else {
-            throw NewsBarError.parseFailed
-        }
-
-        let content = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        let truncated = decoded.stop_reason == "max_tokens"
-        return SummaryResult(
-            summary: content,
-            isTruncated: truncated,
-            usage: AIUsage.from(anthropic: decoded.usage)
-        )
     }
 
     private static func systemPrompt(language: AppLanguage) -> String {

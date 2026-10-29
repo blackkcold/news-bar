@@ -8,8 +8,7 @@ struct InterestPrivacySection: View {
     @State private var topic = ""
     @State private var topicMessage: String?
     @State private var showSavedRules = false
-    @State private var explanationPresented = false
-    @State private var frozenExplanation: RecommendationExplanationModel?
+    @State private var explanationPresentation: RecommendationExplanationPresentation?
     @State private var isClearing = false
     @State private var clearMessage: String?
     private var english: Bool { settings.appLanguage == .en }
@@ -62,10 +61,11 @@ struct InterestPrivacySection: View {
                 theme: settings.appTheme,
                 language: settings.appLanguage,
                 action: {
-                    // Capture once so the sheet keeps showing the same frozen
-                    // snapshot even if the controller publishes a newer ranking.
-                    frozenExplanation = makeExplanationModel()
-                    explanationPresented = true
+                    // Build the full read-only model first, then hand it to an
+                    // Identifiable wrapper. The sheet's content is therefore
+                    // never gated on an optional value: presenting and
+                    // populating happen in one identity-bearing step.
+                    explanationPresentation = RecommendationExplanationPresentation(model: makeExplanationModel())
                 }
             )
             if !controller.state.feedbacks.isEmpty {
@@ -124,12 +124,14 @@ struct InterestPrivacySection: View {
             Text(english ? "Off by default. Behavior and profile stay on this Mac. Selected news titles still go to your configured AI provider for summaries. System browser history, passwords and cookies are never imported; the reader only keeps first-party cookies from sites you visit, managed in the Browser tab." : "默认关闭。行为与画像仅存本机；摘要仍会把选中的新闻标题发给配置的 AI 提供商。不导入系统浏览器的历史、密码或 Cookie；阅读器只保存你访问站点自身的第一方 Cookie，可在「浏览器」页签管理。")
         }
         .task { await controller.prepare() }
-        .sheet(isPresented: $explanationPresented) {
-            if let frozenExplanation {
-                RecommendationExplanationView(model: frozenExplanation, theme: settings.appTheme)
-                    .appThemeSurface()
-                    .environment(settings)
-            }
+        // `item:` ties the presentation identity to the built model. The old
+        // `isPresented:` + `if let` pair could render an EmptyView on first
+        // presentation because the sheet closure read the state before the
+        // assignment landed, which sized the sheet around empty content.
+        .sheet(item: $explanationPresentation) { presentation in
+            RecommendationExplanationView(model: presentation.model, theme: settings.appTheme)
+                .appThemeSurface()
+                .environment(settings)
         }
         .confirmationDialog(english ? "Allow local reading-behavior learning?" : "允许在本机记录新闻阅读行为？", isPresented: $consentPrompt) {
             Button(english ? "Allow local personalization" : "允许本地个性化") { controller.setLearningEnabled(true) }

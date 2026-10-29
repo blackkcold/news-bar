@@ -20,6 +20,8 @@ For each candidate, available features produce a personal score and a public bas
 
 Already-read items are down-weighted, and while learning is on, reducing a topic also lowers its score. These are ranking adjustments, not deletion. Current coefficients, normalization peaks and caps change between versions; consult the in-app recommendation diagnostics and RecommendationEngine source for live values. This guide does not duplicate tunable numbers.
 
+The interest network in the Interests section only reads profile tags and source co-occurrence to show where evidence came from. Its topic-to-source links do not take part in scoring and do not represent causality or semantic distance. The graph draws at most 8 topics, 6 sources and 28 links, truncating by weight; a node reduced by an explicit rule gets a dashed outline rather than a negative edge.
+
 ## Diversity and source rotation
 
 Diversity adjustments follow the initial ranking. Repeated sources or topics receive a soft penalty, and a source protection cap varies with list length rather than acting as a fixed quota; source filtering only changes which items are displayed, while ranking and diversity penalties still use the full candidate pool. At fixed positions, the list prefers a less-used source. This is source rotation (source backfill): it selects by source count and a deterministic order, not random exploration and not a semantic model.
@@ -49,4 +51,6 @@ Bookmarks, mutes and hides still work (and explicit blocks still filter content 
 Semantic vector ranking is not enabled, and no causal graph or probability confidence is shown. Relationship views only indicate title-tag and profile-evidence matches; they do not represent semantic distance. Explanations come from the latest snapshot and may change after a refresh or profile update. When a selection trace is missing, the app says it is unavailable.
 
 A recommendation score is not an article quality rating and does not predict what you will enjoy. Source diversity is a soft constraint, so balanced coverage is not guaranteed. The app cannot infer whether the window is fully occluded; it only uses its own window, list visibility and reader occlusion to judge exposure, so explanations describe observable state only.
+
+The interest network places nodes by weight order with evenly spaced angles; it is a reading aid, not a vector-distance or causal graph, and the number of nodes or links hidden by a cap is stated in its legend.
 

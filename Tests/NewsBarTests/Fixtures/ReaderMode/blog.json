@@ -1,0 +1,81 @@
+{
+  "ok": true,
+  "reason": null,
+  "url": "https://blog.example.dev/posts/swift-concurrency",
+  "title": "Swift 并发迁移笔记",
+  "byline": "A. Developer",
+  "siteName": "Example Dev",
+  "publishedAt": "2026-10-20",
+  "lang": "en",
+  "wordCount": 320,
+  "score": 1200,
+  "selector": "heuristic",
+  "blocks": [
+    {
+      "type": "p",
+      "text": "这次迁移把一个图片处理流水线从回调改成了结构化并发。目标不是追求更短的代码，而是让取消和错误传播有明确的边界。下面记录几个真正踩到的坑。"
+    },
+    {
+      "type": "h2",
+      "text": "任务组不是万能的"
+    },
+    {
+      "type": "p",
+      "text": "任务组适合扇出再汇合的场景。如果子任务之间需要共享可变状态，仍然要回到 actor 或显式的锁。把共享状态塞进任务组只会让竞态更难发现，因为任务组本身不提供互斥。"
+    },
+    {
+      "type": "quote",
+      "text": "并发不是让代码变快，而是让等待重叠。计算仍然是计算。"
+    },
+    {
+      "type": "h3",
+      "text": "取消检查的位置"
+    },
+    {
+      "type": "p",
+      "text": "长循环里要主动检查取消。只在函数入口检查一次是不够的，因为任务可能在循环中途被取消。把检查放在每一批次之后，既不会带来明显开销，也能让退出更及时。"
+    },
+    {
+      "type": "pre",
+      "text": "for batch in chunks {\n    try Task.checkCancellation()\n    await process(batch)\n}"
+    },
+    {
+      "type": "p",
+      "text": "还有一个小细节：把异步函数标记为 @MainActor 之后，调用方仍然需要用 await 进入，但这不代表整段代码都在主线程执行。真正需要主线程的部分应该尽量短，把解析和计算留在后台，再回到主线程更新界面。"
+    },
+    {
+      "type": "figure",
+      "src": "https://blog.example.dev/assets/pipeline.webp",
+      "alt": "流水线示意",
+      "caption": "把阶段拆开后，取消信号会沿着任务树向下传播。"
+    },
+    {
+      "type": "p",
+      "text": "最后一点是测试。并发代码的测试要避免依赖真实时间，用可控的时钟或注入的调度器。否则本地通过、CI 偶发失败，排查成本会很高。"
+    },
+    {
+      "type": "p",
+      "text": "分享这篇文章"
+    },
+    {
+      "type": "p",
+      "text": "旧站备份",
+      "href": "http://blog.example.dev/old"
+    },
+    {
+      "type": "p",
+      "text": "脚本链接",
+      "href": "javascript:alert(1)"
+    },
+    {
+      "type": "img",
+      "src": "https://localhost/private.png",
+      "alt": "不该出现"
+    },
+    {
+      "type": "img",
+      "src": "http://insecure.example.com/a.png",
+      "alt": "不该出现"
+    }
+  ]
+}

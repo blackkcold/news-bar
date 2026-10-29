@@ -49,4 +49,5 @@ enum AIQuotaOrigin: String, Codable, Sendable, CaseIterable {
     case research
     case triage
     case selection
+    case aiSearch
 }

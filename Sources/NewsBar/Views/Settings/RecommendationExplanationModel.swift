@@ -496,6 +496,9 @@ struct RecommendationExplanationModel {
     let policyVersion: Int?
     let dimensions: [RecommendationExplanationDimension]
     let groups: [RecommendationExplanationGroup]
+    /// Read-only interest network built from the same profile pass that
+    /// produced `dimensions`. It never feeds ranking.
+    let interestGraph: InterestGraphModel
     let snapshotAsOf: Date?
     let candidateCount: Int
     let itemLimit: Int
@@ -605,6 +608,16 @@ struct RecommendationExplanationModel {
             )
         }
         let items = status == .resetting ? [] : buildItems(input: input, traceFor: traceFor, language: language)
+        // Built from the same `profile` value that produced `dimensions`: one
+        // pass, no second InterestProfile.build. Resetting hides old evidence.
+        let interestGraph = status == .resetting
+            ? InterestGraphModel.empty(language: language)
+            : InterestGraphModel.make(
+                profile: profile,
+                dimensions: dimensions,
+                state: displayInput.state,
+                language: language
+            )
         let snapshot = input.snapshot
         // Live-profile fields must describe the real state, never the retained
         // display copy (which exists only to render tags/weights). While off,
@@ -634,6 +647,7 @@ struct RecommendationExplanationModel {
             policyVersion: snapshot?.policyVersion,
             dimensions: dimensions,
             groups: groups,
+            interestGraph: interestGraph,
             snapshotAsOf: snapshot?.asOf,
             candidateCount: candidateCount,
             itemLimit: 10,

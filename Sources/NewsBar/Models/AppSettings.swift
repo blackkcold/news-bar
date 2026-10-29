@@ -81,6 +81,23 @@ final class AppSettings {
     var readerHistoryEnabled: Bool {
         didSet { UserDefaults.standard.set(readerHistoryEnabled, forKey: "readerHistoryEnabled") }
     }
+    /// Reader-mode typography. Values are relative multipliers, never pixels:
+    /// the native reader multiplies a base point size by `readerModeFontScale`.
+    var readerModeFontScale: Double {
+        didSet { UserDefaults.standard.set(readerModeFontScale, forKey: "readerModeFontScale") }
+    }
+    var readerModeLineSpacing: Double {
+        didSet { UserDefaults.standard.set(readerModeLineSpacing, forKey: "readerModeLineSpacing") }
+    }
+    /// Maximum text column width in points (620…760).
+    var readerModeWidth: Double {
+        didSet { UserDefaults.standard.set(readerModeWidth, forKey: "readerModeWidth") }
+    }
+    /// `auto` follows the app theme, `paper` is a warm light page, `dark` is a
+    /// low-light page.
+    var readerModeTheme: String {
+        didSet { UserDefaults.standard.set(readerModeTheme, forKey: "readerModeTheme") }
+    }
     @ObservationIgnored var resolvedColorScheme: ColorScheme? {
         if appTheme == .retroEditorial { return .light }
         switch colorScheme {
@@ -95,6 +112,12 @@ final class AppSettings {
     }
     var aiModel: String {
         didSet { UserDefaults.standard.set(aiModel, forKey: "aiModel") }
+    }
+    /// True only when the user typed the model id by hand. A manual id may be
+    /// used when the provider exposes no model catalog; the UI marks it as
+    /// unverified, and API-key and quota checks still apply.
+    var aiModelManuallyEntered: Bool {
+        didSet { UserDefaults.standard.set(aiModelManuallyEntered, forKey: "aiModelManuallyEntered") }
     }
     var aiPopupMaxWords: Int {
         didSet { UserDefaults.standard.set(aiPopupMaxWords, forKey: "aiPopupMaxWords") }
@@ -137,6 +160,27 @@ final class AppSettings {
     }
     var aiPopupDailyCap: Int {
         didSet { UserDefaults.standard.set(aiPopupDailyCap, forKey: "aiPopupDailyCap") }
+    }
+    /// Reader AI search is a first-class feature, but it is independent from the
+    /// RSS summary settings: its own model, thinking level and page budget.
+    var aiSearchEnabled: Bool {
+        didSet { UserDefaults.standard.set(aiSearchEnabled, forKey: "aiSearchEnabled") }
+    }
+    /// Allows the web-search scope. When off, only the current page can be used
+    /// as context, and no search provider is contacted.
+    var aiSearchUseWeb: Bool {
+        didSet { UserDefaults.standard.set(aiSearchUseWeb, forKey: "aiSearchUseWeb") }
+    }
+    /// Empty means "inherit `aiModel`". Never written implicitly.
+    var aiSearchModel: String {
+        didSet { UserDefaults.standard.set(aiSearchModel, forKey: "aiSearchModel") }
+    }
+    var aiSearchThinking: AIThinkingLevel {
+        didSet { UserDefaults.standard.set(aiSearchThinking.rawValue, forKey: "aiSearchThinking") }
+    }
+    /// 3 / 5 / 8 pages per web search.
+    var aiSearchPageCount: Int {
+        didSet { UserDefaults.standard.set(aiSearchPageCount, forKey: "aiSearchPageCount") }
     }
     var aiDashboardDailyCap: Int {
         didSet { UserDefaults.standard.set(aiDashboardDailyCap, forKey: "aiDashboardDailyCap") }
@@ -396,12 +440,21 @@ final class AppSettings {
         self.rssTitleTranslationEnabled = defaults.boolIfPresent(forKey: "rssTitleTranslationEnabled") ?? false
         self.readerCookieMemoryEnabled = defaults.boolIfPresent(forKey: "readerCookieMemoryEnabled") ?? true
         self.readerHistoryEnabled = defaults.boolIfPresent(forKey: "readerHistoryEnabled") ?? true
+        let storedFontScale = defaults.doubleIfPresent(forKey: "readerModeFontScale") ?? 1.0
+        self.readerModeFontScale = [0.9, 1.0, 1.15, 1.35].contains(storedFontScale) ? storedFontScale : 1.0
+        let storedLineSpacing = defaults.doubleIfPresent(forKey: "readerModeLineSpacing") ?? 1.55
+        self.readerModeLineSpacing = [1.35, 1.55, 1.75].contains(storedLineSpacing) ? storedLineSpacing : 1.55
+        let storedWidth = defaults.doubleIfPresent(forKey: "readerModeWidth") ?? 680
+        self.readerModeWidth = (620...760).contains(storedWidth) ? storedWidth : 680
+        let storedReaderTheme = defaults.stringIfPresent(forKey: "readerModeTheme") ?? "auto"
+        self.readerModeTheme = ["auto", "paper", "dark"].contains(storedReaderTheme) ? storedReaderTheme : "auto"
         self.aiSummaryEnabled = defaults.boolIfPresent(forKey: "aiSummaryEnabled") ?? false
         self.aiProvider = defaults.stringIfPresent(forKey: "aiProvider") ?? "deepseek"
 
         // Persisted selections are historical until the provider's real catalog
         // validates them. Never migrate to another hard-coded model ID.
         self.aiModel = defaults.stringIfPresent(forKey: "aiModel") ?? ""
+        self.aiModelManuallyEntered = defaults.boolIfPresent(forKey: "aiModelManuallyEntered") ?? false
 
         let rawPopupMaxWords = defaults.integerIfPresent(forKey: "aiPopupMaxWords") ?? 120
         self.aiPopupMaxWords = Self.validAIPopupMaxWords.contains(rawPopupMaxWords) ? rawPopupMaxWords : 120
@@ -419,6 +472,13 @@ final class AppSettings {
         self.aiDisableDeepSeekThinking = defaults.boolIfPresent(forKey: "aiDisableDeepSeekThinking") ?? true
         let rawPopupCap = defaults.integerIfPresent(forKey: "aiPopupDailyCap") ?? 200
         self.aiPopupDailyCap = Self.validAICaps.contains(rawPopupCap) ? rawPopupCap : 200
+        self.aiSearchEnabled = defaults.boolIfPresent(forKey: "aiSearchEnabled") ?? true
+        self.aiSearchUseWeb = defaults.boolIfPresent(forKey: "aiSearchUseWeb") ?? true
+        self.aiSearchModel = defaults.stringIfPresent(forKey: "aiSearchModel") ?? ""
+        let rawSearchThinking = defaults.stringIfPresent(forKey: "aiSearchThinking") ?? AIThinkingLevel.medium.rawValue
+        self.aiSearchThinking = AIThinkingLevel(rawValue: rawSearchThinking) ?? .medium
+        let rawSearchPages = defaults.integerIfPresent(forKey: "aiSearchPageCount") ?? 3
+        self.aiSearchPageCount = Self.validAISearchPageCounts.contains(rawSearchPages) ? rawSearchPages : 3
         let rawDashboardCap = defaults.integerIfPresent(forKey: "aiDashboardDailyCap") ?? 200
         self.aiDashboardDailyCap = Self.validAICaps.contains(rawDashboardCap) ? rawDashboardCap : 200
         if let legacyRef = defaults.stringIfPresent(forKey: "onePasswordRef"),
@@ -662,11 +722,21 @@ final class AppSettings {
         return ids
     }
 
-    var canUseCurrentAIModel: Bool {
+    /// Whether a model id has been validated. A catalog hit is validated; a
+    /// hand-entered id is accepted without a catalog but is never presented as
+    /// verified. Key presence and the quota ledger are checked separately, so
+    /// this escape hatch cannot bypass them.
+    var isAIModelCatalogValidated: Bool {
         guard modelCatalogProviderID == aiProvider,
               let updated = modelCatalogUpdatedAt, Date().timeIntervalSince(updated) <= 24 * 3600,
               modelCatalogIdentity == ProviderModelService.identity(providerID: aiProvider, connection: resolvedAIConnection, apiKey: cachedAPIKey ?? "") else { return false }
         return availableProviderModels.contains { $0.id == aiModel }
+    }
+
+    var canUseCurrentAIModel: Bool {
+        if isAIModelCatalogValidated { return true }
+        let manual = aiModel.trimmingCharacters(in: .whitespacesAndNewlines)
+        return aiModelManuallyEntered && !manual.isEmpty
     }
 
     @discardableResult
@@ -678,7 +748,12 @@ final class AppSettings {
 
     @MainActor
     func validatedAIConfiguration(apiKey: String) async -> ValidatedAIConfiguration? {
-        guard await refreshModelCatalog(apiKey: apiKey), canUseCurrentAIModel else { return nil }
+        // A key is mandatory for every provider except Ollama Cloud, which also
+        // accepts a local/account-less call. A manual model id never skips this.
+        guard !apiKey.isEmpty || aiProvider == AIProvider.ollamaCloud.rawValue else { return nil }
+        let catalogValidated = await refreshModelCatalog(apiKey: apiKey)
+        guard canUseCurrentAIModel else { return nil }
+        if !catalogValidated, !(aiModelManuallyEntered && !aiModel.isEmpty) { return nil }
         return ValidatedAIConfiguration(providerID: aiProvider, connection: resolvedAIConnection,
                                         model: aiModel, apiKey: apiKey, revision: modelCatalogRevision)
     }
@@ -708,7 +783,10 @@ final class AppSettings {
         modelCatalogError = nil
         modelCatalogIsStale = false
         isLoadingModelCatalog = false
-        if clearSelection { aiModel = "" }
+        if clearSelection {
+            aiModel = ""
+            aiModelManuallyEntered = false
+        }
     }
 
     /// Called on provider/key changes and before paid generation. Listing is
@@ -745,7 +823,11 @@ final class AppSettings {
             modelCatalogIsStale = result.source == .stale
             modelCatalogError = result.refreshError
             isLoadingModelCatalog = false
-            aiModel = ProviderModelSelection.preferred(in: result.snapshot.models, current: aiModel) ?? ""
+            let preferred = ProviderModelSelection.preferred(in: result.snapshot.models, current: aiModel) ?? ""
+            aiModel = preferred
+            if result.snapshot.models.contains(where: { $0.id == preferred }) {
+                aiModelManuallyEntered = false
+            }
             return canUseCurrentAIModel
         } catch {
             guard revision == modelCatalogRevision, provider == aiProvider else { return false }
@@ -940,6 +1022,15 @@ final class AppSettings {
     /// Whitelisted daily AI call caps. `-1` means unlimited. Any value outside
     /// this set is migrated to the entry tier.
     static let validAICaps: Set<Int> = [-1, 200, 500]
+    /// Page budgets offered for reader AI search.
+    static let validAISearchPageCounts: Set<Int> = [3, 5, 8]
+
+    /// The model AI search actually uses. Empty `aiSearchModel` inherits the
+    /// summary model; it is never silently rewritten.
+    var effectiveAISearchModel: String {
+        let manual = aiSearchModel.trimmingCharacters(in: .whitespacesAndNewlines)
+        return manual.isEmpty ? aiModel : manual
+    }
     /// Default money budget: ¥5.00/day.
     static let defaultAICostCapMicros: Int64 = 5_000_000
     /// v2.8 and earlier offered 20 / 50 / 100. Those values map to the new

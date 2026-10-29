@@ -73,6 +73,9 @@ struct HTTPAIChatClient: AIChatClienting {
     let apiKey: String
     let model: String
     let disableDeepSeekThinking: Bool
+    /// Explicit level (AI search sets its own). `nil` keeps the legacy summary
+    /// preference, applied only when the connection declares a DeepSeek switch.
+    let thinking: AIThinkingLevel?
     let timeout: TimeInterval
     let transport: Transport
 
@@ -81,6 +84,7 @@ struct HTTPAIChatClient: AIChatClienting {
         apiKey: String,
         model: String,
         disableDeepSeekThinking: Bool = false,
+        thinking: AIThinkingLevel? = nil,
         timeout: TimeInterval = 60,
         transport: @escaping Transport = { request in
             try await PrivateHTTP.data(
@@ -94,46 +98,47 @@ struct HTTPAIChatClient: AIChatClienting {
         self.apiKey = apiKey
         self.model = model
         self.disableDeepSeekThinking = disableDeepSeekThinking
+        self.thinking = thinking
         self.timeout = timeout
         self.transport = transport
     }
 
     func complete(_ request: AIChatRequest) async throws -> AIChatResponse {
+        let built: AIBuiltRequest
+        do {
+            built = try AIRequestBuilder.build(
+                connection: connection,
+                apiKey: apiKey,
+                model: model,
+                messages: request.messages,
+                maxTokens: request.maxTokens,
+                temperature: request.temperature,
+                thinking: thinking ?? AIRequestBuilder.thinkingLevel(
+                    connection: connection,
+                    disableDeepSeekThinking: disableDeepSeekThinking
+                ),
+                timeout: timeout,
+                userAgent: "NewsBar/1.0 (macOS; Chat)"
+            )
+        } catch AIRequestBuilderError.invalidURL {
+            throw AIChatError.invalidURL
+        } catch {
+            throw AIChatError.malformedResponse
+        }
+
+        let (data, response) = try await send(built.request)
+        try Self.validate(response)
         switch connection.responseFormat {
         case .openAI:
-            return try await openAIComplete(request)
+            return try Self.parseOpenAI(data)
         case .anthropic:
-            return try await anthropicComplete(request)
+            return try Self.parseAnthropic(data)
         }
     }
 
-    // MARK: - OpenAI-compatible
+    // MARK: - Response parsing
 
-    private func openAIComplete(_ request: AIChatRequest) async throws -> AIChatResponse {
-        guard let url = URL(string: connection.baseURL) else { throw AIChatError.invalidURL }
-        var httpRequest = URLRequest(url: url)
-        httpRequest.httpMethod = "POST"
-        httpRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        httpRequest.setValue(
-            "\(connection.authHeaderPrefix)\(apiKey)",
-            forHTTPHeaderField: connection.authHeaderName
-        )
-        httpRequest.timeoutInterval = timeout
-
-        var body: [String: Any] = [
-            "model": model,
-            "messages": request.messages.map { ["role": $0.role.rawValue, "content": $0.content] },
-            "max_tokens": request.maxTokens,
-            "temperature": request.temperature,
-        ]
-        if disableDeepSeekThinking, ProviderModelSelection.isDeepSeek(model) {
-            body["thinking"] = ["type": "disabled"]
-        }
-        httpRequest.httpBody = try JSONSerialization.data(withJSONObject: body)
-
-        let (data, response) = try await send(httpRequest)
-        try Self.validate(response)
-
+    private static func parseOpenAI(_ data: Data) throws -> AIChatResponse {
         struct OpenAIResponse: Decodable {
             struct Choice: Decodable {
                 struct Message: Decodable { let content: String? }
@@ -163,42 +168,7 @@ struct HTTPAIChatClient: AIChatClienting {
         )
     }
 
-    // MARK: - Anthropic
-
-    private func anthropicComplete(_ request: AIChatRequest) async throws -> AIChatResponse {
-        guard let url = URL(string: connection.baseURL) else { throw AIChatError.invalidURL }
-        var httpRequest = URLRequest(url: url)
-        httpRequest.httpMethod = "POST"
-        httpRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        httpRequest.setValue(
-            "\(connection.authHeaderPrefix)\(apiKey)",
-            forHTTPHeaderField: connection.authHeaderName
-        )
-        httpRequest.setValue(connection.apiVersion ?? "2023-06-01", forHTTPHeaderField: "anthropic-version")
-        httpRequest.timeoutInterval = timeout
-
-        let system = request.messages
-            .filter { $0.role == .system }
-            .map(\.content)
-            .joined(separator: "\n\n")
-        let messages = request.messages
-            .filter { $0.role != .system }
-            .map { ["role": $0.role.rawValue, "content": $0.content] }
-
-        var body: [String: Any] = [
-            "model": model,
-            "messages": messages,
-            "max_tokens": request.maxTokens,
-            "temperature": request.temperature,
-        ]
-        if !system.isEmpty {
-            body["system"] = system
-        }
-        httpRequest.httpBody = try JSONSerialization.data(withJSONObject: body)
-
-        let (data, response) = try await send(httpRequest)
-        try Self.validate(response)
-
+    private static func parseAnthropic(_ data: Data) throws -> AIChatResponse {
         struct AnthropicResponse: Decodable {
             struct Block: Decodable {
                 let type: String
