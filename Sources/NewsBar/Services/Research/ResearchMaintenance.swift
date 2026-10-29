@@ -16,18 +16,45 @@ struct ResearchMaintenance: Sendable {
     let store: any ResearchPersisting
     let cache: ResearchCacheStore
     let ledger: ResearchLedger
+    let quota: AIQuotaStore
     let now: @Sendable () -> Date
 
     init(
         store: any ResearchPersisting = ResearchStore.shared,
         cache: ResearchCacheStore = ResearchCacheStore.shared,
         ledger: ResearchLedger = ResearchLedger.shared,
+        quota: AIQuotaStore = .shared,
         now: @escaping @Sendable () -> Date = { Date() }
     ) {
         self.store = store
         self.cache = cache
         self.ledger = ledger
+        self.quota = quota
         self.now = now
+    }
+
+    /// One-time carry-over of today's already-spent calls into the single quota
+    /// ledger. The marker is written only after a successful seed, so a failed
+    /// write retries on the next launch without double counting.
+    static let aiQuotaMigrationKey = "aiQuotaMigrationVersion"
+
+    @MainActor
+    @discardableResult
+    func migrateAIQuotaIfNeeded(settings: AppSettings) -> Bool {
+        guard UserDefaults.standard.integer(forKey: Self.aiQuotaMigrationKey) < 1 else {
+            return false
+        }
+        settings.resetDailyStatsIfNeeded()
+        let summary = AISummaryService.legacySummaryUsage(settings: settings)
+        let research = ledger.snapshot(at: now()).totalAI
+        guard quota.seedLegacyUsage(
+            summaryCount: summary,
+            researchCount: research,
+            at: now()
+        ) else { return false }
+        UserDefaults.standard.set(1, forKey: Self.aiQuotaMigrationKey)
+        settings.refreshAIUsageMirror(at: now())
+        return true
     }
 
     /// Moves the legacy `todayBurstResearchCount` counter into the shared ledger

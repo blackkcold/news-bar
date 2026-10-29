@@ -145,7 +145,7 @@ enum ResearchRecordProvisioner {
         switch origin {
         case .manual:
             return true
-        case .burst, .keyword:
+        case .burst, .keyword, .interest:
             return now.timeIntervalSince(record.lastSeenAt) <= 7 * 86_400
         }
     }

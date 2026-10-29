@@ -6,7 +6,7 @@ import Foundation
 struct RecommendationTrace: Sendable, Equatable {
     /// Actual additive terms of `rawScore`: `personal.*` terms are scaled by
     /// profile confidence, `baseline.*` terms by its complement. Their sum minus
-    /// `readPenalty` and `feedbackPenalty` equals `rawScore`.
+    /// `readPenalty` and `negativePenalty` equals `rawScore`.
     /// Unknown features are absent keys; known-but-zero features are present with
     /// value `0` (e.g. `personal.*` at cold start).
     let contributions: [String: Double]
@@ -20,12 +20,17 @@ struct RecommendationTrace: Sendable, Equatable {
     let confidence: Double
     /// Penalty for content already read (0 or 0.15).
     let readPenalty: Double
-    /// Penalty from an explicit "reduce this topic" rule (0 or 0.2). Feedback
-    /// saved without profile consent never contributes this penalty.
-    let feedbackPenalty: Double
+    /// Sum of the three soft-negative terms below, capped at 0.40.
+    let negativePenalty: Double
+    /// "Less like this event" term, cap 0.25.
+    let negativeContentPenalty: Double
+    /// "Less like this topic" term, cap 0.20.
+    let negativeTopicPenalty: Double
+    /// "Less like this source" term, cap 0.15.
+    let negativeSourcePenalty: Double
     /// `confidence * personalScore + (1 - confidence) * baselineScore` after the
-    /// read/feedback penalties. Equals `sum(contributions) - readPenalty -
-    /// feedbackPenalty`, and is the `ScoredRecommendation.score` value.
+    /// read/negative penalties. Equals `sum(contributions) - readPenalty -
+    /// negativePenalty`, and is the `ScoredRecommendation.score` value.
     let rawScore: Double
     /// The actual ordering key of the slot that selected this item, after the
     /// penalties applied in that slot:

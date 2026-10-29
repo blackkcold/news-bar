@@ -65,6 +65,12 @@ struct ResearchDetailView: View {
         .onChange(of: record.id) { _, _ in
             verificationExpanded = presentation?.expandsVerificationByDefault ?? false
         }
+        // Fallback when a status notification is lost or the window was closed
+        // during a run. The key changes when the record becomes active again,
+        // so a retry restarts the poll without a manual refresh.
+        .task(id: "\(record.id)|\(record.status.isActive)") {
+            await model.poll(id: record.id)
+        }
     }
 
     // MARK: - Header
@@ -192,6 +198,13 @@ struct ResearchDetailView: View {
 
     @ViewBuilder
     private var banners: some View {
+        if let notice = model.notice(for: record.id) {
+            banner(
+                symbol: notice.tone == .error ? "exclamationmark.circle.fill" : "info.circle.fill",
+                tint: notice.tone == .error ? .red : .blue,
+                text: notice.message
+            )
+        }
         if let issue = record.loadIssue {
             banner(
                 symbol: "lock.doc",
@@ -274,7 +287,11 @@ struct ResearchDetailView: View {
     // MARK: - Report
 
     @ViewBuilder
-    private func reportContent(_ report: BurstResearch, presentation: ReportPresentation) -> some View {
+    private func reportContent(_ rawReport: BurstResearch, presentation: ReportPresentation) -> some View {
+        // Stored reports from older prompt versions must not leak pipeline
+        // vocabulary either. Enforcement is field-level: dirty prose is hidden,
+        // never mechanically rewritten.
+        let report = ReaderFacingText.enforce(rawReport)
         if !report.summary.isEmpty {
             section(index: "01", titleKey: "burst.summary", subtitleKey: "burst.summary.subtitle") {
                 Text(report.summary)
@@ -795,18 +812,11 @@ struct ResearchDetailView: View {
     // MARK: - Helpers
 
     private var statusLabel: String {
-        L10n.string("research.status.\(record.status.rawValue)", language: settings.appLanguage)
+        ResearchStatusPresentation.label(record.status, language: settings.appLanguage)
     }
 
     private var statusColor: Color {
-        switch record.status {
-        case .queued, .running: return .blue
-        case .ready: return .green
-        case .partial: return .orange
-        case .failed: return .red
-        case .cancelled, .interrupted: return .secondary
-        case .corrupt: return .purple
-        }
+        ResearchStatusPresentation.tint(record.status)
     }
 
     private var sourceMark: EditorialSourceMark {

@@ -49,14 +49,9 @@ struct ResearchSettingsSection: View {
                     }
                 }
 
-                Picker("research.settings.aiCap".localized, selection: Binding(
-                    get: { settings.researchDailyAICap },
-                    set: { settings.researchDailyAICap = $0 }
-                )) {
-                    ForEach(Array(AppSettings.validResearchDailyAICaps).sorted(), id: \.self) { cap in
-                        Text(L10n.string("research.cap.times", language: settings.appLanguage, cap)).tag(cap)
-                    }
-                }
+                Text("research.settings.aiShared".localized)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
 
                 Picker("research.settings.taskCap".localized, selection: Binding(
                     get: { settings.researchDailyTaskCap },

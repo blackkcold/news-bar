@@ -9,6 +9,7 @@ struct ResearchLedgerView: View {
     private let ledger: ResearchLedger
 
     @State private var snapshot = LedgerSnapshot.empty
+    @State private var quota = AIQuotaStore.shared.snapshot()
     @State private var showsResetConfirmation = false
     @State private var resetMessage: String?
     @State private var resetMessageIsError = false
@@ -59,7 +60,10 @@ struct ResearchLedgerView: View {
             titleVisibility: .visible
         ) {
             Button("research.ledger.reset".localized, role: .destructive) {
-                let succeeded = ledger.resetToday()
+                let ledgerOK = ledger.resetToday()
+                let quotaOK = AIQuotaStore.shared.resetToday()
+                let succeeded = ledgerOK && quotaOK
+                settings.refreshAIUsageMirror()
                 resetMessage = succeeded
                     ? "research.ledger.reset.done".localized
                     : "research.ledger.reset.failed".localized
@@ -86,14 +90,21 @@ struct ResearchLedgerView: View {
         VStack(alignment: .leading, spacing: 7) {
             row(
                 title: "research.ledger.ai".localized,
-                value: "\(snapshot.totalAI) / \(settings.researchDailyAICap)"
+                value: quotaValueText
             )
 
-            usageBar
+            if settings.effectiveAILimitMode == .cost || settings.aiCountLimit != nil {
+                usageBar
+            } else {
+                Text("research.ledger.aiUnlimitedHint".localized)
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
 
             HStack(spacing: 10) {
                 legendItem("research.origin.burst".localized, count: snapshot.ai.burst, color: .orange)
                 legendItem("research.origin.keyword".localized, count: snapshot.ai.keyword, color: .blue)
+                legendItem("research.origin.interest".localized, count: snapshot.ai.interest, color: .purple)
                 legendItem("research.origin.manual".localized, count: snapshot.ai.manual, color: .green)
                 Spacer(minLength: 0)
             }
@@ -152,26 +163,29 @@ struct ResearchLedgerView: View {
         }
     }
 
+    private var quotaValueText: String {
+        if settings.effectiveAILimitMode == .cost {
+            return "\(AICostFormat.yuan(quota.costMicros)) / \(AICostFormat.yuan(settings.aiCostCapMicros))"
+        }
+        if let cap = settings.aiCountLimit {
+            return "\(quota.count) / \(cap)"
+        }
+        return L10n.string(
+            "research.ledger.aiValueUnlimited",
+            language: settings.appLanguage,
+            quota.count
+        )
+    }
+
     private var usageBar: some View {
         GeometryReader { proxy in
-            let cap = max(settings.researchDailyAICap, 1)
             let width = proxy.size.width
-            let usedFraction = min(1, Double(snapshot.totalAI) / Double(cap))
-            let usedWidth = width * usedFraction
-            let total = max(snapshot.totalAI, 1)
+            let usedWidth = width * usageFraction
 
             HStack(spacing: 0) {
-                if snapshot.totalAI > 0 {
-                    Rectangle()
-                        .fill(Color.orange)
-                        .frame(width: usedWidth * Double(snapshot.ai.burst) / Double(total))
-                    Rectangle()
-                        .fill(Color.blue)
-                        .frame(width: usedWidth * Double(snapshot.ai.keyword) / Double(total))
-                    Rectangle()
-                        .fill(Color.green)
-                        .frame(width: usedWidth * Double(snapshot.ai.manual) / Double(total))
-                }
+                Rectangle()
+                    .fill(usageAtLimit ? Color.red : Color.blue)
+                    .frame(width: usedWidth)
                 Rectangle()
                     .fill(Color.secondary.opacity(0.12))
                     .frame(width: max(0, width - usedWidth))
@@ -180,13 +194,40 @@ struct ResearchLedgerView: View {
         }
         .frame(height: 8)
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(
-            L10n.string(
-                "research.ledger.barA11y",
+        .accessibilityLabel(accessibilityUsageLabel)
+    }
+
+    private var usageFraction: Double {
+        if settings.effectiveAILimitMode == .cost {
+            guard settings.aiCostCapMicros > 0 else { return 0 }
+            return min(1, Double(quota.costMicros) / Double(settings.aiCostCapMicros))
+        }
+        let cap = max(settings.aiCountLimit ?? 0, 1)
+        return min(1, Double(quota.count) / Double(cap))
+    }
+
+    private var usageAtLimit: Bool {
+        if settings.effectiveAILimitMode == .cost {
+            return settings.aiCostCapMicros > 0 && quota.costMicros >= settings.aiCostCapMicros
+        }
+        guard let cap = settings.aiCountLimit, cap > 0 else { return false }
+        return quota.count >= cap
+    }
+
+    private var accessibilityUsageLabel: String {
+        if settings.effectiveAILimitMode == .cost {
+            return L10n.string(
+                "research.ledger.costA11y",
                 language: settings.appLanguage,
-                snapshot.totalAI,
-                settings.researchDailyAICap
+                AICostFormat.yuan(quota.costMicros),
+                AICostFormat.yuan(settings.aiCostCapMicros)
             )
+        }
+        return L10n.string(
+            "research.ledger.barA11y",
+            language: settings.appLanguage,
+            quota.count,
+            settings.aiCountLimit ?? 0
         )
     }
 
@@ -214,5 +255,6 @@ struct ResearchLedgerView: View {
 
     private func refresh() {
         snapshot = ledger.snapshot()
+        quota = AIQuotaStore.shared.snapshot()
     }
 }

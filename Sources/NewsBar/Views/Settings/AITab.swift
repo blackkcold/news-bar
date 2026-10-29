@@ -19,10 +19,58 @@ struct AITab: View {
     @State private var showCustomEditor = false
     @State private var editingCustom: CustomAIProviderConfig?
     @State private var pendingCustomDeletion: CustomAIProviderConfig?
+    @State private var costInput = ""
+    @FocusState private var costFieldFocused: Bool
 
     init() {
         let saved = UserDefaults.standard.string(forKey: "aiProvider") ?? AIProvider.deepseek.rawValue
         _selectedProviderID = State(initialValue: saved)
+    }
+
+    /// Red only when a finite cap is actually reached; unlimited never is.
+    private var usageIsAtLimit: Bool {
+        if settings.effectiveAILimitMode == .cost {
+            return settings.aiCostCapMicros > 0
+                && settings.todayAICostMicros >= settings.aiCostCapMicros
+        }
+        guard let cap = settings.aiCountLimit else { return false }
+        return settings.todayAIRequestCount >= cap
+    }
+
+    private var usageValueText: String {
+        settings.effectiveAILimitMode == .cost
+            ? settings.aiCostUsageText
+            : settings.aiUsageText
+    }
+
+    private var usageFraction: Double? {
+        if settings.effectiveAILimitMode == .cost {
+            guard settings.aiCostCapMicros > 0 else { return nil }
+            return min(1, Double(settings.todayAICostMicros) / Double(settings.aiCostCapMicros))
+        }
+        guard let cap = settings.aiCountLimit, cap > 0 else { return nil }
+        return min(1, Double(settings.todayAIRequestCount) / Double(cap))
+    }
+
+    private static let costPresets: [Double] = [5, 10, 20, 50]
+
+    private static func costText(_ micros: Int64) -> String {
+        String(format: "%.2f", Double(max(0, micros)) / 1_000_000)
+    }
+
+    private func commitCostInput() {
+        let normalized = costInput.replacingOccurrences(of: ",", with: ".")
+        guard let value = Double(normalized), value >= 0 else {
+            costInput = Self.costText(settings.aiCostCapMicros)
+            return
+        }
+        settings.aiCostCapMicros = Int64((value * 1_000_000).rounded())
+        costInput = Self.costText(settings.aiCostCapMicros)
+    }
+
+    private func setCostCap(_ yuan: Double) {
+        settings.aiCostCapMicros = Int64((yuan * 1_000_000).rounded())
+        costInput = Self.costText(settings.aiCostCapMicros)
     }
 
     var body: some View {
@@ -292,15 +340,38 @@ struct AITab: View {
                             .font(.caption)
                             .foregroundStyle(.secondary)
                         Spacer()
-                        Text(settings.aiUsageText)
+                        Text(usageValueText)
                             .font(.system(size: 12, weight: .medium, design: .monospaced))
-                            .foregroundStyle(settings.todayAIRequestCount >= settings.aiDailyCap ? .red : .primary)
+                            .foregroundStyle(usageIsAtLimit ? .red : .primary)
                     }
-                    ProgressView(
-                        value: min(Double(settings.todayAIRequestCount), Double(settings.aiDailyCap)),
-                        total: Double(settings.aiDailyCap)
-                    )
-                    .tint(settings.todayAIRequestCount >= settings.aiDailyCap ? .red : .blue)
+                    if let fraction = usageFraction {
+                        ProgressView(value: fraction)
+                            .tint(usageIsAtLimit ? .red : .blue)
+                    } else {
+                        Text("ai.usage.unlimitedHint".localized)
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                    }
+
+                    if settings.effectiveAILimitMode == .cost {
+                        if settings.todayAIInputTokens > 0 || settings.todayAIOutputTokens > 0 {
+                            Text(L10n.string(
+                                "ai.cost.tokens",
+                                settings.todayAIInputTokens,
+                                settings.todayAIOutputTokens
+                            ))
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                        }
+                        Text("ai.cost.footer".localized)
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                        if settings.todayAIUnpricedCalls > 0 {
+                            Text(L10n.string("ai.cost.unpriced", settings.todayAIUnpricedCalls))
+                                .font(.caption2)
+                                .foregroundStyle(.orange)
+                        }
+                    }
 
                     Text("ai.usage.shared".localized)
                         .font(.caption2)
@@ -314,19 +385,82 @@ struct AITab: View {
             }
 
             Section {
-                HStack {
-                    Text("ai.dailyCap".localized)
-                    Spacer()
-                    Picker("", selection: Binding(
-                        get: { settings.aiDailyCap },
-                        set: { settings.aiDailyCap = $0 }
+                if settings.aiCostEstimateAvailable {
+                    Picker("ai.limitMode".localized, selection: Binding(
+                        get: { settings.effectiveAILimitMode },
+                        set: { settings.aiLimitMode = $0 }
                     )) {
-                        ForEach(Array(AppSettings.validAICaps).sorted(), id: \.self) { cap in
-                            Text(L10n.string("ai.capTimes", cap)).tag(cap)
+                        Text("ai.limitMode.count".localized).tag(AILimitMode.count)
+                        Text("ai.limitMode.cost".localized).tag(AILimitMode.cost)
+                    }
+                    .pickerStyle(.segmented)
+                }
+
+                if settings.effectiveAILimitMode == .cost {
+                    HStack {
+                        Text("ai.costCap".localized)
+                        Spacer()
+                        Text("¥")
+                            .font(.system(size: 12, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                        TextField("5.00", text: $costInput)
+                            .frame(width: 72)
+                            .multilineTextAlignment(.trailing)
+                            .focused($costFieldFocused)
+                            .onSubmit(commitCostInput)
+                    }
+                    HStack(spacing: 6) {
+                        ForEach(Self.costPresets, id: \.self) { value in
+                            Button("¥\(Int(value))") { setCostCap(value) }
+                                .buttonStyle(.bordered)
+                                .controlSize(.small)
                         }
                     }
-                    .labelsHidden()
-                    .frame(width: 90)
+                    if let perCall = settings.estimatedAICostPerCallMicros {
+                        Text(L10n.string(
+                            "ai.cost.perCall",
+                            AICostFormat.yuan(perCall),
+                            200,
+                            AICostFormat.yuan(perCall * 200),
+                            500,
+                            AICostFormat.yuan(perCall * 500)
+                        ))
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                    }
+                } else {
+                    HStack {
+                        Text("ai.dailyCap".localized)
+                        Spacer()
+                        Picker("", selection: Binding(
+                            get: { settings.aiDailyCap },
+                            set: { settings.aiDailyCap = $0 }
+                        )) {
+                            ForEach(Array(AppSettings.validAICaps).sorted(), id: \.self) { cap in
+                                Text(cap < 0 ? "ai.cap.unlimited".localized : L10n.string("ai.capTimes", cap))
+                                    .tag(cap)
+                            }
+                        }
+                        .labelsHidden()
+                        .frame(width: 90)
+                    }
+                    if !settings.aiCostEstimateAvailable {
+                        Text("ai.cost.unavailable".localized)
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                    }
+                    if let perCall = settings.estimatedAICostPerCallMicros {
+                        Text(L10n.string(
+                            "ai.cost.perCall",
+                            AICostFormat.yuan(perCall),
+                            200,
+                            AICostFormat.yuan(perCall * 200),
+                            500,
+                            AICostFormat.yuan(perCall * 500)
+                        ))
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                    }
                 }
             } header: {
                 Text("ai.limit".localized)
@@ -360,6 +494,27 @@ struct AITab: View {
         }
         .formStyle(.grouped)
         .scrollContentBackground(.hidden)
+        .onAppear {
+            costInput = Self.costText(settings.aiCostCapMicros)
+            settings.refreshAIUsageMirror()
+        }
+        .onChange(of: settings.aiCostCapMicros) { _, value in
+            let text = Self.costText(value)
+            if text != costInput { costInput = text }
+        }
+        .onChange(of: costFieldFocused) { _, focused in
+            if !focused { commitCostInput() }
+        }
+        .onChange(of: settings.aiProvider) { _, _ in
+            if settings.aiLimitMode == .cost, !settings.aiCostEstimateAvailable {
+                settings.aiLimitMode = .count
+            }
+        }
+        .onChange(of: settings.aiModel) { _, _ in
+            if settings.aiLimitMode == .cost, !settings.aiCostEstimateAvailable {
+                settings.aiLimitMode = .count
+            }
+        }
         .task(id: settings.modelCatalogRevision) {
             selectedProviderID = settings.aiProvider
             await settings.refreshModelCatalog()
@@ -624,6 +779,9 @@ private struct CustomAIProviderEditor: View {
     @State private var authHeaderPrefix: String
     @State private var apiVersion: String
     @State private var pricingNote: String
+    @State private var inputPrice: String
+    @State private var outputPrice: String
+    @State private var cacheReadPrice: String
     @State private var errorMessage: String?
 
     init(provider: CustomAIProviderConfig?, onSaved: @escaping (CustomAIProviderConfig?) -> Void) {
@@ -636,6 +794,22 @@ private struct CustomAIProviderEditor: View {
         _authHeaderPrefix = State(initialValue: provider?.authHeaderPrefix ?? "Bearer ")
         _apiVersion = State(initialValue: provider?.apiVersion ?? "")
         _pricingNote = State(initialValue: provider?.pricingNote ?? "")
+        _inputPrice = State(initialValue: Self.priceText(provider?.inputPricePerMTok))
+        _outputPrice = State(initialValue: Self.priceText(provider?.outputPricePerMTok))
+        _cacheReadPrice = State(initialValue: Self.priceText(provider?.cacheReadPricePerMTok))
+    }
+
+    private static func priceText(_ value: Double?) -> String {
+        guard let value else { return "" }
+        return String(format: "%g", value)
+    }
+
+    private static func priceValue(_ text: String) -> Double? {
+        let normalized = text
+            .replacingOccurrences(of: ",", with: ".")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty, let value = Double(normalized), value >= 0 else { return nil }
+        return value
     }
 
     var body: some View {
@@ -671,6 +845,23 @@ private struct CustomAIProviderEditor: View {
 
             TextField("ai.custom.pricing".localized, text: $pricingNote)
                 .textFieldStyle(.roundedBorder)
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("ai.custom.unitPrices".localized)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                HStack(spacing: 8) {
+                    TextField("ai.custom.inputPrice".localized, text: $inputPrice)
+                        .textFieldStyle(.roundedBorder)
+                    TextField("ai.custom.outputPrice".localized, text: $outputPrice)
+                        .textFieldStyle(.roundedBorder)
+                    TextField("ai.custom.cachePrice".localized, text: $cacheReadPrice)
+                        .textFieldStyle(.roundedBorder)
+                }
+                Text("ai.custom.unitPrices.footer".localized)
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
 
             if let errorMessage {
                 Text(errorMessage)
@@ -720,7 +911,10 @@ private struct CustomAIProviderEditor: View {
             authHeaderName: authHeaderName.isEmpty ? (isAnthropicFormat ? "x-api-key" : "Authorization") : authHeaderName,
             authHeaderPrefix: authHeaderPrefix,
             apiVersion: apiVersion.isEmpty ? nil : apiVersion,
-            pricingNote: pricingNote.trimmingCharacters(in: .whitespacesAndNewlines)
+            pricingNote: pricingNote.trimmingCharacters(in: .whitespacesAndNewlines),
+            inputPricePerMTok: Self.priceValue(inputPrice),
+            outputPricePerMTok: Self.priceValue(outputPrice),
+            cacheReadPricePerMTok: Self.priceValue(cacheReadPrice)
         )
 
         if let existing = provider, let idx = settings.customAIProviders.firstIndex(where: { $0.id == existing.id }) {

@@ -163,11 +163,11 @@ final class RecommendationTests: XCTestCase {
         legacy.learningEnabled = true
 
         let profile = InterestProfile.build(state: legacy, now: now)
-        XCTAssertNil(profile.topics["ai"]) // old reduce must not apply -4
+        XCTAssertNil(profile.topics["ai"]) // old reduce must not add -4
         XCTAssertEqual(profile.shortTermTopics["ai"] ?? 0, 0, accuracy: 1e-12) // no moreLikeThis +2
         XCTAssertEqual(profile.confidence, 0, accuracy: 1e-12) // followTopic is not consent evidence
         let legacyTrace = try XCTUnwrap(RecommendationEngine.rank(items: [ai], state: legacy, now: now).items.first?.trace)
-        XCTAssertEqual(legacyTrace.feedbackPenalty, 0, accuracy: 1e-12)
+        XCTAssertEqual(legacyTrace.negativePenalty, 0, accuracy: 1e-12)
 
         // The same flag must not disable feedback that was recorded with consent.
         var active = LocalInterestState()
@@ -175,9 +175,9 @@ final class RecommendationTests: XCTestCase {
         active.feedbacks = [
             InterestFeedback(item: ai, kind: .reduceTopic, occurredAt: now, topic: "ai", participatesInProfile: true)
         ]
-        XCTAssertEqual(InterestProfile.build(state: active, now: now).topics["ai"] ?? 0, -4, accuracy: 1e-12)
+        XCTAssertEqual(InterestProfile.build(state: active, now: now).negativeTopics["ai"] ?? 0, 0.8, accuracy: 1e-12)
         let activeTrace = try XCTUnwrap(RecommendationEngine.rank(items: [ai], state: active, now: now).items.first?.trace)
-        XCTAssertEqual(activeTrace.feedbackPenalty, 0.2, accuracy: 1e-12)
+        XCTAssertEqual(activeTrace.negativePenalty, 0.16, accuracy: 1e-12)
     }
 
     func testScopedHardBlocksOnlyRemoveTheirOwnScope() {

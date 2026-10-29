@@ -26,13 +26,14 @@ final class RecommendationTraceTests: XCTestCase {
 
         // Contributions are the actual additive terms of the displayed score.
         let sum = trace.contributions.values.reduce(0, +)
-        XCTAssertEqual(sum - trace.readPenalty - trace.feedbackPenalty, trace.rawScore, accuracy: 1e-9)
+        XCTAssertEqual(sum - trace.readPenalty - trace.negativePenalty, trace.rawScore, accuracy: 1e-9)
         XCTAssertEqual(trace.rawScore,
                        trace.confidence * trace.personalScore + (1 - trace.confidence) * trace.baselineScore
-                           - trace.readPenalty - trace.feedbackPenalty,
+                           - trace.readPenalty - trace.negativePenalty,
                        accuracy: 1e-9)
         XCTAssertEqual(trace.readPenalty, 0.15, accuracy: 1e-12)
-        XCTAssertEqual(trace.feedbackPenalty, 0.2, accuracy: 1e-12)
+        XCTAssertEqual(trace.negativePenalty, 0.16, accuracy: 1e-12)
+        XCTAssertEqual(trace.negativeTopicPenalty, 0.16, accuracy: 1e-12)
         XCTAssertEqual(trace.selectionScore,
                        trace.rawScore - trace.sourcePenalty - trace.topicPenalty - trace.diversityPenalty,
                        accuracy: 1e-9)
@@ -209,7 +210,7 @@ final class RecommendationTraceTests: XCTestCase {
 
         let first = RecommendationEngine.rank(items: items, state: state, now: now, limit: 10, seed: 4)
         let second = RecommendationEngine.rank(items: items, state: state, now: now, limit: 10, seed: 4)
-        XCTAssertEqual(first.policyVersion, 3)
+        XCTAssertEqual(first.policyVersion, 4)
         XCTAssertEqual(first.items.map(\.contentID), second.items.map(\.contentID))
         for (lhs, rhs) in zip(first.items, second.items) {
             XCTAssertEqual(try XCTUnwrap(lhs.trace), try XCTUnwrap(rhs.trace))

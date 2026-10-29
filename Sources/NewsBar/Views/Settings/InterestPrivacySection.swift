@@ -70,15 +70,18 @@ struct InterestPrivacySection: View {
             )
             if !controller.state.feedbacks.isEmpty {
                 DisclosureGroup(isExpanded: $showSavedRules) {
-                ForEach(controller.state.feedbacks.filter { [.bookmark, .muteSource, .hideEvent, .notInterested, .reduceTopic].contains($0.kind) }.suffix(30).reversed()) { feedback in
+                ForEach(controller.state.feedbacks.filter { [.bookmark, .muteSource, .hideEvent, .notInterested, .reduceTopic, .lessLikeContent, .lessLikeSource].contains($0.kind) }.suffix(30).reversed()) { feedback in
                     HStack {
                         Image(systemName: feedback.kind == .bookmark ? "bookmark" : "minus.circle")
                         VStack(alignment: .leading, spacing: 2) {
                             Text(feedbackLabel(feedback.kind)).foregroundStyle(.secondary)
-                            Text(feedback.kind == .muteSource ? feedback.item.source.displayName : feedback.item.displayTitle).lineLimit(2)
+                            Text(feedback.kind == .muteSource || feedback.kind == .lessLikeSource ? feedback.item.source.displayName : feedback.item.displayTitle).lineLimit(2)
+                            if let hint = decayHint(feedback.kind) {
+                                Text(hint).font(.caption2).foregroundStyle(.tertiary)
+                            }
                         }
                         Spacer()
-                        Button(english ? "Remove / undo" : "移除／撤销") { controller.undo(feedback.id) }.disabled(!controller.canManagePreferences)
+                        Button(english ? "Remove / undo" : "移除／撤销") { controller.undo(feedback.id, restorePrevious: false) }.disabled(!controller.canManagePreferences)
                     }
                     .font(.caption)
                 }
@@ -190,12 +193,23 @@ struct InterestPrivacySection: View {
         }
     }
 
+    private func decayHint(_ kind: InterestFeedbackKind) -> String? {
+        switch kind {
+        case .lessLikeContent: return english ? "Fades by half in about 14 days" : "约 14 天减弱一半"
+        case .reduceTopic, .lessLikeSource: return english ? "Fades by half in about 30 days" : "约 30 天减弱一半"
+        default: return nil
+        }
+    }
+
     private func feedbackLabel(_ kind: InterestFeedbackKind) -> String {
         switch kind {
         case .bookmark: return english ? "Bookmarked" : "已收藏"
         case .muteSource: return english ? "Muted source" : "已屏蔽来源"
         case .hideEvent: return english ? "Hidden event" : "已隐藏事件"
         case .reduceTopic: return english ? "Reduced topic" : "已减少主题"
+        case .lessLikeContent: return english ? "Less like this event" : "少推荐这条"
+        case .lessLikeSource: return english ? "Less like this source" : "少推荐这个来源"
+        case .unknown: return english ? "Other preference" : "其他偏好"
         default: return english ? "Not interested" : "不感兴趣"
         }
     }

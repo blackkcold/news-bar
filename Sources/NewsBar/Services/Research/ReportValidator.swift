@@ -279,6 +279,18 @@ enum ReportValidator {
                 L10n.string("research.limitation.insufficient", language: input.language),
             ]).joined(separator: "\n")
         }
+
+        // Reader-facing prose must never expose the pipeline's own vocabulary,
+        // even when an older prompt or a provider rewrite produced it.
+        let readerFindings = ReaderFacingText.findings(in: report)
+        if !readerFindings.isEmpty {
+            NSLog(
+                "[ReportValidator] hiding %ld reader-facing field(s) with internal vocabulary: %@",
+                readerFindings.count,
+                readerFindings.map(\.description).joined(separator: "; ")
+            )
+            report = ReaderFacingText.enforce(report)
+        }
         return report
     }
 

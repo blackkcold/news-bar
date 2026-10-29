@@ -22,6 +22,40 @@ final class InterestAttributionTests: XCTestCase {
     }
 
     @MainActor
+    func testUndoRepeatedFeedbackRestoresThePreviousRule() async throws {
+        let (store, _) = temporaryStore()
+        let controller = InterestController(store: store)
+        await controller.prepare()
+        controller.setLearningEnabled(true)
+        let article = item()
+        let originalID = try XCTUnwrap(controller.feedback(article, kind: .lessLikeSource))
+        let replacementID = try XCTUnwrap(controller.feedback(article, kind: .lessLikeSource))
+
+        controller.undo(replacementID)
+
+        XCTAssertEqual(controller.state.feedbacks.filter { $0.kind == .lessLikeSource }.map(\.id), [originalID])
+        let flushed = await controller.flush()
+        XCTAssertTrue(flushed)
+        let persisted = try await store.load()
+        XCTAssertEqual(persisted.feedbacks.filter { $0.kind == .lessLikeSource }.map(\.id), [originalID])
+    }
+
+    @MainActor
+    func testRemovingRepeatedFeedbackDoesNotRestoreThePreviousRule() async throws {
+        let (store, _) = temporaryStore()
+        let controller = InterestController(store: store)
+        await controller.prepare()
+        controller.setLearningEnabled(true)
+        let article = item()
+        _ = try XCTUnwrap(controller.feedback(article, kind: .lessLikeSource))
+        let replacementID = try XCTUnwrap(controller.feedback(article, kind: .lessLikeSource))
+
+        controller.undo(replacementID, restorePrevious: false)
+
+        XCTAssertFalse(controller.state.feedbacks.contains { $0.kind == .lessLikeSource })
+    }
+
+    @MainActor
     private func waitUntil(timeout: TimeInterval = 2, _ condition: @MainActor () -> Bool) async throws -> Bool {
         let deadline = Date().addingTimeInterval(timeout)
         while !condition() {
@@ -137,11 +171,13 @@ final class InterestAttributionTests: XCTestCase {
         // Deduplication is case-insensitive, but the persisted label must keep
         // the literal keyword spelling so `followed:PC2545` still matches tags.
         XCTAssertEqual(rules.first?.topic, "followed:PC2545")
-        // Follow adds +4 under the same literal key; the reduction must cancel
-        // it. A lowercased stored key would leave this at +4 and create a
-        // separate, unused "followed:pc2545" penalty.
-        XCTAssertEqual(InterestProfile.build(state: state).topics["followed:PC2545"], 0)
-        XCTAssertNil(InterestProfile.build(state: state).topics["followed:pc2545"])
+        // Follow adds +4 under the same literal key; the reduction is a separate
+        // signed term under that same key. A lowercased stored key would create
+        // a second, unused "followed:pc2545" penalty.
+        let profile = InterestProfile.build(state: state)
+        XCTAssertEqual(profile.topics["followed:PC2545"], 4)
+        XCTAssertEqual(profile.negativeTopics["followed:PC2545"] ?? 0, 0.8, accuracy: 1e-9)
+        XCTAssertNil(profile.negativeTopics["followed:pc2545"])
     }
 
     // MARK: - Explicit rules without behavioral learning

@@ -57,6 +57,10 @@ func researchTestRecord(
     )
 }
 
+enum ResearchFakeStoreError: Error {
+    case writeFailed
+}
+
 /// Thread-safe clock for injectable store timestamps.
 final class ResearchTestClock: @unchecked Sendable {
     private let lock = NSLock()
@@ -90,6 +94,10 @@ actor ResearchFakeStore: ResearchPersisting {
     private var savedIDs: [String] = []
     private var metaState = ResearchStoreMeta()
     private(set) var didDeleteAll = false
+    private var shouldFailSaves = false
+    private var saveDelay: UInt64 = 0
+    private var recordDelays: [String: UInt64] = [:]
+    private var footprintCalls = 0
 
     init(records: [ResearchRecord] = []) {
         self.recordMap = Dictionary(uniqueKeysWithValues: records.map { ($0.id, $0) })
@@ -108,7 +116,13 @@ actor ResearchFakeStore: ResearchPersisting {
     }
 
     func record(id: String) async -> ResearchRecord? {
-        recordMap[id]
+        let record = recordMap[id]
+        if let delay = recordDelays[id] { try? await Task.sleep(nanoseconds: delay) }
+        return record
+    }
+
+    func setRecordDelay(id: String, nanoseconds: UInt64) {
+        recordDelays[id] = nanoseconds
     }
 
     func latestRecord(topicKey: String) async -> ResearchRecord? {
@@ -131,6 +145,29 @@ actor ResearchFakeStore: ResearchPersisting {
         recordMap[id] = record
     }
 
+    func markReadOnOpen(id: String, at date: Date) async -> ResearchOpenReadResult {
+        guard var record = recordMap[id],
+              record.loadIssue == nil,
+              record.status != .corrupt,
+              record.status.marksReadOnOpen else { return .unchanged }
+        let needsRead = !record.isRead
+        let needsTouch = date.timeIntervalSince(record.lastAccessedAt) > 600
+        guard needsRead || needsTouch else { return .unchanged }
+        record.isRead = true
+        record.lastAccessedAt = date
+        recordMap[id] = record
+        savedIDs.append(id)
+        return .updated
+    }
+
+    func setShouldFailSaves(_ value: Bool) {
+        shouldFailSaves = value
+    }
+
+    func setSaveDelay(nanoseconds: UInt64) {
+        saveDelay = nanoseconds
+    }
+
     func deleteAll() async throws {
         recordMap.removeAll()
         savedIDs.removeAll()
@@ -138,10 +175,17 @@ actor ResearchFakeStore: ResearchPersisting {
     }
 
     func storageFootprint() async -> Int64 {
-        0
+        footprintCalls += 1
+        return 0
+    }
+
+    func storageFootprintCount() -> Int {
+        footprintCalls
     }
 
     func save(_ record: ResearchRecord) async throws {
+        if saveDelay > 0 { try? await Task.sleep(nanoseconds: saveDelay) }
+        guard !shouldFailSaves else { throw ResearchFakeStoreError.writeFailed }
         recordMap[record.id] = record
         savedIDs.append(record.id)
     }
@@ -187,6 +231,10 @@ actor ResearchFakeStore: ResearchPersisting {
         savedIDs
     }
 
+    func saveCount(for id: String) -> Int {
+        savedIDs.filter { $0 == id }.count
+    }
+
     func snapshot() -> [String: ResearchRecord] {
         recordMap
     }
@@ -200,4 +248,3 @@ actor ResearchFakeStore: ResearchPersisting {
             }
     }
 }
-

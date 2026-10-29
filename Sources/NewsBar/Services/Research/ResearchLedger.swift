@@ -27,13 +27,32 @@ enum LedgerKind: String, Codable, Sendable, CaseIterable {
 struct LedgerCounts: Codable, Hashable, Sendable, Equatable {
     var burst = 0
     var keyword = 0
+    /// Automatic picks that are neither bursts nor explicit keywords.
+    var interest = 0
     var manual = 0
+
+    init() {}
+
+    enum CodingKeys: String, CodingKey {
+        case burst, keyword, interest, manual
+    }
+
+    /// Optional decoding keeps ledgers written before `interest` existed
+    /// readable instead of marking the whole ledger unusable.
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        burst = try container.decodeIfPresent(Int.self, forKey: .burst) ?? 0
+        keyword = try container.decodeIfPresent(Int.self, forKey: .keyword) ?? 0
+        interest = try container.decodeIfPresent(Int.self, forKey: .interest) ?? 0
+        manual = try container.decodeIfPresent(Int.self, forKey: .manual) ?? 0
+    }
 
     subscript(origin: ResearchOrigin) -> Int {
         get {
             switch origin {
             case .burst: return burst
             case .keyword: return keyword
+            case .interest: return interest
             case .manual: return manual
             }
         }
@@ -41,12 +60,13 @@ struct LedgerCounts: Codable, Hashable, Sendable, Equatable {
             switch origin {
             case .burst: burst = newValue
             case .keyword: keyword = newValue
+            case .interest: interest = newValue
             case .manual: manual = newValue
             }
         }
     }
 
-    var total: Int { burst + keyword + manual }
+    var total: Int { burst + keyword + interest + manual }
 
     mutating func increment(_ origin: ResearchOrigin) {
         self[origin] += 1
@@ -110,9 +130,9 @@ final class ResearchLedger: Sendable {
         var isValid: Bool {
             version == ResearchLedger.currentVersion
                 && day >= 0
-                && ai.burst >= 0 && ai.keyword >= 0 && ai.manual >= 0
-                && search.burst >= 0 && search.keyword >= 0 && search.manual >= 0
-                && tasks.burst >= 0 && tasks.keyword >= 0 && tasks.manual >= 0
+                && ai.burst >= 0 && ai.keyword >= 0 && ai.interest >= 0 && ai.manual >= 0
+                && search.burst >= 0 && search.keyword >= 0 && search.interest >= 0 && search.manual >= 0
+                && tasks.burst >= 0 && tasks.keyword >= 0 && tasks.interest >= 0 && tasks.manual >= 0
         }
 
         enum CodingKeys: String, CodingKey {
@@ -261,6 +281,32 @@ final class ResearchLedger: Sendable {
             var record = Self.rolling(state.record, to: today)
             guard record.ai.burst == 0 else { return true }
             record.ai.burst = count
+            do {
+                try write(record)
+                state.record = record
+                state.availability = .available
+                return true
+            } catch {
+                state.availability = Self.availability(for: error)
+                return false
+            }
+        }
+    }
+
+    /// AI calls are counted here for the per-origin breakdown only. The shared
+    /// daily cap is enforced by `AIQuotaStore`, the single app-wide gate.
+    @discardableResult
+    func recordAICalls(
+        _ count: Int = 1,
+        origin: ResearchOrigin,
+        at date: Date = Date()
+    ) -> Bool {
+        guard count > 0 else { return true }
+        return lock.withLock { state in
+            guard state.availability.isUsable else { return false }
+            let today = Self.dayKey(for: date, calendar: calendar)
+            var record = Self.rolling(state.record, to: today)
+            record.ai[origin] += count
             do {
                 try write(record)
                 state.record = record

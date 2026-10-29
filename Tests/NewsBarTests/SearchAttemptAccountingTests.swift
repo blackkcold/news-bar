@@ -241,6 +241,7 @@ final class SearchAttemptAccountingTests: XCTestCase {
                 now: { self.clock.now }
             ),
             ledger: ResearchLedger(fileURL: directory.appendingPathComponent("ledger.json")),
+            quota: AIQuotaStore(fileURL: directory.appendingPathComponent("quota.json")),
             now: { self.clock.now }
         )
         let recorder = RunRecorder()
@@ -254,7 +255,7 @@ final class SearchAttemptAccountingTests: XCTestCase {
                 defaultRecency: .month,
                 searchConfiguration: configuration(),
                 firecrawlAPIKey: "",
-                aiDailyCap: 30,
+                quotaPolicy: AIQuotaPolicy(mode: .count, countCap: 30),
                 taskDailyCap: 3
             ),
             progress: { recorder.append($0) }
@@ -287,6 +288,7 @@ final class SearchAttemptAccountingTests: XCTestCase {
                 now: { self.clock.now }
             ),
             ledger: ResearchLedger(fileURL: directory.appendingPathComponent("ledger.json")),
+            quota: AIQuotaStore(fileURL: directory.appendingPathComponent("quota.json")),
             now: { self.clock.now }
         )
 
@@ -302,7 +304,7 @@ final class SearchAttemptAccountingTests: XCTestCase {
                     keys: [.tavily: "key"]
                 ),
                 firecrawlAPIKey: "",
-                aiDailyCap: 30,
+                quotaPolicy: AIQuotaPolicy(mode: .count, countCap: 30),
                 taskDailyCap: 3
             ),
             progress: { _ in }
@@ -331,6 +333,7 @@ final class SearchAttemptAccountingTests: XCTestCase {
                 now: { self.clock.now }
             ),
             ledger: ResearchLedger(fileURL: directory.appendingPathComponent("ledger.json")),
+            quota: AIQuotaStore(fileURL: directory.appendingPathComponent("quota.json")),
             now: { self.clock.now }
         )
 
@@ -344,7 +347,7 @@ final class SearchAttemptAccountingTests: XCTestCase {
                 defaultRecency: .month,
                 searchConfiguration: configuration(),
                 firecrawlAPIKey: "",
-                aiDailyCap: 30,
+                quotaPolicy: AIQuotaPolicy(mode: .count, countCap: 30),
                 taskDailyCap: 3
             ),
             progress: { recorder.append($0) }

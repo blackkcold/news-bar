@@ -196,7 +196,7 @@ final class ResearchCoordinatorTests: XCTestCase {
             await progress(snapshot)
             return .failure("failed")
         }
-        XCTAssertTrue(accepted)
+        XCTAssertEqual(accepted, .accepted)
         await coordinator.waitForAll()
         let failedRecord = await store.record(id: record.id)
         let failed = try XCTUnwrap(failedRecord)
@@ -208,13 +208,13 @@ final class ResearchCoordinatorTests: XCTestCase {
             XCTFail("automatic retry ignored cooldown")
             return .failure("unexpected")
         }
-        XCTAssertFalse(blocked)
+        XCTAssertEqual(blocked, .admissionDenied)
         var manualOrigin: ResearchOrigin?
         let manual = await coordinator.schedule(recordID: record.id, trigger: .manual) { record, _ in
             manualOrigin = record.run.origin
             return .failure("manual failure")
         }
-        XCTAssertTrue(manual)
+        XCTAssertEqual(manual, .accepted)
         await coordinator.waitForAll()
         XCTAssertEqual(manualOrigin, .manual)
         let retriedRecord = await store.record(id: record.id)
@@ -238,7 +238,7 @@ final class ResearchCoordinatorTests: XCTestCase {
                 if index == 0 { try? await Task.sleep(nanoseconds: 200_000_000) }
                 return self.success()
             }
-            XCTAssertTrue(accepted)
+            XCTAssertEqual(accepted, .accepted)
         }
         await coordinator.waitForAll()
         // The first job is already running; each later automatic job replaces
@@ -284,10 +284,42 @@ final class ResearchCoordinatorTests: XCTestCase {
         let store = ResearchFakeStore(records: [record])
         let coordinator = ResearchCoordinator(store: store, notifier: { _ in })
         let accepted = await coordinator.schedule(recordID: record.id, trigger: .burst) { _, _ in .failure("failed again") }
-        XCTAssertTrue(accepted)
+        XCTAssertEqual(accepted, .accepted)
         await coordinator.waitForAll()
         let stored = await store.record(id: record.id)
         XCTAssertEqual(try XCTUnwrap(stored).automaticAttempts, 2)
+    }
+
+    @MainActor
+    func testScheduleReportsPersistenceFailure() async {
+        let record = researchTestRecord(title: "写盘失败", status: .failed, updatedAt: Date())
+        let store = ResearchFakeStore(records: [record])
+        let coordinator = ResearchCoordinator(store: store, notifier: { _ in })
+        await store.setShouldFailSaves(true)
+
+        let outcome = await coordinator.schedule(recordID: record.id) { _, _ in .failure("unused") }
+
+        XCTAssertEqual(outcome, .persistenceFailed)
+    }
+
+    @MainActor
+    func testScheduleReportsAlreadyActiveForDuplicate() async {
+        let record = researchTestRecord(title: "重复", status: .failed, updatedAt: Date())
+        let store = ResearchFakeStore(records: [record])
+        let coordinator = ResearchCoordinator(store: store, automaticStartInterval: 0, notifier: { _ in })
+
+        let first = await coordinator.schedule(recordID: record.id) { record, _ in
+            try? await Task.sleep(nanoseconds: 150_000_000)
+            return .failure("done")
+        }
+        let second = await coordinator.schedule(recordID: record.id) { _, _ in
+            XCTFail("duplicate must not run")
+            return .failure("unexpected")
+        }
+
+        XCTAssertEqual(first, .accepted)
+        XCTAssertEqual(second, .alreadyActive)
+        await coordinator.waitForAll()
     }
 
     func testExplicitManualRunOriginSurvivesRecordRoundTrip() throws {

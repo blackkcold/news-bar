@@ -31,6 +31,30 @@ extension Notification.Name {
     static let researchRecordsChanged = Notification.Name("researchRecordsChanged")
 }
 
+/// User-info keys for `.researchRecordsChanged`. A present `recordID` lets the
+/// research center refresh one record instead of rescanning storage; absent
+/// means a bulk change (delete all, import, maintenance) and a full refresh.
+enum ResearchChangeKey {
+    static let recordID = "recordID"
+}
+
+/// Why a schedule request was not accepted. Callers must surface this to the
+/// user; `schedule` no longer returns a bare Bool that can be discarded.
+enum ResearchScheduleOutcome: Equatable, Sendable {
+    /// The job is queued and will run.
+    case accepted
+    /// The same record already has a running or queued job.
+    case alreadyActive
+    /// The record disappeared, is corrupt, or cannot be written by this build.
+    case unavailable
+    /// Automatic admission policy declined this attempt.
+    case admissionDenied
+    /// The automatic queue is full and nothing was evictable.
+    case queueFull
+    /// Writing the queued state failed.
+    case persistenceFailed
+}
+
 /// Serializes research tasks and owns their status transitions. The heavy
 /// network work stays in the injected executor; this type only decides who
 /// runs, when, and what gets persisted. MainActor keeps `AppSettings` and the
@@ -99,31 +123,30 @@ final class ResearchCoordinator {
         startNextIfPossible()
     }
 
-    @discardableResult
     func schedule(
         recordID: String,
         notify: Bool = true,
         trigger: ResearchOrigin = .manual,
         executor: @escaping Executor
-    ) async -> Bool {
+    ) async -> ResearchScheduleOutcome {
         guard running[recordID] == nil,
               !queue.contains(where: { $0.recordID == recordID }),
-              admitting.insert(recordID).inserted else { return false }
+              admitting.insert(recordID).inserted else { return .alreadyActive }
         defer { admitting.remove(recordID) }
         let admissionGeneration = generation
         guard let record = await store.record(id: recordID),
               admissionGeneration == generation,
               record.status != .running,
               record.loadIssue == nil,
-              record.status != .corrupt else { return false }
-        guard !trigger.isAutomatic || ResearchAutoAdmission.allows(record, now: Date()) else { return false }
+              record.status != .corrupt else { return .unavailable }
+        guard !trigger.isAutomatic || ResearchAutoAdmission.allows(record, now: Date()) else { return .admissionDenied }
         guard running[recordID] == nil,
-              !queue.contains(where: { $0.recordID == recordID }) else { return false }
+              !queue.contains(where: { $0.recordID == recordID }) else { return .alreadyActive }
 
         if trigger.isAutomatic,
            queue.filter({ $0.trigger.isAutomatic }).count >= automaticQueueLimit {
             // Do not evict a job whose initial status write is still pending.
-            guard let oldest = queue.firstIndex(where: { $0.trigger.isAutomatic && $0.ready }) else { return false }
+            guard let oldest = queue.firstIndex(where: { $0.trigger.isAutomatic && $0.ready }) else { return .queueFull }
             let evicted = queue.remove(at: oldest)
             markDiscarded(evicted, generation: admissionGeneration)
         }
@@ -136,14 +159,14 @@ final class ResearchCoordinator {
             try await store.save(queued)
         } catch {
             queue.removeAll { $0.token == job.token }
-            return false
+            return .persistenceFailed
         }
         guard admissionGeneration == generation,
-              let index = queue.firstIndex(where: { $0.token == job.token }) else { return false }
+              let index = queue.firstIndex(where: { $0.token == job.token }) else { return .unavailable }
         queue[index].ready = true
-        postChanged()
+        postChanged(recordID: recordID)
         startNextIfPossible()
-        return true
+        return .accepted
     }
 
     func cancel(recordID: String) {
@@ -160,7 +183,7 @@ final class ResearchCoordinator {
             record.run.phase = .done
             record.run.finishedAt = Date()
             try? await self.store.save(record)
-            self.postChanged()
+            self.postChanged(recordID: recordID)
         }
     }
 
@@ -259,7 +282,7 @@ final class ResearchCoordinator {
             record.run.finishedAt = Date()
             do {
                 try await self.store.save(record)
-                self.postChanged()
+                self.postChanged(recordID: job.recordID)
             } catch { return }
         }
     }
@@ -301,7 +324,7 @@ final class ResearchCoordinator {
             try? await store.delete(id: job.recordID)
             return
         }
-        postChanged()
+        postChanged(recordID: job.recordID)
 
         let recordID = job.recordID
         let progress: @Sendable (ResearchRun) async -> Void = { [weak self, store] run in
@@ -317,7 +340,7 @@ final class ResearchCoordinator {
             latest.run = run
             latest.run.origin = job.trigger
             await store.saveProgress(latest)
-            await MainActor.run { self.postChanged() }
+            await MainActor.run { self.postChanged(recordID: recordID) }
         }
 
         let execution = await job.executor(record, progress)
@@ -381,14 +404,15 @@ final class ResearchCoordinator {
         }
 
         try? await store.save(current)
-        postChanged()
+        postChanged(recordID: job.recordID)
 
         if current.status == .ready, job.notify {
             notifier(current)
         }
     }
 
-    private func postChanged() {
-        NotificationCenter.default.post(name: .researchRecordsChanged, object: nil)
+    private func postChanged(recordID: String? = nil) {
+        let info = recordID.map { [ResearchChangeKey.recordID: $0] }
+        NotificationCenter.default.post(name: .researchRecordsChanged, object: nil, userInfo: info)
     }
 }

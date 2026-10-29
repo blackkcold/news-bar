@@ -7,7 +7,7 @@ The research center turns a topic into a verifiable report: it plans queries, se
 - Menu bar popover: the research chip opens the most recent unread report.
 - Dashboard: the research section lists recent records; right-click a news row to verify it.
 - Reader toolbar: "Verify online" starts a run for the open article.
-- Settings → Research: providers, budgets, retention and the Firecrawl key.
+- Settings → AI: usage and limit (calls or budget), model and key; Settings → Research: providers, task cap, retention and the Firecrawl key.
 
 ## Pipeline
 
@@ -29,6 +29,7 @@ A run that loses search, pages or budget still produces a `partial` report inste
 - Record, index, meta, cache, ledger and clear-intent files are created owner-only (0600) *before* content is written, via a same-directory temporary file and an atomic rename. A failed write leaves the previous file intact. The same writer covers translation caches, AI summary caches, the encrypted key store, the machine UUID, reading history and the request budget.
 - Every record and index write states `schemaVersion: 1`. A missing version is read as v1; a higher version is projected read-only and is never overwritten by an older build. Corrupt, unreadable and newer-version records cannot be pinned, marked read or rewritten; they can still be deleted.
 - The ledger is versioned and reports `available / corrupt / ioUnavailable / unsupportedVersion`. Anything other than `available` fails closed and the UI shows “—” instead of a fake zero. A reset archives a corrupt file (0600) first, refuses while a research task is running, and never restores provider-side quota.
+- AI usage lives in its own global ledger (`AIQuota/quota.json`): summaries, research and triage share one daily allowance with unlimited / 200 / 500 tiers. A money budget can replace the call limit; it is estimated from model prices and reported token usage, and falls back to the call limit when no price is known. A corrupt ledger fails closed and a reset archives it first.
 
 ## Providers and keys
 

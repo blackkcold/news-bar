@@ -9,7 +9,9 @@ struct ResearchPipelineConfiguration: Sendable {
     var searchConfiguration: SearchRouterConfiguration
     /// Firecrawl key used only for the page-reading fallback; may be empty.
     var firecrawlAPIKey: String
-    var aiDailyCap: Int
+    /// The app-wide AI limit captured at task creation. The quota ledger is the
+    /// only gate; the research ledger keeps per-origin counts for display.
+    var quotaPolicy: AIQuotaPolicy
     var taskDailyCap: Int
     var seedSourceName: String?
     /// Re-checked at every phase boundary so a cancelled or superseded run
@@ -24,7 +26,7 @@ struct ResearchPipelineConfiguration: Sendable {
         defaultRecency: ResearchDefaultRecency,
         searchConfiguration: SearchRouterConfiguration,
         firecrawlAPIKey: String,
-        aiDailyCap: Int,
+        quotaPolicy: AIQuotaPolicy,
         taskDailyCap: Int,
         seedSourceName: String? = nil,
         isAllowed: @escaping @Sendable () async -> Bool = { true }
@@ -36,7 +38,7 @@ struct ResearchPipelineConfiguration: Sendable {
         self.defaultRecency = defaultRecency
         self.searchConfiguration = searchConfiguration
         self.firecrawlAPIKey = firecrawlAPIKey
-        self.aiDailyCap = aiDailyCap
+        self.quotaPolicy = quotaPolicy
         self.taskDailyCap = taskDailyCap
         self.seedSourceName = seedSourceName
         self.isAllowed = isAllowed
@@ -66,6 +68,7 @@ struct ResearchPipeline: Sendable {
     let searchRouter: SearchRouter
     let pageReader: PageReader
     let ledger: ResearchLedger
+    let quota: AIQuotaStore
     let now: @Sendable () -> Date
 
     init(
@@ -73,12 +76,14 @@ struct ResearchPipeline: Sendable {
         searchRouter: SearchRouter,
         pageReader: PageReader,
         ledger: ResearchLedger = .shared,
+        quota: AIQuotaStore = .shared,
         now: @escaping @Sendable () -> Date = { Date() }
     ) {
         self.ai = ai
         self.searchRouter = searchRouter
         self.pageReader = pageReader
         self.ledger = ledger
+        self.quota = quota
         self.now = now
     }
 
@@ -139,13 +144,42 @@ struct ResearchPipeline: Sendable {
                 state.aiLimitReached = true
                 return nil
             }
-            guard ledger.reserve(.ai, origin: origin, cap: configuration.aiDailyCap) else {
+            let price = ai.price
+            let system = request.messages
+                .filter { $0.role == .system }
+                .map(\.content)
+                .joined(separator: "\n\n")
+            let user = request.messages
+                .filter { $0.role != .system }
+                .map(\.content)
+                .joined(separator: "\n\n")
+            let estimatedInput = AICostEstimator.estimateInputTokens(system: system, user: user)
+            let reserved = price.map {
+                AICostEstimator.reserveMicros(
+                    inputTokens: estimatedInput,
+                    maxOutputTokens: request.maxTokens,
+                    price: $0
+                )
+            } ?? 0
+
+            guard quota.reserve(
+                .research,
+                policy: configuration.quotaPolicy,
+                reservedCostMicros: reserved
+            ) else {
                 state.budgetExhausted = true
                 return nil
             }
+            _ = ledger.recordAICalls(1, origin: origin)
             state.aiCalls += 1
             do {
-                return try await ai.complete(request)
+                let response = try await ai.complete(request)
+                quota.settle(
+                    reservedCostMicros: reserved,
+                    usage: response.usage,
+                    price: price
+                )
+                return response
             } catch is CancellationError {
                 return nil
             } catch {
@@ -154,8 +188,17 @@ struct ResearchPipeline: Sendable {
         }
 
         func budgetMessage() -> String {
-            if !ledger.snapshot().availability.isUsable {
+            let quotaSnapshot = quota.snapshot()
+            guard ledger.snapshot().availability.isUsable, quotaSnapshot.isUsable else {
                 return L10n.string("research.error.ledger", language: language)
+            }
+            if configuration.quotaPolicy.mode == .cost {
+                return L10n.string(
+                    "research.error.costBudget",
+                    language: language,
+                    AICostFormat.yuan(quotaSnapshot.costMicros),
+                    AICostFormat.yuan(configuration.quotaPolicy.costCapMicros ?? 0)
+                )
             }
             return L10n.string("research.error.budget", language: language)
         }
@@ -579,8 +622,36 @@ struct ResearchPipeline: Sendable {
                 draft = ResearchReportParser.synthesis(from: repaired.text, now: now())
             }
         }
-        guard let draft else {
+        guard var draft = draft else {
             return await fail(L10n.string("research.error.ai", language: language))
+        }
+
+        // One bounded rewrite when the model still described its own pipeline.
+        // Structural fields (dates, evidenceIDs, statuses) must survive; if the
+        // rewrite does not come back clean, ReportValidator hides the offending
+        // fields instead of showing engineering vocabulary to the reader.
+        if !ReaderFacingText.findings(in: draft).isEmpty {
+            let rewrite = ResearchPrompts.readerRewriteUserPrompt(
+                rawOutput: response.text,
+                language: language
+            )
+            let candidate = await callAI(
+                AIChatRequest(
+                    messages: [
+                        AIChatMessage(role: .system, content: synthesisSystem),
+                        AIChatMessage(role: .user, content: rewrite),
+                    ],
+                    maxTokens: 8_192,
+                    temperature: 0.1
+                )
+            ).flatMap { ResearchReportParser.synthesis(from: $0.text, now: now()) }
+            if let candidate, ReaderFacingText.findings(in: candidate).isEmpty {
+                draft = candidate
+            } else {
+                NSLog(
+                    "[ResearchPipeline] reader-facing rewrite failed; hiding offending fields"
+                )
+            }
         }
 
         // Stage 7 — validate.

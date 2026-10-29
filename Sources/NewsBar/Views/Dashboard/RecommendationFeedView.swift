@@ -141,7 +141,6 @@ struct RecommendationFeedView: View {
     var onShowSources: () -> Void = {}
     @Environment(AppSettings.self) private var settings
     @State private var controller = InterestController.shared
-    @State private var lastFeedback: UUID?
     @State private var expandedReason: String?
     @State private var visibleCount = 20
     private var english: Bool { settings.appLanguage == .en }
@@ -199,18 +198,76 @@ struct RecommendationFeedView: View {
                                     .font(.caption).foregroundStyle(.secondary)
                                 Spacer(minLength: 0)
                                 Menu {
-                                    Button(english ? "Bookmark / remove" : "收藏／取消收藏") { lastFeedback = controller.toggleBookmark(row.item) }
-                                    Button(english ? "More like this (session)" : "更多同类（本次会话）") { lastFeedback = controller.feedback(row.item, kind: .moreLikeThis) }
-                                        .disabled(!controller.canLearn)
-                                        .help(softFeedbackHelp)
-                                    Button(english ? "Not interested: this article" : "不感兴趣：仅这条") { lastFeedback = controller.feedback(row.item, kind: .notInterested) }
-                                    Button(english ? "Hide this event" : "不再看这个事件") { lastFeedback = controller.feedback(row.item, kind: .hideEvent) }
-                                    if let topic = row.topic {
-                                        Button(english ? "Reduce this topic" : "减少这个主题") { lastFeedback = controller.feedback(row.item, kind: .reduceTopic, topic: topic) }
-                                            .disabled(!controller.canLearn)
-                                            .help(softFeedbackHelp)
+                                    Button(english ? "Bookmark / remove" : "收藏／取消收藏") {
+                                        if let id = controller.toggleBookmark(row.item) {
+                                            ActionToastCenter.shared.show(english ? "Bookmarked" : "已收藏") {
+                                                controller.undo(id)
+                                            }
+                                        }
                                     }
-                                    Button(english ? "Mute source" : "屏蔽来源") { lastFeedback = controller.feedback(row.item, kind: .muteSource) }
+                                    Button(english ? "More like this (session)" : "更多同类（本次会话）") {
+                                        if let id = controller.feedback(row.item, kind: .moreLikeThis) {
+                                            ActionToastCenter.shared.show(english ? "More like this" : "已记录：更多同类") {
+                                                controller.undo(id)
+                                            }
+                                        }
+                                    }
+                                    .disabled(!controller.canLearn)
+                                    .help(softFeedbackHelp)
+
+                                    Divider()
+
+                                    Menu(english ? "Less like this" : "少推荐") {
+                                        Button(english ? "This article" : "这条内容") {
+                                            if let id = controller.feedback(row.item, kind: .lessLikeContent) {
+                                                ActionToastCenter.shared.show(english ? "Fewer like this" : "已减少推荐：这条") {
+                                                    controller.undo(id)
+                                                }
+                                            }
+                                        }
+                                        if let topic = row.topic {
+                                            Button(english ? "This topic" : "这个主题") {
+                                                if let id = controller.feedback(row.item, kind: .reduceTopic, topic: topic) {
+                                                    ActionToastCenter.shared.show(english ? "Fewer like this topic" : "已减少推荐：这个主题") {
+                                                        controller.undo(id)
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        Button(english ? "This source" : "这个来源") {
+                                            if let id = controller.feedback(row.item, kind: .lessLikeSource) {
+                                                ActionToastCenter.shared.show(english ? "Fewer like this source" : "已减少推荐：这个来源") {
+                                                    controller.undo(id)
+                                                }
+                                            }
+                                        }
+                                    }
+                                    .disabled(!controller.canLearn)
+                                    .help(softFeedbackHelp)
+
+                                    Menu(english ? "Hide" : "屏蔽") {
+                                        Button(english ? "This article" : "不再看这条") {
+                                            if let id = controller.feedback(row.item, kind: .notInterested) {
+                                                ActionToastCenter.shared.show(english ? "Hidden: this article" : "已屏蔽：这条") {
+                                                    controller.undo(id)
+                                                }
+                                            }
+                                        }
+                                        Button(english ? "This event" : "不再看这个事件") {
+                                            if let id = controller.feedback(row.item, kind: .hideEvent) {
+                                                ActionToastCenter.shared.show(english ? "Hidden: this event" : "已屏蔽：这个事件") {
+                                                    controller.undo(id)
+                                                }
+                                            }
+                                        }
+                                        Button(english ? "This source" : "屏蔽这个来源") {
+                                            if let id = controller.feedback(row.item, kind: .muteSource) {
+                                                ActionToastCenter.shared.show(english ? "Muted source" : "已屏蔽：这个来源") {
+                                                    controller.undo(id)
+                                                }
+                                            }
+                                        }
+                                    }
                                 } label: { Image(systemName: "ellipsis").frame(minWidth: 28, minHeight: 28) }
                                 .disabled(!controller.canManagePreferences)
                                 .accessibilityLabel(english ? "Reading preferences" : "阅读偏好操作")
@@ -250,9 +307,6 @@ struct RecommendationFeedView: View {
                 }
             } else {
                 ProgressView().frame(maxWidth: .infinity).padding()
-            }
-            if let feedback = lastFeedback {
-                Button(english ? "Undo last feedback" : "撤销上一次反馈") { controller.undo(feedback); lastFeedback = nil }
             }
             Text(english ? "Ranked on this Mac · original source order is unchanged" : "在本机排序 · 不改变来源原榜顺序")
                 .font(.caption2).foregroundStyle(.secondary)

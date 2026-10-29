@@ -28,6 +28,21 @@ struct ResearchAutomationSection: View {
                 set: { settings.researchShowPopoverChip = $0 }
             ))
 
+            Toggle("research.markReadOnOpen".localized, isOn: Binding(
+                get: { settings.researchMarkReadOnOpen },
+                set: { settings.researchMarkReadOnOpen = $0 }
+            ))
+
+            Toggle("research.auto.personalization".localized, isOn: Binding(
+                get: { settings.researchUsePersonalization },
+                set: { settings.researchUsePersonalization = $0 }
+            ))
+            if settings.researchUsePersonalization, !InterestController.shared.state.learningEnabled {
+                Text("research.auto.personalization.off".localized)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
             Toggle("research.auto.notificationSummary".localized, isOn: Binding(
                 get: { settings.researchNotificationShowsSummary },
                 set: { settings.researchNotificationShowsSummary = $0 }
@@ -35,7 +50,13 @@ struct ResearchAutomationSection: View {
         } header: {
             Text("research.auto.title".localized)
         } footer: {
-            Text("research.auto.footer".localized)
+            VStack(alignment: .leading, spacing: 4) {
+                Text("research.auto.footer".localized)
+                if let last = settings.researchLastAutomaticDecision {
+                    Text(L10n.string("research.auto.lastCheck", language: settings.appLanguage, last))
+                        .foregroundStyle(.secondary)
+                }
+            }
         }
     }
 }
