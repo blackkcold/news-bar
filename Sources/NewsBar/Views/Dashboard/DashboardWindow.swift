@@ -5,6 +5,7 @@ struct DashboardWindow: View {
     @Environment(AppSettings.self) private var settings
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let orchestrator: NewsOrchestrator
+    @State private var actionToasts = ActionToastCenter.shared
     @State private var collapsedRSSSourceIDs: Set<NewsSource.ID> = []
     @State private var searchText = ""
     @State private var debouncedSearchText = ""
@@ -263,6 +264,14 @@ struct DashboardWindow: View {
                     .padding(.top, 12)
                     .allowsHitTesting(false)
             }
+            .overlay(alignment: .bottom) {
+                if let toast = actionToasts.toast {
+                    ActionToastView(toast: toast)
+                        .padding(.bottom, 16)
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                }
+            }
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.18), value: actionToasts.toast?.id)
             .adaptiveColorScheme()
             .task {
                 await orchestrator.loadCached(settings: settings)
@@ -907,14 +916,14 @@ private struct DashboardResearchSection: View {
 
     private func displayTitle(_ entry: ResearchIndexEntry) -> String {
         entry.topic.isEmpty
-            ? L10n.string("research.status.\(entry.status.rawValue)", language: settings.appLanguage)
+            ? ResearchStatusPresentation.label(entry.status, language: settings.appLanguage)
             : entry.topic
     }
 
     @ViewBuilder
     private func badge(_ entry: ResearchIndexEntry) -> some View {
         if entry.status == .running || entry.status == .queued {
-            Text(L10n.string("research.status.\(entry.status.rawValue)", language: settings.appLanguage))
+            Text(ResearchStatusPresentation.label(entry.status, language: settings.appLanguage))
                 .font(.system(size: 9, weight: .semibold))
                 .foregroundStyle(tint(entry))
         } else if let verdict = entry.verdict {
@@ -929,20 +938,14 @@ private struct DashboardResearchSection: View {
     }
 
     private func tint(_ entry: ResearchIndexEntry) -> Color {
-        switch entry.status {
-        case .ready: return .green
-        case .partial: return .orange
-        case .failed, .corrupt: return .red
-        case .running, .queued: return .accentColor
-        case .cancelled, .interrupted: return .secondary
-        }
+        ResearchStatusPresentation.tint(entry.status)
     }
 
     private func accessibilityLabel(_ entry: ResearchIndexEntry) -> String {
         let separator = settings.appLanguage == .en ? ", " : "，"
         return [
             displayTitle(entry),
-            L10n.string("research.status.\(entry.status.rawValue)", language: settings.appLanguage),
+            ResearchStatusPresentation.label(entry.status, language: settings.appLanguage),
             L10n.string("research.origin.\(entry.origin.rawValue)", language: settings.appLanguage),
         ].joined(separator: separator)
     }

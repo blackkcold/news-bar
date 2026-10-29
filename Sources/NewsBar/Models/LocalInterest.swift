@@ -103,12 +103,26 @@ struct ReadingSessionRecord: Codable, Identifiable, Sendable {
 
 enum InterestFeedbackKind: String, Codable, Sendable {
     case bookmark, moreLikeThis, notInterested, muteSource, reduceTopic, followTopic, hideEvent
+    /// Soft: downweight this event for a while, never hide it outright.
+    case lessLikeContent
+    /// Soft: downweight this source, keep the exploration slot.
+    case lessLikeSource
+    /// A kind written by a newer build. Decoded instead of throwing so one
+    /// unknown row cannot stop learning for the whole profile.
+    case unknown
+
+    init(from decoder: Decoder) throws {
+        let raw = try decoder.singleValueContainer().decode(String.self)
+        self = InterestFeedbackKind(rawValue: raw) ?? .unknown
+    }
 }
 
 struct InterestFeedback: Codable, Identifiable, Sendable {
     var id = UUID()
     let item: NewsItem
     let kind: InterestFeedbackKind
+    /// Preserve an unrecognized value when a newer version's rule is rewritten.
+    private let originalKind: String?
     let occurredAt: Date
     var topic: String?
     var participatesInProfile = true
@@ -118,9 +132,9 @@ struct InterestFeedback: Codable, Identifiable, Sendable {
     /// previous rule instead of stacking duplicate ranking penalties.
     var scopeKey: String {
         switch kind {
-        case .muteSource:
+        case .muteSource, .lessLikeSource:
             return "source:" + item.source.id
-        case .notInterested, .bookmark:
+        case .notInterested, .bookmark, .lessLikeContent:
             return "content:" + ContentIdentity.id(for: item.url)
         case .hideEvent:
             return "cluster:" + ContentIdentity.cluster(for: item)
@@ -128,8 +142,86 @@ struct InterestFeedback: Codable, Identifiable, Sendable {
             return "topic:" + (topic ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         case .moreLikeThis:
             return "session-content:" + ContentIdentity.id(for: item.url)
+        case .unknown:
+            return "unknown:" + id.uuidString
         }
     }
+
+    enum CodingKeys: String, CodingKey {
+        case id, item, kind, occurredAt, topic, participatesInProfile
+    }
+
+    init(
+        id: UUID = UUID(),
+        item: NewsItem,
+        kind: InterestFeedbackKind,
+        occurredAt: Date,
+        topic: String? = nil,
+        participatesInProfile: Bool = true
+    ) {
+        self.id = id
+        self.item = item
+        self.kind = kind
+        self.originalKind = nil
+        self.occurredAt = occurredAt
+        self.topic = topic
+        self.participatesInProfile = participatesInProfile
+    }
+
+    /// `participatesInProfile` was added after the v1 payload shipped without a
+    /// schema bump. Decode it leniently so old rows keep working.
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        item = try container.decode(NewsItem.self, forKey: .item)
+        let rawKind = try container.decode(String.self, forKey: .kind)
+        kind = InterestFeedbackKind(rawValue: rawKind) ?? .unknown
+        originalKind = kind == .unknown ? rawKind : nil
+        occurredAt = try container.decode(Date.self, forKey: .occurredAt)
+        topic = try container.decodeIfPresent(String.self, forKey: .topic)
+        participatesInProfile = try container.decodeIfPresent(Bool.self, forKey: .participatesInProfile) ?? true
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(item, forKey: .item)
+        try container.encode(originalKind ?? kind.rawValue, forKey: .kind)
+        try container.encode(occurredAt, forKey: .occurredAt)
+        try container.encodeIfPresent(topic, forKey: .topic)
+        try container.encode(participatesInProfile, forKey: .participatesInProfile)
+    }
+}
+
+/// One cached AI triage verdict. Optional fields keep old payloads readable.
+struct ResearchTriageRecord: Codable, Sendable, Equatable {
+    var topicKey: String
+    var sameEventAs: String?
+    var sameAngleAs: String?
+    var worth: Bool
+    var confidence: Double
+    var reason: String
+    var evaluatedAt: Date
+}
+
+/// Why the last automatic check did or did not start a run. Shown in settings
+/// so "nothing happened today" is explainable instead of looking broken.
+struct ResearchAutomaticDecision: Codable, Sendable, Equatable {
+    enum Kind: String, Codable, Sendable {
+        case started
+        case skippedNoCandidates
+        case skippedNoWorthy
+        case skippedBudget
+        case skippedKeywordPriority
+        case skippedNotStarted
+        case triageFailed
+    }
+
+    var at: Date
+    var kind: Kind
+    var candidateCount: Int
+    /// Short, user-facing reason (already localized when written).
+    var reason: String?
 }
 
 struct PersistedResearchState: Codable, Sendable {
@@ -140,6 +232,12 @@ struct PersistedResearchState: Codable, Sendable {
     /// Start of the most recent feed-triggered research run. Persisted so a
     /// relaunch cannot bypass the one-per-hour automatic budget.
     var lastAutomaticStartedAt: Date?
+    /// Last time the automatic selector looked for a topic, whether or not it
+    /// started one. Throttles AI triage independently of the run budget.
+    var lastAutomaticCheckAt: Date?
+    var lastAutomaticDecision: ResearchAutomaticDecision?
+    /// Cached triage verdicts keyed by topicKey, pruned after seven days.
+    var triage: [String: ResearchTriageRecord]?
     var updatedAt: Date = Date()
 }
 
@@ -340,9 +438,19 @@ struct LocalInterestState: Codable, Sendable {
         if profileSignals.count > 20_000 {
             profileSignals = Dictionary(uniqueKeysWithValues: profileSignals.sorted { $0.value.occurredAt > $1.value.occurredAt }.prefix(20_000).map { ($0.key, $0.value) })
         }
-        // Only session-scoped "more like this" expires. Long-term rules and
-        // bookmarks are deduped by scope and must not be silently truncated.
-        feedbacks = feedbacks.filter { $0.kind != .moreLikeThis || now.timeIntervalSince($0.occurredAt) < 2 * 3600 }
+        // Session-scoped "more like this" expires after two hours. Soft
+        // negatives decay to near zero by 180 days and are then removed; hard
+        // blocks and bookmarks are user intent and are never truncated.
+        feedbacks = feedbacks.filter { feedback in
+            switch feedback.kind {
+            case .moreLikeThis:
+                return now.timeIntervalSince(feedback.occurredAt) < 2 * 3600
+            case .lessLikeContent, .lessLikeSource, .reduceTopic:
+                return now.timeIntervalSince(feedback.occurredAt) < 180 * 86_400
+            default:
+                return true
+            }
+        }
         let bookmarked = Set(feedbacks.filter { $0.kind == .bookmark }.map { ContentIdentity.id(for: $0.item.url) })
         contents = contents.filter { bookmarked.contains($0.key) || now.timeIntervalSince($0.value.lastSeen) <= 7 * 86400 }
         if contents.count > 5_000 {

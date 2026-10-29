@@ -4,6 +4,10 @@ struct ResearchListRow: View {
     @Environment(AppSettings.self) private var settings
     let entry: ResearchIndexEntry
     let isSelected: Bool
+    /// Presentation-only retry state. Never persisted.
+    var statusOverride: ResearchStatus? = nil
+
+    private var effectiveStatus: ResearchStatus { statusOverride ?? entry.status }
 
     private static let relativeFormatter: RelativeDateTimeFormatter = {
         let formatter = RelativeDateTimeFormatter()
@@ -78,7 +82,16 @@ struct ResearchListRow: View {
                             .background(Color.purple.opacity(0.1))
                             .editorialClipShape(cornerRadius: 4)
                     } else if entry.hasReport {
-                        reportBadge
+                        HStack(spacing: 4) {
+                            reportBadge
+                            if ResearchStatusPresentation.needsAttentionDot(effectiveStatus) {
+                                Circle()
+                                    .fill(statusColor)
+                                    .frame(width: 5, height: 5)
+                                    .help(statusLabel)
+                                    .accessibilityHidden(true)
+                            }
+                        }
                     } else {
                         Text(statusLabel)
                             .font(.system(size: 8, weight: .semibold))
@@ -108,7 +121,7 @@ struct ResearchListRow: View {
     }
 
     private var statusLabel: String {
-        L10n.string("research.status.\(entry.status.rawValue)", language: settings.appLanguage)
+        ResearchStatusPresentation.label(effectiveStatus, language: settings.appLanguage)
     }
 
     private func issueLabel(_ issue: ResearchEntryIssue) -> String {
@@ -159,14 +172,7 @@ struct ResearchListRow: View {
     }
 
     private var statusColor: Color {
-        switch entry.status {
-        case .queued, .running: return .blue
-        case .ready: return .green
-        case .partial: return .orange
-        case .failed: return .red
-        case .cancelled, .interrupted: return .secondary
-        case .corrupt: return .purple
-        }
+        ResearchStatusPresentation.tint(effectiveStatus)
     }
 
     private var sourceMark: EditorialSourceMark {

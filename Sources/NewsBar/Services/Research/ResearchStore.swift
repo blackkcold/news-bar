@@ -37,7 +37,9 @@ struct ResearchIndexEntry: Codable, Hashable, Sendable, Identifiable {
     let updatedAt: Date
     let lastAccessedAt: Date
     let isPinned: Bool
-    let isRead: Bool
+    /// Mutable so the research center can apply an optimistic read before the
+    /// store write completes; the next index load replaces the whole value.
+    var isRead: Bool
     let reportVersion: Int
     let strength: Int
     let verdict: VerificationReport.Verdict?
@@ -124,6 +126,12 @@ enum ResearchStoreError: Error, Equatable {
     case readOnlyMeta
 }
 
+enum ResearchOpenReadResult: Equatable, Sendable {
+    case updated
+    case unchanged
+    case failed
+}
+
 protocol ResearchPersisting: Sendable {
     func bootstrap() async -> ResearchStoreBootstrap
     func index() async -> [ResearchIndexEntry]
@@ -132,6 +140,9 @@ protocol ResearchPersisting: Sendable {
     func latestRecord(topicKey: String) async -> ResearchRecord?
     func burstSummary() async -> ResearchSummary
     func touch(id: String, at date: Date) async
+    /// Marks a finished record read and touches its access time in one save.
+    /// Active or unreadable records are left untouched.
+    func markReadOnOpen(id: String, at date: Date) async -> ResearchOpenReadResult
     func deleteAll() async throws
     func storageFootprint() async -> Int64
     func save(_ record: ResearchRecord) async throws
@@ -169,6 +180,7 @@ extension ResearchPersisting {
     func latestRecord(topicKey: String) async -> ResearchRecord? { nil }
     func burstSummary() async -> ResearchSummary { .zero }
     func touch(id: String, at date: Date) async {}
+    func markReadOnOpen(id: String, at date: Date) async -> ResearchOpenReadResult { .unchanged }
     func deleteAll() async throws {}
     func storageFootprint() async -> Int64 { 0 }
 
@@ -414,6 +426,27 @@ actor ResearchStore: ResearchPersisting {
         guard date.timeIntervalSince(record.lastAccessedAt) > 600 else { return }
         record.lastAccessedAt = date
         try? await save(record)
+    }
+
+    /// Opening a finished record clears its unread marker and bumps the access
+    /// time in the same write. A read flip always writes, even inside the touch
+    /// throttle window; otherwise one save covers both fields.
+    func markReadOnOpen(id: String, at date: Date = Date()) async -> ResearchOpenReadResult {
+        guard var record = await record(id: id),
+              record.loadIssue == nil,
+              record.status != .corrupt,
+              record.status.marksReadOnOpen else { return .unchanged }
+        let needsRead = !record.isRead
+        let needsTouch = date.timeIntervalSince(record.lastAccessedAt) > 600
+        guard needsRead || needsTouch else { return .unchanged }
+        record.isRead = true
+        record.lastAccessedAt = date
+        do {
+            try await save(record)
+            return .updated
+        } catch {
+            return .failed
+        }
     }
 
     /// Removes every authoritative record. Cache files are intentionally left

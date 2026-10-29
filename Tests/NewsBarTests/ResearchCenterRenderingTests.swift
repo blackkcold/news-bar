@@ -11,9 +11,8 @@ final class ResearchCenterRenderingTests: XCTestCase {
     ]
 
     func testCenterRendersAcrossStatesThemesLanguagesAndSizes() async throws {
-        let output = FileManager.default.temporaryDirectory
+        let output = try researchTestDirectory()
             .appendingPathComponent("research-render-matrix", isDirectory: true)
-        try? FileManager.default.removeItem(at: output)
         try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
 
         for theme in AppTheme.allCases {

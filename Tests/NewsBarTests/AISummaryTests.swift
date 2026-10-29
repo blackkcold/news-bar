@@ -357,6 +357,8 @@ final class AppSettingsBudgetCapTests: XCTestCase {
     private func snapshotAIKeys() -> [String: Any?] {
         [
             "aiDailyCap": snapshotObject(forKey: "aiDailyCap"),
+            "aiLimitMode": snapshotObject(forKey: "aiLimitMode"),
+            "aiCostCapMicros": snapshotObject(forKey: "aiCostCapMicros"),
             "aiBudgetMode": snapshotObject(forKey: "aiBudgetMode"),
             "aiPopupDailyCap": snapshotObject(forKey: "aiPopupDailyCap"),
             "aiDashboardDailyCap": snapshotObject(forKey: "aiDashboardDailyCap"),
@@ -374,9 +376,9 @@ final class AppSettingsBudgetCapTests: XCTestCase {
     }
 
     func testValidAICaps_containsExpectedValues() {
-        XCTAssertTrue(AppSettings.validAICaps.contains(20))
-        XCTAssertTrue(AppSettings.validAICaps.contains(50))
-        XCTAssertTrue(AppSettings.validAICaps.contains(100))
+        XCTAssertTrue(AppSettings.validAICaps.contains(-1))
+        XCTAssertTrue(AppSettings.validAICaps.contains(200))
+        XCTAssertTrue(AppSettings.validAICaps.contains(500))
         XCTAssertEqual(AppSettings.validAICaps.count, 3)
     }
 
@@ -384,54 +386,48 @@ final class AppSettingsBudgetCapTests: XCTestCase {
         let prior = snapshotObject(forKey: "aiDailyCap")
         defer { restoreObject(prior, forKey: "aiDailyCap") }
 
-        UserDefaults.standard.set(100, forKey: "aiDailyCap")
+        UserDefaults.standard.set(500, forKey: "aiDailyCap")
         let settings = AppSettings()
-        XCTAssertEqual(settings.aiDailyCap, 100)
+        XCTAssertEqual(settings.aiDailyCap, 500)
     }
 
-    func testInit_fallsBackTo50ForInvalidCap() {
+    func testInit_migratesLegacyCapToEntryTier() {
         let prior = snapshotObject(forKey: "aiDailyCap")
         defer { restoreObject(prior, forKey: "aiDailyCap") }
 
         UserDefaults.standard.set(42, forKey: "aiDailyCap")
         let settings = AppSettings()
-        XCTAssertEqual(settings.aiDailyCap, 50, "Invalid cap 42 should fall back to 50")
+        XCTAssertEqual(settings.aiDailyCap, 200, "Unknown caps migrate to 200")
     }
 
-    func testInit_fallsBackTo50ForMissingCap() {
+    func testInit_fallsBackTo200ForMissingCap() {
         let prior = snapshotObject(forKey: "aiDailyCap")
         defer { restoreObject(prior, forKey: "aiDailyCap") }
 
         UserDefaults.standard.removeObject(forKey: "aiDailyCap")
         let settings = AppSettings()
-        XCTAssertEqual(settings.aiDailyCap, 50, "Missing cap should default to 50")
+        XCTAssertEqual(settings.aiDailyCap, 200, "Missing cap should default to 200")
     }
 
-    func testInit_accepts20() {
+    func testInit_migratesLegacy20And100() {
         let prior = snapshotObject(forKey: "aiDailyCap")
         defer { restoreObject(prior, forKey: "aiDailyCap") }
 
-        UserDefaults.standard.set(20, forKey: "aiDailyCap")
-        let settings = AppSettings()
-        XCTAssertEqual(settings.aiDailyCap, 20)
+        for legacy in [20, 100] {
+            UserDefaults.standard.set(legacy, forKey: "aiDailyCap")
+            let settings = AppSettings()
+            XCTAssertEqual(settings.aiDailyCap, 200)
+        }
     }
 
-    func testInit_accepts100() {
-        let prior = snapshotObject(forKey: "aiDailyCap")
-        defer { restoreObject(prior, forKey: "aiDailyCap") }
-
-        UserDefaults.standard.set(100, forKey: "aiDailyCap")
-        let settings = AppSettings()
-        XCTAssertEqual(settings.aiDailyCap, 100)
-    }
-
-    func testInit_rejectsNegativeCap() {
+    func testInit_acceptsUnlimited() {
         let prior = snapshotObject(forKey: "aiDailyCap")
         defer { restoreObject(prior, forKey: "aiDailyCap") }
 
         UserDefaults.standard.set(-1, forKey: "aiDailyCap")
         let settings = AppSettings()
-        XCTAssertEqual(settings.aiDailyCap, 50, "Negative cap should fall back to 50")
+        XCTAssertEqual(settings.aiDailyCap, -1)
+        XCTAssertNil(settings.aiCountLimit)
     }
 
     func testInit_rejectsZeroCap() {
@@ -440,7 +436,7 @@ final class AppSettingsBudgetCapTests: XCTestCase {
 
         UserDefaults.standard.set(0, forKey: "aiDailyCap")
         let settings = AppSettings()
-        XCTAssertEqual(settings.aiDailyCap, 50, "Zero cap should fall back to 50")
+        XCTAssertEqual(settings.aiDailyCap, 200, "Zero cap should fall back to 200")
     }
 
     func testRecordAIRequests_incrementsCount() {
@@ -471,11 +467,11 @@ final class AppSettingsBudgetCapTests: XCTestCase {
         let snapshot = snapshotAIKeys()
         defer { restoreAIKeys(snapshot) }
 
-        UserDefaults.standard.set(50, forKey: "aiDailyCap")
+        UserDefaults.standard.set(500, forKey: "aiDailyCap")
         let settings = AppSettings()
         settings.todayAIRequestCount = 3
         XCTAssertTrue(settings.aiUsageText.contains("3"))
-        XCTAssertTrue(settings.aiUsageText.contains("50"))
+        XCTAssertTrue(settings.aiUsageText.contains("500"))
     }
 
     // MARK: - Budget Mode Tests
@@ -509,31 +505,31 @@ final class AppSettingsBudgetCapTests: XCTestCase {
 
     // MARK: - Per-Target Cap Tests
 
-    func testInit_popupCapDefaultsTo50() {
+    func testInit_popupCapDefaultsTo200() {
         let snapshot = snapshotAIKeys()
         defer { restoreAIKeys(snapshot) }
 
         UserDefaults.standard.removeObject(forKey: "aiPopupDailyCap")
         let settings = AppSettings()
-        XCTAssertEqual(settings.aiPopupDailyCap, 50)
+        XCTAssertEqual(settings.aiPopupDailyCap, 200)
     }
 
-    func testInit_dashboardCapDefaultsTo50() {
+    func testInit_dashboardCapDefaultsTo200() {
         let snapshot = snapshotAIKeys()
         defer { restoreAIKeys(snapshot) }
 
         UserDefaults.standard.removeObject(forKey: "aiDashboardDailyCap")
         let settings = AppSettings()
-        XCTAssertEqual(settings.aiDashboardDailyCap, 50)
+        XCTAssertEqual(settings.aiDashboardDailyCap, 200)
     }
 
     func testInit_popupCapValidates() {
         let snapshot = snapshotAIKeys()
         defer { restoreAIKeys(snapshot) }
 
-        UserDefaults.standard.set(100, forKey: "aiPopupDailyCap")
+        UserDefaults.standard.set(500, forKey: "aiPopupDailyCap")
         let settings = AppSettings()
-        XCTAssertEqual(settings.aiPopupDailyCap, 100)
+        XCTAssertEqual(settings.aiPopupDailyCap, 500)
     }
 
     func testInit_popupCapRejectsInvalid() {
@@ -542,16 +538,16 @@ final class AppSettingsBudgetCapTests: XCTestCase {
 
         UserDefaults.standard.set(42, forKey: "aiPopupDailyCap")
         let settings = AppSettings()
-        XCTAssertEqual(settings.aiPopupDailyCap, 50)
+        XCTAssertEqual(settings.aiPopupDailyCap, 200)
     }
 
     func testInit_dashboardCapValidates() {
         let snapshot = snapshotAIKeys()
         defer { restoreAIKeys(snapshot) }
 
-        UserDefaults.standard.set(20, forKey: "aiDashboardDailyCap")
+        UserDefaults.standard.set(200, forKey: "aiDashboardDailyCap")
         let settings = AppSettings()
-        XCTAssertEqual(settings.aiDashboardDailyCap, 20)
+        XCTAssertEqual(settings.aiDashboardDailyCap, 200)
     }
 
     // MARK: - effectiveDailyCap Tests
@@ -561,12 +557,12 @@ final class AppSettingsBudgetCapTests: XCTestCase {
         defer { restoreAIKeys(snapshot) }
 
         UserDefaults.standard.set("shared", forKey: "aiBudgetMode")
-        UserDefaults.standard.set(100, forKey: "aiDailyCap")
-        UserDefaults.standard.set(20, forKey: "aiPopupDailyCap")
-        UserDefaults.standard.set(50, forKey: "aiDashboardDailyCap")
+        UserDefaults.standard.set(500, forKey: "aiDailyCap")
+        UserDefaults.standard.set(200, forKey: "aiPopupDailyCap")
+        UserDefaults.standard.set(200, forKey: "aiDashboardDailyCap")
         let settings = AppSettings()
-        XCTAssertEqual(settings.effectiveDailyCap(for: .popup), 100)
-        XCTAssertEqual(settings.effectiveDailyCap(for: .dashboard), 100)
+        XCTAssertEqual(settings.effectiveDailyCap(for: .popup), 500)
+        XCTAssertEqual(settings.effectiveDailyCap(for: .dashboard), 500)
     }
 
     func testEffectiveDailyCap_independentModeReturnsPerTargetCap() {
@@ -574,12 +570,12 @@ final class AppSettingsBudgetCapTests: XCTestCase {
         defer { restoreAIKeys(snapshot) }
 
         UserDefaults.standard.set("independent", forKey: "aiBudgetMode")
-        UserDefaults.standard.set(100, forKey: "aiDailyCap")
-        UserDefaults.standard.set(20, forKey: "aiPopupDailyCap")
-        UserDefaults.standard.set(50, forKey: "aiDashboardDailyCap")
+        UserDefaults.standard.set(500, forKey: "aiDailyCap")
+        UserDefaults.standard.set(200, forKey: "aiPopupDailyCap")
+        UserDefaults.standard.set(500, forKey: "aiDashboardDailyCap")
         let settings = AppSettings()
-        XCTAssertEqual(settings.effectiveDailyCap(for: .popup), 20)
-        XCTAssertEqual(settings.effectiveDailyCap(for: .dashboard), 50)
+        XCTAssertEqual(settings.effectiveDailyCap(for: .popup), 200)
+        XCTAssertEqual(settings.effectiveDailyCap(for: .dashboard), 500)
     }
 
     // MARK: - Per-Target Count Tests
@@ -695,17 +691,62 @@ final class AISummaryServiceBudgetTests: XCTestCase {
 
     private let testTarget: SummaryTarget = .popup
     private let testMode: AISummaryBudgetMode = .independent
+    private var directory: URL!
+    private var store: AIQuotaStore!
 
-    override func setUp() {
-        super.setUp()
-        AISummaryService.initBudget(target: testTarget, mode: testMode, baseline: 0, cap: 50)
+    override func setUpWithError() throws {
+        try super.setUpWithError()
+        directory = try researchTestDirectory()
+        store = AIQuotaStore(fileURL: directory.appendingPathComponent("quota.json"))
+        AISummaryService.useQuotaStore(store)
+        AISummaryService.initBudget(
+            target: testTarget,
+            mode: testMode,
+            policy: AIQuotaPolicy(mode: .count, countCap: 50),
+            forceReset: true
+        )
+    }
+
+    override func tearDown() {
+        AISummaryService.useQuotaStore(.shared)
+        if let directory {
+            try? FileManager.default.removeItem(at: directory)
+        }
+        super.tearDown()
+    }
+
+    private func seedUsage(_ count: Int) {
+        let unlimited = AIQuotaPolicy(mode: .count, countCap: nil)
+        for _ in 0..<count {
+            XCTAssertTrue(store.reserve(.summary, policy: unlimited))
+        }
+    }
+
+    private func useCap(_ cap: Int) {
+        AISummaryService.initBudget(
+            target: testTarget,
+            mode: testMode,
+            policy: AIQuotaPolicy(mode: .count, countCap: cap),
+            forceReset: true
+        )
     }
 
     // MARK: - initBudget
 
-    func testInitBudget_setsBaselineAndCap() {
-        AISummaryService.initBudget(target: testTarget, mode: testMode, baseline: 10, cap: 20)
+    func testInitBudget_setsPolicyAndResetsAttempts() {
+        useCap(20)
         XCTAssertEqual(AISummaryService.readGenerationAttempts(target: testTarget, mode: testMode), 0)
+        XCTAssertEqual(AISummaryService.readGenerationCap(target: testTarget, mode: testMode), 20)
+    }
+
+    func testInitBudget_unlimitedPolicyHasNoCap() {
+        AISummaryService.initBudget(
+            target: testTarget,
+            mode: testMode,
+            policy: .unlimited,
+            forceReset: true
+        )
+        XCTAssertNil(AISummaryService.readGenerationCap(target: testTarget, mode: testMode))
     }
 
     // MARK: - consumeAttemptBudget
@@ -723,10 +764,10 @@ final class AISummaryServiceBudgetTests: XCTestCase {
         XCTAssertEqual(AISummaryService.readGenerationAttempts(target: testTarget, mode: testMode), 3)
     }
 
-    // MARK: - Boundary: baseline + attempts + 1 <= cap
+    // MARK: - Boundary: used + 1 <= cap
 
     func testConsumeAttemptBudget_allowsAtCapBoundary() {
-        AISummaryService.initBudget(target: testTarget, mode: testMode, baseline: 0, cap: 5)
+        useCap(5)
         for i in 0..<5 {
             XCTAssertNoThrow(try AISummaryService.consumeAttemptBudget(target: testTarget, mode: testMode),
                              "Attempt \(i) should succeed")
@@ -735,7 +776,7 @@ final class AISummaryServiceBudgetTests: XCTestCase {
     }
 
     func testConsumeAttemptBudget_throwsWhenExceedingCap() {
-        AISummaryService.initBudget(target: testTarget, mode: testMode, baseline: 0, cap: 3)
+        useCap(3)
         XCTAssertNoThrow(try AISummaryService.consumeAttemptBudget(target: testTarget, mode: testMode))
         XCTAssertNoThrow(try AISummaryService.consumeAttemptBudget(target: testTarget, mode: testMode))
         XCTAssertNoThrow(try AISummaryService.consumeAttemptBudget(target: testTarget, mode: testMode))
@@ -750,44 +791,79 @@ final class AISummaryServiceBudgetTests: XCTestCase {
     }
 
     func testConsumeAttemptBudget_doesNotIncrementOnDenied() {
-        AISummaryService.initBudget(target: testTarget, mode: testMode, baseline: 0, cap: 2)
+        useCap(2)
         XCTAssertNoThrow(try AISummaryService.consumeAttemptBudget(target: testTarget, mode: testMode))
         XCTAssertNoThrow(try AISummaryService.consumeAttemptBudget(target: testTarget, mode: testMode))
         XCTAssertThrowsError(try AISummaryService.consumeAttemptBudget(target: testTarget, mode: testMode))
         XCTAssertEqual(AISummaryService.readGenerationAttempts(target: testTarget, mode: testMode), 2)
     }
 
-    // MARK: - Boundary with non-zero baseline
+    // MARK: - Boundary with pre-existing usage
 
-    func testConsumeAttemptBudget_withBaseline() {
-        AISummaryService.initBudget(target: testTarget, mode: testMode, baseline: 8, cap: 10)
+    func testConsumeAttemptBudget_withExistingUsage() {
+        seedUsage(8)
+        useCap(10)
         XCTAssertNoThrow(try AISummaryService.consumeAttemptBudget(target: testTarget, mode: testMode))
         XCTAssertNoThrow(try AISummaryService.consumeAttemptBudget(target: testTarget, mode: testMode))
         XCTAssertThrowsError(try AISummaryService.consumeAttemptBudget(target: testTarget, mode: testMode))
         XCTAssertEqual(AISummaryService.readGenerationAttempts(target: testTarget, mode: testMode), 2)
     }
 
-    func testConsumeAttemptBudget_baselineAtCap() {
-        AISummaryService.initBudget(target: testTarget, mode: testMode, baseline: 10, cap: 10)
+    func testConsumeAttemptBudget_existingUsageAtCap() {
+        seedUsage(10)
+        useCap(10)
         XCTAssertThrowsError(try AISummaryService.consumeAttemptBudget(target: testTarget, mode: testMode))
         XCTAssertEqual(AISummaryService.readGenerationAttempts(target: testTarget, mode: testMode), 0)
     }
 
-    func testConsumeAttemptBudget_baselineExceedsCap() {
-        AISummaryService.initBudget(target: testTarget, mode: testMode, baseline: 15, cap: 10)
+    func testConsumeAttemptBudget_existingUsageExceedsCap() {
+        seedUsage(15)
+        useCap(10)
         XCTAssertThrowsError(try AISummaryService.consumeAttemptBudget(target: testTarget, mode: testMode))
+        XCTAssertEqual(AISummaryService.readGenerationAttempts(target: testTarget, mode: testMode), 0)
+    }
+
+    func testConsumeAttemptBudget_unlimitedNeverThrows() {
+        AISummaryService.initBudget(
+            target: testTarget,
+            mode: testMode,
+            policy: .unlimited,
+            forceReset: true
+        )
+        for _ in 0..<50 {
+            XCTAssertNoThrow(try AISummaryService.consumeAttemptBudget(target: testTarget, mode: testMode))
+        }
+        XCTAssertEqual(AISummaryService.readGenerationAttempts(target: testTarget, mode: testMode), 50)
+    }
+
+    func testCostMode_blocksWhenReservationWouldExceedBudget() {
+        store.resetToday()
+        AISummaryService.initBudget(
+            target: testTarget,
+            mode: testMode,
+            policy: AIQuotaPolicy(mode: .cost, costCapMicros: 10_000),
+            forceReset: true
+        )
+        XCTAssertTrue(store.reserve(.summary, policy: .unlimited, reservedCostMicros: 9_000))
+        XCTAssertThrowsError(
+            try AISummaryService.consumeAttemptBudget(
+                target: testTarget,
+                mode: testMode,
+                reservedCostMicros: 2_000
+            )
+        )
         XCTAssertEqual(AISummaryService.readGenerationAttempts(target: testTarget, mode: testMode), 0)
     }
 
     // MARK: - readGenerationAttempts
 
     func testReadGenerationAttempts_initialZero() {
-        AISummaryService.initBudget(target: testTarget, mode: testMode, baseline: 0, cap: 50)
+        useCap(50)
         XCTAssertEqual(AISummaryService.readGenerationAttempts(target: testTarget, mode: testMode), 0)
     }
 
     func testReadGenerationAttempts_afterMultipleCalls() {
-        AISummaryService.initBudget(target: testTarget, mode: testMode, baseline: 0, cap: 50)
+        useCap(50)
         XCTAssertEqual(AISummaryService.readGenerationAttempts(target: testTarget, mode: testMode), 0)
         try? AISummaryService.consumeAttemptBudget(target: testTarget, mode: testMode)
         XCTAssertEqual(AISummaryService.readGenerationAttempts(target: testTarget, mode: testMode), 1)
@@ -798,12 +874,8 @@ final class AISummaryServiceBudgetTests: XCTestCase {
     // MARK: - readGenerationCap
 
     func testReadGenerationCap_returnsSetCap() {
-        AISummaryService.initBudget(target: testTarget, mode: testMode, baseline: 0, cap: 100)
+        useCap(100)
         XCTAssertEqual(AISummaryService.readGenerationCap(target: testTarget, mode: testMode), 100)
-    }
-
-    func testReadGenerationCap_defaultIs50() {
-        XCTAssertEqual(AISummaryService.readGenerationCap(target: testTarget, mode: testMode), 50)
     }
 
     // MARK: - Isolation: different initBudget calls reset state
@@ -812,15 +884,26 @@ final class AISummaryServiceBudgetTests: XCTestCase {
         try? AISummaryService.consumeAttemptBudget(target: testTarget, mode: testMode)
         try? AISummaryService.consumeAttemptBudget(target: testTarget, mode: testMode)
         XCTAssertEqual(AISummaryService.readGenerationAttempts(target: testTarget, mode: testMode), 2)
-        AISummaryService.initBudget(target: testTarget, mode: testMode, baseline: 0, cap: 50)
+        useCap(50)
         XCTAssertEqual(AISummaryService.readGenerationAttempts(target: testTarget, mode: testMode), 0)
     }
 
-    // MARK: - Per-Target Isolation (independent mode)
+    // MARK: - One global quota, regardless of budget mode
 
-    func testIndependentMode_popupAndDashboardAreIsolated() {
-        AISummaryService.initBudget(target: .popup, mode: .independent, baseline: 0, cap: 3)
-        AISummaryService.initBudget(target: .dashboard, mode: .independent, baseline: 0, cap: 3)
+    func testIndependentMode_stillUsesTheSingleGlobalQuota() {
+        store.resetToday()
+        AISummaryService.initBudget(
+            target: .popup,
+            mode: .independent,
+            policy: AIQuotaPolicy(mode: .count, countCap: 3),
+            forceReset: true
+        )
+        AISummaryService.initBudget(
+            target: .dashboard,
+            mode: .independent,
+            policy: AIQuotaPolicy(mode: .count, countCap: 3),
+            forceReset: true
+        )
 
         XCTAssertNoThrow(try AISummaryService.consumeAttemptBudget(target: .popup, mode: .independent))
         XCTAssertNoThrow(try AISummaryService.consumeAttemptBudget(target: .popup, mode: .independent))
@@ -829,13 +912,19 @@ final class AISummaryServiceBudgetTests: XCTestCase {
 
         XCTAssertEqual(AISummaryService.readGenerationAttempts(target: .popup, mode: .independent), 3)
         XCTAssertEqual(AISummaryService.readGenerationAttempts(target: .dashboard, mode: .independent), 0)
-        XCTAssertNoThrow(try AISummaryService.consumeAttemptBudget(target: .dashboard, mode: .independent))
+        XCTAssertThrowsError(try AISummaryService.consumeAttemptBudget(target: .dashboard, mode: .independent))
     }
 
     // MARK: - Shared Mode: single state for both targets
 
     func testSharedMode_bothTargetsShareSameBudgetState() {
-        AISummaryService.initBudget(target: .popup, mode: .shared, baseline: 0, cap: 3)
+        store.resetToday()
+        AISummaryService.initBudget(
+            target: .popup,
+            mode: .shared,
+            policy: AIQuotaPolicy(mode: .count, countCap: 3),
+            forceReset: true
+        )
 
         XCTAssertNoThrow(try AISummaryService.consumeAttemptBudget(target: .popup, mode: .shared))
         XCTAssertNoThrow(try AISummaryService.consumeAttemptBudget(target: .dashboard, mode: .shared))
@@ -849,17 +938,33 @@ final class AISummaryServiceBudgetTests: XCTestCase {
     }
 
     func testSharedMode_reinitializationDoesNotDiscardActiveAttempts() {
-        AISummaryService.initBudget(target: .popup, mode: .shared, baseline: 5, cap: 10)
+        store.resetToday()
+        AISummaryService.initBudget(
+            target: .popup,
+            mode: .shared,
+            policy: AIQuotaPolicy(mode: .count, countCap: 10),
+            forceReset: true
+        )
         XCTAssertNoThrow(try AISummaryService.consumeAttemptBudget(target: .popup, mode: .shared))
 
-        AISummaryService.initBudget(target: .dashboard, mode: .shared, baseline: 5, cap: 10)
+        AISummaryService.initBudget(
+            target: .dashboard,
+            mode: .shared,
+            policy: AIQuotaPolicy(mode: .count, countCap: 10)
+        )
 
         XCTAssertEqual(AISummaryService.readGenerationAttempts(target: .popup, mode: .shared), 1)
         XCTAssertNoThrow(try AISummaryService.consumeAttemptBudget(target: .dashboard, mode: .shared))
     }
 
     func testSharedMode_concurrentTargetsCannotExceedCap() async {
-        AISummaryService.initBudget(target: .popup, mode: .shared, baseline: 0, cap: 4)
+        store.resetToday()
+        AISummaryService.initBudget(
+            target: .popup,
+            mode: .shared,
+            policy: AIQuotaPolicy(mode: .count, countCap: 4),
+            forceReset: true
+        )
 
         let successes = await withTaskGroup(of: Bool.self, returning: Int.self) { group in
             for index in 0..<8 {
@@ -1316,10 +1421,32 @@ final class FormatRetryBudgetTests: XCTestCase {
 
     private let retryTarget: SummaryTarget = .popup
     private let retryMode: AISummaryBudgetMode = .independent
+    private var directory: URL!
+    private var store: AIQuotaStore!
 
-    override func setUp() {
-        super.setUp()
-        AISummaryService.initBudget(target: retryTarget, mode: retryMode, baseline: 0, cap: 50)
+    override func setUpWithError() throws {
+        try super.setUpWithError()
+        directory = try researchTestDirectory()
+        store = AIQuotaStore(fileURL: directory.appendingPathComponent("quota.json"))
+        AISummaryService.useQuotaStore(store)
+        useCap(50)
+    }
+
+    override func tearDown() {
+        AISummaryService.useQuotaStore(.shared)
+        if let directory {
+            try? FileManager.default.removeItem(at: directory)
+        }
+        super.tearDown()
+    }
+
+    private func useCap(_ cap: Int) {
+        AISummaryService.initBudget(
+            target: retryTarget,
+            mode: retryMode,
+            policy: AIQuotaPolicy(mode: .count, countCap: cap),
+            forceReset: true
+        )
     }
 
     // MARK: - One extra attempt is permitted within the existing cap
@@ -1348,7 +1475,7 @@ final class FormatRetryBudgetTests: XCTestCase {
     // MARK: - The extra attempt does not exceed the cap at the boundary
 
     func testConsumeAttemptBudget_formatRetryAtBoundarySucceeds() {
-        AISummaryService.initBudget(target: retryTarget, mode: retryMode, baseline: 0, cap: 2)
+        useCap(2)
         XCTAssertNoThrow(
             try AISummaryService.consumeAttemptBudget(target: retryTarget, mode: retryMode),
             "Initial attempt at cap=2 must succeed"
@@ -1366,7 +1493,7 @@ final class FormatRetryBudgetTests: XCTestCase {
     // MARK: - A second extra attempt (beyond the one retry) is denied
 
     func testConsumeAttemptBudget_secondExtraAttemptDeniedAtBoundary() {
-        AISummaryService.initBudget(target: retryTarget, mode: retryMode, baseline: 0, cap: 2)
+        useCap(2)
         XCTAssertNoThrow(try AISummaryService.consumeAttemptBudget(target: retryTarget, mode: retryMode))
         XCTAssertNoThrow(try AISummaryService.consumeAttemptBudget(target: retryTarget, mode: retryMode))
         XCTAssertThrowsError(
@@ -1389,7 +1516,7 @@ final class FormatRetryBudgetTests: XCTestCase {
     // MARK: - No HTTP call is made by the budget primitive itself
 
     func testConsumeAttemptBudget_doesNotPerformNetworkCall() {
-        AISummaryService.initBudget(target: retryTarget, mode: retryMode, baseline: 0, cap: 50)
+        useCap(50)
         let before = AISummaryService.readGenerationAttempts(target: retryTarget, mode: retryMode)
         XCTAssertEqual(before, 0)
         XCTAssertNoThrow(try AISummaryService.consumeAttemptBudget(target: retryTarget, mode: retryMode))

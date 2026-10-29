@@ -156,7 +156,10 @@ struct RecommendationExplanationTrace: Equatable, Sendable {
     let baselineScore: Double
     let confidence: Double
     let readPenalty: Double
-    let feedbackPenalty: Double
+    let negativePenalty: Double
+    let negativeContentPenalty: Double
+    let negativeTopicPenalty: Double
+    let negativeSourcePenalty: Double
     let rawScore: Double
     let selectionScore: Double
     let sourcePenalty: Double
@@ -172,9 +175,9 @@ struct RecommendationExplanationTrace: Equatable, Sendable {
 
     var contributionsTotal: Double { contributions.values.reduce(0, +) }
 
-    /// Sum of contributions minus read/feedback penalties should equal rawScore.
+    /// Sum of contributions minus read/negative penalties should equal rawScore.
     var contributionMismatch: Double {
-        abs(contributionsTotal - readPenalty - feedbackPenalty - rawScore)
+        abs(contributionsTotal - readPenalty - negativePenalty - rawScore)
     }
 
     /// `selectionScore` is the decision key for additive slots only. Source
@@ -211,7 +214,10 @@ struct RecommendationExplanationTrace: Equatable, Sendable {
             value: "\(Int((confidence * 100).rounded()))%"
         ))
         row("readPenalty", english ? "Read penalty" : "已读惩罚", readPenalty)
-        row("feedbackPenalty", english ? "Feedback penalty" : "反馈惩罚", feedbackPenalty)
+        row("negativePenalty", english ? "Soft negative total" : "软降权合计", negativePenalty, emphasis: true)
+        row("negativeContent", english ? "Less like this event" : "少推荐这条", negativeContentPenalty)
+        row("negativeTopic", english ? "Less like this topic" : "少推荐这个主题", negativeTopicPenalty)
+        row("negativeSource", english ? "Less like this source" : "少推荐这个来源", negativeSourcePenalty)
         row("rawScore", english ? "Raw score" : "原始分", rawScore, emphasis: true)
         rows.append(RecommendationExplanationTraceRow(
             id: "selectionScore",

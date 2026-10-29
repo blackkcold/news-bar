@@ -122,6 +122,15 @@ final class NewsOrchestrator {
     /// Persisted start of the most recent feed-triggered run. The automatic
     /// budget is global: burst and keyword share this one timestamp.
     private var lastAutomaticStartedAt: Date?
+    /// Last selector check that spent the hourly paid-triage window, or started
+    /// a run. Cheap skips use `lastCheapCheckAt` instead.
+    private var lastAutomaticCheckAt: Date?
+    /// In-memory throttle for cheap selector passes. It only prevents repeated
+    /// ranking after an empty pool or a keyword pass; it is intentionally not
+    /// persisted so a relaunch can re-check immediately.
+    private var lastCheapCheckAt: Date?
+    private var lastAutomaticDecision: ResearchAutomaticDecision?
+    private var triageCache: [String: ResearchTriageRecord] = [:]
     private var latestTrendSummary = TrendChangeSummary.none
     /// The shared result uses the detailed Dashboard prompt. Popup limits rows at render time.
     static let sharedSummaryTarget: SummaryTarget = .dashboard
@@ -531,8 +540,8 @@ final class NewsOrchestrator {
             trendSummary: trendSummary
         )
 
-        let burstScheduled = await handleBurstTopics(settings: settings)
-        if !burstScheduled {
+        let automaticScheduled = await handleAutomaticResearch(settings: settings)
+        if !automaticScheduled {
             await handleKeywordTopics(settings: settings)
         }
 
@@ -757,11 +766,14 @@ final class NewsOrchestrator {
         return translated
     }
 
-    // MARK: - Burst (爆) topic push
+    // MARK: - Automatic research
 
-    /// Detects new Weibo "爆" topics and pushes a single notification each with
-    /// AI research pre-generated. De-duplicates by title and respects a cooldown.
-    private func handleBurstTopics(settings: AppSettings) async -> Bool {
+    /// Picks at most one automatic research topic per hour from bursts, the
+    /// local interest profile and the public chart. The AI triage call is the
+    /// only paid step and runs at most once per hour, before any record exists.
+    /// When nothing is worth researching the hour is skipped instead of
+    /// spending a run on a weak topic.
+    private func handleAutomaticResearch(settings: AppSettings) async -> Bool {
         // `researchAutoEnabled` is the single master switch. `burstPushEnabled`
         // only decides whether the finished report also raises a notification.
         guard settings.researchAutoEnabled,
@@ -769,60 +781,311 @@ final class NewsOrchestrator {
               !isResearchClearBlocked else { return false }
         let now = Date()
         let epoch = InterestController.shared.state.consentEpoch
+        guard automaticCheckAllows(now: now) else { return false }
 
-        let candidates = weiboDetectionItems.filter { $0.hotLabel == "爆" }
-        guard !candidates.isEmpty else { return false }
+        let state = InterestController.shared.state
+        let personalizationEnabled = settings.researchUsePersonalization && state.learningEnabled
+        let index = await researchStore.index()
+        let recentRecords = index.sorted { $0.lastSeenAt > $1.lastSeenAt }
+        let knownKeys = Set(index.filter {
+            now.timeIntervalSince($0.lastSeenAt) <= 7 * 86_400
+        }.map(\.topicKey))
+        let keywordMatch: (NewsItem) -> Bool = { item in
+            settings.keywordTrackingEnabled && settings.keywordMatches(item.title)
+        }
 
-        let selected = ResearchSelectionPolicy.select(
-            items: candidates,
-            state: InterestController.shared.state,
-            limit: settings.researchDetectionLimit
-        ).map(\.item)
+        var pool = weiboDetectionItems
+        pool.append(contentsOf: bilibiliItems)
+        for source in settings.activeSources where !source.isBuiltIn {
+            if let items = rssItemsMap[source.id] { pool.append(contentsOf: items) }
+        }
 
-        // The hourly budget is checked before any record is created: a blocked
-        // candidate must not leave a queued ghost in the research center.
-        guard automaticBudgetAllows(now: now) else { return false }
+        let candidates = ResearchCandidateBuilder.build(
+            items: pool,
+            state: state,
+            now: now,
+            limit: settings.researchDetectionLimit,
+            excludingTopicKeys: knownKeys,
+            includePersonal: personalizationEnabled,
+            isKeywordMatch: keywordMatch
+        )
 
-        var notifiedChanged = false
-        var scheduled = false
-        for burst in selected {
-            guard epoch == InterestController.shared.state.consentEpoch else { return scheduled }
-            guard automaticBudgetAllows(now: now) else { break }
-            guard let record = await ResearchRecordProvisioner.ensureRecord(
-                for: burst,
-                origin: .burst,
-                store: researchStore,
-                now: now
-            ) else { continue }
+        guard !candidates.isEmpty else {
+            await recordAutomaticSkip(.skippedNoCandidates, candidateCount: 0,
+                                      reasonKey: "research.auto.skip.noCandidates",
+                                      settings: settings, epoch: epoch, now: now)
+            return false
+        }
+        guard ResearchCandidateBuilder.hasPlausibleCandidate(
+            candidates,
+            personalizationEnabled: personalizationEnabled
+        ) else {
+            await recordAutomaticSkip(.skippedNoWorthy, candidateCount: candidates.count,
+                                      reasonKey: "research.auto.skip.noWorthy",
+                                      settings: settings, epoch: epoch, now: now)
+            return false
+        }
+        guard automaticBudgetAllows(now: now) else {
+            await recordAutomaticSkip(.skippedBudget, candidateCount: candidates.count,
+                                      reasonKey: "research.auto.skip.budget",
+                                      settings: settings, epoch: epoch, now: now)
+            return false
+        }
 
-            // A finished burst topic is researched once per exact title. Failed
-            // records still go through the admission retry policy below; ready
-            // or partial records do not silently run again every six hours.
-            if (record.status == .ready || record.status == .partial),
-               notifiedBurstTopics.contains(burst.title) {
-                continue
-            }
-
-            guard ResearchAutoAdmission.allows(record, now: now) else { continue }
-            scheduled = await scheduleResearch(
-                recordID: record.id,
-                settings: settings,
-                forceSearch: false,
-                notify: settings.burstPushEnabled,
-                trigger: .burst
+        // Decide the keyword priority before paying for triage. A burst still
+        // wins, but anything else must yield to an actionable keyword match.
+        let keywordPriority = hasExplicitKeywordCandidate(settings: settings)
+        if keywordPriority, !candidates.contains(where: { $0.kind == .burst }) {
+            await recordAutomaticSkip(
+                .skippedKeywordPriority,
+                candidateCount: candidates.count,
+                reasonKey: "research.auto.skip.keywordPriority",
+                settings: settings, epoch: epoch, now: now
             )
-            if scheduled {
-                lastAutomaticStartedAt = now
-                if notifiedBurstTopics.insert(burst.title).inserted { notifiedChanged = true }
-                break
+            return false
+        }
+
+        var cache = (state.research.triage ?? [:]).filter {
+            now.timeIntervalSince($0.value.evaluatedAt) <= 7 * 86_400
+        }
+        var decisions: [ResearchTriageDecision] = []
+        var uncached: [ResearchCandidateItem] = []
+        for candidate in candidates {
+            if let cached = cache[candidate.topicKey] {
+                decisions.append(ResearchTriageDecision(
+                    id: candidate.item.id,
+                    sameEventAs: cached.sameEventAs,
+                    sameAngleAs: cached.sameAngleAs,
+                    worth: cached.worth,
+                    confidence: cached.confidence,
+                    reason: cached.reason
+                ))
+            } else {
+                uncached.append(candidate)
             }
         }
 
-        if notifiedChanged || scheduled {
-            await persistResearchState(epoch: epoch)
+        if !uncached.isEmpty {
+            if let client = await makeTriageClient(settings: settings) {
+                guard AIQuotaStore.shared.reserve(.triage, policy: settings.aiQuotaPolicy) else {
+                    triageCache = cache
+                    await recordAutomaticSkip(.skippedBudget, candidateCount: candidates.count,
+                                              reasonKey: "research.auto.skip.budget",
+                                              settings: settings, epoch: epoch, now: now)
+                    return false
+                }
+                _ = researchLedger.recordAICalls(1, origin: .burst)
+                do {
+                    let response = try await client.complete(
+                        ResearchTriage.request(
+                            candidates: uncached,
+                            recent: recentRecords,
+                            language: settings.appLanguage,
+                            now: now
+                        )
+                    )
+                    AIQuotaStore.shared.settle(
+                        reservedCostMicros: 0,
+                        usage: response.usage,
+                        price: client.price
+                    )
+                    let parsed = ResearchTriage.parse(response.text)
+                    decisions.append(contentsOf: parsed)
+                    for decision in parsed {
+                        guard let candidate = uncached.first(where: { $0.item.id == decision.id }) else { continue }
+                        cache[candidate.topicKey] = ResearchTriageRecord(
+                            topicKey: candidate.topicKey,
+                            sameEventAs: decision.sameEventAs,
+                            sameAngleAs: decision.sameAngleAs,
+                            worth: decision.worth,
+                            confidence: decision.confidence,
+                            reason: decision.reason,
+                            evaluatedAt: now
+                        )
+                    }
+                } catch {
+                    NSLog("[Research] triage failed: %@", String(describing: error))
+                }
+            }
         }
+
+        triageCache = cache
+        let knownIDs = Set(recentRecords.map(\.id))
+        if let chosen = ResearchTriage.choose(
+            candidates: candidates,
+            decisions: decisions,
+            knownRecordIDs: knownIDs
+        ) {
+            // Explicit keywords outrank inferred interest. A burst still wins;
+            // anything else yields so the keyword pass can run this round.
+            if chosen.kind != .burst, keywordPriority {
+                await recordAutomaticSkip(
+                    .skippedKeywordPriority,
+                    candidateCount: candidates.count,
+                    reasonKey: "research.auto.skip.keywordPriority",
+                    settings: settings, epoch: epoch, now: now
+                )
+                return false
+            }
+            return await startOrRecordFailure(chosen, settings: settings, epoch: epoch, now: now)
+        }
+
+        // No usable verdict: keep only a very hot burst that has not already
+        // been judged. A cached "not worth it" is a verdict and must not be
+        // overridden by this fallback.
+        if let fallback = ResearchTriage.fallbackBurst(candidates: candidates, decisions: decisions) {
+            return await startOrRecordFailure(fallback, settings: settings, epoch: epoch, now: now)
+        }
+
+        // A cached batch that produced decisions is a real "not worth it"
+        // result; an empty batch means the AI never answered.
+        let evaluated = !decisions.isEmpty
+        await recordAutomaticSkip(
+            evaluated ? .skippedNoWorthy : .triageFailed,
+            candidateCount: candidates.count,
+            reasonKey: evaluated ? "research.auto.skip.noWorthy" : "research.auto.skip.triageFailed",
+            settings: settings, epoch: epoch, now: now
+        )
+        return false
+    }
+
+    private func automaticCheckAllows(now: Date) -> Bool {
+        guard ResearchAutomationPolicy.cheapCheckAllows(now: now, lastCheapCheckAt: lastCheapCheckAt) else {
+            return false
+        }
+        guard let lastAutomaticCheckAt else { return true }
+        return now.timeIntervalSince(lastAutomaticCheckAt) >= ResearchAutomationPolicy.minimumInterval
+    }
+
+    /// True when the user has typed a keyword that matches a currently loaded
+    /// item. The explicit keyword path must get its turn before inferred
+    /// interest, matching the documented priority order.
+    private func hasExplicitKeywordCandidate(settings: AppSettings) -> Bool {
+        guard settings.keywordTrackingEnabled, !settings.keywordList.isEmpty else { return false }
+        let state = InterestController.shared.state
+        return ResearchKeywordPriority.hasUnprocessedMatch(
+            items: allActiveItems(settings: settings),
+            keywords: settings.activeKeywords,
+            handledPairs: notifiedKeywordPairs,
+            handledTitles: notifiedBurstTopics,
+            isBlocked: { state.isBlocked($0) }
+        )
+    }
+
+    private func makeTriageClient(settings: AppSettings) async -> HTTPAIChatClient? {
+        let apiKey = await resolveAPIKey(settings: settings)
+        guard !apiKey.isEmpty else { return nil }
+        // Use the settings-level validator directly: the summary-facing helper
+        // also mutates `aiSummaryState`, which a background check must not do.
+        guard let configuration = await settings.validatedAIConfiguration(apiKey: apiKey) else {
+            return nil
+        }
+        return HTTPAIChatClient(
+            connection: configuration.connection,
+            apiKey: configuration.apiKey,
+            model: configuration.model,
+            disableDeepSeekThinking: settings.aiDisableDeepSeekThinking,
+            timeout: 12
+        )
+    }
+
+    private func recordAutomaticSkip(
+        _ kind: ResearchAutomaticDecision.Kind,
+        candidateCount: Int,
+        reasonKey: String,
+        settings: AppSettings,
+        epoch: UUID,
+        now: Date
+    ) async {
+        if ResearchAutomationPolicy.skipConsumesCheckWindow(kind) {
+            lastAutomaticCheckAt = now
+        } else {
+            lastCheapCheckAt = now
+        }
+        let reason = L10n.string(reasonKey, language: settings.appLanguage)
+        lastAutomaticDecision = ResearchAutomaticDecision(
+            at: now,
+            kind: kind,
+            candidateCount: candidateCount,
+            reason: reason
+        )
+        settings.updateResearchLastAutomaticDecision(Self.automaticDecisionText(now: now, reason: reason))
+        await persistResearchState(epoch: epoch)
+    }
+
+    private static let automaticDecisionTimeFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "HH:mm"
+        return formatter
+    }()
+
+    private static func automaticDecisionText(now: Date, reason: String) -> String {
+        "\(automaticDecisionTimeFormatter.string(from: now)) · \(reason)"
+    }
+
+    /// A paid triage verdict must always consume this hour's check, even when
+    /// record creation or admission then refuses to start. Otherwise the next
+    /// refresh would pay for the same judgement again five minutes later.
+    private func startOrRecordFailure(
+        _ candidate: ResearchCandidateItem,
+        settings: AppSettings,
+        epoch: UUID,
+        now: Date
+    ) async -> Bool {
+        if await startAutomaticResearch(candidate, settings: settings, epoch: epoch, now: now) {
+            return true
+        }
+        await recordAutomaticSkip(
+            .skippedNotStarted,
+            candidateCount: 1,
+            reasonKey: "research.auto.skip.notStarted",
+            settings: settings, epoch: epoch, now: now
+        )
+        return false
+    }
+
+    private func startAutomaticResearch(
+        _ candidate: ResearchCandidateItem,
+        settings: AppSettings,
+        epoch: UUID,
+        now: Date
+    ) async -> Bool {
+        guard epoch == InterestController.shared.state.consentEpoch,
+              automaticBudgetAllows(now: now) else { return false }
+        let origin: ResearchOrigin = candidate.kind == .burst ? .burst : .interest
+        guard let record = await ResearchRecordProvisioner.ensureRecord(
+            for: candidate.item,
+            origin: origin,
+            store: researchStore,
+            now: now
+        ) else { return false }
+        guard ResearchAutoAdmission.allows(record, now: now) else { return false }
+        let scheduled = await scheduleResearch(
+            recordID: record.id,
+            settings: settings,
+            forceSearch: false,
+            notify: settings.burstPushEnabled,
+            trigger: origin
+        )
+        guard scheduled else { return false }
+        lastAutomaticStartedAt = now
+        lastAutomaticCheckAt = now
+        lastCheapCheckAt = now
+        lastAutomaticDecision = ResearchAutomaticDecision(
+            at: now,
+            kind: .started,
+            candidateCount: 1,
+            reason: nil
+        )
+        settings.updateResearchLastAutomaticDecision(Self.automaticDecisionText(
+            now: now,
+            reason: L10n.string("research.auto.started", language: settings.appLanguage, candidate.item.title)
+        ))
+        notifiedBurstTopics.insert(candidate.item.title)
+        await persistResearchState(epoch: epoch)
         await refreshResearchSummary()
-        return scheduled
+        return true
     }
 
     func refreshResearchSummary() async {
@@ -889,7 +1152,7 @@ final class NewsOrchestrator {
         trigger: ResearchOrigin = .manual
     ) async -> Bool {
         ResearchCoordinator.shared.setMaxConcurrent(settings.researchMaxConcurrent)
-        return await ResearchCoordinator.shared.schedule(recordID: recordID, notify: notify, trigger: trigger) { [weak self] record, progress in
+        let outcome = await ResearchCoordinator.shared.schedule(recordID: recordID, notify: notify, trigger: trigger) { [weak self] record, progress in
             guard let self else {
                 return .failure(L10n.string("research.error.unavailable", language: settings.appLanguage))
             }
@@ -900,6 +1163,7 @@ final class NewsOrchestrator {
                 progress: progress
             )
         }
+        return outcome == .accepted
     }
 
     /// Runs the evidence-backed pipeline for one record. The coordinator owns
@@ -954,7 +1218,7 @@ final class NewsOrchestrator {
             defaultRecency: settings.researchDefaultRecency,
             searchConfiguration: searchConfiguration,
             firecrawlAPIKey: keys[.firecrawl] ?? "",
-            aiDailyCap: settings.researchDailyAICap,
+            quotaPolicy: settings.aiQuotaPolicy,
             taskDailyCap: settings.researchDailyTaskCap,
             seedSourceName: item.source.displayName,
             isAllowed: {
@@ -1184,10 +1448,9 @@ final class NewsOrchestrator {
             AISummaryService.initBudget(
                 target: Self.sharedSummaryTarget,
                 mode: .shared,
-                baseline: settings.todayAIRequestCount,
-                cap: settings.aiDailyCap
+                policy: settings.aiQuotaPolicy
             )
-            let requestCount = await generateSummary(
+            _ = await generateSummary(
                 items: allItems,
                 contentHash: newHash,
                 maxWords: settings.aiDashboardMaxWords,
@@ -1198,7 +1461,7 @@ final class NewsOrchestrator {
                 burstTriggered: hasBurstWeibo,
                 summaryLanguage: settings.appLanguage
             )
-            settings.recordAIRequests(requestCount)
+            settings.refreshAIUsageMirror()
         } else {
             aiSummaryState = previousState
         }
@@ -1233,10 +1496,9 @@ final class NewsOrchestrator {
         AISummaryService.initBudget(
             target: Self.sharedSummaryTarget,
             mode: .shared,
-            baseline: settings.todayAIRequestCount,
-            cap: settings.aiDailyCap
+            policy: settings.aiQuotaPolicy
         )
-        let requestCount = await generateSummary(
+        _ = await generateSummary(
             items: allItems,
             contentHash: newHash,
             maxWords: settings.aiDashboardMaxWords,
@@ -1246,7 +1508,7 @@ final class NewsOrchestrator {
             trendHistoryHash: latestTrendSummary.historyHash,
             summaryLanguage: settings.appLanguage
         )
-        settings.recordAIRequests(requestCount)
+        settings.refreshAIUsageMirror()
     }
 
     // MARK: - Manual Regeneration (Popup context)
@@ -1273,11 +1535,10 @@ final class NewsOrchestrator {
         AISummaryService.initBudget(
             target: Self.sharedSummaryTarget,
             mode: .shared,
-            baseline: settings.todayAIRequestCount,
-            cap: settings.aiDailyCap
+            policy: settings.aiQuotaPolicy
         )
         let newHash = summaryGenerationHash(items: allItems, settings: settings)
-        let requestCount = await generateSummary(
+        _ = await generateSummary(
             items: allItems,
             contentHash: newHash,
             maxWords: settings.aiDashboardMaxWords,
@@ -1287,7 +1548,7 @@ final class NewsOrchestrator {
             trendHistoryHash: latestTrendSummary.historyHash,
             summaryLanguage: settings.appLanguage
         )
-        settings.recordAIRequests(requestCount)
+        settings.refreshAIUsageMirror()
     }
 
     // MARK: - Shared Helpers
@@ -1639,9 +1900,24 @@ final class NewsOrchestrator {
         } catch NewsBarError.apiKeyInvalid {
             aiSummaryState = .error("error.aiKeyInvalid".localized)
         } catch NewsBarError.rateLimited {
-            let count = AISummaryService.readGenerationAttempts(target: Self.sharedSummaryTarget, mode: budgetMode)
-            let cap = AISummaryService.readGenerationCap(target: Self.sharedSummaryTarget, mode: budgetMode)
-            aiSummaryState = .error(L10n.string("error.aiCapReached", count, cap))
+            let snapshot = AIQuotaStore.shared.snapshot()
+            let mode = AISummaryService.readGenerationLimitMode(
+                target: Self.sharedSummaryTarget,
+                mode: budgetMode
+            )
+            if mode == .cost {
+                aiSummaryState = .error(L10n.string(
+                    "error.aiCostCapReached",
+                    AICostFormat.yuan(snapshot.costMicros),
+                    AICostFormat.yuan(settings.aiCostCapMicros)
+                ))
+            } else {
+                let cap = AISummaryService.readGenerationCap(
+                    target: Self.sharedSummaryTarget,
+                    mode: budgetMode
+                ) ?? 0
+                aiSummaryState = .error(L10n.string("error.aiCapReached", snapshot.count, cap))
+            }
         } catch let error as NewsBarError {
             switch error {
             case .parseFailedWithDetail(let detail):
@@ -1732,6 +2008,9 @@ final class NewsOrchestrator {
             notifiedKeywordPairs = saved.notifiedKeywords
             lastResearchAt = saved.lastResearchAt
             lastAutomaticStartedAt = saved.lastAutomaticStartedAt
+            lastAutomaticCheckAt = saved.lastAutomaticCheckAt
+            lastAutomaticDecision = saved.lastAutomaticDecision
+            triageCache = saved.triage ?? [:]
             researchStateLoaded = true
             await importLegacyResearchIfNeeded(saved)
             await refreshResearchSummary()
@@ -1778,6 +2057,9 @@ final class NewsOrchestrator {
         persisted.notifiedKeywords = Set(notifiedKeywordPairs.sorted().prefix(2000))
         persisted.lastResearchAt = lastResearchAt
         persisted.lastAutomaticStartedAt = lastAutomaticStartedAt
+        persisted.lastAutomaticCheckAt = lastAutomaticCheckAt
+        persisted.lastAutomaticDecision = lastAutomaticDecision
+        persisted.triage = triageCache.isEmpty ? nil : triageCache
         InterestController.shared.updateResearch(persisted, epoch: epoch)
         await InterestController.shared.flush()
     }
@@ -1873,6 +2155,9 @@ final class NewsOrchestrator {
         researchStateLoaded = false
         lastResearchAt = nil
         lastAutomaticStartedAt = nil
+        lastAutomaticCheckAt = nil
+        lastAutomaticDecision = nil
+        triageCache = [:]
         weiboDetectionItems = []
         researchSummary = .zero
         researchHighlights = []
@@ -1909,6 +2194,10 @@ final class NewsOrchestrator {
         legacyBurstArtifacts = [:]
         researchStateLoaded = false
         lastAutomaticStartedAt = nil
+        lastAutomaticCheckAt = nil
+        lastCheapCheckAt = nil
+        lastAutomaticDecision = nil
+        triageCache = [:]
         aiSummaryManifest = nil
     }
 

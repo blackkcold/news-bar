@@ -82,6 +82,28 @@ final class ResearchLedgerTests: XCTestCase {
         XCTAssertTrue(ledger.reserve(.ai, origin: .manual, cap: 1, at: now))
     }
 
+    func testNegativeInterestCountsFailClosed() throws {
+        for category in ["ai", "search", "tasks"] {
+            let directory = try researchTestDirectory()
+            let url = directory.appendingPathComponent("ledger.json")
+            var counts: [String: [String: Int]] = [
+                "ai": ["burst": 0, "keyword": 0, "interest": 0, "manual": 0],
+                "search": ["burst": 0, "keyword": 0, "interest": 0, "manual": 0],
+                "tasks": ["burst": 0, "keyword": 0, "interest": 0, "manual": 0],
+            ]
+            counts[category]?["interest"] = -1
+            let json: [String: Any] = ["version": 2, "day": 20000101,
+                                       "ai": counts["ai"]!, "search": counts["search"]!,
+                                       "tasks": counts["tasks"]!]
+            try JSONSerialization.data(withJSONObject: json).write(to: url)
+
+            let ledger = ResearchLedger(fileURL: url)
+            let date = Date(timeIntervalSince1970: 946_684_800)
+            XCTAssertEqual(ledger.snapshot(at: date).availability, .corrupt, category)
+            XCTAssertFalse(ledger.reserve(.ai, origin: .manual, cap: 10, at: date), category)
+        }
+    }
+
     func testCountsPersistAcrossInstances() throws {
         let (ledger, url) = try makeLedger()
         XCTAssertTrue(ledger.reserve(.ai, origin: .keyword, cap: 10, at: now))

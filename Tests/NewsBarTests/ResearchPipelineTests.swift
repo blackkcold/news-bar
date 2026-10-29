@@ -137,7 +137,7 @@ final class ResearchPipelineTests: XCTestCase {
                 keys: [.tavily: "tavily-key"]
             ),
             firecrawlAPIKey: "",
-            aiDailyCap: aiCap,
+            quotaPolicy: AIQuotaPolicy(mode: .count, countCap: aiCap),
             taskDailyCap: taskCap
         )
     }
@@ -169,6 +169,7 @@ final class ResearchPipelineTests: XCTestCase {
             searchRouter: router,
             pageReader: reader,
             ledger: ledger,
+            quota: AIQuotaStore(fileURL: directory.appendingPathComponent("quota.json")),
             now: { clock.now }
         )
         return (pipeline, provider)

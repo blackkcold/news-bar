@@ -172,6 +172,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         Task { @MainActor [weak self] in
             guard let self else { return }
             await ResearchMaintenance.shared.migrateLedgerIfNeeded(settings: self.settings)
+            _ = ResearchMaintenance.shared.migrateAIQuotaIfNeeded(settings: self.settings)
             _ = await SearchKeyStore.migrateLegacyFirecrawlKey(settings: self.settings)
         }
 

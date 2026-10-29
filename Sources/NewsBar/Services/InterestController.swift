@@ -71,6 +71,8 @@ final class InterestController {
     private(set) var feedSessionID = UUID()
     private var candidates: [NewsItem] = []
     private var rankingGeneration = UUID()
+    /// Only live replacement actions need a one-step undo snapshot.
+    @ObservationIgnored private var replacedFeedback: [UUID: InterestFeedback] = [:]
     private let store: LocalInterestStore
     @ObservationIgnored private var pendingEvents: [PendingInterestEvent] = []
     @ObservationIgnored private var pendingFlush: Task<Void, Never>?
@@ -224,8 +226,10 @@ final class InterestController {
     func feedback(_ item: NewsItem, kind: InterestFeedbackKind, topic: String? = nil) -> UUID? {
         guard canManagePreferences else { return nil }
         switch kind {
-        case .reduceTopic, .moreLikeThis, .followTopic:
+        case .reduceTopic, .moreLikeThis, .followTopic, .lessLikeContent, .lessLikeSource:
             guard canLearn else { return nil }
+        case .unknown:
+            return nil
         case .bookmark, .notInterested, .muteSource, .hideEvent:
             break
         }
@@ -240,22 +244,39 @@ final class InterestController {
             rebuild()
             return feedback.id
         }
+        let previousFeedbacks = state.feedbacks
         let id = state.feedback(
             item: item,
             kind: kind,
             topic: topic,
             participatesInProfile: canLearn
         )
+        if let current = state.feedbacks.first(where: { $0.id == id }) {
+            let previous = previousFeedbacks.first { $0.kind == current.kind && $0.scopeKey == current.scopeKey }
+            rememberReplacement(previous, for: id)
+        }
         persist()
         rebuild()
         return id
     }
 
-    func undo(_ id: UUID) {
+    private func rememberReplacement(_ previous: InterestFeedback?, for id: UUID) {
+        let liveIDs = Set(state.feedbacks.map(\.id) + sessionFeedback.map(\.id))
+        replacedFeedback = replacedFeedback.filter { liveIDs.contains($0.key) }
+        if let previous { replacedFeedback[id] = previous }
+    }
+
+    func undo(_ id: UUID, restorePrevious: Bool = true) {
         guard canManagePreferences else { return }
+        let exists = state.feedbacks.contains { $0.id == id } || sessionFeedback.contains { $0.id == id }
+        let previous = replacedFeedback.removeValue(forKey: id)
+        guard exists else { return }
         flushPendingEvents()
         state.undoFeedback(id)
         sessionFeedback.removeAll { $0.id == id }
+        if restorePrevious, let previous {
+            state.feedbacks.append(previous)
+        }
         persist()
         rebuild()
     }
@@ -263,7 +284,7 @@ final class InterestController {
     func toggleBookmark(_ item: NewsItem) -> UUID? {
         guard canManagePreferences else { return nil }
         if let existing = state.feedbacks.first(where: { $0.kind == .bookmark && ContentIdentity.id(for: $0.item.url) == ContentIdentity.id(for: item.url) }) {
-            undo(existing.id)
+            undo(existing.id, restorePrevious: false)
             return nil
         }
         return feedback(item, kind: .bookmark)
@@ -337,6 +358,7 @@ final class InterestController {
         rankingGeneration = UUID()
         recommendations = nil
         sessionFeedback = []
+        replacedFeedback = [:]
         pendingFlush?.cancel()
         pendingFlush = nil
         pendingEvents.removeAll(keepingCapacity: true)

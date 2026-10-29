@@ -224,7 +224,8 @@ private struct ResearchListPane: View {
                         } label: {
                             ResearchListRow(
                                 entry: entry,
-                                isSelected: entry.id == model.selectedID
+                                isSelected: entry.id == model.selectedID,
+                                statusOverride: model.presentedStatus(for: entry.id)
                             )
                         }
                         .buttonStyle(.plain)
@@ -261,7 +262,7 @@ private struct ResearchDetailPane: View {
 
     var body: some View {
         if let record = model.selectedRecord {
-            ResearchDetailView(model: model, record: record)
+            ResearchDetailView(model: model, record: model.presentedRecord(record))
         } else {
             VStack(spacing: 10) {
                 Image(systemName: "doc.text.magnifyingglass")

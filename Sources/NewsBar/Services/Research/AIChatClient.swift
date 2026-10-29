@@ -23,6 +23,9 @@ struct AIChatResponse: Sendable, Equatable {
     /// pipeline retries once with a larger budget instead of persisting a
     /// half-written JSON document as if it were complete.
     let truncated: Bool
+    /// Measured token usage, when the provider reported it. `nil` means the
+    /// call is real but cannot be priced.
+    var usage: AIUsage? = nil
 }
 
 enum AIChatError: Error, Equatable, LocalizedError {
@@ -51,6 +54,13 @@ enum AIChatError: Error, Equatable, LocalizedError {
 
 protocol AIChatClienting: Sendable {
     func complete(_ request: AIChatRequest) async throws -> AIChatResponse
+    /// Unit price used to reserve and settle the call. Test doubles and
+    /// providers without a published price return nil.
+    var price: ModelPrice? { get }
+}
+
+extension AIChatClienting {
+    var price: ModelPrice? { nil }
 }
 
 /// Minimal chat-completions client that speaks both OpenAI-compatible and
@@ -136,6 +146,7 @@ struct HTTPAIChatClient: AIChatClienting {
                 }
             }
             let choices: [Choice]
+            let usage: OpenAIUsagePayload?
         }
 
         guard let decoded = try? JSONDecoder().decode(OpenAIResponse.self, from: data),
@@ -145,7 +156,11 @@ struct HTTPAIChatClient: AIChatClienting {
         guard let text = choice.message.content, !text.isEmpty else {
             throw AIChatError.emptyResponse
         }
-        return AIChatResponse(text: text, truncated: choice.finishReason == "length")
+        return AIChatResponse(
+            text: text,
+            truncated: choice.finishReason == "length",
+            usage: AIUsage.from(openAI: decoded.usage)
+        )
     }
 
     // MARK: - Anthropic
@@ -191,10 +206,12 @@ struct HTTPAIChatClient: AIChatClienting {
             }
             let content: [Block]
             let stopReason: String?
+            let usage: AnthropicUsagePayload?
 
             enum CodingKeys: String, CodingKey {
                 case content
                 case stopReason = "stop_reason"
+                case usage
             }
         }
 
@@ -204,7 +221,11 @@ struct HTTPAIChatClient: AIChatClienting {
         guard let text = decoded.content.first(where: { $0.type == "text" })?.text, !text.isEmpty else {
             throw AIChatError.emptyResponse
         }
-        return AIChatResponse(text: text, truncated: decoded.stopReason == "max_tokens")
+        return AIChatResponse(
+            text: text,
+            truncated: decoded.stopReason == "max_tokens",
+            usage: AIUsage.from(anthropic: decoded.usage)
+        )
     }
 
     // MARK: - Shared

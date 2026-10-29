@@ -80,7 +80,10 @@ final class RecommendationExplanationTests: XCTestCase {
             baselineScore: 0.64,
             confidence: 0.5,
             readPenalty: 0.15,
-            feedbackPenalty: 0,
+            negativePenalty: 0,
+            negativeContentPenalty: 0,
+            negativeTopicPenalty: 0,
+            negativeSourcePenalty: 0,
             rawScore: rawScore,
             selectionScore: 0.5,
             sourcePenalty: 0.12,
@@ -106,7 +109,10 @@ final class RecommendationExplanationTests: XCTestCase {
             baselineScore: 0.6,
             confidence: 0.5,
             readPenalty: 0,
-            feedbackPenalty: 0,
+            negativePenalty: 0,
+            negativeContentPenalty: 0,
+            negativeTopicPenalty: 0,
+            negativeSourcePenalty: 0,
             rawScore: 0.65,
             selectionScore: 0.5,
             sourcePenalty: 0.1,
@@ -280,15 +286,16 @@ final class RecommendationExplanationTests: XCTestCase {
         XCTAssertEqual(apple.longTerm, 4, accuracy: 0.0001)
     }
 
-    func testReducedCanonicalFollowKeepsRealZeroNetRow() {
+    func testReducedCanonicalFollowKeepsRealProfileValueAndSignedTerm() {
         var state = activeState()
         _ = state.feedback(item: item("科技新闻", 60), kind: .reduceTopic, topic: "technology", now: now)
         let built = model(state: state)
         guard let tech = built.dimensions.first(where: { $0.key == "technology" }) else {
-            return XCTFail("a net-zero reduced topic must stay visible with its real value")
+            return XCTFail("a reduced topic must stay visible with its real value")
         }
         XCTAssertEqual(tech.longTerm, profile(state).topics["technology"] ?? -1, accuracy: 0.0001)
-        XCTAssertEqual(tech.longTerm, 0, accuracy: 0.0001)
+        XCTAssertEqual(tech.longTerm, 4, accuracy: 0.0001)
+        XCTAssertEqual(profile(state).negativeTopics["technology"] ?? 0, 0.8, accuracy: 0.0001)
         XCTAssertTrue(tech.isReduced)
         XCTAssertEqual(tech.manualFollowKeywords, ["Swift"])
     }
@@ -298,11 +305,12 @@ final class RecommendationExplanationTests: XCTestCase {
         _ = state.feedback(item: item("任意新闻", 70), kind: .reduceTopic, topic: "followed:SwiftUI", now: now)
         let built = model(state: state)
         guard let followed = built.dimensions.first(where: { $0.kind == .followed }) else {
-            return XCTFail("a literal follow must stay visible with its real net value")
+            return XCTFail("a literal follow must stay visible with its real value")
         }
         XCTAssertEqual(followed.key, "SwiftUI")
         XCTAssertEqual(followed.longTerm, profile(state).topics["followed:SwiftUI"] ?? -1, accuracy: 0.0001)
-        XCTAssertEqual(followed.longTerm, 0, accuracy: 0.0001)
+        XCTAssertEqual(followed.longTerm, 4, accuracy: 0.0001)
+        XCTAssertEqual(profile(state).negativeTopics["followed:SwiftUI"] ?? 0, 0.8, accuracy: 0.0001)
         XCTAssertTrue(followed.isReduced)
     }
 
@@ -985,7 +993,10 @@ final class RecommendationExplanationRenderingTests: XCTestCase {
             baselineScore: 0.8,
             confidence: 0.42,
             readPenalty: 0,
-            feedbackPenalty: 0,
+            negativePenalty: 0,
+            negativeContentPenalty: 0,
+            negativeTopicPenalty: 0,
+            negativeSourcePenalty: 0,
             rawScore: 0.674,
             selectionScore: 0.674,
             sourcePenalty: 0,

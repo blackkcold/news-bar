@@ -6,6 +6,8 @@ enum AISummaryService {
     struct SummaryResult {
         let summary: String
         let isTruncated: Bool
+        /// Measured usage, when the provider reported it.
+        var usage: AIUsage? = nil
     }
 
     /// Cooldown in seconds before manual regeneration is allowed again.
@@ -18,25 +20,25 @@ enum AISummaryService {
     /// Timestamp of the last manual regeneration.
     private static let _lastRegeneration = OSAllocatedUnfairLock<Date>(initialState: .distantPast)
 
-    /// Per-generation budget state: the daily baseline (todayAIRequestCount at generation entry),
-    /// the active cap from AppSettings, and the number of actual HTTP attempts dispatched so far.
+    /// Per-generation budget state: the immutable limit captured at generation
+    /// entry and the number of HTTP attempts dispatched so far. The persistent
+    /// quota lives in `AIQuotaStore`; nothing here is written to disk.
     private struct BudgetState {
-        var baseline: Int
-        var cap: Int
+        var policy: AIQuotaPolicy
         var attempts: Int
     }
 
     /// Independent-mode: per-target budget states.
     private static let _popupBudgetState = OSAllocatedUnfairLock<BudgetState>(
-        initialState: BudgetState(baseline: 0, cap: 50, attempts: 0)
+        initialState: BudgetState(policy: .unlimited, attempts: 0)
     )
     private static let _dashboardBudgetState = OSAllocatedUnfairLock<BudgetState>(
-        initialState: BudgetState(baseline: 0, cap: 50, attempts: 0)
+        initialState: BudgetState(policy: .unlimited, attempts: 0)
     )
 
     /// Shared-mode: single budget state enforcing the shared total cap atomically.
     private static let _sharedBudgetState = OSAllocatedUnfairLock<BudgetState>(
-        initialState: BudgetState(baseline: 0, cap: 50, attempts: 0)
+        initialState: BudgetState(policy: .unlimited, attempts: 0)
     )
 
     private static func budgetStateLock(for target: SummaryTarget, mode: AISummaryBudgetMode)
@@ -62,6 +64,22 @@ enum AISummaryService {
     }
 
     private static let timeout: TimeInterval = 60
+    /// The gate used by this service. Production uses the shared store; tests
+    /// swap in one backed by a temporary directory.
+    private static let _quotaStore = OSAllocatedUnfairLock<AIQuotaStore>(initialState: .shared)
+
+    static var quotaStore: AIQuotaStore { _quotaStore.withLock { $0 } }
+    static func useQuotaStore(_ store: AIQuotaStore) { _quotaStore.withLock { $0 = store } }
+
+    /// Today's summary attempts under the old two-book system. The UserDefaults
+    /// counter and the durable budget recorded the same attempts, so the larger
+    /// value wins. A corrupt budget file is ignored rather than seeding Int.max.
+    static func legacySummaryUsage(settings: AppSettings) -> Int {
+        let durable = durableSharedBudget.used()
+        let safeDurable = durable == Int.max ? 0 : durable
+        return max(0, max(settings.todayAIRequestCount, safeDurable))
+    }
+
     private static let durableSharedBudget = persistentBudget(named: "shared")
     private static let durablePopupBudget = persistentBudget(named: "popup")
     private static let durableDashboardBudget = persistentBudget(named: "dashboard")
@@ -82,29 +100,41 @@ enum AISummaryService {
         max(8192, maxWords * 16)
     }
 
-    /// Initialise the per-generation budget state with the persisted daily count and cap.
-    static func initBudget(target: SummaryTarget, mode: AISummaryBudgetMode, baseline: Int, cap: Int) {
+    /// Initialise the per-generation budget state with the active limit.
+    static func initBudget(
+        target: SummaryTarget,
+        mode: AISummaryBudgetMode,
+        policy: AIQuotaPolicy,
+        forceReset: Bool = false
+    ) {
         budgetStateLock(for: target, mode: mode).withLock {
-            if mode == .shared,
+            if !forceReset,
+               mode == .shared,
                $0.attempts > 0,
-               $0.baseline == baseline,
-               $0.cap == cap {
+               $0.policy == policy {
                 return
             }
-            $0 = BudgetState(baseline: baseline, cap: cap, attempts: 0)
+            $0 = BudgetState(policy: policy, attempts: 0)
         }
     }
 
-    /// Check whether the next attempt is within budget and increment if so.
-    /// Throws `NewsBarError.rateLimited` when `baseline + attempts + 1 > cap`.
-    static func consumeAttemptBudget(target: SummaryTarget, mode: AISummaryBudgetMode) throws {
-        try budgetStateLock(for: target, mode: mode).withLock { state in
-            let nextTotal = state.baseline + state.attempts + 1
-            guard nextTotal <= state.cap else {
-                throw NewsBarError.rateLimited
-            }
-            state.attempts += 1
+    /// Check whether the next attempt is within budget and reserve it in the
+    /// shared quota ledger. Throws `NewsBarError.rateLimited` when the active
+    /// limit is reached.
+    static func consumeAttemptBudget(
+        target: SummaryTarget,
+        mode: AISummaryBudgetMode,
+        reservedCostMicros: Int64 = 0
+    ) throws {
+        let policy = budgetStateLock(for: target, mode: mode).withLock { $0.policy }
+        guard quotaStore.reserve(
+            .summary,
+            policy: policy,
+            reservedCostMicros: reservedCostMicros
+        ) else {
+            throw NewsBarError.rateLimited
         }
+        budgetStateLock(for: target, mode: mode).withLock { $0.attempts += 1 }
     }
 
     /// Read the number of actual attempts dispatched in this generation.
@@ -112,9 +142,14 @@ enum AISummaryService {
         budgetStateLock(for: target, mode: mode).withLock { $0.attempts }
     }
 
-    /// Read the active cap for this generation.
-    static func readGenerationCap(target: SummaryTarget, mode: AISummaryBudgetMode) -> Int {
-        budgetStateLock(for: target, mode: mode).withLock { $0.cap }
+    /// Read the active count cap for this generation. `nil` means unlimited.
+    static func readGenerationCap(target: SummaryTarget, mode: AISummaryBudgetMode) -> Int? {
+        budgetStateLock(for: target, mode: mode).withLock { $0.policy.countCap }
+    }
+
+    /// Read the active limit mode for this generation.
+    static func readGenerationLimitMode(target: SummaryTarget, mode: AISummaryBudgetMode) -> AILimitMode {
+        budgetStateLock(for: target, mode: mode).withLock { $0.policy.mode }
     }
 
     /// Attempt to acquire the per-target generation lock. Returns `false` if already generating.
@@ -187,6 +222,7 @@ enum AISummaryService {
             let message: Message
         }
         let choices: [Choice]
+        let usage: OpenAIUsagePayload?
     }
 
     private struct AnthropicResponse: Decodable {
@@ -196,6 +232,7 @@ enum AISummaryService {
         }
         let content: [ContentBlock]
         let stop_reason: String?
+        let usage: AnthropicUsagePayload?
     }
 
     /// Sanitize a title for prompt inclusion: strip control characters and
@@ -365,7 +402,11 @@ enum AISummaryService {
             )
         }
         if !result.isTruncated {
-            return SummaryResult(summary: result.summary, isTruncated: false)
+            return SummaryResult(
+                summary: result.summary,
+                isTruncated: false,
+                usage: result.usage
+            )
         }
         let retryResult = try await withRetry {
             guard await requestAllowed() else { throw CancellationError() }
@@ -382,7 +423,11 @@ enum AISummaryService {
                 budgetMode: budgetMode
             )
         }
-        return SummaryResult(summary: retryResult.summary, isTruncated: retryResult.isTruncated)
+        return SummaryResult(
+            summary: retryResult.summary,
+            isTruncated: retryResult.isTruncated,
+            usage: retryResult.usage
+        )
     }
 
     private static func makeRequest(
@@ -396,24 +441,48 @@ enum AISummaryService {
         disableDeepSeekThinking: Bool,
         target: SummaryTarget,
         budgetMode: AISummaryBudgetMode
-    ) async throws -> (summary: String, isTruncated: Bool) {
-        try consumeAttemptBudget(target: target, mode: budgetMode)
-        let (baseline, cap) = budgetStateLock(for: target, mode: budgetMode).withLock { ($0.baseline, $0.cap) }
-        let durable = budgetMode == .shared ? durableSharedBudget : (target == .popup ? durablePopupBudget : durableDashboardBudget)
-        guard durable.reserve(cap: cap, baseline: baseline) else { throw NewsBarError.rateLimited }
+    ) async throws -> SummaryResult {
+        let price = connection.customPrice
+            ?? AIPriceCatalog.price(for: connection.providerID, model: model)
+        let estimatedInput = AICostEstimator.estimateInputTokens(
+            system: systemPrompt,
+            user: userPrompt
+        )
+        let reserved = price.map {
+            AICostEstimator.reserveMicros(
+                inputTokens: estimatedInput,
+                maxOutputTokens: maxTokens,
+                price: $0
+            )
+        } ?? 0
+
+        try consumeAttemptBudget(
+            target: target,
+            mode: budgetMode,
+            reservedCostMicros: reserved
+        )
+
+        let result: SummaryResult
         switch connection.responseFormat {
         case .openAI:
-            return try await makeOpenAIRequest(
+            result = try await makeOpenAIRequest(
                 url: url, connection: connection, apiKey: apiKey, model: model,
                 systemPrompt: systemPrompt, userPrompt: userPrompt, maxTokens: maxTokens,
                 disableDeepSeekThinking: disableDeepSeekThinking
             )
         case .anthropic:
-            return try await makeAnthropicRequest(
+            result = try await makeAnthropicRequest(
                 url: url, connection: connection, apiKey: apiKey, model: model,
                 systemPrompt: systemPrompt, userPrompt: userPrompt, maxTokens: maxTokens
             )
         }
+
+        quotaStore.settle(
+            reservedCostMicros: reserved,
+            usage: result.usage,
+            price: price
+        )
+        return result
     }
 
     // MARK: - OpenAI-format request
@@ -427,7 +496,7 @@ enum AISummaryService {
         userPrompt: String,
         maxTokens: Int,
         disableDeepSeekThinking: Bool
-    ) async throws -> (summary: String, isTruncated: Bool) {
+    ) async throws -> SummaryResult {
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -482,7 +551,11 @@ enum AISummaryService {
 
         let content = choice.message.content.trimmingCharacters(in: .whitespacesAndNewlines)
         let truncated = choice.finish_reason == "length"
-        return (content, truncated)
+        return SummaryResult(
+            summary: content,
+            isTruncated: truncated,
+            usage: AIUsage.from(openAI: decoded.usage)
+        )
     }
 
     // MARK: - Anthropic-format request
@@ -495,7 +568,7 @@ enum AISummaryService {
         systemPrompt: String,
         userPrompt: String,
         maxTokens: Int
-    ) async throws -> (summary: String, isTruncated: Bool) {
+    ) async throws -> SummaryResult {
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -549,7 +622,11 @@ enum AISummaryService {
                 }
                 let content = choice.message.content.trimmingCharacters(in: .whitespacesAndNewlines)
                 let truncated = choice.finish_reason == "length"
-                return (content, truncated)
+                return SummaryResult(
+                    summary: content,
+                    isTruncated: truncated,
+                    usage: AIUsage.from(openAI: fallback.usage)
+                )
             } catch let fallbackError as DecodingError {
                 NSLog("[AISummaryService] OpenAI fallback also failed: %@", fallbackError.localizedDescription)
                 throw anthropicDecodeError
@@ -562,7 +639,11 @@ enum AISummaryService {
 
         let content = text.trimmingCharacters(in: .whitespacesAndNewlines)
         let truncated = decoded.stop_reason == "max_tokens"
-        return (content, truncated)
+        return SummaryResult(
+            summary: content,
+            isTruncated: truncated,
+            usage: AIUsage.from(anthropic: decoded.usage)
+        )
     }
 
     private static func systemPrompt(language: AppLanguage) -> String {

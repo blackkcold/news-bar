@@ -88,6 +88,11 @@ struct InterestProfile: Sendable {
     var shortTermTopics: [String: Double] = [:]
     var sources: [String: Double] = [:]
     var confidence: Double = 0
+    // Negative evidence uses the same decay clock as the positive side. Each
+    // value is the raw decayed sum; the scorer clamps and caps it.
+    var negativeTopics: [String: Double] = [:]
+    var negativeSources: [String: Double] = [:]
+    var negativeClusters: [String: Double] = [:]
 
     static func build(state: LocalInterestState, now: Date = Date(), sessionFeedback: [InterestFeedback] = []) -> InterestProfile {
         guard state.learningEnabled else { return InterestProfile() }
@@ -126,7 +131,17 @@ struct InterestProfile: Sendable {
             case .followTopic:
                 if let topic = feedback.topic { profile.topics[topic, default: 0] += 4; explicitCount += 1 }
             case .reduceTopic:
-                if let topic = feedback.topic { profile.topics[topic, default: 0] -= 4; profile.shortTermTopics[topic, default: 0] -= 4 }
+                // Soft, decaying downweight. The old flat -4 profile
+                // subtraction buried a topic far beyond the documented cap.
+                if let topic = feedback.topic {
+                    profile.negativeTopics[topic, default: 0] += 0.8 * pow(0.5, max(0, age) / (30 * 86400))
+                }
+            case .lessLikeContent:
+                profile.negativeClusters[ContentIdentity.cluster(for: feedback.item), default: 0] += pow(0.5, max(0, age) / (14 * 86400))
+            case .lessLikeSource:
+                // A fresh single source rule reaches its 0.15 cap; repeats
+                // saturate rather than stacking without bound.
+                profile.negativeSources[feedback.item.source.id, default: 0] += pow(0.5, max(0, age) / (30 * 86400))
             default: break
             }
         }
@@ -230,7 +245,10 @@ private struct TracedCandidate {
     let baselineScore: Double
     let confidence: Double
     let readPenalty: Double
-    let feedbackPenalty: Double
+    let negativePenalty: Double
+    let negativeContentPenalty: Double
+    let negativeTopicPenalty: Double
+    let negativeSourcePenalty: Double
 
     /// Single source of truth: the score the selector actually compares.
     var rawScore: Double { row.score }
@@ -240,7 +258,9 @@ enum RecommendationEngine {
     // 2: known-dictionary follows transfer to their canonical topic tag.
     // 3: canonical alias follows count once; non-consenting soft feedback no
     //    longer shapes the profile or the reduce-topic penalty.
-    static let policyVersion = 3
+    // 4: one signed model: soft negatives (content/topic/source) share the
+    //    decay clock, cap at 0.40, and replace the flat reduce-topic -4.
+    static let policyVersion = 4
 
     private static func contributions(terms: [FeatureTerm], baselineTerms: [FeatureTerm],
                                       denominator: Double, confidence: Double) -> [String: Double] {
@@ -323,12 +343,17 @@ enum RecommendationEngine {
                 ]
             }
             let baseline = baselineTerms.reduce(0) { $0 + $1.coefficient * $1.value }
-            let reduced = state.learningEnabled && state.feedbacks.contains {
-                $0.participatesInProfile && $0.kind == .reduceTopic && $0.topic.map(tags.contains) == true
-            }
+            // One signed model: soft negatives are capped per scope and in
+            // total, so "less like this" can never become a de-facto block.
+            let negativeContent = min(1, profile.negativeClusters[clusterID] ?? 0)
+            let negativeTopic = min(1, tags.map { profile.negativeTopics[$0] ?? 0 }.max() ?? 0)
+            let negativeSource = min(1, profile.negativeSources[item.source.id] ?? 0)
+            let negativeContentPenalty = min(0.25, 0.25 * negativeContent)
+            let negativeTopicPenalty = min(0.20, 0.20 * negativeTopic)
+            let negativeSourcePenalty = min(0.15, 0.15 * negativeSource)
+            let negativePenalty = min(0.40, negativeContentPenalty + negativeTopicPenalty + negativeSourcePenalty)
             let readPenalty = readIDs.contains(id) ? 0.15 : 0
-            let feedbackPenalty = reduced ? 0.2 : 0
-            let score = profile.confidence * personal + (1 - profile.confidence) * baseline - readPenalty - feedbackPenalty
+            let score = profile.confidence * personal + (1 - profile.confidence) * baseline - readPenalty - negativePenalty
             let reason = profile.confidence > 0 && (affinity ?? 0) > 0.1 ? "interest" : heat != nil ? "publicHeat" : "fresh"
             candidates.append(TracedCandidate(
                 row: ScoredRecommendation(item: item, contentID: id, clusterID: clusterID, score: score,
@@ -340,7 +365,10 @@ enum RecommendationEngine {
                 baselineScore: baseline,
                 confidence: profile.confidence,
                 readPenalty: readPenalty,
-                feedbackPenalty: feedbackPenalty
+                negativePenalty: negativePenalty,
+                negativeContentPenalty: negativeContentPenalty,
+                negativeTopicPenalty: negativeTopicPenalty,
+                negativeSourcePenalty: negativeSourcePenalty
             ))
         }
         candidates.sort { $0.row.score == $1.row.score ? $0.row.contentID < $1.row.contentID : $0.row.score > $1.row.score }
@@ -423,7 +451,10 @@ enum RecommendationEngine {
                 baselineScore: candidate.baselineScore,
                 confidence: candidate.confidence,
                 readPenalty: candidate.readPenalty,
-                feedbackPenalty: candidate.feedbackPenalty,
+                negativePenalty: candidate.negativePenalty,
+                negativeContentPenalty: candidate.negativeContentPenalty,
+                negativeTopicPenalty: candidate.negativeTopicPenalty,
+                negativeSourcePenalty: candidate.negativeSourcePenalty,
                 rawScore: candidate.rawScore,
                 selectionScore: selectionScore,
                 sourcePenalty: applied.source,

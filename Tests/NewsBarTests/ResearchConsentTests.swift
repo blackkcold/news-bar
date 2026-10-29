@@ -37,6 +37,32 @@ final class ResearchConsentTests: XCTestCase {
         XCTAssertTrue(text.contains("not fact adjudication"))
     }
 
+    func testAutomaticResearchDisclosureCoversTriageData() {
+        let chinese = L10n.string("research.auto.footer", language: .zh)
+        let english = L10n.string("research.auto.footer", language: .en)
+
+        XCTAssertTrue(chinese.contains("候选标题"))
+        XCTAssertTrue(chinese.contains("历史研究标题"))
+        XCTAssertTrue(english.contains("candidate titles"))
+        XCTAssertTrue(english.contains("previous research titles"))
+    }
+
+    @MainActor
+    func testClearingInterestDataClearsLastAutomaticDecision() async throws {
+        let settings = AppSettings()
+        let original = settings.researchLastAutomaticDecision
+        defer { settings.updateResearchLastAutomaticDecision(original) }
+        settings.updateResearchLastAutomaticDecision("旧的私人主题")
+        let directory = try researchTestDirectory()
+        let controller = InterestController(store: LocalInterestStore(fileURL: directory.appendingPathComponent("interest.sqlite")))
+
+        let success = await controller.clear(keepBookmarks: false)
+
+        XCTAssertTrue(success)
+        XCTAssertNil(settings.researchLastAutomaticDecision)
+        XCTAssertNil(UserDefaults.standard.string(forKey: "researchLastAutomaticDecision"))
+    }
+
     func testMissingProviderAndModelHaveReadableFallbacks() {
         let text = ResearchConsent.disclosure(
             providers: [],

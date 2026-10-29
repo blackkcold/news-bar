@@ -80,7 +80,8 @@ enum AIProvider: String, CaseIterable, Codable {
             responseFormat: responseFormat,
             authHeaderName: authHeaderName,
             authHeaderPrefix: authHeaderPrefix,
-            apiVersion: apiVersion
+            apiVersion: apiVersion,
+            providerID: rawValue
         )
     }
 
@@ -161,25 +162,6 @@ enum AIProvider: String, CaseIterable, Codable {
                 ("计费方式", "按量计费，详见 ollama.com/settings/billing"),
                 ("用量参考", "每次总结约消耗 200-800 tokens"),
             ]
-        }
-    }
-
-    func estimatedDailyCostText(model: String, requestCount: Int) -> String {
-        guard requestCount > 0 else { return "¥0.0000" }
-
-        switch self {
-        case .deepseek:
-            return "以实际模型及提供商账单为准"
-        case .googleAIStudio:
-            return "以账户额度及实际模型为准"
-        case .minimaxTokenPlan:
-            return "按 Token Plan 扣减"
-        case .minimaxAPI:
-            return "定价未内置"
-        case .opencodeGo, .opencodeZen:
-            return "由 Opencode 账户计费"
-        case .ollamaCloud:
-            return "按量计费，详见官网定价"
         }
     }
 }

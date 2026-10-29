@@ -3,7 +3,13 @@ import Foundation
 /// Entry point that created a research record. Fixed at creation time; the
 /// record's origin never changes, even after a manual re-run.
 enum ResearchOrigin: String, Codable, Sendable, CaseIterable {
-    case burst, keyword, manual
+    /// A Weibo "爆" topic.
+    case burst
+    /// An explicit user keyword.
+    case keyword
+    /// An automatic pick from the local interest profile or the public chart.
+    case interest
+    case manual
 
     var isAutomatic: Bool { self != .manual }
 }
@@ -13,6 +19,15 @@ enum ResearchStatus: String, Codable, Sendable, CaseIterable {
 
     /// Statuses whose research task still owns a live slot in the coordinator.
     var isActive: Bool { self == .queued || self == .running }
+
+    /// A finished run. Opening one is a completed look at the outcome, so it
+    /// may clear the unread marker. Active runs and unreadable files may not.
+    var marksReadOnOpen: Bool {
+        switch self {
+        case .ready, .partial, .failed, .cancelled, .interrupted: return true
+        case .queued, .running, .corrupt: return false
+        }
+    }
 
     /// Statuses that may still carry a usable previous report.
     var keepsPreviousReport: Bool {

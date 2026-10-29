@@ -6,6 +6,10 @@ struct ResolvedAIConnection: Sendable {
     var authHeaderName: String
     var authHeaderPrefix: String
     var apiVersion: String?
+    /// Provider id used by the price catalog (`deepseek`, `ollamaCloud`, …).
+    var providerID: String = ""
+    /// User-entered unit prices for a custom provider, already CNY per 1M tokens.
+    var customPrice: ModelPrice? = nil
 }
 
 struct CustomAIProviderConfig: Identifiable, Hashable, Codable {
@@ -19,6 +23,10 @@ struct CustomAIProviderConfig: Identifiable, Hashable, Codable {
     var authHeaderPrefix: String
     var apiVersion: String?
     var pricingNote: String?
+    /// Optional unit prices entered by the user, CNY per million tokens.
+    var inputPricePerMTok: Double?
+    var outputPricePerMTok: Double?
+    var cacheReadPricePerMTok: Double?
 
     init(
         id: String = UUID().uuidString,
@@ -30,7 +38,10 @@ struct CustomAIProviderConfig: Identifiable, Hashable, Codable {
         authHeaderName: String = "Authorization",
         authHeaderPrefix: String = "Bearer ",
         apiVersion: String? = nil,
-        pricingNote: String? = nil
+        pricingNote: String? = nil,
+        inputPricePerMTok: Double? = nil,
+        outputPricePerMTok: Double? = nil,
+        cacheReadPricePerMTok: Double? = nil
     ) {
         self.id = id
         self.name = name
@@ -42,6 +53,9 @@ struct CustomAIProviderConfig: Identifiable, Hashable, Codable {
         self.authHeaderPrefix = authHeaderPrefix
         self.apiVersion = apiVersion
         self.pricingNote = pricingNote
+        self.inputPricePerMTok = inputPricePerMTok
+        self.outputPricePerMTok = outputPricePerMTok
+        self.cacheReadPricePerMTok = cacheReadPricePerMTok
     }
 
     /// CRITICAL: AppSettings decodes `[CustomAIProviderConfig]` with `try?` — a
@@ -59,6 +73,9 @@ struct CustomAIProviderConfig: Identifiable, Hashable, Codable {
         authHeaderPrefix = (try? c.decode(String.self, forKey: .authHeaderPrefix)) ?? "Bearer "
         apiVersion = try? c.decodeIfPresent(String.self, forKey: .apiVersion)
         pricingNote = try? c.decodeIfPresent(String.self, forKey: .pricingNote)
+        inputPricePerMTok = try? c.decodeIfPresent(Double.self, forKey: .inputPricePerMTok)
+        outputPricePerMTok = try? c.decodeIfPresent(Double.self, forKey: .outputPricePerMTok)
+        cacheReadPricePerMTok = try? c.decodeIfPresent(Double.self, forKey: .cacheReadPricePerMTok)
     }
 
     var effectiveModels: [String] {
@@ -75,7 +92,25 @@ struct CustomAIProviderConfig: Identifiable, Hashable, Codable {
             responseFormat: responseFormat,
             authHeaderName: authHeaderName,
             authHeaderPrefix: authHeaderPrefix,
-            apiVersion: apiVersion ?? (responseFormat == .anthropic ? "2023-06-01" : nil)
+            apiVersion: apiVersion ?? (responseFormat == .anthropic ? "2023-06-01" : nil),
+            providerID: "custom:\(id)",
+            customPrice: unitPrice
+        )
+    }
+
+    /// Prices are only usable when both input and output are present.
+    var unitPrice: ModelPrice? {
+        guard let input = inputPricePerMTok, let output = outputPricePerMTok,
+              input >= 0, output >= 0 else { return nil }
+        return ModelPrice(
+            provider: "custom:\(id)",
+            modelPrefix: defaultModel ?? "",
+            inputPerMTok: input,
+            outputPerMTok: output,
+            cacheReadPerMTok: cacheReadPricePerMTok,
+            cacheWritePerMTok: nil,
+            currency: "CNY",
+            updatedAt: ""
         )
     }
 }

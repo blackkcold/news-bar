@@ -105,9 +105,28 @@ final class AppSettings {
     var aiMaxWords: Int {
         didSet { UserDefaults.standard.set(aiMaxWords, forKey: "aiMaxWords") }
     }
+    /// Daily AI call cap for the whole app. `-1` means unlimited. The gate
+    /// always works through `aiQuotaPolicy`, never through this raw value.
     var aiDailyCap: Int {
         didSet { UserDefaults.standard.set(aiDailyCap, forKey: "aiDailyCap") }
     }
+    /// Active limit style: call count or money budget. Exactly one applies.
+    var aiLimitMode: AILimitMode {
+        didSet { UserDefaults.standard.set(aiLimitMode.rawValue, forKey: "aiLimitMode") }
+    }
+    /// Money budget in micros of the display currency. Read only in `.cost` mode.
+    var aiCostCapMicros: Int64 {
+        didSet { UserDefaults.standard.set(aiCostCapMicros, forKey: "aiCostCapMicros") }
+    }
+    /// Transient: false when today's quota record cannot be read. The UI says
+    /// so instead of painting a fake zero.
+    var aiUsageAvailable = true
+    /// Transient mirrors of today's quota ledger. They exist so SwiftUI can
+    /// re-render; the ledger stays the single authority.
+    var todayAICostMicros: Int64 = 0
+    var todayAIUnpricedCalls = 0
+    var todayAIInputTokens = 0
+    var todayAIOutputTokens = 0
     var aiBudgetMode: AISummaryBudgetMode {
         didSet { UserDefaults.standard.set(aiBudgetMode.rawValue, forKey: "aiBudgetMode") }
     }
@@ -217,6 +236,29 @@ final class AppSettings {
     var researchShowPopoverChip: Bool {
         didSet { UserDefaults.standard.set(researchShowPopoverChip, forKey: "researchShowPopoverChip") }
     }
+    /// Opening a finished research record clears its unread marker. Active runs
+    /// never do. Turning this off keeps the unread badge until a manual mark.
+    var researchMarkReadOnOpen: Bool {
+        didSet { UserDefaults.standard.set(researchMarkReadOnOpen, forKey: "researchMarkReadOnOpen") }
+    }
+    /// Lets the local interest profile add non-burst topics to automatic
+    /// research. Effective only while local learning is enabled.
+    var researchUsePersonalization: Bool {
+        didSet { UserDefaults.standard.set(researchUsePersonalization, forKey: "researchUsePersonalization") }
+    }
+    /// Read-only mirror of the last automatic selection result. Written by the
+    /// orchestrator so settings can explain a skipped hour; never persisted as
+    /// a preference.
+    private(set) var researchLastAutomaticDecision: String?
+
+    func updateResearchLastAutomaticDecision(_ text: String?) {
+        researchLastAutomaticDecision = text
+        if let text {
+            UserDefaults.standard.set(text, forKey: "researchLastAutomaticDecision")
+        } else {
+            UserDefaults.standard.removeObject(forKey: "researchLastAutomaticDecision")
+        }
+    }
     /// Shows the one-sentence summary in the completion notification. Turning
     /// it off keeps the report title but hides the conclusion from the lock
     /// screen.
@@ -231,10 +273,6 @@ final class AppSettings {
     /// Research depth preset (quick / standard / deep).
     var researchDepth: ResearchDepth {
         didSet { UserDefaults.standard.set(researchDepth.rawValue, forKey: "researchDepth") }
-    }
-    /// Shared daily AI-call cap for all three research origins.
-    var researchDailyAICap: Int {
-        didSet { UserDefaults.standard.set(researchDailyAICap, forKey: "researchDailyAICap") }
     }
     /// Shared daily task cap, counted across origins.
     var researchDailyTaskCap: Int {
@@ -340,6 +378,10 @@ final class AppSettings {
     private(set) var modelCatalogRevision = UUID()
     private var modelCatalogIdentity: String?
     private var isInitializing = true
+    /// A personal-data reset removes every derived artifact, including the
+    /// last automatic topic shown in settings. The notification is posted on
+    /// the main actor by InterestController.
+    @ObservationIgnored private var interestDataClearedObserver: NSObjectProtocol?
 
     var currentProvider: AIProvider {
         AIProvider(rawValue: aiProvider) ?? .deepseek
@@ -371,15 +413,19 @@ final class AppSettings {
         let rawDashboardMaxWords = defaults.integerIfPresent(forKey: "aiDashboardMaxWords") ?? 360
         self.aiDashboardMaxWords = Self.validAIDashboardMaxWords.contains(rawDashboardMaxWords) ? rawDashboardMaxWords : 360
         self.aiMaxWords = defaults.integerIfPresent(forKey: "aiMaxWords") ?? 150
-        let rawCap = defaults.integerIfPresent(forKey: "aiDailyCap") ?? 50
-        self.aiDailyCap = Self.validAICaps.contains(rawCap) ? rawCap : 50
+        let rawCap = defaults.integerIfPresent(forKey: "aiDailyCap") ?? 200
+        self.aiDailyCap = Self.migratedAICap(rawCap)
+        let rawLimitMode = defaults.stringIfPresent(forKey: "aiLimitMode") ?? AILimitMode.count.rawValue
+        self.aiLimitMode = AILimitMode(rawValue: rawLimitMode) ?? .count
+        self.aiCostCapMicros = defaults.int64IfPresent(forKey: "aiCostCapMicros")
+            ?? Self.defaultAICostCapMicros
         let rawBudgetMode = defaults.stringIfPresent(forKey: "aiBudgetMode") ?? AISummaryBudgetMode.shared.rawValue
         self.aiBudgetMode = AISummaryBudgetMode(rawValue: rawBudgetMode) ?? .shared
         self.aiDisableDeepSeekThinking = defaults.boolIfPresent(forKey: "aiDisableDeepSeekThinking") ?? true
-        let rawPopupCap = defaults.integerIfPresent(forKey: "aiPopupDailyCap") ?? 50
-        self.aiPopupDailyCap = Self.validAICaps.contains(rawPopupCap) ? rawPopupCap : 50
-        let rawDashboardCap = defaults.integerIfPresent(forKey: "aiDashboardDailyCap") ?? 50
-        self.aiDashboardDailyCap = Self.validAICaps.contains(rawDashboardCap) ? rawDashboardCap : 50
+        let rawPopupCap = defaults.integerIfPresent(forKey: "aiPopupDailyCap") ?? 200
+        self.aiPopupDailyCap = Self.validAICaps.contains(rawPopupCap) ? rawPopupCap : 200
+        let rawDashboardCap = defaults.integerIfPresent(forKey: "aiDashboardDailyCap") ?? 200
+        self.aiDashboardDailyCap = Self.validAICaps.contains(rawDashboardCap) ? rawDashboardCap : 200
         if let legacyRef = defaults.stringIfPresent(forKey: "onePasswordRef"),
            !legacyRef.isEmpty {
             defaults.removeObject(forKey: "onePasswordRef")
@@ -444,11 +490,12 @@ final class AppSettings {
         let rawDetectionLimit = defaults.integerIfPresent(forKey: "researchDetectionLimit") ?? 3
         self.researchDetectionLimit = Self.validResearchDetectionLimits.contains(rawDetectionLimit) ? rawDetectionLimit : 3
         self.researchShowPopoverChip = defaults.boolIfPresent(forKey: "researchShowPopoverChip") ?? true
+        self.researchMarkReadOnOpen = defaults.boolIfPresent(forKey: "researchMarkReadOnOpen") ?? true
+        self.researchUsePersonalization = defaults.boolIfPresent(forKey: "researchUsePersonalization") ?? true
+        self.researchLastAutomaticDecision = defaults.stringIfPresent(forKey: "researchLastAutomaticDecision")
         self.researchNotificationShowsSummary = defaults.boolIfPresent(forKey: "researchNotificationShowsSummary") ?? true
         let rawDepth = defaults.stringIfPresent(forKey: "researchDepth") ?? ResearchDepth.standard.rawValue
         self.researchDepth = ResearchDepth(rawValue: rawDepth) ?? .standard
-        let rawResearchAICap = defaults.integerIfPresent(forKey: "researchDailyAICap") ?? 30
-        self.researchDailyAICap = Self.validResearchDailyAICaps.contains(rawResearchAICap) ? rawResearchAICap : 30
         let rawResearchTaskCap = defaults.integerIfPresent(forKey: "researchDailyTaskCap") ?? 3
         self.researchDailyTaskCap = Self.validResearchDailyTaskCaps.contains(rawResearchTaskCap) ? rawResearchTaskCap : 3
         let rawResearchConcurrency = defaults.integerIfPresent(forKey: "researchMaxConcurrent") ?? 1
@@ -481,6 +528,19 @@ final class AppSettings {
 
         self.isInitializing = false
         resetDailyStatsIfNeeded()
+        interestDataClearedObserver = NotificationCenter.default.addObserver(
+            forName: .interestDataCleared,
+            object: nil,
+            queue: nil
+        ) { [weak self] _ in
+            self?.updateResearchLastAutomaticDecision(nil)
+        }
+    }
+
+    deinit {
+        if let interestDataClearedObserver {
+            NotificationCenter.default.removeObserver(interestDataClearedObserver)
+        }
     }
 
     func migrateLegacyKeyIfNeeded() {
@@ -768,26 +828,97 @@ final class AppSettings {
         return active.contains { TitleFeatures.matches($0, in: title) }
     }
 
+    /// Today's estimated spend. A dash means the ledger is unreadable; a
+    /// suffix marks the value when some calls could not be priced.
     var estimatedAICostText: String {
-        guard !isUsingCustomProvider else {
-            return selectedCustomProvider?.pricingNote?.isEmpty == false
-                ? (selectedCustomProvider?.pricingNote ?? "定价未内置")
-                : "定价未内置"
-        }
-        return currentProvider.estimatedDailyCostText(model: aiModel, requestCount: todayAIRequestCount)
+        guard aiUsageAvailable else { return "—" }
+        let value = AICostFormat.yuan(todayAICostMicros)
+        return todayAIUnpricedCalls > 0
+            ? L10n.string("general.estimatedAICostPartial", value)
+            : value
     }
 
     var aiUsageText: String {
-        "\(todayAIRequestCount) / \(aiDailyCap) 次"
+        if let cap = aiCountLimit {
+            return L10n.string("ai.usage.value", todayAIRequestCount, cap)
+        }
+        return L10n.string("ai.usage.unlimitedValue", todayAIRequestCount)
+    }
+    /// `nil` means unlimited.
+    var aiCountLimit: Int? {
+        aiDailyCap < 0 ? nil : aiDailyCap
+    }
+
+    /// Immutable limit handed to the service layer. Exactly one cap is active.
+    var aiQuotaPolicy: AIQuotaPolicy {
+        let mode = effectiveAILimitMode
+        return AIQuotaPolicy(
+            mode: mode,
+            countCap: mode == .count ? aiCountLimit : nil,
+            costCapMicros: mode == .cost ? max(0, aiCostCapMicros) : nil
+        )
+    }
+
+    /// Unit price for the active provider and model, if one is known.
+    var currentModelPrice: ModelPrice? {
+        if let custom = selectedCustomProvider {
+            return custom.unitPrice
+        }
+        guard !aiModel.isEmpty else { return nil }
+        return AIPriceCatalog.price(for: currentProvider.rawValue, model: aiModel)
+    }
+
+    /// Money mode is only meaningful when the active model can be priced.
+    var aiCostEstimateAvailable: Bool {
+        currentModelPrice != nil
+    }
+
+    /// The mode actually enforced. A stale `.cost` choice with no price falls
+    /// back to the count limit instead of silently never blocking.
+    var effectiveAILimitMode: AILimitMode {
+        aiLimitMode == .cost && aiCostEstimateAvailable ? .cost : .count
+    }
+
+    /// Typical summary call: 1500 input / 1000 output tokens.
+    var estimatedAICostPerCallMicros: Int64? {
+        guard let price = currentModelPrice else { return nil }
+        return AICostEstimator.reserveMicros(
+            inputTokens: 1_500,
+            maxOutputTokens: 1_000,
+            price: price
+        )
+    }
+
+    var aiCostUsageText: String {
+        "\(AICostFormat.yuan(todayAICostMicros)) / \(AICostFormat.yuan(aiCostCapMicros))"
+    }
+
+    /// Mirrors the quota ledger into observable settings. The ledger is the
+    /// authority; this value exists only so SwiftUI re-renders.
+    func refreshAIUsageMirror(at date: Date = Date()) {
+        let snapshot = AIQuotaStore.shared.snapshot(at: date)
+        aiUsageAvailable = snapshot.isUsable
+        guard snapshot.isUsable else { return }
+        todayAIRequestCount = snapshot.count
+        todayAICostMicros = snapshot.costMicros
+        todayAIUnpricedCalls = snapshot.unpricedCalls
+        todayAIInputTokens = snapshot.inputTokens
+        todayAIOutputTokens = snapshot.outputTokens
     }
 
     var aiPopupUsageText: String {
         let cap = effectiveDailyCap(for: .popup)
+        guard cap >= 0 else {
+            return L10n.string("ai.usage.unlimitedValue", todayPopupAIRequestCount)
+        }
         return "\(todayPopupAIRequestCount) / \(cap) 次"
     }
 
     var aiDashboardUsageText: String {
         let cap = effectiveDailyCap(for: .dashboard)
+        guard cap >= 0 else {
+            return L10n.string("ai.usage.unlimitedValue", todayDashboardAIRequestCount)
+        }
         return "\(todayDashboardAIRequestCount) / \(cap) 次"
     }
 
@@ -811,14 +942,21 @@ final class AppSettings {
         }
     }
 
-    /// Whitelisted daily AI request caps. Any value outside this set is rejected.
-    static let validAICaps: Set<Int> = [20, 50, 100]
+    /// Whitelisted daily AI call caps. `-1` means unlimited. Any value outside
+    /// this set is migrated to the entry tier.
+    static let validAICaps: Set<Int> = [-1, 200, 500]
+    /// Default money budget: ¥5.00/day.
+    static let defaultAICostCapMicros: Int64 = 5_000_000
+    /// v2.8 and earlier offered 20 / 50 / 100. Those values map to the new
+    /// entry tier; a value already in the new set is preserved.
+    static func migratedAICap(_ raw: Int) -> Int {
+        validAICaps.contains(raw) ? raw : 200
+    }
     /// Whitelisted burst-research daily caps. Any value outside this set is rejected.
     static let validBurstCaps: Set<Int> = [10, 20, 50]
     /// Whitelisted automatic-detection limits.
     static let validResearchDetectionLimits: Set<Int> = [1, 2, 3, 5]
-    /// Whitelisted shared research budgets and execution limits.
-    static let validResearchDailyAICaps: Set<Int> = [10, 20, 30, 50, 100]
+    /// Whitelisted research execution limits.
     static let validResearchDailyTaskCaps: Set<Int> = [1, 2, 3, 5, 10]
     static let validResearchConcurrency: Set<Int> = [1, 2, 3]
     static let validResearchHistoryLimits: Set<Int> = [50, 100, 200, 500, 1000]
@@ -1002,5 +1140,10 @@ extension UserDefaults {
     func doubleIfPresent(forKey key: String) -> Double? {
         guard object(forKey: key) != nil else { return nil }
         return double(forKey: key)
+    }
+
+    func int64IfPresent(forKey key: String) -> Int64? {
+        guard let value = object(forKey: key) as? NSNumber else { return nil }
+        return value.int64Value
     }
 }
