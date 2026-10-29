@@ -29,6 +29,9 @@ enum L10n {
     /// Test-only: every defined key, for the "used but undefined" lint.
     static var allKeys: Set<String> { Set(zhStrings.keys) }
 
+    /// Test-only: the Chinese format strings, for the format-contract test.
+    static var testFormats: [String: String] { zhStrings }
+
     // MARK: - Chinese strings
 
     private static let zhStrings: [String: String] = [
@@ -134,7 +137,7 @@ enum L10n {
         "ai.feature": "功能开关",
         "ai.provider": "提供商",
         "ai.addCustomProvider": "添加自定义提供商",
-        "ai.editProvider": "编辑",
+        "ai.editProvider": "编辑 %@",
         "ai.delete": "删除",
         "ai.provider.footer.custom": "当前为自定义提供商，可在上方编辑或删除。",
         "ai.apiKey": "API Key",
@@ -256,11 +259,11 @@ enum L10n {
         "rss.imageFlow": "图片流",
         "rss.displayCount.footer.unified": "开启后，所有 RSS 源共用同一组文本/图片展示数量。",
         "rss.displayCount.footer.perSource": "关闭后，可在每个 RSS 源行中按当前展示模式单独设置数量；右键可重置为全局默认值。",
-        "rss.subscribed": "已订阅 RSS 源",
+        "rss.subscribed": "已订阅 RSS 源（%ld）",
         "rss.hideRecommendations": "隐藏推荐",
         "rss.showRecommendations": "推荐列表",
         "rss.subscribed.footer": "拖拽已订阅源可调整展示顺序；文本流/图片流设置会保留。",
-        "rss.unsubscribed": "未订阅 RSS 源",
+        "rss.unsubscribed": "未订阅 RSS 源（%ld）",
         "rss.recommendationValidation": "推荐验证",
         "rss.recommendationValidation.footer": "只测试未添加推荐源；测试不会修改订阅、排序或通知。",
         "rss.addSource": "添加 RSS 源",
@@ -1082,7 +1085,7 @@ enum L10n {
         "ai.feature": "Feature",
         "ai.provider": "Provider",
         "ai.addCustomProvider": "Add Custom Provider",
-        "ai.editProvider": "Edit",
+        "ai.editProvider": "Edit %@",
         "ai.delete": "Delete",
         "ai.provider.footer.custom": "Currently using a custom provider; you can edit or delete it above.",
         "ai.apiKey": "API Key",
@@ -1204,11 +1207,11 @@ enum L10n {
         "rss.imageFlow": "Image Flow",
         "rss.displayCount.footer.unified": "When enabled, all RSS sources share the same text/image display counts.",
         "rss.displayCount.footer.perSource": "When disabled, set counts per source by display mode; right-click to reset to the global default.",
-        "rss.subscribed": "Subscribed RSS Sources",
+        "rss.subscribed": "Subscribed RSS Sources (%ld)",
         "rss.hideRecommendations": "Hide Recommendations",
         "rss.showRecommendations": "Recommendations",
         "rss.subscribed.footer": "Drag subscribed sources to reorder; text/image flow settings are preserved.",
-        "rss.unsubscribed": "Unsubscribed RSS Sources",
+        "rss.unsubscribed": "Unsubscribed RSS Sources (%ld)",
         "rss.recommendationValidation": "Recommendation Validation",
         "rss.recommendationValidation.footer": "Only tests unadded recommendations; testing does not modify subscriptions, order or notifications.",
         "rss.addSource": "Add RSS Source",
