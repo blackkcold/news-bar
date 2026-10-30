@@ -28,7 +28,14 @@ final class AISearchPanelModel {
     var question = ""
     var scope: AISearchScope = .currentPage
     private(set) var state: State = .idle
-    private(set) var answer: AISearchAnswer?
+    @ObservationIgnored private let reveal = AnswerReveal()
+    var answer: AnswerDocument? { reveal.document }
+    var isRevealing: Bool { reveal.isStreaming }
+
+    /// Wired by the reader so Reduce Motion can bypass the typewriter.
+    func setRevealEnabled(_ enabled: Bool) {
+        reveal.isEnabled = enabled
+    }
     private(set) var progress: Double = 0
     private(set) var lastQuestion = ""
     private(set) var lastScope: AISearchScope = .currentPage
@@ -47,7 +54,7 @@ final class AISearchPanelModel {
         _ scope: AISearchScope,
         _ page: AISearchPageContext?,
         _ onStage: @Sendable (AISearchStage) async -> Void
-    ) async throws -> AISearchAnswer
+    ) async throws -> AnswerDocument
 
     init(runner: Runner? = nil) {
         self.runner = runner
@@ -67,6 +74,7 @@ final class AISearchPanelModel {
         task = nil
         isPresented = false
         state = .idle
+        reveal.reset()
         progress = 0
     }
 
@@ -100,7 +108,8 @@ final class AISearchPanelModel {
         task?.cancel()
         lastQuestion = trimmed
         lastScope = scope
-        answer = nil
+        reveal.reset()
+        reveal.begin()
         state = .searching
         progress = 0.1
         task = Task { [weak self] in
@@ -110,7 +119,7 @@ final class AISearchPanelModel {
                     await MainActor.run { self.apply(stage) }
                 }
                 try Task.checkCancellation()
-                self.answer = result
+                self.reveal.finish(with: result)
                 self.state = .done
                 self.progress = 1
             } catch {
@@ -127,7 +136,8 @@ final class AISearchPanelModel {
         task?.cancel()
         lastQuestion = question
         lastScope = scope
-        answer = nil
+        reveal.reset()
+        reveal.begin()
         state = .searching
         progress = 0.1
         task = Task { [weak self] in
@@ -139,7 +149,7 @@ final class AISearchPanelModel {
                     await MainActor.run { self.apply(stage) }
                 }
                 try Task.checkCancellation()
-                self.answer = result
+                self.reveal.finish(with: result)
                 self.state = .done
                 self.progress = 1
             } catch {
@@ -175,98 +185,10 @@ final class AISearchPanelModel {
     // MARK: - Live wiring
 
     private func makeService(settings: AppSettings) async throws -> AISearchService {
-        let model = settings.effectiveAISearchModel.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !model.isEmpty else { throw AISearchError.noModel }
-
-        let key: String
-        if let cached = settings.cachedAPIKey, !cached.isEmpty {
-            key = cached
-        } else {
-            key = await EncryptedKeyStore().readAPIKey(account: settings.activeAPIKeyAccount) ?? ""
-            if !key.isEmpty { settings.cachedAPIKey = key }
+        try await AISearchServiceFactory.make(settings: settings) { document in
+            Task { @MainActor [weak self] in
+                self?.reveal.receive(document)
+            }
         }
-        guard !key.isEmpty || settings.aiProvider == AIProvider.ollamaCloud.rawValue else {
-            throw AISearchError.noKey
-        }
-
-        let connection = settings.resolvedAIConnection
-        let language = settings.appLanguage
-        let pageCount = settings.aiSearchPageCount
-        let thinking = settings.aiSearchThinking
-        let policy = settings.aiQuotaPolicy
-
-        // Search providers reuse the same configuration and key vault as
-        // research. The ticket caps this run at six HTTP attempts.
-        let providerIDs = Set(settings.researchSearchProviders.compactMap(SearchProviderID.init(rawValue:)))
-        let searchKeys = await SearchKeyStore.loadAll()
-        let searchConfiguration = SearchRouterConfiguration(enabled: providerIDs, keys: searchKeys)
-        let router = SearchRouter()
-        let firecrawlKey = searchKeys[.firecrawl] ?? ""
-        let pageReader = PageReader(isScrapeEnabled: !firecrawlKey.isEmpty)
-
-        let client = HTTPAIChatClient(
-            connection: connection,
-            apiKey: key,
-            model: model,
-            thinking: thinking,
-            timeout: 45
-        )
-
-        let price = connection.customPrice
-            ?? AIPriceCatalog.price(for: connection.providerID, model: model)
-        let reserved = price.map {
-            AICostEstimator.reserveMicros(
-                inputTokens: max(1, pageCount * 1_200),
-                maxOutputTokens: AISearchService.answerTokens,
-                price: $0
-            )
-        } ?? 0
-
-        return AISearchService(
-            search: { query, limit in
-                let batch = try await router.search(
-                    SearchQuery(
-                        text: query,
-                        recency: .month,
-                        language: language.bcp47,
-                        maxResults: limit
-                    ),
-                    configuration: searchConfiguration,
-                    maxAttempts: 6,
-                    maxProviderAttempts: 3,
-                    useCache: false,
-                    ticket: SearchAttemptTicket(limit: 6)
-                )
-                return batch.hits
-            },
-            read: { hit in
-                try await pageReader.read(hit, apiKey: firecrawlKey)
-            },
-            answer: { system, user, maxTokens in
-                try await client.complete(AIChatRequest(
-                    messages: [
-                        AIChatMessage(role: .system, content: system),
-                        AIChatMessage(role: .user, content: user),
-                    ],
-                    maxTokens: maxTokens,
-                    temperature: 0.2
-                ))
-            },
-            reserve: {
-                AIQuotaStore.shared.reserve(.aiSearch, policy: policy, reservedCostMicros: reserved)
-            },
-            settle: { response in
-                AIQuotaStore.shared.settle(
-                    reservedCostMicros: reserved,
-                    usage: response.usage,
-                    price: price
-                )
-            },
-            now: { Date() },
-            pageCount: pageCount,
-            thinking: thinking,
-            model: model,
-            language: language
-        )
     }
 }

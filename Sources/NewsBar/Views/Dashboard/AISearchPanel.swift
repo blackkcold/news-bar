@@ -13,11 +13,10 @@ struct AISearchPanel: View {
     let onRetry: () -> Void
     let onClose: () -> Void
     let onOpenCitation: (URL) -> Void
+    let onCopy: (String) -> Void
     let onOpenSettings: () -> Void
 
     @FocusState private var questionFocused: Bool
-
-    private var english: Bool { language == .en }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -50,6 +49,17 @@ struct AISearchPanel: View {
             Text(L10n.string("reader.search.title", language: language))
                 .font(.headline)
             Spacer(minLength: 0)
+            if let answer = model.answer {
+                Button {
+                    onCopy(answer.plainText(language))
+                } label: {
+                    Image(systemName: "doc.on.doc")
+                }
+                .buttonStyle(.borderless)
+                .disabled(model.isRevealing)
+                .help(L10n.string("answer.copy", language: language))
+                .accessibilityLabel(L10n.string("answer.copy", language: language))
+            }
             Button(action: onClose) {
                 Image(systemName: "xmark")
             }
@@ -129,18 +139,18 @@ struct AISearchPanel: View {
                 .fixedSize(horizontal: false, vertical: true)
 
         case .searching, .reading, .answering:
-            VStack(alignment: .leading, spacing: 8) {
-                ProgressView(value: model.progress)
-                    .progressViewStyle(.linear)
-                Text(stageText)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 9) {
+                AnswerStageRow(state: model.state, scope: model.scope, language: language)
+                if let answer = model.answer {
+                    answerSection(answer)
+                } else {
+                    AnswerSkeleton()
+                }
             }
-            .accessibilityElement(children: .combine)
 
         case .done:
             if let answer = model.answer {
-                answerView(answer)
+                answerSection(answer)
             }
 
         case .failed(let message):
@@ -164,68 +174,24 @@ struct AISearchPanel: View {
         }
     }
 
-    private func answerView(_ answer: AISearchAnswer) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            ScrollView {
-                Text(answer.answer)
-                    .font(.callout)
-                    .textSelection(.enabled)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+    private func answerSection(_ answer: AnswerDocument) -> some View {
+        AnswerDocumentView(
+            document: answer,
+            language: language,
+            maxHeight: 360,
+            onOpenSource: { source in
+                if let url = URL(string: source.url) { onOpenCitation(url) }
             }
-            .frame(maxHeight: 240)
-
-            if answer.citations.isEmpty {
-                Text(L10n.string("reader.search.noCitations", language: language))
-                    .font(.caption)
-                    .foregroundStyle(.orange)
-            } else {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(L10n.string("reader.search.citations", language: language))
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                    ForEach(answer.citations) { citation in
-                        Button {
-                            if let url = URL(string: citation.url) { onOpenCitation(url) }
-                        } label: {
-                            HStack(alignment: .firstTextBaseline, spacing: 6) {
-                                Text("[\(citation.index)]")
-                                    .font(.system(size: 10, weight: .bold, design: .monospaced))
-                                    .foregroundStyle(.secondary)
-                                VStack(alignment: .leading, spacing: 1) {
-                                    Text(citation.title)
-                                        .font(.caption)
-                                        .lineLimit(1)
-                                    Text(citation.host)
-                                        .font(.caption2)
-                                        .foregroundStyle(.secondary)
-                                }
-                                Spacer(minLength: 0)
-                                Image(systemName: "arrow.up.right")
-                                    .font(.caption2)
-                                    .foregroundStyle(.secondary)
-                            }
-                            .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
-                        .help(citation.url)
-                        .accessibilityLabel(english
-                            ? "Citation \(citation.index), \(citation.title), open \(citation.host)"
-                            : "引用 \(citation.index)，\(citation.title)，打开 \(citation.host)")
-                    }
-                }
-            }
-        }
+        )
     }
 
     private var footer: some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(L10n.string(
-                "reader.search.meta",
+                "answer.meta",
                 language: language,
                 modelName,
-                model.answer?.thinkingLevel.title(language) ?? "",
-                model.answer?.fetchedSources.count ?? 0
+                model.answer?.thinking.title(language) ?? ""
             ))
             .font(.caption2)
             .foregroundStyle(.tertiary)
@@ -236,19 +202,6 @@ struct AISearchPanel: View {
                 .lineLimit(2)
         }
         .accessibilityElement(children: .combine)
-    }
-
-    private var stageText: String {
-        switch model.state {
-        case .searching:
-            return L10n.string("reader.search.searching", language: language)
-        case .reading(let index, let total):
-            return L10n.string("reader.search.reading", language: language, index, total)
-        case .answering:
-            return L10n.string("reader.search.answering", language: language)
-        default:
-            return ""
-        }
     }
 
     private func submit() {

@@ -54,6 +54,10 @@ enum AIChatError: Error, Equatable, LocalizedError {
 
 protocol AIChatClienting: Sendable {
     func complete(_ request: AIChatRequest) async throws -> AIChatResponse
+    /// Incremental answer. Providers that cannot stream still satisfy this:
+    /// the default implementation runs `complete` and yields one text event,
+    /// so every caller has a single code path.
+    func stream(_ request: AIChatRequest) -> AsyncThrowingStream<AIChatStreamEvent, Error>
     /// Unit price used to reserve and settle the call. Test doubles and
     /// providers without a published price return nil.
     var price: ModelPrice? { get }
@@ -61,6 +65,23 @@ protocol AIChatClienting: Sendable {
 
 extension AIChatClienting {
     var price: ModelPrice? { nil }
+
+    func stream(_ request: AIChatRequest) -> AsyncThrowingStream<AIChatStreamEvent, Error> {
+        AsyncThrowingStream { continuation in
+            let task = Task {
+                do {
+                    let response = try await complete(request)
+                    if let usage = response.usage { continuation.yield(.usage(usage)) }
+                    continuation.yield(.text(response.text))
+                    continuation.yield(.finished(truncated: response.truncated))
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
 }
 
 /// Minimal chat-completions client that speaks both OpenAI-compatible and
@@ -68,6 +89,7 @@ extension AIChatClienting {
 /// provider-side web search: research output stays a plain JSON contract.
 struct HTTPAIChatClient: AIChatClienting {
     typealias Transport = @Sendable (URLRequest) async throws -> (Data, URLResponse)
+    typealias StreamTransport = @Sendable (URLRequest) async throws -> (AsyncThrowingStream<Data, Error>, HTTPURLResponse)
 
     let connection: ResolvedAIConnection
     let apiKey: String
@@ -78,6 +100,7 @@ struct HTTPAIChatClient: AIChatClienting {
     let thinking: AIThinkingLevel?
     let timeout: TimeInterval
     let transport: Transport
+    let streamTransport: StreamTransport
 
     init(
         connection: ResolvedAIConnection,
@@ -92,6 +115,9 @@ struct HTTPAIChatClient: AIChatClienting {
                 maxBytes: PrivateHTTP.defaultMaxBytes,
                 timeout: request.timeoutInterval
             )
+        },
+        streamTransport: @escaping StreamTransport = { request in
+            try await PrivateHTTP.stream(for: request, timeout: request.timeoutInterval)
         }
     ) {
         self.connection = connection
@@ -101,12 +127,85 @@ struct HTTPAIChatClient: AIChatClienting {
         self.thinking = thinking
         self.timeout = timeout
         self.transport = transport
+        self.streamTransport = streamTransport
+    }
+
+    var price: ModelPrice? {
+        connection.customPrice ?? AIPriceCatalog.price(for: connection.providerID, model: model)
     }
 
     func complete(_ request: AIChatRequest) async throws -> AIChatResponse {
-        let built: AIBuiltRequest
+        let built = try build(request, stream: false)
+        let (data, response) = try await send(built.request)
+        try Self.validate(response)
+        switch connection.responseFormat {
+        case .openAI:
+            return try Self.parseOpenAI(data)
+        case .anthropic:
+            return try Self.parseAnthropic(data)
+        }
+    }
+
+    // MARK: - Streaming
+
+    func stream(_ request: AIChatRequest) -> AsyncThrowingStream<AIChatStreamEvent, Error> {
+        AsyncThrowingStream { continuation in
+            let task = Task {
+                do {
+                    let built = try build(request, stream: true)
+                    let (chunks, response) = try await streamTransport(built.request)
+                    do {
+                        try Self.validate(response)
+                    } catch let error as AIChatError {
+                        // A provider or proxy that refuses streaming must not
+                        // cost the user the answer. Nothing was generated yet,
+                        // so retrying without `stream` is free.
+                        guard Self.allowsNonStreamingFallback(error) else { throw error }
+                        let whole = try await complete(request)
+                        if let usage = whole.usage { continuation.yield(.usage(usage)) }
+                        continuation.yield(.text(whole.text))
+                        continuation.yield(.finished(truncated: whole.truncated))
+                        continuation.finish()
+                        return
+                    }
+
+                    var buffer = ""
+                    for try await data in chunks {
+                        guard let text = String(data: data, encoding: .utf8) else { continue }
+                        buffer += text
+                        for frame in SSEDecoder.drain(&buffer) {
+                            for event in AIStreamParser.events(from: frame, format: connection.responseFormat) {
+                                continuation.yield(event)
+                            }
+                        }
+                    }
+                    if let frame = SSEDecoder.frame(from: buffer) {
+                        for event in AIStreamParser.events(from: frame, format: connection.responseFormat) {
+                            continuation.yield(event)
+                        }
+                    }
+                    continuation.finish()
+                } catch is CancellationError {
+                    continuation.finish(throwing: CancellationError())
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+
+    private static func allowsNonStreamingFallback(_ error: AIChatError) -> Bool {
+        switch error {
+        case .server(let status): return [400, 404, 405, 415, 422, 501].contains(status)
+        case .malformedResponse: return true
+        default: return false
+        }
+    }
+
+    private func build(_ request: AIChatRequest, stream: Bool) throws -> AIBuiltRequest {
         do {
-            built = try AIRequestBuilder.build(
+            return try AIRequestBuilder.build(
                 connection: connection,
                 apiKey: apiKey,
                 model: model,
@@ -118,21 +217,13 @@ struct HTTPAIChatClient: AIChatClienting {
                     disableDeepSeekThinking: disableDeepSeekThinking
                 ),
                 timeout: timeout,
-                userAgent: "NewsBar/1.0 (macOS; Chat)"
+                userAgent: "NewsBar/1.0 (macOS; Chat)",
+                stream: stream
             )
         } catch AIRequestBuilderError.invalidURL {
             throw AIChatError.invalidURL
         } catch {
             throw AIChatError.malformedResponse
-        }
-
-        let (data, response) = try await send(built.request)
-        try Self.validate(response)
-        switch connection.responseFormat {
-        case .openAI:
-            return try Self.parseOpenAI(data)
-        case .anthropic:
-            return try Self.parseAnthropic(data)
         }
     }
 

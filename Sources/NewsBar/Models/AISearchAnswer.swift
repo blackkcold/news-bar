@@ -38,35 +38,6 @@ struct AISearchSource: Identifiable, Equatable, Sendable {
     }
 }
 
-struct AISearchCitation: Identifiable, Equatable, Sendable {
-    let id: String
-    let index: Int
-    let url: String
-    let title: String
-    let host: String
-
-    init(source: AISearchSource) {
-        self.id = source.id
-        self.index = source.index
-        self.url = source.url
-        self.title = source.title
-        self.host = source.host
-    }
-}
-
-struct AISearchAnswer: Equatable, Sendable {
-    let question: String
-    let answer: String
-    let citations: [AISearchCitation]
-    let fetchedSources: [AISearchSource]
-    let thinkingLevel: AIThinkingLevel
-    let model: String
-    let scope: AISearchScope
-    let searchedAt: Date
-    /// True when every citation was discarded and the answer was degraded.
-    let citationsUnavailable: Bool
-}
-
 enum AISearchStage: Equatable, Sendable {
     case searching
     case reading(index: Int, total: Int)

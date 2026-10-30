@@ -24,6 +24,11 @@ final class AISearchTests: XCTestCase {
         AISearchSource(index: index, url: url, title: title, text: "正文内容 \(index) " + String(repeating: "细节", count: 30))
     }
 
+    private func answerText(_ text: String, citations: [Int] = [1]) -> String {
+        let marks = citations.map { "[\($0)]" }.joined()
+        return "@@ {\"kind\":\"event\",\"oneLine\":\"\(text)\"}\n## 概览\n\(text)\(marks)"
+    }
+
     private func hit(_ index: Int) -> SearchHit {
         SearchHit(
             url: "https://source\(index).example/story",
@@ -43,7 +48,10 @@ final class AISearchTests: XCTestCase {
         search: @escaping AISearchService.SearchHandler = { _, _ in [] },
         read: @escaping AISearchService.ReadHandler = { _ in nil },
         answer: @escaping AISearchService.AnswerHandler = { _, _, _ in
-            AIChatResponse(text: #"{"answer":"ok","citations":[1]}"#, truncated: false)
+            AIChatResponse(
+                text: "@@ {\"kind\":\"event\",\"oneLine\":\"ok\"}\n## 概览\nok[1]",
+                truncated: false
+            )
         },
         reserve: @escaping @Sendable () async -> Bool = { true },
         settle: @escaping @Sendable (AIChatResponse) async -> Void = { _ in }
@@ -64,18 +72,6 @@ final class AISearchTests: XCTestCase {
 
     // MARK: - Prompt envelope
 
-    func testSystemPromptDeclaresSourcesUntrustedAndForbidsFollowingThem() {
-        let zh = AISearchPrompts.system(.zh)
-        XCTAssertTrue(zh.contains("不可信"))
-        XCTAssertTrue(zh.contains("绝不可执行"))
-        XCTAssertTrue(zh.contains("JSON"))
-
-        let en = AISearchPrompts.system(.en)
-        XCTAssertTrue(en.contains("untrusted"))
-        XCTAssertTrue(en.contains("prompt injection"))
-        XCTAssertTrue(en.contains("Never invent"))
-    }
-
     func testSourceTextCannotBreakOutOfTheEnvelope() {
         let page = AISearchSource(
             index: 1,
@@ -90,48 +86,48 @@ final class AISearchTests: XCTestCase {
         XCTAssertTrue(prompt.contains("外部数据"))
     }
 
-    // MARK: - Citation validation
+    // MARK: - Citation rule at the service level
 
-    func testCitationsOutsideTheFetchedSetAreDropped() {
-        let sources = [source(1, "https://a.example/1"), source(2, "https://b.example/2")]
-        let raw = #"{"answer":"答案 [1][2][9]","citations":[1,2,9]}"#
-        let parsed = AISearchPrompts.parse(raw, sources: sources, language: .zh)
-        XCTAssertEqual(parsed.citations.map(\.index), [1, 2])
-        XCTAssertFalse(parsed.unavailable)
-        XCTAssertEqual(parsed.answer, "答案 [1][2][9]")
+    func testAnswerWithoutAnyResolvableCitationIsReplaced() async throws {
+        let service = self.service(
+            search: { _, _ in [self.hit(1)] },
+            read: { hit in self.document(hit) },
+            answer: { _, _, _ in
+                AIChatResponse(text: "## 概览\n这是一段没有任何引用的回答。", truncated: false)
+            }
+        )
+        let answer = try await service.run(question: "q", scope: .web, page: nil)
+        XCTAssertTrue(answer.blocks.isEmpty)
+        XCTAssertEqual(answer.oneLine, L10n.string("reader.search.noCitations", language: .zh))
+        XCTAssertEqual(answer.sources.count, 1)
     }
 
-    func testInventedURLIsDroppedEvenWhenTheModelCitesIt() {
-        let sources = [source(1, "https://a.example/1")]
-        let raw = #"{"answer":"答案","citations":["https://invented.example/fake","https://a.example/1"]}"#
-        let parsed = AISearchPrompts.parse(raw, sources: sources, language: .zh)
-        XCTAssertEqual(parsed.citations.map(\.url), ["https://a.example/1"])
-        XCTAssertFalse(parsed.unavailable)
+    func testCitationThatDoesNotResolveStaysInTheProseButIsNotEvidence() async throws {
+        let service = self.service(
+            search: { _, _ in [self.hit(1)] },
+            read: { hit in self.document(hit) },
+            answer: { _, _, _ in
+                AIChatResponse(
+                    text: "@@ {\"kind\":\"event\",\"oneLine\":\"一句\"}\n## 概览\n甲[1]，乙[9]。",
+                    truncated: false
+                )
+            }
+        )
+        let answer = try await service.run(question: "q", scope: .web, page: nil)
+        XCTAssertEqual(answer.citationIndices, [1])
+        XCTAssertTrue(answer.blocks.first?.body.contains("[9]") ?? false)
     }
 
-    func testAllCitationsDroppedDegradesTheAnswer() {
-        let sources = [source(1, "https://a.example/1")]
-        let raw = #"{"answer":"我编造了一个答案","citations":[42,"https://invented.example/fake"]}"#
-        let parsed = AISearchPrompts.parse(raw, sources: sources, language: .zh)
-        XCTAssertTrue(parsed.citations.isEmpty)
-        XCTAssertTrue(parsed.unavailable)
-        XCTAssertEqual(parsed.answer, "未能获得可引用的来源。")
-        XCTAssertFalse(parsed.answer.contains("编造"))
-    }
-
-    func testCodeFenceAndBracketedFallbackStillValidate() {
-        let sources = [source(1, "https://a.example/1"), source(2, "https://b.example/2")]
-        let fenced = """
-        ```json
-        {"answer":"简短回答[2]","citations":[2]}
-        ```
-        """
-        XCTAssertEqual(AISearchPrompts.parse(fenced, sources: sources, language: .zh).citations.map(\.index), [2])
-
-        let prose = "根据资料，这件事发生在去年[2]，另见[7]。"
-        let parsed = AISearchPrompts.parse(prose, sources: sources, language: .zh)
-        XCTAssertEqual(parsed.citations.map(\.index), [2])
-        XCTAssertTrue(parsed.answer.contains("去年"))
+    func testTruncatedAnswerIsMarkedInTheDocument() async throws {
+        let service = self.service(
+            search: { _, _ in [self.hit(1)] },
+            read: { hit in self.document(hit) },
+            answer: { _, _, _ in
+                AIChatResponse(text: self.answerText("a"), truncated: true)
+            }
+        )
+        let answer = try await service.run(question: "q", scope: .web, page: nil)
+        XCTAssertTrue(answer.truncated)
     }
 
     // MARK: - Service behaviour
@@ -145,7 +141,7 @@ final class AISearchTests: XCTestCase {
             },
             answer: { _, user, _ in
                 XCTAssertTrue(user.contains("阅读器当前打开"))
-                return AIChatResponse(text: #"{"answer":"a","citations":[1]}"#, truncated: false)
+                return AIChatResponse(text: self.answerText("a"), truncated: false)
             }
         )
         let page = AISearchPageContext(
@@ -155,9 +151,9 @@ final class AISearchTests: XCTestCase {
         )
         let answer = try await service.run(question: "问题", scope: .currentPage, page: page)
         XCTAssertEqual(counter.count, 0)
-        XCTAssertEqual(answer.fetchedSources.count, 1)
-        XCTAssertEqual(answer.citations.map(\.url), ["https://page.example/a"])
-        XCTAssertEqual(answer.scope, .currentPage)
+        XCTAssertEqual(answer.sources.count, 1)
+        XCTAssertEqual(answer.citationIndices, [1])
+        XCTAssertEqual(answer.mode, .currentPage)
     }
 
     func testCurrentPageScopeWithoutTextFails() async {
@@ -189,15 +185,15 @@ final class AISearchTests: XCTestCase {
                 XCTAssertTrue(user.contains("source1"))
                 XCTAssertTrue(user.contains("source3"))
                 XCTAssertFalse(user.contains("source4"))
-                return AIChatResponse(text: #"{"answer":"a","citations":[1,2]}"#, truncated: false)
+                return AIChatResponse(text: self.answerText("a", citations: [1, 2]), truncated: false)
             }
         )
         let answer = try await service.run(question: "q", scope: .web, page: nil)
         XCTAssertEqual(limits.recordedLimits, [3])
         XCTAssertEqual(reads.count, 3)
-        XCTAssertEqual(answer.fetchedSources.count, 2)
-        XCTAssertEqual(answer.fetchedSources.map(\.url), [hit(1).url, hit(3).url])
-        XCTAssertEqual(answer.citations.map(\.index), [1, 2])
+        XCTAssertEqual(answer.sources.count, 2)
+        XCTAssertEqual(answer.sources.map(\.url), [hit(1).url, hit(3).url])
+        XCTAssertEqual(answer.citationIndices, [1, 2])
     }
 
     func testQuotaIsReservedBeforeAnswering() async {
@@ -207,7 +203,7 @@ final class AISearchTests: XCTestCase {
             read: { hit in self.document(hit) },
             answer: { _, _, _ in
                 answered.increment()
-                return AIChatResponse(text: #"{"answer":"a","citations":[1]}"#, truncated: false)
+                return AIChatResponse(text: self.answerText("a"), truncated: false)
             },
             reserve: { false }
         )
@@ -265,6 +261,26 @@ final class AISearchTests: XCTestCase {
         ])
     }
 
+    // MARK: - Quota preflight
+
+    func testQuotaPreflightStopsBeforeAnySearch() async {
+        let searches = Counter()
+        var service = self.service(
+            search: { _, _ in
+                searches.increment()
+                return [self.hit(1)]
+            }
+        )
+        service.preflight = { false }
+        do {
+            _ = try await service.run(question: "q", scope: .web, page: nil)
+            XCTFail("expected quotaUnavailable")
+        } catch {
+            XCTAssertEqual(error as? AISearchError, .quotaUnavailable)
+        }
+        XCTAssertEqual(searches.count, 0)
+    }
+
     // MARK: - Panel state machine
 
     @MainActor
@@ -272,23 +288,23 @@ final class AISearchTests: XCTestCase {
         let model = AISearchPanelModel(runner: { question, scope, _, onStage in
             await onStage(.searching)
             await onStage(.answering)
-            return AISearchAnswer(
-                question: question,
-                answer: "answer",
-                citations: [],
-                fetchedSources: [],
-                thinkingLevel: .medium,
+            return AnswerDocument(
+                kind: .term,
+                oneLine: "answer",
+                blocks: [AnswerBlock(id: 0, heading: nil, body: "body")],
+                sources: [],
+                mode: .currentPage,
                 model: "m",
-                scope: scope,
-                searchedAt: Date(),
-                citationsUnavailable: true
+                thinking: .medium,
+                generatedAt: Date(),
+                question: question
             )
         })
         model.question = "  question  "
         model.runInjected(question: model.question, scope: .currentPage, page: nil)
         await waitForIdle(model)
         XCTAssertEqual(model.state, .done)
-        XCTAssertEqual(model.answer?.answer, "answer")
+        XCTAssertEqual(model.answer?.oneLine, "answer")
         XCTAssertEqual(model.lastQuestion, "question")
         XCTAssertEqual(model.progress, 1)
     }
@@ -314,6 +330,29 @@ final class AISearchTests: XCTestCase {
             throw AISearchError.emptyQuestion
         })
         model.runInjected(question: "   ", scope: .currentPage, page: nil)
+        XCTAssertEqual(model.state, .idle)
+    }
+
+    @MainActor
+    func testDismissClearsThePreviousAnswer() async {
+        let model = AISearchPanelModel(runner: { _, _, _, _ in
+            AnswerDocument(
+                kind: .term,
+                oneLine: "answer",
+                blocks: [AnswerBlock(id: 0, heading: nil, body: "body")],
+                sources: [],
+                mode: .web,
+                model: "m",
+                thinking: .medium,
+                generatedAt: Date(),
+                question: nil
+            )
+        })
+        model.runInjected(question: "q", scope: .web, page: nil)
+        await waitForIdle(model)
+        XCTAssertNotNil(model.answer)
+        model.dismiss()
+        XCTAssertNil(model.answer)
         XCTAssertEqual(model.state, .idle)
     }
 

@@ -22,6 +22,71 @@ enum PrivateHTTP {
 
     static let defaultMaxBytes = 4 * 1024 * 1024
 
+    /// Streaming variant of `data(for:)`. The body stays open, so the resource
+    /// timeout is the generation ceiling rather than the request timeout. The
+    /// body ceiling is still enforced while reading, and the session is
+    /// cancelled as soon as the consumer stops.
+    static func stream(
+        for request: URLRequest,
+        maxBytes: Int = defaultMaxBytes,
+        timeout: TimeInterval? = nil,
+        redirectPolicy: RedirectPolicy = .deny
+    ) async throws -> (AsyncThrowingStream<Data, Error>, HTTPURLResponse) {
+        var request = request
+        if let timeout { request.timeoutInterval = timeout }
+
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.httpCookieStorage = nil
+        configuration.httpCookieAcceptPolicy = .never
+        configuration.urlCache = nil
+        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
+        configuration.timeoutIntervalForRequest = request.timeoutInterval
+        configuration.timeoutIntervalForResource = 300
+        let session = URLSession(configuration: configuration)
+
+        let (bytes, response) = try await session.bytes(
+            for: request,
+            delegate: RequestDelegate(policy: redirectPolicy)
+        )
+        guard let http = response as? HTTPURLResponse else {
+            session.invalidateAndCancel()
+            throw PrivateHTTPError.invalidResponse
+        }
+        if let declared = http.value(forHTTPHeaderField: "Content-Length").flatMap(Int.init),
+           declared > maxBytes {
+            session.invalidateAndCancel()
+            throw PrivateHTTPError.tooLarge(maxBytes)
+        }
+
+        let stream = AsyncThrowingStream<Data, Error> { continuation in
+            let task = Task {
+                var line = Data()
+                var total = 0
+                do {
+                    for try await byte in bytes {
+                        line.append(byte)
+                        total += 1
+                        if total > maxBytes { throw PrivateHTTPError.tooLarge(maxBytes) }
+                        if byte == 0x0A {
+                            continuation.yield(line)
+                            line.removeAll(keepingCapacity: true)
+                        }
+                    }
+                    if !line.isEmpty { continuation.yield(line) }
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+                session.invalidateAndCancel()
+            }
+            continuation.onTermination = { _ in
+                task.cancel()
+                session.invalidateAndCancel()
+            }
+        }
+        return (stream, http)
+    }
+
     static func data(
         for request: URLRequest,
         maxBytes: Int = defaultMaxBytes,

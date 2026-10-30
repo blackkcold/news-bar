@@ -2,6 +2,27 @@ import XCTest
 @testable import NewsBar
 
 final class AIChatClientTests: XCTestCase {
+    /// A client without a price can never settle cost, so accounts capped by
+    /// money silently paid for every call. The catalog is the fallback.
+    func testClientPriceFallsBackToTheCatalog() {
+        let client = HTTPAIChatClient(
+            connection: AIProvider.deepseek.resolvedConnection(),
+            apiKey: "unused",
+            model: "deepseek-v4-flash"
+        )
+        XCTAssertEqual(client.price?.provider, "deepseek")
+        XCTAssertGreaterThan(client.price?.outputPerMTok ?? 0, 0)
+    }
+
+    func testUnknownModelHasNoPrice() {
+        let client = HTTPAIChatClient(
+            connection: AIProvider.deepseek.resolvedConnection(),
+            apiKey: "unused",
+            model: "unlisted-model"
+        )
+        XCTAssertNil(client.price)
+    }
+
     private final class Recorder: @unchecked Sendable {
         private let lock = NSLock()
         private var values: [URLRequest] = []

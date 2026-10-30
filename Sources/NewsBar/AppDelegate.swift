@@ -497,6 +497,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
     private func setupStatusBar() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        // Local UI verification hook: `open -a NewsBar --args --open-dashboard`
+        // shows the dashboard without hunting for the menu bar icon.
+        if ProcessInfo.processInfo.arguments.contains("--open-dashboard") {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
+                self?.togglePopover()
+            }
+        }
 
         if let button = statusItem?.button {
             let icon = NSImage(
