@@ -13,7 +13,7 @@
   "release_branch": true,
   "auto_merge": false,
   "release_note_style": "structured-cn",
-  "summary": "阅读模式、兴趣网络图与阅读器 AI 搜索",
-  "summary_en": "Reader mode, interest network graph, and reader AI search",
-  "validation": "swift test 1148/1148（2 skipped）+ swift build -c release + scripts/build.sh + codesign verify 通过"
+  "summary": "AI 答案画布、流式作答与划词自动联网判定",
+  "summary_en": "AI answer canvas, streaming answers, and automatic look-up for selections",
+  "validation": "swift test 1220/1220（3 skipped）+ swift build -c release + scripts/build.sh + codesign verify 通过"
 }

@@ -843,6 +843,32 @@ struct ReaderContentView: View {
     @Environment(AppSettings.self) private var settings
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
+    private var explainPanel: some View {
+        SelectionExplainPanel(
+            model: explainModel,
+            language: settings.appLanguage,
+            providerName: settings.providerDisplayName(forID: settings.aiProvider),
+            onClose: { explainModel.dismiss() },
+            onCopy: { answer in
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(answer, forType: .string)
+            },
+            onRetry: { explainModel.retry(settings: settings) },
+            onOpenSettings: {
+                explainModel.dismiss()
+                onConfigureAI()
+            },
+            onOpenSource: { url in
+                explainModel.dismiss()
+                model.openReaderModeLink(url)
+            },
+            canLookUp: settings.aiSearchEnabled && !settings.researchSearchProviders.isEmpty,
+            onLookUp: { explainModel.requestLookUp() },
+            onConfirmLookUp: { explainModel.confirmLookUp(settings: settings) },
+            onCancelLookUp: { explainModel.cancelLookUp() }
+        )
+    }
+
     private var english: Bool { settings.appLanguage == .en }
     private var controller: InterestController { InterestController.shared }
     private var isBookmarked: Bool {
@@ -894,23 +920,13 @@ struct ReaderContentView: View {
             .animation(reduceMotion ? nil : DashboardMotion.micro, value: model.notice != nil)
             .overlay(alignment: .bottomTrailing) {
                 if explainModel.state != .idle {
-                    SelectionExplainPanel(
-                        model: explainModel,
-                        language: settings.appLanguage,
-                        providerName: settings.providerDisplayName(forID: settings.aiProvider),
-                        onClose: { explainModel.dismiss() },
-                        onCopy: { answer in
-                            NSPasteboard.general.clearContents()
-                            NSPasteboard.general.setString(answer, forType: .string)
-                        },
-                        onRetry: { explainModel.retry(settings: settings) },
-                        onOpenSettings: {
-                            explainModel.dismiss()
-                            onConfigureAI()
-                        }
-                    )
+                    explainPanel
                     .padding(16)
                     .transition(.move(edge: .bottom).combined(with: .opacity))
+                    .onAppear { explainModel.setRevealEnabled(!reduceMotion) }
+                    .onChange(of: reduceMotion) { _, value in
+                        explainModel.setRevealEnabled(!value)
+                    }
                 }
             }
             .animation(reduceMotion ? nil : DashboardMotion.micro, value: explainModel.state)
@@ -929,6 +945,10 @@ struct ReaderContentView: View {
                             closeAISearch()
                             model.openReaderModeLink(url)
                         },
+                        onCopy: { text in
+                            NSPasteboard.general.clearContents()
+                            NSPasteboard.general.setString(text, forType: .string)
+                        },
                         onOpenSettings: {
                             closeAISearch()
                             onConfigureAI()
@@ -936,6 +956,10 @@ struct ReaderContentView: View {
                     )
                     .padding(16)
                     .transition(.move(edge: .trailing).combined(with: .opacity))
+                    .onAppear { searchModel.setRevealEnabled(!reduceMotion) }
+                    .onChange(of: reduceMotion) { _, value in
+                        searchModel.setRevealEnabled(!value)
+                    }
                 }
             }
             .animation(reduceMotion ? nil : DashboardMotion.micro, value: showAISearch)

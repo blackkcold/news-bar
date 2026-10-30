@@ -394,6 +394,23 @@ struct AITab: View {
             }
 
             Section {
+                Picker("settings.selectionWeb", selection: Binding(
+                    get: { settings.selectionWebMode },
+                    set: { settings.selectionWebMode = $0 }
+                )) {
+                    ForEach(SelectionWebMode.allCases) { mode in
+                        Text(mode.title(settings.appLanguage)).tag(mode)
+                    }
+                }
+                Text(settings.selectionWebMode.detail(settings.appLanguage))
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            } header: {
+                Text("settings.selectionWeb.section".localized)
+            }
+
+            Section {
                 summaryLengthRow(
                     title: "ai.summaryLength".localized,
                     selection: Binding(

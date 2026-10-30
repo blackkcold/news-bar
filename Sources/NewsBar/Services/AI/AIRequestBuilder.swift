@@ -36,7 +36,8 @@ enum AIRequestBuilder {
         temperature: Double,
         thinking: AIThinkingLevel,
         timeout: TimeInterval,
-        userAgent: String? = nil
+        userAgent: String? = nil,
+        stream: Bool = false
     ) throws -> AIBuiltRequest {
         guard !messages.isEmpty else { throw AIRequestBuilderError.emptyMessages }
         guard let url = URL(string: connection.baseURL) else { throw AIRequestBuilderError.invalidURL }
@@ -66,6 +67,12 @@ enum AIRequestBuilder {
                 "max_tokens": requested,
                 "temperature": temperature,
             ]
+            if stream {
+                body["stream"] = true
+                // Without this OpenAI-compatible servers omit token usage from
+                // the final chunk, and the call could not be priced.
+                body["stream_options"] = ["include_usage": true]
+            }
         case .anthropic:
             let system = messages
                 .filter { $0.role == .system }
@@ -81,6 +88,7 @@ enum AIRequestBuilder {
                 "temperature": temperature,
             ]
             if !system.isEmpty { body["system"] = system }
+            if stream { body["stream"] = true }
         }
 
         let applied = AIThinkingApplication.apply(

@@ -82,13 +82,40 @@
     );
   };
 
+  // A comment avatar is 32x32. Stretched to the reading column it becomes a
+  // black smear, which is exactly what readers reported. Only images that are
+  // demonstrably content-sized become figures.
+  const MIN_IMAGE_WIDTH = 240;
+  const MIN_IMAGE_HEIGHT = 160;
+  const DECORATIVE_SRC = /(^|[/_.-])(avatar|icon|logo|emoji|sprite|gravatar)([/_.-]|$)/;
+
+  const isDecorativeImage = (img, caption) => {
+    const hasCaption = !!(caption && caption.trim());
+    const width = img.naturalWidth || Number(img.getAttribute("width")) || 0;
+    const height = img.naturalHeight || Number(img.getAttribute("height")) || 0;
+    // No size and no caption: the page has not marked this as content.
+    if (!hasCaption && (!width || !height)) return true;
+    if (width && height && (width < MIN_IMAGE_WIDTH || height < MIN_IMAGE_HEIGHT)) return true;
+    const role = (img.getAttribute("role") || "").toLowerCase();
+    if (role === "presentation" || role === "none") return true;
+    const alt = (img.getAttribute("alt") || "").toLowerCase();
+    if (/(avatar|icon|logo|emoji|badge|sprite)/.test(alt)) return true;
+    const src = (img.currentSrc || img.getAttribute("src") || "").toLowerCase();
+    if (DECORATIVE_SRC.test(src)) return true;
+    return !!img.closest(
+      'a[href*="/user"], a[href*="/profile"], a[rel~="author"], ' +
+      '[class*="avatar" i], [class*="comment" i], [class*="discussion" i]'
+    );
+  };
+
   const NOISE = [
     "script", "style", "noscript", "iframe", "svg", "canvas", "video", "audio",
     "form", "input", "select", "textarea", "button", "nav", "footer", "aside",
     "header", "[role=navigation]", "[role=banner]", "[role=complementary]",
     ".comment", ".comments", ".sidebar", ".footer", ".nav", ".share", ".shared",
     ".related", ".advert", ".ads", ".ad", ".recommend", ".recommended",
-    "#comments", "#sidebar", "#footer", "#nav",
+    "[class*=avatar i]", "[class*=discussion i]", "[data-testid*=comment i]",
+    "[itemprop=comment]", "#comments", "#sidebar", "#footer", "#nav",
   ].join(",");
 
   const NEGATIVE = [
@@ -199,6 +226,7 @@
       blocks.push(block);
     };
     const imageBlock = (img, caption) => {
+      if (isDecorativeImage(img, caption)) return false;
       const src = bestImage(img);
       if (!src) return false;
       handled.add(img);

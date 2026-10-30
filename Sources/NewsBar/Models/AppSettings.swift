@@ -31,6 +31,27 @@ enum AppTheme: String, Sendable, CaseIterable, Identifiable {
     }
 }
 
+/// How selected-text explanations reach the web.
+///
+/// Offline is the default: a selection is often private, and a look-up turns
+/// one call into a search plus page reads. Auto lets the model decide, and
+/// always is an explicit opt-in.
+enum SelectionWebMode: String, Codable, Sendable, CaseIterable, Identifiable {
+    case offline
+    case auto
+    case always
+
+    var id: String { rawValue }
+
+    func title(_ language: AppLanguage) -> String {
+        L10n.string("settings.selectionWeb.\(rawValue)", language: language)
+    }
+
+    func detail(_ language: AppLanguage) -> String {
+        L10n.string("settings.selectionWeb.\(rawValue).detail", language: language)
+    }
+}
+
 enum AppLanguage: String, Sendable, Codable, CaseIterable, Identifiable {
     case zh
     case en
@@ -170,6 +191,11 @@ final class AppSettings {
     /// as context, and no search provider is contacted.
     var aiSearchUseWeb: Bool {
         didSet { UserDefaults.standard.set(aiSearchUseWeb, forKey: "aiSearchUseWeb") }
+    }
+
+    /// Selected-text look-up mode. Offline by default; see SelectionWebMode.
+    var selectionWebMode: SelectionWebMode {
+        didSet { UserDefaults.standard.set(selectionWebMode.rawValue, forKey: "selectionWebMode") }
     }
     /// Empty means "inherit `aiModel`". Never written implicitly.
     var aiSearchModel: String {
@@ -474,6 +500,9 @@ final class AppSettings {
         self.aiPopupDailyCap = Self.validAICaps.contains(rawPopupCap) ? rawPopupCap : 200
         self.aiSearchEnabled = defaults.boolIfPresent(forKey: "aiSearchEnabled") ?? true
         self.aiSearchUseWeb = defaults.boolIfPresent(forKey: "aiSearchUseWeb") ?? true
+        self.selectionWebMode = SelectionWebMode(
+            rawValue: defaults.stringIfPresent(forKey: "selectionWebMode") ?? ""
+        ) ?? .offline
         self.aiSearchModel = defaults.stringIfPresent(forKey: "aiSearchModel") ?? ""
         let rawSearchThinking = defaults.stringIfPresent(forKey: "aiSearchThinking") ?? AIThinkingLevel.medium.rawValue
         self.aiSearchThinking = AIThinkingLevel(rawValue: rawSearchThinking) ?? .medium

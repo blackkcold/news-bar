@@ -9,7 +9,7 @@ final class SelectionExplainModel {
     enum State: Equatable {
         case idle
         case loading
-        case ready(String)
+        case ready(AnswerDocument)
         case noKey
         case quota
         case failed(String)
@@ -17,17 +17,50 @@ final class SelectionExplainModel {
 
     private(set) var state: State = .idle
     private(set) var selection = ""
+    /// Why `.auto` answered from model knowledge instead of the web. The badge
+    /// row alone cannot say it: an offline answer reads the same whether the
+    /// model judged it unnecessary or the search itself failed.
+    private(set) var lookupNotice: LookupNotice?
+    @ObservationIgnored private let reveal = AnswerReveal()
+    /// The answer as far as it has been revealed. Non-nil while the model is
+    /// still typing, which is when the panel should already show the card.
+    var document: AnswerDocument? { reveal.document }
+    var isRevealing: Bool { reveal.isStreaming }
+    private(set) var isConfirmingLookUp = false
+
+    enum LookupNotice: Equatable {
+        /// Auto: the plan said a plain explanation is enough, so no search ran.
+        case judgedOffline
+        /// Auto: the search failed and the offline answer stood in for it.
+        case lookupFailed
+        /// Auto: no search provider is enabled, so a look-up could not run.
+        case searchUnavailable
+    }
+
+    func setRevealEnabled(_ enabled: Bool) {
+        reveal.isEnabled = enabled
+    }
     @ObservationIgnored private var task: Task<Void, Never>?
-    @ObservationIgnored private let explainer: ((String) async throws -> String)?
+    @ObservationIgnored private let explainer: ((String) async throws -> AnswerDocument)?
+    @ObservationIgnored private let planner: ((String) async -> SelectionPlan?)?
+    @ObservationIgnored private let onlineAnswer: ((String) async throws -> AnswerDocument)?
     @ObservationIgnored private var cachedService: SelectionExplainService?
     @ObservationIgnored private var cachedServiceIdentity: String?
 
     init() {
         explainer = nil
+        planner = nil
+        onlineAnswer = nil
     }
 
-    init(explainer: @escaping (String) async throws -> String) {
+    init(
+        explainer: @escaping (String) async throws -> AnswerDocument,
+        planner: ((String) async -> SelectionPlan?)? = nil,
+        onlineAnswer: ((String) async throws -> AnswerDocument)? = nil
+    ) {
         self.explainer = explainer
+        self.planner = planner
+        self.onlineAnswer = onlineAnswer
     }
 
     deinit {
@@ -39,12 +72,16 @@ final class SelectionExplainModel {
         guard !trimmed.isEmpty else { return }
         task?.cancel()
         selection = trimmed
+        lookupNotice = nil
         state = .loading
+        reveal.reset()
+        reveal.begin()
         task = Task { [weak self] in
             guard let self else { return }
             do {
-                let answer = try await self.answer(for: trimmed, settings: settings)
+                let answer = try await self.run(trimmed, settings: settings)
                 try Task.checkCancellation()
+                self.reveal.finish(with: answer)
                 self.state = .ready(answer)
             } catch is CancellationError {
                 return
@@ -69,14 +106,147 @@ final class SelectionExplainModel {
         explain(selection, settings: settings)
     }
 
+    /// The selection becomes a search query, which sends it to a search
+    /// provider — a different disclosure than the AI provider alone. Ask first.
+    func requestLookUp() {
+        guard !selection.isEmpty else { return }
+        isConfirmingLookUp = true
+    }
+
+    func cancelLookUp() {
+        isConfirmingLookUp = false
+    }
+
+    func confirmLookUp(settings: AppSettings) {
+        isConfirmingLookUp = false
+        guard !selection.isEmpty else { return }
+        task?.cancel()
+        lookupNotice = nil
+        state = .loading
+        reveal.reset()
+        reveal.begin()
+        task = Task { [weak self] in
+            guard let self else { return }
+            do {
+                let result = try await self.lookUp(self.selection, settings: settings)
+                try Task.checkCancellation()
+                self.reveal.finish(with: result)
+                self.state = .ready(result)
+            } catch is CancellationError {
+                return
+            } catch {
+                self.reveal.reset()
+                self.state = .failed(L10n.string("reader.selection.webFailed", language: settings.appLanguage))
+            }
+        }
+    }
+
     func dismiss() {
         task?.cancel()
         task = nil
         state = .idle
         selection = ""
+        lookupNotice = nil
+        reveal.reset()
     }
 
-    private func answer(for text: String, settings: AppSettings) async throws -> String {
+    /// Routes one explanation according to the user's mode. Offline is the
+    /// default; auto asks the model whether the passage needs sources; always
+    /// skips the question. A failed look-up falls back to the offline answer
+    /// instead of leaving the user with an error — and says so, because an
+    /// unannounced fallback looks exactly like a deliberate offline answer.
+    private func run(_ text: String, settings: AppSettings) async throws -> AnswerDocument {
+        switch settings.selectionWebMode {
+        case .offline:
+            return try await answer(for: text, settings: settings)
+        case .always:
+            return try await lookUp(text, settings: settings)
+        case .auto:
+            // Without a provider the look-up cannot run at all. Say that up
+            // front instead of spending a classification call and then falling
+            // back for a reason the user cannot see.
+            guard settings.aiSearchEnabled, !settings.researchSearchProviders.isEmpty else {
+                lookupNotice = .searchUnavailable
+                return try await answer(for: text, settings: settings)
+            }
+            let plan = await classify(text, settings: settings)
+            guard SelectionLookupPolicy.shouldLookUp(plan, in: text) else {
+                lookupNotice = .judgedOffline
+                return try await answer(for: text, settings: settings)
+            }
+            let query = plan?.query.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            do {
+                return try await lookUp(query.isEmpty ? text : query, settings: settings)
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                lookupNotice = .lookupFailed
+                return try await answer(for: text, settings: settings)
+            }
+        }
+    }
+
+    private func lookUp(_ query: String, settings: AppSettings) async throws -> AnswerDocument {
+        if let onlineAnswer {
+            return try await onlineAnswer(query)
+        }
+        let service = try await AISearchServiceFactory.make(
+            settings: settings,
+            profile: .selectionLookUp
+        ) { document in
+            Task { @MainActor [weak self] in
+                self?.reveal.receive(document)
+            }
+        }
+        return try await service.run(question: query, scope: .web, page: nil)
+    }
+
+    /// One small call, counted like any other. A parse failure means "look it
+    /// up": a missing answer is worse than an extra search. `SelectionLookupPolicy`
+    /// applies that rule, so a `nil` plan here is not a "no".
+    private func classify(_ text: String, settings: AppSettings) async -> SelectionPlan? {
+        if let planner {
+            return await planner(text)
+        }
+        let key = await Self.resolveAPIKey(settings: settings)
+        guard !key.isEmpty else { return nil }
+        guard let configuration = await settings.validatedAIConfiguration(apiKey: key) else { return nil }
+        guard AIQuotaStore.shared.snapshot().availability.isUsable else { return nil }
+        guard AIQuotaStore.shared.reserve(.selection, policy: settings.aiQuotaPolicy) else { return nil }
+
+        let client = HTTPAIChatClient(
+            connection: configuration.connection,
+            apiKey: configuration.apiKey,
+            model: configuration.model,
+            disableDeepSeekThinking: settings.aiDisableDeepSeekThinking,
+            timeout: 20
+        )
+        let escaped = String(text.prefix(2_000))
+            .replacingOccurrences(of: "&", with: "&amp;")
+            .replacingOccurrences(of: "<", with: "&lt;")
+            .replacingOccurrences(of: ">", with: "&gt;")
+        let request = AIChatRequest(messages: [
+            AIChatMessage(role: .system, content: SelectionQueryPlanner.prompt(settings.appLanguage)),
+            AIChatMessage(role: .user, content: "<untrusted_source>\n\(escaped)\n</untrusted_source>"),
+        ], maxTokens: 300, temperature: 0)
+        do {
+            let response = try await client.complete(request)
+            AIQuotaStore.shared.settle(
+                reservedCostMicros: 0,
+                usage: response.usage,
+                price: client.price
+            )
+            // A cut-off JSON is not a plan. Hand back nil so the policy sends
+            // the passage to the web instead of trusting half an answer.
+            guard !response.truncated else { return nil }
+            return SelectionQueryPlanner.parse(response.text)
+        } catch {
+            AIQuotaStore.shared.settle(reservedCostMicros: 0, usage: nil, price: client.price)
+            return nil
+        }
+    }
+
+    private func answer(for text: String, settings: AppSettings) async throws -> AnswerDocument {
         if let explainer {
             return try await explainer(text)
         }
@@ -120,14 +290,32 @@ final class SelectionExplainModel {
                 apiKey: configuration.apiKey,
                 model: configuration.model,
                 disableDeepSeekThinking: settings.aiDisableDeepSeekThinking,
-                timeout: 25
+                timeout: 60
             )
+            // Reserve the call like any other: the input is the selection, the
+            // output is the answer budget. Without this a cost-capped account
+            // paid for every explanation and recorded none of them.
+            let price = client.price
+            let reserved = price.map {
+                AICostEstimator.reserveMicros(
+                    inputTokens: max(1, min(text.count, SelectionExplainService.maxSelectionCharacters)),
+                    maxOutputTokens: SelectionExplainService.maxTokens,
+                    price: $0
+                )
+            } ?? 0
             service = SelectionExplainService(
                 client: client,
-                reserve: { AIQuotaStore.shared.reserve(.selection, policy: policy) },
+                modelName: configuration.model,
+                reserve: {
+                    AIQuotaStore.shared.reserve(
+                        .selection,
+                        policy: policy,
+                        reservedCostMicros: reserved
+                    )
+                },
                 settle: { response, price in
                     AIQuotaStore.shared.settle(
-                        reservedCostMicros: 0,
+                        reservedCostMicros: reserved,
                         usage: response.usage,
                         price: price
                     )
@@ -136,7 +324,11 @@ final class SelectionExplainModel {
             cachedService = service
             cachedServiceIdentity = identity
         }
-        return try await service.explain(text, language: language)
+        return try await service.explain(text, language: language) { document in
+            Task { @MainActor [weak self] in
+                self?.reveal.receive(document)
+            }
+        }
     }
 
     private static func resolveAPIKey(settings: AppSettings) async -> String {
