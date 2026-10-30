@@ -16,6 +16,9 @@ struct AnswerDocumentView: View {
     /// when the badge alone would be ambiguous — an automatic look-up that was
     /// judged unnecessary, or one that failed and fell back.
     var notice: String? = nil
+    /// True while the answer is still being revealed. The canvas holds its cap
+    /// for the whole run and only hugs its content once the text stops.
+    var isStreaming: Bool = false
 
     @State private var highlightedSource: Int?
     @State private var contentHeight: CGFloat = 0
@@ -30,7 +33,11 @@ struct AnswerDocumentView: View {
                 VStack(alignment: .leading, spacing: 12) {
                     header(proxy: proxy)
                     ForEach(document.blocks) { block in
-                        AnswerBlockView(block: block, sourceCount: document.sources.count) { index in
+                        AnswerBlockView(
+                            block: block,
+                            sourceCount: document.sources.count,
+                            selectable: !isStreaming
+                        ) { index in
                             reveal(index, proxy: proxy)
                         }
                     }
@@ -46,7 +53,7 @@ struct AnswerDocumentView: View {
                     contentHeight = height
                 }
             }
-            .frame(maxHeight: clampedHeight)
+            .frame(maxHeight: canvasHeight)
             // A cut-off card must look cut off. Without this the last visible
             // heading reads as an empty section and the sources look absent.
             // An overlay (not a mask) because a mask does not reach scrolled
@@ -71,7 +78,20 @@ struct AnswerDocumentView: View {
     }
 
     private var isOverflowing: Bool {
-        contentHeight > clampedHeight + 1
+        contentHeight > canvasHeight + 1
+    }
+
+    private var canvasHeight: CGFloat {
+        Self.canvasHeight(contentHeight: contentHeight, maxHeight: maxHeight, isStreaming: isStreaming)
+    }
+
+    /// A streaming answer keeps the cap for the whole run; a finished one hugs
+    /// its content. Growing the canvas on every revealed character resized the
+    /// scroll view up to fifteen times a second, and a scroll view that resizes
+    /// under repainting text is where the previous frame's glyphs stay on
+    /// screen. Kept pure so the rule is testable without a window.
+    static func canvasHeight(contentHeight: CGFloat, maxHeight: CGFloat, isStreaming: Bool) -> CGFloat {
+        isStreaming ? maxHeight : clampedHeight(contentHeight: contentHeight, maxHeight: maxHeight)
     }
 
     private var clampedHeight: CGFloat {

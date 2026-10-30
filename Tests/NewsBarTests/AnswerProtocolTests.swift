@@ -241,6 +241,29 @@ final class AnswerProtocolTests: XCTestCase {
         XCTAssertEqual(lines, [.paragraph("第一段"), .paragraph("第二段")])
     }
 
+    /// A quotation draws one rule per `.quote`, so consecutive `>` lines have to
+    /// arrive as one line item or a three-line quote reads as three quotations.
+    func testFormatterMergesConsecutiveQuoteLinesIntoOneQuotation() {
+        let lines = AnswerFormatter.lines("""
+        > 这一代换了封装，散热是重点。
+        > 我们也在现场做了实测。
+        > 具体数据会在评测里公布。
+        """)
+        XCTAssertEqual(lines, [
+            .quote("这一代换了封装，散热是重点。\n我们也在现场做了实测。\n具体数据会在评测里公布。"),
+        ])
+    }
+
+    func testFormatterStartsANewQuotationAfterABlankLine() {
+        let lines = AnswerFormatter.lines("> 第一段\n\n> 第二段")
+        XCTAssertEqual(lines, [.quote("第一段"), .quote("第二段")])
+    }
+
+    func testFormatterEndsAQuotationBeforeOrdinaryText() {
+        let lines = AnswerFormatter.lines("> 引用原话\n紧接着的正文")
+        XCTAssertEqual(lines, [.quote("引用原话"), .paragraph("紧接着的正文")])
+    }
+
     func testFormatterTreatsUnknownMarkersAsText() {
         let lines = AnswerFormatter.lines("### 不是标题\n\n1. 也不是列表")
         XCTAssertEqual(lines, [.paragraph("### 不是标题"), .paragraph("1. 也不是列表")])

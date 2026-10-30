@@ -181,7 +181,8 @@ struct AISearchPanel: View {
             maxHeight: 360,
             onOpenSource: { source in
                 if let url = URL(string: source.url) { onOpenCitation(url) }
-            }
+            },
+            isStreaming: model.isRevealing
         )
     }
 
