@@ -126,7 +126,8 @@ actor SelectionExplainService {
             inputTokens: max(current.inputTokens, next.inputTokens),
             outputTokens: max(current.outputTokens, next.outputTokens),
             cacheReadTokens: max(current.cacheReadTokens, next.cacheReadTokens),
-            cacheWriteTokens: max(current.cacheWriteTokens, next.cacheWriteTokens)
+            cacheWriteTokens: max(current.cacheWriteTokens, next.cacheWriteTokens),
+            reportedCost: next.reportedCost ?? current.reportedCost
         )
     }
 

@@ -14,6 +14,30 @@ struct ProviderModel: Codable, Identifiable, Equatable, Sendable {
     let id: String
     var displayName: String? = nil
     var createdAt: Date? = nil
+    /// True when the provider prices this model at zero. OpenCode Zen's free
+    /// tier is only callable from OpenCode itself, so it must not be offered
+    /// to this app.
+    var isFree: Bool = false
+    /// False for models whose API cannot serve a chat request, such as System
+    /// One's `jev-*` evaluators.
+    var isChatCompatible: Bool = true
+
+    enum CodingKeys: String, CodingKey {
+        case id, displayName, createdAt, isFree, isChatCompatible
+    }
+}
+
+extension ProviderModel {
+    /// Older cached catalogs predate these flags. A missing flag must decode
+    /// instead of invalidating the whole snapshot.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        displayName = try c.decodeIfPresent(String.self, forKey: .displayName)
+        createdAt = try c.decodeIfPresent(Date.self, forKey: .createdAt)
+        isFree = try c.decodeIfPresent(Bool.self, forKey: .isFree) ?? false
+        isChatCompatible = try c.decodeIfPresent(Bool.self, forKey: .isChatCompatible) ?? true
+    }
 }
 
 enum ProviderModelSelection {
@@ -42,6 +66,9 @@ enum ProviderModelSelection {
 
 enum ProviderModelError: Error, Equatable, Sendable {
     case invalidEndpoint, unauthorized, unsupportedEndpoint, malformedResponse, responseTooLarge, incompletePagination, emptyCatalog, network, server(Int)
+    case cannotResolveHost(String)
+    case tlsFailure(String)
+    case timedOut
 
     var invalidatesCache: Bool {
         switch self {
@@ -60,6 +87,9 @@ enum ProviderModelError: Error, Equatable, Sendable {
         case .malformedResponse, .incompletePagination: return english ? "The model list was incomplete or unreadable. Try refreshing it." : "模型列表格式异常或分页不完整，请重新获取。"
         case .responseTooLarge: return english ? "The model list exceeded the safety size limit." : "模型列表超过安全大小上限。"
         case .server(let status): return english ? "The provider's model-list request failed (HTTP \(status))." : "提供商模型列表请求失败（HTTP \(status)）。"
+        case .cannotResolveHost(let host): return english ? "Cannot resolve the provider host (\(host)). The domain may be retired or blocked by DNS." : "无法解析提供商域名（\(host)）。该域名可能已注销或 DNS 被拦截。"
+        case .tlsFailure(let host): return english ? "Could not establish a secure connection to \(host) (TLS). Check the proxy or certificate." : "与 \(host) 建立加密连接失败（TLS）。请检查代理或证书。"
+        case .timedOut: return english ? "The provider request timed out. Try again shortly." : "请求提供商超时，请稍后重试。"
         case .network: return english ? "Cannot refresh the model list. Check the network connection." : "暂时无法刷新模型列表，请检查网络连接。"
         }
     }
@@ -103,12 +133,64 @@ enum ProviderModelParser {
         let created: Double?
         let created_at: String?
         let modified_at: String?
-        let capabilities: [String]?
+        let capabilities: FlexibleStringList?
         let supportedGenerationMethods: [String]?
         let output_modalities: [String]?
         let enabled: Bool?
         let deprecated: Bool?
         let status: String?
+        let type: String?
+        let cost: ModelCost?
+        let api: APIMap?
+    }
+
+    /// OpenCode's catalog nests prices under `cost.text`. Zero input and
+    /// output marks the free models that only OpenCode itself may call.
+    private struct ModelCost: Decodable {
+        struct Text: Decodable {
+            struct Side: Decodable {
+                struct Cache: Decodable {
+                    let read: Double?
+                    let write: Double?
+                }
+                let price: Double?
+                let cache: Cache?
+            }
+            let input: Side?
+            let output: Side?
+        }
+        let text: Text?
+    }
+
+    /// Only the keys matter: `chat-completions`, `responses`, `messages`,
+    /// `generate-content` and `systemone`. Decoding the values would bind the
+    /// app to a shape that changes as models gain capabilities.
+    private struct APIMap: Decodable {
+        let keys: Set<String>
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: DynamicKey.self)
+            keys = Set(container.allKeys.map(\.stringValue))
+        }
+
+        private struct DynamicKey: CodingKey {
+            var stringValue: String
+            var intValue: Int? { nil }
+            init?(stringValue: String) { self.stringValue = stringValue }
+            init?(intValue: Int) { nil }
+        }
+    }
+
+    /// Ollama lists capabilities as strings; OpenCode lists them as an object.
+    /// A wrong shape must not fail the entire catalog, so anything other than
+    /// a string array decodes to an empty list.
+    private struct FlexibleStringList: Decodable {
+        let values: [String]
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.singleValueContainer()
+            values = (try? container.decode([String].self)) ?? []
+        }
     }
 
     static func parse(_ data: Data, format: ProviderModelFormat) throws -> ProviderModelPage {
@@ -131,7 +213,7 @@ enum ProviderModelParser {
             let raw: String?
             switch format {
             case .ollama:
-                if let caps = entry.capabilities, !caps.contains("completion") { return nil }
+                if let caps = entry.capabilities?.values, !caps.contains("completion") { return nil }
                 raw = entry.name ?? entry.model
             case .google:
                 guard entry.supportedGenerationMethods?.contains("generateContent") == true else { return nil }
@@ -147,7 +229,18 @@ enum ProviderModelParser {
             if let timestamp = entry.created { date = Date(timeIntervalSince1970: timestamp) }
             else if let rawDate = entry.created_at ?? entry.modified_at { date = ISO8601DateFormatter().date(from: rawDate) }
             else { date = nil }
-            return ProviderModel(id: id, displayName: entry.display_name ?? entry.displayName, createdAt: date)
+            let costText = entry.cost?.text
+            let zeroPriced = costText?.input?.price == 0 && costText?.output?.price == 0
+            let freeByName = id.lowercased().hasSuffix("-free")
+            let apiKeys = entry.api?.keys ?? []
+            let chatType = entry.type == nil || entry.type == "chat" || entry.type == "text"
+            return ProviderModel(
+                id: id,
+                displayName: entry.display_name ?? entry.displayName,
+                createdAt: date,
+                isFree: zeroPriced || freeByName,
+                isChatCompatible: chatType && !apiKeys.contains("systemone")
+            )
         }
         let cursor: String?
         if format == .google { cursor = envelope.nextPageToken?.isEmpty == false ? envelope.nextPageToken : nil }

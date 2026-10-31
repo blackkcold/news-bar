@@ -74,9 +74,98 @@ final class AICostTests: XCTestCase {
     }
 
     func testUnknownProviderHasNoPrice() {
-        XCTAssertNil(AIPriceCatalog.price(for: "opencodeGo", model: "anything"))
         XCTAssertNil(AIPriceCatalog.price(for: "custom:abc", model: "anything"))
-        XCTAssertFalse(AIPriceCatalog.hasPrices(for: "opencodeGo"))
+        XCTAssertFalse(AIPriceCatalog.hasPrices(for: "custom:abc"))
+    }
+
+    func testOpenCodePriceCatalogCoversGoAndZen() throws {
+        let go = try XCTUnwrap(AIPriceCatalog.price(for: "opencodeGo", model: "deepseek-v4.1-flash"))
+        XCTAssertEqual(go.currency, "CNY")
+        // Peak DeepSeek price on Go: the reservation must be a ceiling.
+        XCTAssertEqual(go.inputPerMTok, 0.30 * AIPriceCatalog.usdToCny, accuracy: 0.0001)
+        XCTAssertEqual(go.outputPerMTok, 1.20 * AIPriceCatalog.usdToCny, accuracy: 0.0001)
+        XCTAssertEqual(go.cacheReadPerMTok ?? 0, 0.006 * AIPriceCatalog.usdToCny, accuracy: 0.0001)
+
+        let zen = try XCTUnwrap(AIPriceCatalog.price(for: "opencodeZen", model: "deepseek-v4.1-flash"))
+        XCTAssertEqual(zen.inputPerMTok, 0.30 * AIPriceCatalog.usdToCny, accuracy: 0.0001)
+        XCTAssertEqual(zen.outputPerMTok, 1.20 * AIPriceCatalog.usdToCny, accuracy: 0.0001)
+
+        XCTAssertTrue(AIPriceCatalog.hasPrices(for: "opencodeGo"))
+        XCTAssertTrue(AIPriceCatalog.hasPrices(for: "opencodeZen"))
+    }
+
+    func testOpenCodePlanAllowanceIsModelSpecific() throws {
+        let go = try XCTUnwrap(
+            OpenCodePriceCatalog.entry(for: "opencodeGo", model: "deepseek-v4.1-flash")?.allowance
+        )
+        XCTAssertEqual(go.go, 100)
+        XCTAssertEqual(go.goPlus, 200)
+        XCTAssertEqual(go.goTeams, 105)
+
+        let flash = try XCTUnwrap(
+            OpenCodePriceCatalog.entry(for: "opencodeGo", model: "glm-5.3-flash")?.allowance
+        )
+        XCTAssertEqual(flash.go, 60)
+        XCTAssertNil(OpenCodePriceCatalog.entry(for: "opencodeGo", model: "beam-free")?.allowance)
+        XCTAssertTrue(try XCTUnwrap(
+            OpenCodePriceCatalog.entry(for: "opencodeZen", model: "deepseek-v4.1-flash-free")
+        ).isFree)
+    }
+
+    // MARK: - Reported cost
+
+    func testOpenCodeGoUsageReadsAllowanceAndBilledTokens() throws {
+        let data = Data("""
+        {"prompt_tokens": 1500, "completion_tokens": 1000, "cost": 0,
+         "opencode": {"billing_source": "go", "list_cost": 0.00165, "allowance": 0.00165,
+           "tokens": {"input": 1500, "output": 1000, "reasoning": 0,
+                      "cache_read": 200, "cache_write_5m": 0, "cache_write_1h": 0}}}
+        """.utf8)
+        let payload = try JSONDecoder().decode(OpenAIUsagePayload.self, from: data)
+        let usage = try XCTUnwrap(AIUsage.from(openAI: payload))
+        XCTAssertEqual(usage.inputTokens, 1500)
+        XCTAssertEqual(usage.outputTokens, 1000)
+        XCTAssertEqual(usage.cacheReadTokens, 200)
+        let reported = try XCTUnwrap(usage.reportedCost)
+        XCTAssertEqual(reported.usd, 0.00165, accuracy: 1e-9)
+        XCTAssertEqual(reported.basis, .allowance)
+        XCTAssertEqual(reported.billingSource, "go")
+        XCTAssertEqual(reported.cnyMicros, 11_880)
+    }
+
+    func testOpenCodeBalanceUsageUsesChargedCost() throws {
+        let data = Data("""
+        {"prompt_tokens": 1200, "completion_tokens": 300, "cost": 0.00412,
+         "opencode": {"billing_source": "balance", "list_cost": 0.00412}}
+        """.utf8)
+        let payload = try JSONDecoder().decode(OpenAIUsagePayload.self, from: data)
+        let reported = try XCTUnwrap(AIUsage.from(openAI: payload)?.reportedCost)
+        XCTAssertEqual(reported.basis, .charged)
+        XCTAssertEqual(reported.usd, 0.00412, accuracy: 1e-9)
+        XCTAssertEqual(reported.cnyMicros, 29_664)
+    }
+
+    func testOpenCodeFreeUsageIsZeroAndPriced() throws {
+        let data = Data("""
+        {"prompt_tokens": 10, "completion_tokens": 5, "cost": 0,
+         "opencode": {"billing_source": "free", "list_cost": 0}}
+        """.utf8)
+        let payload = try JSONDecoder().decode(OpenAIUsagePayload.self, from: data)
+        let reported = try XCTUnwrap(AIUsage.from(openAI: payload)?.reportedCost)
+        XCTAssertEqual(reported.basis, .free)
+        XCTAssertEqual(reported.usd, 0)
+        XCTAssertEqual(reported.cnyMicros, 0)
+    }
+
+    func testOpenCodeAnthropicUsageAlsoCarriesReportedCost() throws {
+        let data = Data("""
+        {"input_tokens": 100, "output_tokens": 50, "cost": 0,
+         "opencode": {"billing_source": "go", "allowance": 0.0005}}
+        """.utf8)
+        let payload = try JSONDecoder().decode(AnthropicUsagePayload.self, from: data)
+        let reported = try XCTUnwrap(AIUsage.from(anthropic: payload)?.reportedCost)
+        XCTAssertEqual(reported.basis, .allowance)
+        XCTAssertEqual(reported.usd, 0.0005, accuracy: 1e-12)
     }
 
     // MARK: - Estimation
@@ -181,5 +270,49 @@ final class AICostTests: XCTestCase {
         let snapshot = store.snapshot()
         XCTAssertEqual(snapshot.costMicros, 7_000, "An unpriced call keeps its estimate")
         XCTAssertEqual(snapshot.unpricedCalls, 1)
+    }
+
+    func testReportedGoAllowanceWinsOverTheLocalTable() throws {
+        let directory = try researchTestDirectory()
+        let store = AIQuotaStore(fileURL: directory.appendingPathComponent("quota.json"))
+        let price = ModelPrice(
+            provider: "opencodeGo",
+            modelPrefix: "deepseek-v4.1-flash",
+            inputPerMTok: 1_000,
+            outputPerMTok: 1_000,
+            cacheReadPerMTok: nil,
+            cacheWritePerMTok: nil,
+            currency: "CNY",
+            updatedAt: ""
+        )
+        let policy = AIQuotaPolicy(mode: .cost, costCapMicros: 100_000)
+        XCTAssertTrue(store.reserve(.summary, policy: policy, reservedCostMicros: 20_000))
+        let usage = AIUsage(
+            inputTokens: 1500,
+            outputTokens: 1000,
+            reportedCost: AIReportedCost(usd: 0.00165, basis: .allowance, billingSource: "go")
+        )
+        store.settle(reservedCostMicros: 20_000, usage: usage, price: price)
+
+        let snapshot = store.snapshot()
+        XCTAssertEqual(snapshot.costMicros, 11_880, "The provider's allowance replaces both the reserve and the local table")
+        XCTAssertEqual(snapshot.unpricedCalls, 0)
+    }
+
+    func testReportedFreeCallSettlesAtZeroWithoutBeingUnpriced() throws {
+        let directory = try researchTestDirectory()
+        let store = AIQuotaStore(fileURL: directory.appendingPathComponent("quota.json"))
+        let policy = AIQuotaPolicy(mode: .cost, costCapMicros: 100_000)
+        XCTAssertTrue(store.reserve(.summary, policy: policy, reservedCostMicros: 20_000))
+        let usage = AIUsage(
+            inputTokens: 10,
+            outputTokens: 5,
+            reportedCost: AIReportedCost(usd: 0, basis: .free, billingSource: "free")
+        )
+        store.settle(reservedCostMicros: 20_000, usage: usage, price: nil)
+
+        let snapshot = store.snapshot()
+        XCTAssertEqual(snapshot.costMicros, 0)
+        XCTAssertEqual(snapshot.unpricedCalls, 0)
     }
 }

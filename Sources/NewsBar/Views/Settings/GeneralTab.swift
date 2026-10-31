@@ -1,14 +1,12 @@
 import SwiftUI
 import AppKit
 
-/// 通用页签：语言、启动、主题与外观。
+/// 通用页签：语言、启动、主题与外观。兴趣画像归「隐私与数据」，阅读器代理归「高级」。
 struct GeneralTab: View {
     @Environment(AppSettings.self) private var settings
 
     var body: some View {
         Form {
-            InterestPrivacySection()
-            ReaderProxySettingsSection()
             Section {
                 Picker("settings.language".localized, selection: Binding(
                     get: { settings.appLanguage },

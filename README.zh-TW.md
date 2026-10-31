@@ -64,7 +64,7 @@
 
 ## 🤖 啟用 AI 摘要
 
-設定 → **AI** 標籤頁：選擇 AI 供應商並填入 API Key。支援 **DeepSeek**、**MiniMax**、**Opencode Go/Zen**、**Google AI Studio**、**Ollama Cloud**，以及**使用者自訂供應商**（端點、模型 ID、認證標頭）。
+設定 → **AI** 標籤頁：選擇 AI 供應商並填入 API Key。支援 **DeepSeek**、**MiniMax**、**OpenCode Go/Zen**、**Google AI Studio**、**Ollama Cloud**，以及**使用者自訂供應商**（端點、模型 ID、認證標頭）。
 
 Popup 和 Dashboard 共用一個摘要長度預設（預設 360 字）與每日 AI 呼叫上限（預設 50，可選 20/50/100）。自動總結結合近 12/24 小時趨勢歷史，僅在顯著變化及冷卻條件滿足時重建；Dashboard 的 AI 按鈕仍可強制獨立重新整理摘要。
 
@@ -74,11 +74,15 @@ Popup 和 Dashboard 共用一個摘要長度預設（預設 360 字）與每日 
 |---|---|---|
 | DeepSeek | api.deepseek.com | deepseek-v4-flash, deepseek-v4-pro |
 | MiniMax | api.minimaxi.com | MiniMax-M3, MiniMax-M2.7, MiniMax-M2.7-highspeed, MiniMax-M2.5, MiniMax-M2.5-highspeed, MiniMax-M2.1, MiniMax-M2.1-highspeed, MiniMax-M2 |
-| Opencode Go | open-code-go.aiizhi.com | deepseek-v4-flash, deepseek-v4-pro |
-| Opencode Zen | open-code-zen.aiizhi.com | deepseek-v4-flash, deepseek-v4-pro |
+| OpenCode Go | opencode.ai/inference/go | deepseek-v4.1-flash, deepseek-v4-pro, ... |
+| OpenCode Zen | opencode.ai/inference | deepseek-v4.1-flash, glm-5.3, kimi-k3, ... |
 | Google AI Studio | generativelanguage.googleapis.com | gemini-3.6-flash, gemini-3.5-flash, gemini-3.5-flash-lite, gemini-3.1-flash-lite, gemini-3.1-pro-preview, gemini-3-flash-preview, gemini-2.5-pro, gemini-2.5-flash, gemini-2.5-flash-lite |
 | Ollama Cloud | ollama.com | deepseek-v4-flash:cloud, deepseek-v4-pro:cloud, gpt-oss:20b-cloud, gpt-oss:120b-cloud, kimi-k3:cloud, minimax-m3:cloud, ... |
 | Custom | 使用者自訂 | 自訂端點 / 模型 ID |
+
+> **OpenCode Go** 使用 OpenCode Console 的 Go 訂閱 Key；舊 `open-code-go.aiizhi.com` 的 Key 已失效，請在 `opencode.ai/console → Go` 重新取得。
+
+> **OpenCode Zen** 使用 OpenCode Console 的 API Key；舊 `open-code-zen.aiizhi.com` 的 Key 已失效。免費模型僅限 OpenCode 用戶端呼叫，NewsBar 只列出付費模型。
 
 > **模型摺疊**：預設僅顯示各供應商的 DeepSeek 系模型（若有）；在「一般 → 開發者選項」開啟「顯示全部 AI 模型」可檢視該供應商全部官方模型。
 
@@ -152,7 +156,7 @@ Sources/NewsBar/
 
 - **Swift 5.9** + **SwiftUI** (macOS 15.0+)
 - **AppKit**: NSStatusBar, NSPopover
-- **AI APIs**: DeepSeek / MiniMax / Opencode / Google AI Studio / Ollama Cloud / 自訂
+- **AI APIs**: DeepSeek / MiniMax / OpenCode / Google AI Studio / Ollama Cloud / 自訂
 - **儲存**: 加密檔案（AES-256-GCM, CryptoKit）、UserDefaults、檔案快取（actor）
 - **零外部依賴**
 

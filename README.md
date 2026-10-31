@@ -65,9 +65,11 @@ Download the latest DMG from [Releases](../../releases) and drag it to **Applica
 
 ## 🤖 Enable AI Summary
 
-Settings → **AI** tab: pick a provider and enter your API Key. Supported providers: **DeepSeek**, **MiniMax**, **Opencode Go/Zen**, **Google AI Studio**, **Ollama Cloud**, plus **user-defined custom providers** (endpoint, model IDs, auth header).
+Settings → **AI** → **Connection**: pick a provider and enter your API Key. Supported providers: **DeepSeek**, **MiniMax**, **OpenCode Go/Zen**, **Google AI Studio**, **Ollama Cloud**, plus **user-defined custom providers** (endpoint, model IDs, auth header).
 
 Popup and Dashboard share one summary length preset (default 360 words) and one daily request cap (default 50, configurable 20/50/100). Automatic summaries use 12/24-hour trend history and only regenerate after meaningful changes and cooldown checks; the Dashboard AI button still forces an independent summary regeneration.
+
+Settings → **AI** → **Usage & limits** also opens the OpenCode price list: Go, Go Plus, Teams and Zen, with every model's input, output and cache-read price and the documented monthly allowance per plan. It is a static reference generated from the official catalog — opening it makes no request.
 
 ### Supported AI Providers
 
@@ -75,11 +77,15 @@ Popup and Dashboard share one summary length preset (default 360 words) and one 
 |---|---|---|
 | DeepSeek | api.deepseek.com | deepseek-v4-flash, deepseek-v4-pro |
 | MiniMax | api.minimaxi.com | MiniMax-M3, MiniMax-M2.7, MiniMax-M2.7-highspeed, MiniMax-M2.5, MiniMax-M2.5-highspeed, MiniMax-M2.1, MiniMax-M2.1-highspeed, MiniMax-M2 |
-| Opencode Go | open-code-go.aiizhi.com | deepseek-v4-flash, deepseek-v4-pro |
-| Opencode Zen | open-code-zen.aiizhi.com | deepseek-v4-flash, deepseek-v4-pro |
+| OpenCode Go | opencode.ai/inference/go | deepseek-v4.1-flash, deepseek-v4-pro, ... |
+| OpenCode Zen | opencode.ai/inference | deepseek-v4.1-flash, glm-5.3, kimi-k3, ... |
 | Google AI Studio | generativelanguage.googleapis.com | gemini-3.6-flash, gemini-3.5-flash, gemini-3.5-flash-lite, gemini-3.1-flash-lite, gemini-3.1-pro-preview, gemini-3-flash-preview, gemini-2.5-pro, gemini-2.5-flash, gemini-2.5-flash-lite |
 | Ollama Cloud | ollama.com | deepseek-v4-flash:cloud, deepseek-v4-pro:cloud, gpt-oss:20b-cloud, gpt-oss:120b-cloud, kimi-k3:cloud, minimax-m3:cloud, ... |
 | Custom | Your own | Custom endpoint / model IDs |
+
+> **OpenCode Go** uses the Go subscription key from OpenCode Console. Keys issued for the retired `open-code-go.aiizhi.com` endpoint are not valid; reissue at `opencode.ai/console → Go`.
+
+> **OpenCode Zen** uses a Console API key. Keys issued for the retired `open-code-zen.aiizhi.com` endpoint are not valid; free models are available only inside OpenCode, so NewsBar lists paid models only.
 
 > **Model folding**: by default only DeepSeek-family models are shown for each provider (where available); enable **Show All AI Models** under General → Developer Options to see the full official model list.
 
@@ -142,7 +148,7 @@ Sources/NewsBar/
 │   └── SecurityPolicies.swift  # URL/sanitize/XML safety
 ├── Views/
 │   ├── MenuBar/                # Popover components with compact shared AI briefing
-│   ├── Settings/               # Settings window tabs
+│   ├── Settings/               # Settings window panes (sidebar groups)
 │   ├── Dashboard/              # Dashboard window, full AI briefing + per-source refresh
 │   └── Theme/                  # Modern Material / Retro Editorial primitives
 └── Extensions/
@@ -156,7 +162,7 @@ Sources/NewsBar/
 
 - **Swift 5.9** + **SwiftUI** (macOS 15.0+)
 - **AppKit**: NSStatusBar, NSPopover
-- **AI APIs**: DeepSeek / MiniMax / Opencode / Google AI Studio / Ollama Cloud / Custom
+- **AI APIs**: DeepSeek / MiniMax / OpenCode / Google AI Studio / Ollama Cloud / Custom
 - **Storage**: Encrypted file (AES-256-GCM, CryptoKit), UserDefaults, file-based cache (actor)
 - **Zero external dependencies**
 

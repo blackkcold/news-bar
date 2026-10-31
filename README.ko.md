@@ -64,7 +64,7 @@
 
 ## 🤖 AI 요약 활성화
 
-설정 → **AI** 탭: 공급자를 선택하고 API 키를 입력하세요. 지원 공급자: **DeepSeek**, **MiniMax**, **Opencode Go/Zen**, **Google AI Studio**, **Ollama Cloud**, 그리고 **사용자 정의 공급자**(엔드포인트, 모델 ID, 인증 헤더).
+설정 → **AI** 탭: 공급자를 선택하고 API 키를 입력하세요. 지원 공급자: **DeepSeek**, **MiniMax**, **OpenCode Go/Zen**, **Google AI Studio**, **Ollama Cloud**, 그리고 **사용자 정의 공급자**(엔드포인트, 모델 ID, 인증 헤더).
 
 Popup과 Dashboard는 요약 길이 프리셋(기본 360자)과 일일 요청 상한(기본 50, 20/50/100 선택)을 공유합니다. 자동 요약은 12/24시간 트렌드 히스토리를 사용하며, 의미 있는 변화와 쿨다운 조건이 충족될 때만 재생성합니다. Dashboard의 AI 버튼으로 강제 독립 재생성도 가능합니다.
 
@@ -74,11 +74,15 @@ Popup과 Dashboard는 요약 길이 프리셋(기본 360자)과 일일 요청 �
 |---|---|---|
 | DeepSeek | api.deepseek.com | deepseek-v4-flash, deepseek-v4-pro |
 | MiniMax | api.minimaxi.com | MiniMax-M3, MiniMax-M2.7, MiniMax-M2.7-highspeed, MiniMax-M2.5, MiniMax-M2.5-highspeed, MiniMax-M2.1, MiniMax-M2.1-highspeed, MiniMax-M2 |
-| Opencode Go | open-code-go.aiizhi.com | deepseek-v4-flash, deepseek-v4-pro |
-| Opencode Zen | open-code-zen.aiizhi.com | deepseek-v4-flash, deepseek-v4-pro |
+| OpenCode Go | opencode.ai/inference/go | deepseek-v4.1-flash, deepseek-v4-pro, ... |
+| OpenCode Zen | opencode.ai/inference | deepseek-v4.1-flash, glm-5.3, kimi-k3, ... |
 | Google AI Studio | generativelanguage.googleapis.com | gemini-3.6-flash, gemini-3.5-flash, gemini-3.5-flash-lite, gemini-3.1-flash-lite, gemini-3.1-pro-preview, gemini-3-flash-preview, gemini-2.5-pro, gemini-2.5-flash, gemini-2.5-flash-lite |
 | Ollama Cloud | ollama.com | deepseek-v4-flash:cloud, deepseek-v4-pro:cloud, gpt-oss:20b-cloud, gpt-oss:120b-cloud, kimi-k3:cloud, minimax-m3:cloud, ... |
 | Custom | 사용자 정의 | 커스텀 엔드포인트 / 모델 ID |
+
+> **OpenCode Go**는 OpenCode Console의 Go 구독 키를 사용합니다. 이전 `open-code-go.aiizhi.com` 키는 유효하지 않으므로 `opencode.ai/console → Go`에서 다시 발급하세요.
+
+> **OpenCode Zen**은 OpenCode Console API 키를 사용합니다. 이전 `open-code-zen.aiizhi.com` 키는 유효하지 않습니다. 무료 모델은 OpenCode 클라이언트에서만 사용할 수 있어 NewsBar에는 유료 모델만 표시됩니다.
 
 > **모델 접기**: 기본적으로 각 공급자의 DeepSeek 계열 모델만 표시됩니다(있는 경우). 「일반 → 개발자 옵션」에서「모든 AI 모델 표시」를 활성화하면 전체 공식 모델을 볼 수 있습니다.
 
@@ -152,7 +156,7 @@ Sources/NewsBar/
 
 - **Swift 5.9** + **SwiftUI** (macOS 15.0+)
 - **AppKit**: NSStatusBar, NSPopover
-- **AI APIs**: DeepSeek / MiniMax / Opencode / Google AI Studio / Ollama Cloud / 커스텀
+- **AI APIs**: DeepSeek / MiniMax / OpenCode / Google AI Studio / Ollama Cloud / 커스텀
 - **저장**: 암호화 파일(AES-256-GCM, CryptoKit), UserDefaults, 파일 캐시(actor)
 - **외부 의존성 제로**
 

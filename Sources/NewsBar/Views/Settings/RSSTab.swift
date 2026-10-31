@@ -123,7 +123,7 @@ struct RSSTab: View {
     }
 
     var body: some View {
-        List {
+        Form {
             Section {
                 Toggle("rss.unifiedCount".localized, isOn: Binding(
                     get: { settings.rssUnifiedDisplayCount },
@@ -219,7 +219,7 @@ struct RSSTab: View {
                 Text("rss.addSource".localized)
             }
         }
-        .listStyle(.inset)
+        .formStyle(.grouped)
         .scrollContentBackground(.hidden)
         .onDisappear {
             cancelRecommendationValidation(clearHandleOnly: true)

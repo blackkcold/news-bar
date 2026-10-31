@@ -13,6 +13,8 @@ struct ResolvedAIConnection: Sendable {
     var thinkingStyle: AIThinkingStyle = .none
     /// User-entered unit prices for a custom provider, already CNY per 1M tokens.
     var customPrice: ModelPrice? = nil
+    /// Provider-declared headers (e.g. OpenCode Go's routing session).
+    var additionalHeaders: [String: String] = [:]
 }
 
 struct CustomAIProviderConfig: Identifiable, Hashable, Codable {

@@ -6,7 +6,7 @@ final class ProviderModelTests: XCTestCase {
     private let connection = ResolvedAIConnection(baseURL: "https://provider.example/anthropic/v1/messages", responseFormat: .anthropic, authHeaderName: "x-api-key", authHeaderPrefix: "", apiVersion: "2023-06-01")
 
     func testDerivesCatalogEndpointsWithoutChangingCredentialOrigin() throws {
-        let endpoints = try ProviderModelService.endpoints(providerID: "opencodeGo", connection: connection)
+        let endpoints = try ProviderModelService.endpoints(providerID: "custom:test", connection: connection)
         XCTAssertEqual(endpoints.map { $0.url.absoluteString }, ["https://provider.example/anthropic/v1/models", "https://provider.example/v1/models"])
         let ollama = try ProviderModelService.endpoints(providerID: "ollamaCloud", connection: AIProvider.ollamaCloud.resolvedConnection())
         XCTAssertEqual(ollama.first?.url.absoluteString, "https://ollama.com/api/tags")
@@ -14,6 +14,122 @@ final class ProviderModelTests: XCTestCase {
         XCTAssertEqual(deepseek.first?.url.absoluteString, "https://api.deepseek.com/models")
         let google = try ProviderModelService.endpoints(providerID: "googleAIStudio", connection: AIProvider.googleAIStudio.resolvedConnection())
         XCTAssertEqual(google.first?.url.absoluteString, "https://generativelanguage.googleapis.com/v1beta/models")
+    }
+
+    func testOpenCodeGoUsesGatewayCatalogAndOpenAIProtocol() throws {
+        let connection = AIProvider.opencodeGo.resolvedConnection()
+        let endpoints = try ProviderModelService.endpoints(providerID: AIProvider.opencodeGo.rawValue, connection: connection)
+        XCTAssertEqual(endpoints.map(\.url.absoluteString), ["https://opencode.ai/inference/go/v1/models"])
+        switch endpoints.first?.format {
+        case .openAI: break
+        default: XCTFail("OpenCode Go's catalog is OpenAI-shaped")
+        }
+        XCTAssertEqual(connection.baseURL, "https://opencode.ai/inference/go/openai/v1/chat/completions")
+        XCTAssertEqual(connection.responseFormat, .openAI)
+        XCTAssertEqual(connection.authHeaderName, "Authorization")
+        XCTAssertEqual(connection.authHeaderPrefix, "Bearer ")
+        XCTAssertNil(connection.apiVersion)
+        XCTAssertEqual(connection.thinkingStyle, .none)
+    }
+
+    func testOpenCodeZenUsesPayAsYouGoGatewayAndOpenAIProtocol() throws {
+        let connection = AIProvider.opencodeZen.resolvedConnection()
+        let endpoints = try ProviderModelService.endpoints(providerID: AIProvider.opencodeZen.rawValue, connection: connection)
+        XCTAssertEqual(endpoints.map(\.url.absoluteString), ["https://opencode.ai/inference/v1/models"])
+        switch endpoints.first?.format {
+        case .openAI: break
+        default: XCTFail("OpenCode Zen's catalog is OpenAI-shaped")
+        }
+        XCTAssertEqual(connection.baseURL, "https://opencode.ai/inference/openai/v1/chat/completions")
+        XCTAssertEqual(connection.responseFormat, .openAI)
+        XCTAssertEqual(connection.authHeaderName, "Authorization")
+        XCTAssertEqual(connection.authHeaderPrefix, "Bearer ")
+        XCTAssertNil(connection.apiVersion)
+        XCTAssertEqual(connection.thinkingStyle, .none)
+        XCTAssertTrue(connection.additionalHeaders["x-opencode-session"]?.hasPrefix("newsbar-") ?? false)
+    }
+
+    func testOpenCodeZenCatalogHidesFreeAndSystemOneModels() async throws {
+        let sample = """
+        {"object":"list","data":[
+          {"id":"deepseek-v4.1-flash","object":"model","type":"chat","cost":{"text":{"input":{"price":0.3},"output":{"price":1.2}}},"api":{"chat-completions":{}}},
+          {"id":"deepseek-v4-pro","object":"model","type":"chat","cost":{"text":{"input":{"price":1.74},"output":{"price":3.48}}},"api":{"chat-completions":{}}},
+          {"id":"deepseek-v4.1-flash-free","object":"model","type":"chat","cost":{"text":{"input":{"price":0},"output":{"price":0}}},"api":{"chat-completions":{}}},
+          {"id":"big-pickle","object":"model","type":"chat","cost":{"text":{"input":{"price":0},"output":{"price":0}}},"api":{"chat-completions":{}}},
+          {"id":"jev-1.13","object":"model","type":"chat","cost":{"text":{"input":{"price":0.042},"output":{"price":0}}},"api":{"systemone":{}}}
+        ]}
+        """
+        let fixture = ModelCatalogFixture([(200, sample)])
+        let service = ProviderModelService(fileURL: temporaryCache(), transport: { try await fixture.send($0) })
+        let connection = AIProvider.opencodeZen.resolvedConnection()
+        let result = try await service.catalog(
+            providerID: AIProvider.opencodeZen.rawValue,
+            connection: connection,
+            apiKey: "oc_sk_test",
+            now: now
+        )
+        XCTAssertEqual(result.snapshot.models.map(\.id), ["deepseek-v4.1-flash", "deepseek-v4-pro"])
+        XCTAssertEqual(ProviderModelSelection.preferred(in: result.snapshot.models, current: nil), "deepseek-v4.1-flash")
+
+        let requests = await fixture.requests
+        XCTAssertEqual(requests.first?.url?.absoluteString, "https://opencode.ai/inference/v1/models")
+        XCTAssertEqual(requests.first?.value(forHTTPHeaderField: "Authorization"), "Bearer oc_sk_test")
+        XCTAssertTrue(requests.first?.value(forHTTPHeaderField: "x-opencode-session")?.hasPrefix("newsbar-") ?? false)
+    }
+
+    func testOpenCodeGoCatalogKeepsFreeModelsButDropsSystemOneModels() async throws {
+        let sample = """
+        {"object":"list","data":[
+          {"id":"deepseek-v4.1-flash","object":"model","type":"chat","cost":{"text":{"input":{"price":0.15},"output":{"price":0.6}}},"api":{"chat-completions":{}}},
+          {"id":"beam-free","object":"model","type":"chat","cost":{"text":{"input":{"price":0},"output":{"price":0}}},"api":{"chat-completions":{}}},
+          {"id":"jev-1.13","object":"model","type":"chat","cost":{"text":{"input":{"price":0.042},"output":{"price":0}}},"api":{"systemone":{}}}
+        ]}
+        """
+        let fixture = ModelCatalogFixture([(200, sample)])
+        let service = ProviderModelService(fileURL: temporaryCache(), transport: { try await fixture.send($0) })
+        let result = try await service.catalog(
+            providerID: AIProvider.opencodeGo.rawValue,
+            connection: AIProvider.opencodeGo.resolvedConnection(),
+            apiKey: "oc_sk_test",
+            now: now
+        )
+        XCTAssertEqual(result.snapshot.models.map(\.id), ["deepseek-v4.1-flash", "beam-free"])
+    }
+
+    func testLegacyProviderModelSnapshotDecodesWithoutNewFlags() throws {
+        let data = Data(#"{"identity":"old","models":[{"id":"model-one"}],"fetchedAt":0}"#.utf8)
+        let snapshot = try JSONDecoder().decode(ProviderModelSnapshot.self, from: data)
+        let model = try XCTUnwrap(snapshot.models.first)
+        XCTAssertEqual(model.id, "model-one")
+        XCTAssertFalse(model.isFree)
+        XCTAssertTrue(model.isChatCompatible)
+    }
+
+    func testProviderModelFlagsRoundTrip() throws {
+        let model = ProviderModel(id: "model-one", isFree: true, isChatCompatible: false)
+        let decoded = try JSONDecoder().decode(ProviderModel.self, from: JSONEncoder().encode(model))
+        XCTAssertEqual(decoded, model)
+    }
+
+    func testOpenCodeGoCatalogObjectCapabilitiesDoNotFailParsing() throws {
+        let sample = """
+        {"object":"list","data":[
+          {"id":"deepseek-v4.1-flash","object":"model","created":1793414555,"owned_by":"opencode","name":"DeepSeek V4.1 Flash","type":"chat","modalities":{"input":["text"],"output":["text"]},"capabilities":{"tools":{"supported":true},"reasoning":{"supported":true,"effort":["low","high","max"]}},"limit":{"context":1000000,"output":384000}},
+          {"id":"glm-5.3","object":"model","name":"GLM-5.3","type":"chat","capabilities":{"tools":{"supported":true}}}
+        ]}
+        """
+        let page = try ProviderModelParser.parse(Data(sample.utf8), format: .openAI)
+        XCTAssertEqual(page.models.map(\.id), ["deepseek-v4.1-flash", "glm-5.3"])
+        XCTAssertEqual(ProviderModelSelection.preferred(in: page.models, current: nil), "deepseek-v4.1-flash")
+    }
+
+    func testCapturedOpenCodeGoCatalogParsesEveryModel() throws {
+        let data = try fixtureData("OpenCode/go-models")
+        let page = try ProviderModelParser.parse(data, format: .openAI)
+        XCTAssertEqual(page.models.count, 28)
+        XCTAssertTrue(page.models.contains { $0.id == "deepseek-v4.1-flash" })
+        XCTAssertEqual(ProviderModelSelection.preferred(in: page.models, current: nil), "deepseek-v4.1-flash")
+        XCTAssertNil(page.nextCursor)
     }
 
     func testOllamaUsesExactReturnedIDsAndFiltersNonCompletionModels() throws {
@@ -308,6 +424,47 @@ final class ProviderModelTests: XCTestCase {
         XCTAssertFalse(oldApplied)
         XCTAssertEqual(settings.aiProvider, "ollamaCloud")
         XCTAssertEqual(settings.aiModel, "deepseek-current-cloud")
+    }
+
+    func testCatalogRequestsCarryProviderDeclaredHeaders() async throws {
+        let fixture = ModelCatalogFixture([(200, #"{"data":[{"id":"model-one"}]}"#)])
+        let service = ProviderModelService(fileURL: temporaryCache(), transport: { try await fixture.send($0) })
+        var declared = ResolvedAIConnection(
+            baseURL: "https://provider.example/v1/chat/completions",
+            responseFormat: .openAI,
+            authHeaderName: "Authorization",
+            authHeaderPrefix: "Bearer "
+        )
+        declared.additionalHeaders = ["x-opencode-session": "newsbar-test"]
+        _ = try await service.catalog(providerID: "custom:test", connection: declared, apiKey: "unit-secret", now: now)
+        let requests = await fixture.requests
+        XCTAssertEqual(requests.first?.value(forHTTPHeaderField: "x-opencode-session"), "newsbar-test")
+        XCTAssertEqual(requests.first?.value(forHTTPHeaderField: "Authorization"), "Bearer unit-secret")
+    }
+
+    func testTransportErrorsKeepActionableCause() async throws {
+        let unresolvable = ProviderModelService(fileURL: temporaryCache(), transport: { _ in throw URLError(.cannotFindHost) })
+        do {
+            _ = try await unresolvable.catalog(providerID: "custom:test", connection: connection, apiKey: "unit-secret", now: now)
+            XCTFail("Expected the catalog to fail")
+        } catch {
+            XCTAssertEqual(error as? ProviderModelError, .cannotResolveHost("provider.example"))
+        }
+
+        let timedOut = ProviderModelService(fileURL: temporaryCache(), transport: { _ in throw URLError(.timedOut) })
+        do {
+            _ = try await timedOut.catalog(providerID: "custom:test", connection: connection, apiKey: "unit-secret", now: now)
+            XCTFail("Expected the catalog to time out")
+        } catch {
+            XCTAssertEqual(error as? ProviderModelError, .timedOut)
+        }
+    }
+
+    private func fixtureData(_ name: String) throws -> Data {
+        let uri = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .appendingPathComponent("Fixtures/\(name).json")
+        return try Data(contentsOf: uri)
     }
 
     private func temporaryCache() -> URL {

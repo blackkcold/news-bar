@@ -35,6 +35,21 @@ actor ProviderModelService {
               parts.host?.isEmpty == false, parts.user == nil, parts.password == nil else { throw ProviderModelError.invalidEndpoint }
         parts.query = nil
         parts.fragment = nil
+        if providerID == AIProvider.opencodeGo.rawValue {
+            // Go exposes a single OpenAI-format catalog at the gateway root;
+            // deriving it from the chat path would hit a 404.
+            parts.path = "/inference/go/v1/models"
+            guard let url = parts.url else { throw ProviderModelError.invalidEndpoint }
+            return [ProviderModelEndpoint(url: url, format: .openAI)]
+        }
+        if providerID == AIProvider.opencodeZen.rawValue {
+            // Pay-as-you-go shares one catalog across every API family. The
+            // catalog carries `cost` and `api` metadata used to hide models
+            // this client cannot call.
+            parts.path = "/inference/v1/models"
+            guard let url = parts.url else { throw ProviderModelError.invalidEndpoint }
+            return [ProviderModelEndpoint(url: url, format: .openAI)]
+        }
         if providerID == AIProvider.ollamaCloud.rawValue {
             parts.path = "/api/tags"
             guard let url = parts.url else { throw ProviderModelError.invalidEndpoint }
@@ -80,7 +95,7 @@ actor ProviderModelService {
                 let endpoints = try Self.endpoints(providerID: providerID, connection: connection)
                 for (index, endpoint) in endpoints.enumerated() {
                     do {
-                        let models = try await Self.fetch(endpoint: endpoint, connection: connection, apiKey: apiKey, transport: transport)
+                        let models = try await Self.fetch(endpoint: endpoint, providerID: providerID, connection: connection, apiKey: apiKey, transport: transport)
                         guard !models.isEmpty else { throw ProviderModelError.emptyCatalog }
                         return ProviderModelSnapshot(identity: key, models: models, fetchedAt: now)
                     } catch ProviderModelError.unsupportedEndpoint {
@@ -112,7 +127,7 @@ actor ProviderModelService {
         }
     }
 
-    private nonisolated static func fetch(endpoint: ProviderModelEndpoint, connection: ResolvedAIConnection, apiKey: String, transport: Transport) async throws -> [ProviderModel] {
+    private nonisolated static func fetch(endpoint: ProviderModelEndpoint, providerID: String, connection: ResolvedAIConnection, apiKey: String, transport: Transport) async throws -> [ProviderModel] {
         var cursor: String?
         var seenCursors: Set<String> = []
         var models: [ProviderModel] = []
@@ -134,6 +149,9 @@ actor ProviderModelService {
             var request = URLRequest(url: url)
             request.httpMethod = "GET"
             request.timeoutInterval = 12
+            for (name, value) in connection.additionalHeaders {
+                request.setValue(value, forHTTPHeaderField: name)
+            }
             request.setValue("application/json", forHTTPHeaderField: "Accept")
             if !apiKey.isEmpty {
                 switch endpoint.format {
@@ -148,7 +166,13 @@ actor ProviderModelService {
                                      forHTTPHeaderField: anthropicFallback ? "Authorization" : connection.authHeaderName)
                 }
             }
-            let (data, response) = try await transport(request)
+            let payload: (Data, HTTPURLResponse)
+            do {
+                payload = try await transport(request)
+            } catch let error as URLError {
+                throw Self.mapTransportError(error, host: url.host ?? "")
+            }
+            let (data, response) = payload
             switch response.statusCode {
             case 200...299: break
             case 401, 403: throw ProviderModelError.unauthorized
@@ -157,13 +181,46 @@ actor ProviderModelService {
             }
             guard HTTPClient.validateResponseSize(declaredContentLength: Int(response.value(forHTTPHeaderField: "Content-Length") ?? ""), receivedByteCount: data.count, maxBodySize: 1024 * 1024) else { throw ProviderModelError.responseTooLarge }
             let page = try ProviderModelParser.parse(data, format: endpoint.format)
-            for model in page.models where ids.insert(model.id).inserted { models.append(model) }
+            for model in Self.eligible(page.models, providerID: providerID) where ids.insert(model.id).inserted {
+                models.append(model)
+            }
             guard models.count <= 5000 else { throw ProviderModelError.responseTooLarge }
             guard let next = page.nextCursor else { return models }
             guard next.utf8.count <= 2048, seenCursors.insert(next).inserted else { throw ProviderModelError.incompletePagination }
             cursor = next
         }
         throw ProviderModelError.incompletePagination
+    }
+
+    /// OpenCode's catalog lists models for every API family. Zen's free tier
+    /// is rejected (403) for non-OpenCode clients, and System One models do
+    /// not speak chat at all, so neither may reach the picker.
+    private nonisolated static func eligible(_ models: [ProviderModel], providerID: String) -> [ProviderModel] {
+        switch providerID {
+        case AIProvider.opencodeZen.rawValue:
+            return models.filter { !$0.isFree && $0.isChatCompatible }
+        case AIProvider.opencodeGo.rawValue:
+            return models.filter(\.isChatCompatible)
+        default:
+            return models
+        }
+    }
+
+    /// Keeps the catalog's failure message actionable: a retired host, a TLS
+    /// interception and a slow provider need different fixes.
+    private nonisolated static func mapTransportError(_ error: URLError, host: String) -> ProviderModelError {
+        switch error.code {
+        case .cannotFindHost, .dnsLookupFailed:
+            return .cannotResolveHost(host)
+        case .secureConnectionFailed, .serverCertificateUntrusted,
+             .serverCertificateHasBadDate, .serverCertificateHasUnknownRoot,
+             .serverCertificateNotYetValid:
+            return .tlsFailure(host)
+        case .timedOut:
+            return .timedOut
+        default:
+            return .network
+        }
     }
 
     private func loadIfNeeded() {

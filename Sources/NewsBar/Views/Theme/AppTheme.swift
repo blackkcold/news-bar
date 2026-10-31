@@ -14,6 +14,9 @@ enum EditorialButtonTone {
     case primary
     case secondary
     case destructive
+    /// The chosen item in a segmented row. Filled in both themes so the
+    /// selection stays visible on paper and on material.
+    case selected
 }
 
 /// A concrete shape for cards, pills and buttons so SwiftUI does not have to
@@ -281,9 +284,9 @@ struct EditorialActionButtonStyle: ButtonStyle {
     }
 
     private var foregroundColor: Color {
-        guard retro else { return .primary }
+        guard retro else { return tone == .selected ? .white : .primary }
         switch tone {
-        case .primary, .destructive: return RetroEditorialTokens.raisedPaper
+        case .primary, .selected, .destructive: return RetroEditorialTokens.raisedPaper
         case .secondary: return RetroEditorialTokens.ink
         }
     }
@@ -292,6 +295,9 @@ struct EditorialActionButtonStyle: ButtonStyle {
     private var buttonBackground: some View {
         if retro {
             Rectangle().fill(retroFill)
+        } else if tone == .selected {
+            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .fill(Color.accentColor)
         } else {
             RoundedRectangle(cornerRadius: 7, style: .continuous)
                 .fill(.quaternary.opacity(0.65))
@@ -302,6 +308,9 @@ struct EditorialActionButtonStyle: ButtonStyle {
     private var buttonBorder: some View {
         if retro {
             Rectangle().strokeBorder(RetroEditorialTokens.ink, lineWidth: 1.2)
+        } else if tone == .selected {
+            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .strokeBorder(Color.accentColor, lineWidth: 1)
         } else {
             RoundedRectangle(cornerRadius: 7, style: .continuous)
                 .strokeBorder(Color(nsColor: .separatorColor).opacity(0.35), lineWidth: 1)
@@ -314,7 +323,7 @@ struct EditorialActionButtonStyle: ButtonStyle {
 
     private var retroFill: Color {
         switch tone {
-        case .primary: return RetroEditorialTokens.brick
+        case .primary, .selected: return RetroEditorialTokens.brick
         case .secondary: return RetroEditorialTokens.raisedPaper
         case .destructive: return RetroEditorialTokens.ink
         }

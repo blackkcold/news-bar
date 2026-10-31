@@ -44,6 +44,11 @@ enum AIRequestBuilder {
 
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
+        // Provider-declared headers first; the fixed headers below always win
+        // so a catalog or caller cannot replace authorization or content type.
+        for (name, value) in connection.additionalHeaders {
+            request.setValue(value, forHTTPHeaderField: name)
+        }
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue(
             "\(connection.authHeaderPrefix)\(apiKey)",
