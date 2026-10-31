@@ -342,7 +342,13 @@ final class AIQuotaStore: Sendable {
     ) {
         let actual: Int64
         let priced: Bool
-        if let price, let usage {
+        if let reported = usage?.reportedCost {
+            // The provider knows whether this was a balance charge, a Go
+            // allowance, a free call or a BYOK estimate. Never replace that
+            // with the local table.
+            actual = reported.cnyMicros
+            priced = true
+        } else if let price, let usage {
             actual = AICostEstimator.costMicros(usage: usage, price: price)
             priced = true
         } else {

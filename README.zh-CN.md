@@ -65,9 +65,11 @@
 
 ## 🤖 启用 AI 摘要
 
-设置 → **AI** 标签页：选择 AI 提供商并填入 API Key。支持 **DeepSeek**、**MiniMax**、**Opencode Go/Zen**、**Google AI Studio**、**Ollama Cloud**，以及**用户自定义提供商**（端点、模型 ID、认证头）。
+设置 → **AI** → **连接**：选择 AI 提供商并填入 API Key。支持 **DeepSeek**、**MiniMax**、**OpenCode Go/Zen**、**Google AI Studio**、**Ollama Cloud**，以及**用户自定义提供商**（端点、模型 ID、认证头）。
 
 Popup 和 Dashboard 共用一个摘要长度预设（默认 360 字）和每日 AI 调用上限（默认 50，可选 20/50/100）。自动总结结合近 12/24 小时趋势历史，仅在显著变化及冷却条件满足时重建；Dashboard 的 AI 按钮仍可强制独立刷新摘要。
+
+设置 → **AI** → **用量与限额** 里另有 OpenCode 价目表：Go / Go Plus / Teams / Zen 四档，逐模型列出输入、输出、缓存读单价，以及官方文档中该套餐的月额度。整张表来自官方目录的生成物，打开不发起任何请求。
 
 ### 支持的 AI 提供商
 
@@ -75,11 +77,15 @@ Popup 和 Dashboard 共用一个摘要长度预设（默认 360 字）和每日 
 |---|---|---|
 | DeepSeek | api.deepseek.com | deepseek-v4-flash, deepseek-v4-pro |
 | MiniMax | api.minimaxi.com | MiniMax-M3, MiniMax-M2.7, MiniMax-M2.7-highspeed, MiniMax-M2.5, MiniMax-M2.5-highspeed, MiniMax-M2.1, MiniMax-M2.1-highspeed, MiniMax-M2 |
-| Opencode Go | open-code-go.aiizhi.com | deepseek-v4-flash, deepseek-v4-pro |
-| Opencode Zen | open-code-zen.aiizhi.com | deepseek-v4-flash, deepseek-v4-pro |
+| OpenCode Go | opencode.ai/inference/go | deepseek-v4.1-flash, deepseek-v4-pro, ... |
+| OpenCode Zen | opencode.ai/inference | deepseek-v4.1-flash, glm-5.3, kimi-k3, ... |
 | Google AI Studio | generativelanguage.googleapis.com | gemini-3.6-flash, gemini-3.5-flash, gemini-3.5-flash-lite, gemini-3.1-flash-lite, gemini-3.1-pro-preview, gemini-3-flash-preview, gemini-2.5-pro, gemini-2.5-flash, gemini-2.5-flash-lite |
 | Ollama Cloud | ollama.com | deepseek-v4-flash:cloud, deepseek-v4-pro:cloud, gpt-oss:20b-cloud, gpt-oss:120b-cloud, kimi-k3:cloud, minimax-m3:cloud, ... |
 | Custom | 用户自定义 | 自定义端点 / 模型 ID |
+
+> **OpenCode Go** 使用 OpenCode Console 的 Go 订阅 Key；旧 `open-code-go.aiizhi.com` 的 Key 已失效，请在 `opencode.ai/console → Go` 重新获取。
+
+> **OpenCode Zen** 使用 OpenCode Console 的 API Key；旧 `open-code-zen.aiizhi.com` 的 Key 已失效。免费模型仅限 OpenCode 客户端调用，NewsBar 只列出付费模型。
 
 > **模型折叠**：默认仅显示各供应商的 DeepSeek 系模型（若有）；在「通用 → 开发者选项」开启「显示全部 AI 模型」可查看该供应商全部官方模型。
 
@@ -156,7 +162,7 @@ Sources/NewsBar/
 
 - **Swift 5.9** + **SwiftUI** (macOS 15.0+)
 - **AppKit**: NSStatusBar, NSPopover
-- **AI APIs**: DeepSeek / MiniMax / Opencode / Google AI Studio / Ollama Cloud / 自定义
+- **AI APIs**: DeepSeek / MiniMax / OpenCode / Google AI Studio / Ollama Cloud / 自定义
 - **存储**: 加密文件（AES-256-GCM, CryptoKit）、UserDefaults、文件缓存（actor）
 - **零外部依赖**
 

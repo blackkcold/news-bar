@@ -64,7 +64,7 @@
 
 ## 🤖 AI 要約を有効にする
 
-設定 → **AI** タブ：プロバイダーを選択し API キーを入力。対応プロバイダー：**DeepSeek**、**MiniMax**、**Opencode Go/Zen**、**Google AI Studio**、**Ollama Cloud**、および**ユーザー定義プロバイダー**（エンドポイント、モデル ID、認証ヘッダー）。
+設定 → **AI** タブ：プロバイダーを選択し API キーを入力。対応プロバイダー：**DeepSeek**、**MiniMax**、**OpenCode Go/Zen**、**Google AI Studio**、**Ollama Cloud**、および**ユーザー定義プロバイダー**（エンドポイント、モデル ID、認証ヘッダー）。
 
 Popup と Dashboard は要約長プリセット（デフォルト 360 語）と 1 日あたりのリクエスト上限（デフォルト 50、20/50/100 から選択）を共有します。自動要約は 12/24 時間のトレンド履歴を使用し、有意な変化とクールダウン条件を満たした場合のみ再生成します。Dashboard の AI ボタンで強制的に独立再生成できます。
 
@@ -74,11 +74,15 @@ Popup と Dashboard は要約長プリセット（デフォルト 360 語）と 
 |---|---|---|
 | DeepSeek | api.deepseek.com | deepseek-v4-flash, deepseek-v4-pro |
 | MiniMax | api.minimaxi.com | MiniMax-M3, MiniMax-M2.7, MiniMax-M2.7-highspeed, MiniMax-M2.5, MiniMax-M2.5-highspeed, MiniMax-M2.1, MiniMax-M2.1-highspeed, MiniMax-M2 |
-| Opencode Go | open-code-go.aiizhi.com | deepseek-v4-flash, deepseek-v4-pro |
-| Opencode Zen | open-code-zen.aiizhi.com | deepseek-v4-flash, deepseek-v4-pro |
+| OpenCode Go | opencode.ai/inference/go | deepseek-v4.1-flash, deepseek-v4-pro, ... |
+| OpenCode Zen | opencode.ai/inference | deepseek-v4.1-flash, glm-5.3, kimi-k3, ... |
 | Google AI Studio | generativelanguage.googleapis.com | gemini-3.6-flash, gemini-3.5-flash, gemini-3.5-flash-lite, gemini-3.1-flash-lite, gemini-3.1-pro-preview, gemini-3-flash-preview, gemini-2.5-pro, gemini-2.5-flash, gemini-2.5-flash-lite |
 | Ollama Cloud | ollama.com | deepseek-v4-flash:cloud, deepseek-v4-pro:cloud, gpt-oss:20b-cloud, gpt-oss:120b-cloud, kimi-k3:cloud, minimax-m3:cloud, ... |
 | Custom | ユーザー定義 | カスタムエンドポイント / モデル ID |
+
+> **OpenCode Go** は OpenCode Console の Go サブスクリプションキーを使用します。旧 `open-code-go.aiizhi.com` のキーは無効です。`opencode.ai/console → Go` で再発行してください。
+
+> **OpenCode Zen** は OpenCode Console の API キーを使用します。旧 `open-code-zen.aiizhi.com` のキーは無効です。無料モデルは OpenCode クライアント専用のため、NewsBar には有料モデルのみ表示されます。
 
 > **モデル折りたたみ**：デフォルトでは各プロバイダーの DeepSeek 系モデルのみ表示（あれば）。「一般 → 開発者オプション」で「すべての AI モデルを表示」を有効にすると全公式モデルを確認できます。
 
@@ -152,7 +156,7 @@ Sources/NewsBar/
 
 - **Swift 5.9** + **SwiftUI** (macOS 15.0+)
 - **AppKit**: NSStatusBar, NSPopover
-- **AI APIs**: DeepSeek / MiniMax / Opencode / Google AI Studio / Ollama Cloud / カスタム
+- **AI APIs**: DeepSeek / MiniMax / OpenCode / Google AI Studio / Ollama Cloud / カスタム
 - **ストレージ**: 暗号化ファイル（AES-256-GCM, CryptoKit）、UserDefaults、ファイルキャッシュ（actor）
 - **外部依存ゼロ**
 

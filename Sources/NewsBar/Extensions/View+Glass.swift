@@ -30,13 +30,22 @@ private extension Notification.Name {
 
 private struct AdaptiveColorSchemeModifier: ViewModifier {
     @Environment(AppSettings.self) private var settings
+
+    /// Pins the appearance regardless of the user's choice. The retro theme
+    /// paints light paper, so a dark system appearance must not style its
+    /// controls — otherwise segmented pickers and text fields draw white
+    /// labels on cream.
+    var forced: ColorScheme?
+
     @State private var systemColorScheme: ColorScheme = {
-        NSApp.effectiveAppearance.name == .darkAqua ? .dark : .light
+        // `NSApp` is nil until an NSApplication exists, which is the case in a
+        // single-test process. `NSApplication.shared` creates it on demand.
+        NSApplication.shared.effectiveAppearance.name == .darkAqua ? .dark : .light
     }()
 
     func body(content: Content) -> some View {
         content
-            .preferredColorScheme(settings.resolvedColorScheme ?? systemColorScheme)
+            .preferredColorScheme(forced ?? settings.resolvedColorScheme ?? systemColorScheme)
             .onAppear { syncSystemColorScheme() }
             .onChange(of: settings.colorScheme) { _, newValue in
                 if newValue == "system" { syncSystemColorScheme() }
@@ -50,12 +59,12 @@ private struct AdaptiveColorSchemeModifier: ViewModifier {
     }
 
     private func syncSystemColorScheme() {
-        systemColorScheme = NSApp.effectiveAppearance.name == .darkAqua ? .dark : .light
+        systemColorScheme = NSApplication.shared.effectiveAppearance.name == .darkAqua ? .dark : .light
     }
 }
 
 extension View {
-    func adaptiveColorScheme() -> some View {
-        modifier(AdaptiveColorSchemeModifier())
+    func adaptiveColorScheme(forcing forced: ColorScheme? = nil) -> some View {
+        modifier(AdaptiveColorSchemeModifier(forced: forced))
     }
 }

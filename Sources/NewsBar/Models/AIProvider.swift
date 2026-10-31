@@ -16,8 +16,8 @@ enum AIProvider: String, CaseIterable, Codable {
         case .deepseek:          return "DeepSeek"
         case .minimaxTokenPlan:  return "MiniMax Token Plan"
         case .minimaxAPI:        return "MiniMax API"
-        case .opencodeGo:        return "Opencode Go"
-        case .opencodeZen:       return "Opencode Zen"
+        case .opencodeGo:        return "OpenCode Go"
+        case .opencodeZen:       return "OpenCode Zen"
         case .googleAIStudio:    return "Google AI Studio"
         case .ollamaCloud:       return "Ollama Cloud"
         }
@@ -32,9 +32,9 @@ enum AIProvider: String, CaseIterable, Codable {
         case .minimaxTokenPlan, .minimaxAPI:
             return "https://api.minimaxi.com/anthropic/v1/messages"
         case .opencodeGo:
-            return "https://open-code-go.aiizhi.com/anthropic/v1/messages"
+            return "https://opencode.ai/inference/go/openai/v1/chat/completions"
         case .opencodeZen:
-            return "https://open-code-zen.aiizhi.com/anthropic/v1/messages"
+            return "https://opencode.ai/inference/openai/v1/chat/completions"
         case .googleAIStudio:
             return "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
         case .ollamaCloud:
@@ -48,8 +48,8 @@ enum AIProvider: String, CaseIterable, Codable {
 
     var responseFormat: ResponseFormat {
         switch self {
-        case .deepseek, .googleAIStudio, .ollamaCloud: return .openAI
-        default:                                       return .anthropic
+        case .deepseek, .googleAIStudio, .ollamaCloud, .opencodeGo, .opencodeZen: return .openAI
+        default:                                                    return .anthropic
         }
     }
 
@@ -57,15 +57,15 @@ enum AIProvider: String, CaseIterable, Codable {
 
     var authHeaderName: String {
         switch self {
-        case .deepseek, .googleAIStudio, .ollamaCloud: return "Authorization"
-        default:                                       return "x-api-key"
+        case .deepseek, .googleAIStudio, .ollamaCloud, .opencodeGo, .opencodeZen: return "Authorization"
+        default:                                                    return "x-api-key"
         }
     }
 
     var authHeaderPrefix: String {
         switch self {
-        case .deepseek, .googleAIStudio, .ollamaCloud: return "Bearer "
-        default:                                       return ""
+        case .deepseek, .googleAIStudio, .ollamaCloud, .opencodeGo, .opencodeZen: return "Bearer "
+        default:                                                    return ""
         }
     }
 
@@ -79,7 +79,8 @@ enum AIProvider: String, CaseIterable, Codable {
     var thinkingStyle: AIThinkingStyle {
         switch self {
         case .deepseek: return .deepseekToggle
-        case .minimaxTokenPlan, .minimaxAPI, .opencodeGo, .opencodeZen: return .anthropicBudget
+        case .minimaxTokenPlan, .minimaxAPI: return .anthropicBudget
+        case .opencodeGo, .opencodeZen: return .none
         case .googleAIStudio: return .openAIReasoningEffort
         case .ollamaCloud: return .ollamaThink
         }
@@ -93,7 +94,10 @@ enum AIProvider: String, CaseIterable, Codable {
             authHeaderPrefix: authHeaderPrefix,
             apiVersion: apiVersion,
             providerID: rawValue,
-            thinkingStyle: thinkingStyle
+            thinkingStyle: thinkingStyle,
+            additionalHeaders: self == .opencodeGo || self == .opencodeZen
+                ? ["x-opencode-session": OpenCodeSession.identifier()]
+                : [:]
         )
     }
 
@@ -109,8 +113,8 @@ enum AIProvider: String, CaseIterable, Codable {
         case .deepseek:       return "输入 DeepSeek API Key (sk-...)"
         case .minimaxTokenPlan, .minimaxAPI:
                               return "输入 MiniMax API Key"
-        case .opencodeGo:     return "输入 Opencode Go API Key"
-        case .opencodeZen:    return "输入 Opencode Zen API Key"
+        case .opencodeGo:     return "输入 OpenCode Go API Key (oc_sk_...)"
+        case .opencodeZen:    return "输入 OpenCode API Key (oc_sk_...)"
         case .googleAIStudio: return "输入 Google AI Studio API Key"
         case .ollamaCloud:    return "输入 Ollama Cloud API Key"
         }
@@ -121,8 +125,8 @@ enum AIProvider: String, CaseIterable, Codable {
         case .deepseek:       return "platform.deepseek.com → API Keys"
         case .minimaxTokenPlan, .minimaxAPI:
                               return "platform.minimaxi.com → 接口密钥"
-        case .opencodeGo:     return "open-code-go.aiizhi.com"
-        case .opencodeZen:    return "open-code-zen.aiizhi.com"
+        case .opencodeGo:     return "opencode.ai/console → Go → API Key"
+        case .opencodeZen:    return "opencode.ai/console → API Key"
         case .googleAIStudio: return "aistudio.google.com → Get API Key"
         case .ollamaCloud:    return "ollama.com/settings/keys"
         }
@@ -159,10 +163,17 @@ enum AIProvider: String, CaseIterable, Codable {
                 ("计费方式", "按量计费，详见 platform.minimaxi.com 定价页"),
                 ("用量参考", "每次总结约消耗 200-800 tokens"),
             ]
-        case .opencodeGo, .opencodeZen:
+        case .opencodeGo:
             return [
-                ("计费方式", "通过 Opencode 代理调用，费用由 Opencode 账户决定"),
-                ("用量参考", "每次总结约消耗 200-800 tokens"),
+                ("计费方式", "使用 Go 套餐月度额度；响应中的 allowance 决定本次计入多少额度"),
+                ("等效成本", "套餐内不扣余额；开启 Extra Usage 并超出额度后才按实际用量扣费"),
+                ("额度查询", "opencode.ai/console → Go"),
+            ]
+        case .opencodeZen:
+            return [
+                ("计费方式", "按量计费；响应中的 cost 为实际扣费，list_cost 为等效成本"),
+                ("免费模型", "免费模型仅限 OpenCode 客户端调用，第三方客户端会收到 403，NewsBar 不列出"),
+                ("Key 获取", "opencode.ai/console → API Key"),
             ]
         case .googleAIStudio:
             return [

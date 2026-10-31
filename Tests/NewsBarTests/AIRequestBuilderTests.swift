@@ -173,12 +173,65 @@ final class AIRequestBuilderTests: XCTestCase {
         XCTAssertEqual(anthropic.request.value(forHTTPHeaderField: "anthropic-version"), "2023-06-01")
     }
 
+    func testOpenCodeGoUsesOpenAIProtocolAndSessionHeader() throws {
+        let connection = AIProvider.opencodeGo.resolvedConnection()
+        let built = try build(connection, thinking: .providerDefault)
+        XCTAssertEqual(built.request.url?.absoluteString, "https://opencode.ai/inference/go/openai/v1/chat/completions")
+        XCTAssertEqual(built.request.value(forHTTPHeaderField: "Authorization"), "Bearer key")
+        XCTAssertNil(built.request.value(forHTTPHeaderField: "anthropic-version"))
+        let session = try XCTUnwrap(built.request.value(forHTTPHeaderField: "x-opencode-session"))
+        XCTAssertTrue(session.hasPrefix("newsbar-"))
+
+        let payload = try body(built)
+        XCTAssertNil(payload["system"])
+        XCTAssertEqual(payload["model"] as? String, "model-x")
+    }
+
+    func testOpenCodeZenUsesOpenAIProtocolAndSessionHeader() throws {
+        let connection = AIProvider.opencodeZen.resolvedConnection()
+        let built = try build(connection, thinking: .high)
+        XCTAssertEqual(built.request.url?.absoluteString, "https://opencode.ai/inference/openai/v1/chat/completions")
+        XCTAssertEqual(built.request.value(forHTTPHeaderField: "Authorization"), "Bearer key")
+        XCTAssertNil(built.request.value(forHTTPHeaderField: "anthropic-version"))
+        let session = try XCTUnwrap(built.request.value(forHTTPHeaderField: "x-opencode-session"))
+        XCTAssertTrue(session.hasPrefix("newsbar-"))
+
+        let payload = try body(built)
+        XCTAssertNil(payload["system"])
+        XCTAssertNil(payload["thinking"])
+        XCTAssertEqual(payload["model"] as? String, "model-x")
+    }
+
+    func testOpenCodeSessionIsStableAndNamespaced() throws {
+        let suite = "OpenCodeSessionTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let first = OpenCodeSession.identifier(defaults: defaults)
+        let second = OpenCodeSession.identifier(defaults: defaults)
+        XCTAssertTrue(first.hasPrefix("newsbar-"))
+        XCTAssertEqual(first, second)
+        XCTAssertEqual(first, "newsbar-" + (defaults.string(forKey: OpenCodeSession.defaultsKey) ?? ""))
+    }
+
+    func testAdditionalHeadersCannotReplaceFixedHeaders() throws {
+        var connection = connection(style: .none)
+        connection.additionalHeaders = [
+            "Authorization": "Bearer injected",
+            "Content-Type": "text/plain",
+            "x-opencode-session": "newsbar-test",
+        ]
+        let built = try build(connection, thinking: .providerDefault)
+        XCTAssertEqual(built.request.value(forHTTPHeaderField: "Authorization"), "Bearer key")
+        XCTAssertEqual(built.request.value(forHTTPHeaderField: "Content-Type"), "application/json")
+        XCTAssertEqual(built.request.value(forHTTPHeaderField: "x-opencode-session"), "newsbar-test")
+    }
+
     func testProviderCapabilitiesAreDeclaredPerProvider() {
         XCTAssertEqual(AIProvider.deepseek.thinkingStyle, .deepseekToggle)
         XCTAssertEqual(AIProvider.minimaxAPI.thinkingStyle, .anthropicBudget)
         XCTAssertEqual(AIProvider.minimaxTokenPlan.thinkingStyle, .anthropicBudget)
-        XCTAssertEqual(AIProvider.opencodeGo.thinkingStyle, .anthropicBudget)
-        XCTAssertEqual(AIProvider.opencodeZen.thinkingStyle, .anthropicBudget)
+        XCTAssertEqual(AIProvider.opencodeGo.thinkingStyle, .none)
+        XCTAssertEqual(AIProvider.opencodeZen.thinkingStyle, .none)
         XCTAssertEqual(AIProvider.googleAIStudio.thinkingStyle, .openAIReasoningEffort)
         XCTAssertEqual(AIProvider.ollamaCloud.thinkingStyle, .ollamaThink)
     }

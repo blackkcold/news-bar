@@ -1,8 +1,21 @@
 import SwiftUI
 
 struct AITab: View {
+    /// The AI group is three pages: how it connects, what it has spent, and
+    /// what the reader and research features do with it. Page state lives on
+    /// the tab, so a half-typed key survives a page switch.
+    enum Page: String, CaseIterable, Identifiable {
+        case connection
+        case usage
+        case research
+
+        var id: String { rawValue }
+        var titleKey: String { "settings.ai.page.\(rawValue)" }
+    }
+
     @Environment(AppSettings.self) private var settings
 
+    @State private var page: Page
     @State private var selectedProviderID: String
     @State private var apiKeyInput = ""
     @State private var onePasswordRef = ""
@@ -20,11 +33,13 @@ struct AITab: View {
     @State private var editingCustom: CustomAIProviderConfig?
     @State private var pendingCustomDeletion: CustomAIProviderConfig?
     @State private var costInput = ""
+    @State private var showPricingSheet = false
     @FocusState private var costFieldFocused: Bool
 
-    init() {
+    init(page: Page = .connection) {
         let saved = UserDefaults.standard.string(forKey: "aiProvider") ?? AIProvider.deepseek.rawValue
         _selectedProviderID = State(initialValue: saved)
+        _page = State(initialValue: page)
     }
 
     /// Red only when a finite cap is actually reached; unlimited never is.
@@ -54,6 +69,27 @@ struct AITab: View {
 
     private static let costPresets: [Double] = [5, 10, 20, 50]
 
+    /// OpenCode reports a different kind of number for each plan. Say which
+    /// one the ledger is showing instead of presenting an allowance as a bill.
+    private var openCodeCostNote: String? {
+        switch settings.aiProvider {
+        case AIProvider.opencodeGo.rawValue: return "ai.cost.footer.opencodeGo".localized
+        case AIProvider.opencodeZen.rawValue: return "ai.cost.footer.opencodeZen".localized
+        default: return nil
+        }
+    }
+
+    /// The documented price list that applies to the provider being edited.
+    /// Only OpenCode publishes per-model prices; every other provider keeps its
+    /// short prose note instead.
+    private var openCodePricingPlan: OpenCodePricingPlan? {
+        switch selectedProviderID {
+        case AIProvider.opencodeGo.rawValue: return .go
+        case AIProvider.opencodeZen.rawValue: return .zen
+        default: return nil
+        }
+    }
+
     private static func costText(_ micros: Int64) -> String {
         String(format: "%.2f", Double(max(0, micros)) / 1_000_000)
     }
@@ -74,309 +110,609 @@ struct AITab: View {
     }
 
     var body: some View {
-        Form {
-            Section {
-                Toggle("ai.enable".localized, isOn: Binding(
-                    get: { settings.aiSummaryEnabled },
-                    set: { settings.aiSummaryEnabled = $0 }
-                ))
-            } header: {
-                Text("ai.feature".localized)
-            }
+        VStack(spacing: 0) {
+            pagePicker
 
-            Section {
-                Picker("ai.provider".localized, selection: Binding(
-                    get: { selectedProviderID },
-                    set: { newProvider in
-                        selectedProviderID = newProvider
-                        settings.aiProvider = newProvider
+            Form {
+                switch page {
+                case .connection: connectionSections
+                case .usage: usageSections
+                case .research: researchSections
+                }
+            }
+            .formStyle(.grouped)
+            .scrollContentBackground(.hidden)
+            .onAppear {
+                costInput = Self.costText(settings.aiCostCapMicros)
+                settings.refreshAIUsageMirror()
+            }
+            .onChange(of: settings.aiCostCapMicros) { _, value in
+                let text = Self.costText(value)
+                if text != costInput { costInput = text }
+            }
+            .onChange(of: costFieldFocused) { _, focused in
+                if !focused { commitCostInput() }
+            }
+            .onChange(of: settings.aiProvider) { _, _ in
+                if settings.aiLimitMode == .cost, !settings.aiCostEstimateAvailable {
+                    settings.aiLimitMode = .count
+                }
+            }
+            .onChange(of: settings.aiModel) { _, _ in
+                if settings.aiLimitMode == .cost, !settings.aiCostEstimateAvailable {
+                    settings.aiLimitMode = .count
+                }
+            }
+            .task(id: settings.modelCatalogRevision) {
+                selectedProviderID = settings.aiProvider
+                await settings.refreshModelCatalog()
+            }
+            .sheet(isPresented: $showCustomEditor) {
+                CustomAIProviderEditor(provider: editingCustom) { saved in
+                    editingCustom = nil
+                    showCustomEditor = false
+                    if let saved, !saved.id.isEmpty {
+                        let customID = "custom:\(saved.id)"
+                        selectedProviderID = customID
+                        settings.aiProvider = customID
                         settings.cachedAPIKey = nil
                         apiKeyInput = ""
                         testResult = nil
                         keyFeedback = nil
                         onePasswordFeedback = nil
                     }
-                )) {
-                    ForEach(settings.providerOptions, id: \.id) { option in
-                        Text(option.name).tag(option.id)
-                    }
                 }
+                .environment(settings)
+                .frame(minWidth: 460, minHeight: 460)
+            }
+            .sheet(isPresented: $showPricingSheet) {
+                OpenCodePricingView(
+                    currentModel: settings.aiModel,
+                    initialPlan: openCodePricingPlan ?? .go
+                )
+                .environment(settings)
+            }
+            .confirmationDialog(
+                "ai.deleteCustom.title".localized,
+                isPresented: Binding(
+                    get: { pendingCustomDeletion != nil },
+                    set: { if !$0 { pendingCustomDeletion = nil } }
+                ),
+                presenting: pendingCustomDeletion
+            ) { custom in
+                Button(L10n.string("ai.deleteCustom.confirm", custom.name), role: .destructive) {
+                    deleteCustomProvider(custom)
+                }
+                Button("ai.cancel".localized, role: .cancel) { }
+            } message: { custom in
+                Text(L10n.string("ai.deleteCustom.message", custom.name))
+            }
+            .confirmationDialog(
+                "ai.deleteKey.title".localized,
+                isPresented: $pendingKeyDeletion
+            ) {
+                Button("ai.deleteKey.confirm".localized, role: .destructive) {
+                    deleteAPIKey()
+                }
+                Button("ai.cancel".localized, role: .cancel) { }
+            } message: {
+                Text("ai.deleteKey.message".localized)
+            }
+            .task(id: settings.activeAPIKeyAccount) {
+                await refreshKeyStatus()
+                await loadScopedOnePasswordRef()
+            }
+        }
+    }
 
-                HStack {
+    /// A sticky page switch above the form, so the page name stays visible
+    /// while the form scrolls — the sidebar only says "AI". Chips rather than a
+    /// segmented control: on the paper surface the native one loses its labels.
+    private var pagePicker: some View {
+        HStack(spacing: 0) {
+            EditorialChips(
+                values: Page.allCases,
+                title: { L10n.string($0.titleKey) },
+                groupLabel: "settings.ai.page".localized,
+                selection: $page
+            )
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 10)
+        .padding(.bottom, 6)
+    }
+
+    @ViewBuilder
+    private var connectionSections: some View {
+        Section {
+            Toggle("ai.enable".localized, isOn: Binding(
+                get: { settings.aiSummaryEnabled },
+                set: { settings.aiSummaryEnabled = $0 }
+            ))
+        } header: {
+            Text("ai.feature".localized)
+        }
+
+        Section {
+            Picker("ai.provider".localized, selection: Binding(
+                get: { selectedProviderID },
+                set: { newProvider in
+                    selectedProviderID = newProvider
+                    settings.aiProvider = newProvider
+                    settings.cachedAPIKey = nil
+                    apiKeyInput = ""
+                    testResult = nil
+                    keyFeedback = nil
+                    onePasswordFeedback = nil
+                }
+            )) {
+                ForEach(settings.providerOptions, id: \.id) { option in
+                    Text(option.name).tag(option.id)
+                }
+            }
+
+            HStack {
+                Button {
+                    editingCustom = nil
+                    showCustomEditor = true
+                } label: {
+                    Label("ai.addCustomProvider".localized, systemImage: "plus.circle")
+                }
+                .font(.caption)
+                .buttonStyle(EditorialActionButtonStyle(compact: true))
+                .controlSize(.small)
+
+                Spacer()
+
+                if settings.isUsingCustomProvider, let custom = settings.selectedCustomProvider {
                     Button {
-                        editingCustom = nil
+                        editingCustom = custom
                         showCustomEditor = true
                     } label: {
-                        Label("ai.addCustomProvider".localized, systemImage: "plus.circle")
+                        Text(L10n.string("ai.editProvider", custom.name))
                     }
                     .font(.caption)
                     .buttonStyle(EditorialActionButtonStyle(compact: true))
                     .controlSize(.small)
 
-                    Spacer()
-
-                    if settings.isUsingCustomProvider, let custom = settings.selectedCustomProvider {
-                        Button {
-                            editingCustom = custom
-                            showCustomEditor = true
-                        } label: {
-                            Text(L10n.string("ai.editProvider", custom.name))
-                        }
-                        .font(.caption)
-                        .buttonStyle(EditorialActionButtonStyle(compact: true))
-                        .controlSize(.small)
-
-                        Button {
-                            pendingCustomDeletion = custom
-                        } label: {
-                            Text("ai.delete".localized)
-                        }
-                        .font(.caption)
-                        .foregroundStyle(.red)
-                        .controlSize(.small)
-                    }
-                }
-            } header: {
-                Text("ai.provider".localized)
-            } footer: {
-                if settings.isUsingCustomProvider {
-                    Text("ai.provider.footer.custom".localized)
-                }
-            }
-
-            Section {
-                HStack(spacing: 6) {
-                    Image(systemName: keyStatus == .saved ? "checkmark.seal.fill" : "exclamationmark.circle")
-                        .font(.system(size: 11))
-                        .foregroundStyle(keyStatus == .saved ? .green : .secondary)
-                    Text(keyStatus.label(language: settings.appLanguage))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                }
-
-                SecureField(settings.providerApiKeyPlaceholder(forID: selectedProviderID), text: $apiKeyInput)
-                    .textFieldStyle(.roundedBorder)
-                    .font(.system(size: 12, design: .monospaced))
-                    .onChange(of: selectedProviderID) { _, _ in
-                        apiKeyInput = ""
-                    }
-                    .accessibilityLabel("ai.apiKey".localized)
-
-                HStack {
                     Button {
-                        saveAPIKey()
+                        pendingCustomDeletion = custom
                     } label: {
-                        Text(isSaving ? "ai.saving".localized : "ai.save".localized)
+                        Text("ai.delete".localized)
                     }
-                    .disabled(apiKeyInput.isEmpty || isSaving)
-                    .buttonStyle(EditorialActionButtonStyle(tone: .primary, compact: true))
-                    .controlSize(.small)
-
-                    Button {
-                        testConnection()
-                    } label: {
-                        Text(isTesting ? "ai.testing".localized : "ai.test".localized)
-                    }
-                    .disabled((apiKeyInput.isEmpty && (settings.cachedAPIKey?.isEmpty ?? true)) || isTesting)
-                    .buttonStyle(EditorialActionButtonStyle(compact: true))
-                    .controlSize(.small)
-
-                    Spacer()
-
-                    Button {
-                        pendingKeyDeletion = true
-                    } label: {
-                        Text("ai.deleteKey".localized)
-                    }
-                    .disabled(keyStatus == .missing || isDeletingKey)
+                    .font(.caption)
                     .foregroundStyle(.red)
                     .controlSize(.small)
                 }
+            }
+        } header: {
+            Text("ai.provider".localized)
+        } footer: {
+            if settings.isUsingCustomProvider {
+                Text("ai.provider.footer.custom".localized)
+            }
+        }
 
-                if let feedback = keyFeedback {
+        Section {
+            HStack(spacing: 6) {
+                Image(systemName: keyStatus == .saved ? "checkmark.seal.fill" : "exclamationmark.circle")
+                    .font(.system(size: 11))
+                    .foregroundStyle(keyStatus == .saved ? .green : .secondary)
+                Text(keyStatus.label(language: settings.appLanguage))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+            }
+
+            SecureField(settings.providerApiKeyPlaceholder(forID: selectedProviderID), text: $apiKeyInput)
+                .textFieldStyle(.roundedBorder)
+                .font(.system(size: 12, design: .monospaced))
+                .onChange(of: selectedProviderID) { _, _ in
+                    apiKeyInput = ""
+                }
+                .accessibilityLabel("ai.apiKey".localized)
+
+            HStack {
+                Button {
+                    saveAPIKey()
+                } label: {
+                    Text(isSaving ? "ai.saving".localized : "ai.save".localized)
+                }
+                .disabled(apiKeyInput.isEmpty || isSaving)
+                .buttonStyle(EditorialActionButtonStyle(tone: .primary, compact: true))
+                .controlSize(.small)
+
+                Button {
+                    testConnection()
+                } label: {
+                    Text(isTesting ? "ai.testing".localized : "ai.test".localized)
+                }
+                .disabled((apiKeyInput.isEmpty && (settings.cachedAPIKey?.isEmpty ?? true)) || isTesting)
+                .buttonStyle(EditorialActionButtonStyle(compact: true))
+                .controlSize(.small)
+
+                Spacer()
+
+                Button {
+                    pendingKeyDeletion = true
+                } label: {
+                    Text("ai.deleteKey".localized)
+                }
+                .disabled(keyStatus == .missing || isDeletingKey)
+                .foregroundStyle(.red)
+                .controlSize(.small)
+            }
+
+            if let feedback = keyFeedback {
+                Text(feedback.text(language: settings.appLanguage))
+                    .font(.caption)
+                    .foregroundStyle(feedback.color)
+                    .accessibilityLabel(feedback.text(language: settings.appLanguage))
+            }
+
+            if let result = testResult {
+                Text(result)
+                    .font(.caption)
+                    .foregroundStyle(testSucceeded ? .green : .orange)
+            }
+        } header: {
+            Text("ai.apiKey".localized)
+        } footer: {
+            Text(L10n.string("ai.apiKey.footer", settings.providerKeyRetrievalURL(forID: selectedProviderID)))
+        }
+
+        Section {
+            VStack(alignment: .leading, spacing: 6) {
+                TextField(settings.providerOnePasswordHint(forID: selectedProviderID), text: $onePasswordRef)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(size: 12, design: .monospaced))
+                    .accessibilityLabel("ai.1password".localized)
+                    .onChange(of: selectedProviderID) { _, _ in
+                        Task { await loadScopedOnePasswordRef() }
+                    }
+
+                HStack {
+                    Button {
+                        loadFrom1Password()
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: "key.horizontal")
+                            Text(isLoadingFrom1Password ? "ai.loading".localized : "ai.loadFrom1Password".localized)
+                        }
+                    }
+                    .disabled(onePasswordRef.isEmpty || isLoadingFrom1Password)
+                    .buttonStyle(EditorialActionButtonStyle(compact: true))
+                    .controlSize(.small)
+                }
+
+                if let feedback = onePasswordFeedback {
                     Text(feedback.text(language: settings.appLanguage))
                         .font(.caption)
                         .foregroundStyle(feedback.color)
-                        .accessibilityLabel(feedback.text(language: settings.appLanguage))
                 }
+            }
+        } header: {
+            Text("ai.1password".localized)
+        } footer: {
+            Text("ai.1password.footer".localized)
+        }
 
-                if let result = testResult {
-                    Text(result)
-                        .font(.caption)
-                        .foregroundStyle(testSucceeded ? .green : .orange)
+        Section {
+            Picker("ai.model".localized, selection: Binding(
+                get: { settings.aiModel },
+                set: {
+                    settings.aiModel = $0
+                    settings.aiModelManuallyEntered = false
                 }
-            } header: {
-                Text("ai.apiKey".localized)
-            } footer: {
-                Text(L10n.string("ai.apiKey.footer", settings.providerKeyRetrievalURL(forID: selectedProviderID)))
+            )) {
+                if !settings.currentAIModels.contains(settings.aiModel) {
+                    Text("ai.models.unselected".localized).tag(settings.aiModel)
+                }
+                ForEach(settings.providerModels(forID: selectedProviderID), id: \.self) { model in
+                    Text(model).tag(model)
+                }
+            }
+            .disabled((settings.currentAIModels.isEmpty && !settings.aiModelManuallyEntered) || settings.isLoadingModelCatalog)
+
+            Toggle("ai.model.manual".localized, isOn: Binding(
+                get: { settings.aiModelManuallyEntered },
+                set: { settings.aiModelManuallyEntered = $0 }
+            ))
+
+            if settings.aiModelManuallyEntered {
+                HStack(spacing: 6) {
+                    TextField("ai.model.manualPlaceholder".localized, text: Binding(
+                        get: { settings.aiModel },
+                        set: { settings.aiModel = $0 }
+                    ))
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(size: 12, design: .monospaced))
+                    .accessibilityLabel("ai.model.manual".localized)
+                    Text(settings.isAIModelCatalogValidated ? "ai.model.verified".localized : "ai.model.unverified".localized)
+                        .font(.caption2.weight(.bold))
+                        .foregroundStyle(settings.isAIModelCatalogValidated ? .green : .orange)
+                        .accessibilityLabel(settings.isAIModelCatalogValidated
+                            ? "ai.model.verified".localized
+                            : "ai.model.unverified".localized)
+                }
             }
 
-            Section {
+            HStack {
+                if settings.isLoadingModelCatalog {
+                    ProgressView().controlSize(.small)
+                    Text("ai.models.loading".localized).font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button {
+                    Task { await settings.refreshModelCatalog(force: true) }
+                } label: {
+                    Label("ai.models.refresh".localized, systemImage: "arrow.clockwise")
+                }
+                .buttonStyle(EditorialActionButtonStyle(compact: true))
+                .disabled(settings.isLoadingModelCatalog)
+            }
+
+            if let error = settings.modelCatalogError {
+                Text(error.message(language: settings.appLanguage))
+                    .font(.caption).foregroundStyle(.orange)
+                if settings.currentAIModels.isEmpty && !settings.aiModelManuallyEntered {
+                    Button {
+                        settings.aiModelManuallyEntered = true
+                    } label: {
+                        Label("ai.models.manualFallback".localized, systemImage: "square.and.pencil")
+                    }
+                    .buttonStyle(EditorialActionButtonStyle(compact: true))
+                    .controlSize(.small)
+                }
+            }
+            if let updated = settings.modelCatalogUpdatedAt {
+                HStack(spacing: 4) {
+                    Text(settings.modelCatalogIsStale ? "ai.models.stale".localized : "ai.models.updated".localized)
+                    Text(updated, style: .relative)
+                }
+                .font(.caption2).foregroundStyle(.secondary)
+            }
+        } header: {
+            Text("ai.modelSettings".localized)
+        } footer: {
+            Text(settings.aiModelManuallyEntered ? "ai.model.manual.footer".localized : "ai.model.footer".localized)
+        }
+
+        Section {
+            // The legacy switch is only meaningful for a connection that
+            // actually exposes a DeepSeek-style binary toggle. Other
+            // providers get a capability note instead of a misleading knob.
+            if settings.resolvedAIConnection.thinkingStyle == .deepseekToggle {
+                Toggle("ai.disableThinking".localized, isOn: Binding(
+                    get: { settings.aiDisableDeepSeekThinking },
+                    set: { settings.aiDisableDeepSeekThinking = $0 }
+                ))
+            }
+            if let note = settings.resolvedAIConnection.thinkingStyle.capabilityNote(settings.appLanguage) {
+                Text(note)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        } footer: {
+            if settings.resolvedAIConnection.thinkingStyle == .deepseekToggle {
+                Text("ai.disableThinking.footer".localized)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var usageSections: some View {
+        Section {
+            if let plan = openCodePricingPlan {
                 VStack(alignment: .leading, spacing: 6) {
-                    TextField(settings.providerOnePasswordHint(forID: selectedProviderID), text: $onePasswordRef)
-                        .textFieldStyle(.roundedBorder)
-                        .font(.system(size: 12, design: .monospaced))
-                        .accessibilityLabel("ai.1password".localized)
-                        .onChange(of: selectedProviderID) { _, _ in
-                            Task { await loadScopedOnePasswordRef() }
-                        }
+                    Text(L10n.string(
+                        "ai.pricing.summary",
+                        L10n.string(plan.titleKey),
+                        OpenCodePriceSheet.listedCount(for: plan)
+                    ))
+                    .font(.caption)
 
-                    HStack {
-                        Button {
-                            loadFrom1Password()
-                        } label: {
-                            HStack(spacing: 4) {
-                                Image(systemName: "key.horizontal")
-                                Text(isLoadingFrom1Password ? "ai.loading".localized : "ai.loadFrom1Password".localized)
-                            }
-                        }
-                        .disabled(onePasswordRef.isEmpty || isLoadingFrom1Password)
-                        .buttonStyle(EditorialActionButtonStyle(compact: true))
-                        .controlSize(.small)
+                    if let note = openCodeCostNote {
+                        Text(note)
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
 
-                    if let feedback = onePasswordFeedback {
-                        Text(feedback.text(language: settings.appLanguage))
-                            .font(.caption)
-                            .foregroundStyle(feedback.color)
+                    Button {
+                        showPricingSheet = true
+                    } label: {
+                        Label("ai.pricing.open".localized, systemImage: "tablecells")
+                    }
+                    .buttonStyle(EditorialActionButtonStyle(compact: true))
+                    .controlSize(.small)
+                    .padding(.top, 2)
+                }
+            } else {
+                VStack(alignment: .leading, spacing: 4) {
+                    ForEach(settings.providerPricingInfo(forID: selectedProviderID), id: \.title) { item in
+                        Text("\(item.title): \(item.detail)")
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
                     }
                 }
-            } header: {
-                Text("ai.1password".localized)
-            } footer: {
-                Text("ai.1password.footer".localized)
+            }
+        } header: {
+            Text("ai.pricing".localized)
+        }
+
+        Section {
+            VStack(alignment: .leading, spacing: 6) {
+                HStack {
+                    Text("ai.usage.today".localized)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Text(usageValueText)
+                        .font(.system(size: 12, weight: .medium, design: .monospaced))
+                        .foregroundStyle(usageIsAtLimit ? .red : .primary)
+                }
+                if let fraction = usageFraction {
+                    ProgressView(value: fraction)
+                        .tint(usageIsAtLimit ? .red : .blue)
+                } else {
+                    Text("ai.usage.unlimitedHint".localized)
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
+
+                if settings.effectiveAILimitMode == .cost {
+                    if settings.todayAIInputTokens > 0 || settings.todayAIOutputTokens > 0 {
+                        Text(L10n.string(
+                            "ai.cost.tokens",
+                            settings.todayAIInputTokens,
+                            settings.todayAIOutputTokens
+                        ))
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                    }
+                    Text("ai.cost.footer".localized)
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                    if settings.todayAIUnpricedCalls > 0 {
+                        Text(L10n.string("ai.cost.unpriced", settings.todayAIUnpricedCalls))
+                            .font(.caption2)
+                            .foregroundStyle(.orange)
+                    }
+                }
+
+                Text("ai.usage.shared".localized)
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                Text("ai.usage.reset".localized)
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
+        } header: {
+            Text("ai.usage".localized)
+        }
+
+        Section {
+            if settings.aiCostEstimateAvailable {
+                Picker("ai.limitMode".localized, selection: Binding(
+                    get: { settings.effectiveAILimitMode },
+                    set: { settings.aiLimitMode = $0 }
+                )) {
+                    Text("ai.limitMode.count".localized).tag(AILimitMode.count)
+                    Text("ai.limitMode.cost".localized).tag(AILimitMode.cost)
+                }
+                .pickerStyle(.segmented)
             }
 
-            Section {
-                Picker("ai.model".localized, selection: Binding(
-                    get: { settings.aiModel },
-                    set: {
-                        settings.aiModel = $0
-                        settings.aiModelManuallyEntered = false
+            if settings.effectiveAILimitMode == .cost {
+                HStack {
+                    Text("ai.costCap".localized)
+                    Spacer()
+                    Text("¥")
+                        .font(.system(size: 12, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                    TextField("5.00", text: $costInput)
+                        .frame(width: 72)
+                        .multilineTextAlignment(.trailing)
+                        .focused($costFieldFocused)
+                        .onSubmit(commitCostInput)
+                }
+                HStack(spacing: 6) {
+                    ForEach(Self.costPresets, id: \.self) { value in
+                        Button("¥\(Int(value))") { setCostCap(value) }
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
                     }
+                }
+                if let perCall = settings.estimatedAICostPerCallMicros {
+                    Text(L10n.string(
+                        "ai.cost.perCall",
+                        AICostFormat.yuan(perCall),
+                        AICostFormat.yuan(perCall * 200),
+                        AICostFormat.yuan(perCall * 500)
+                    ))
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                }
+            } else {
+                HStack {
+                    Text("ai.dailyCap".localized)
+                    Spacer()
+                    Picker("", selection: Binding(
+                        get: { settings.aiDailyCap },
+                        set: { settings.aiDailyCap = $0 }
+                    )) {
+                        ForEach(Array(AppSettings.validAICaps).sorted(), id: \.self) { cap in
+                            Text(cap < 0 ? "ai.cap.unlimited".localized : L10n.string("ai.capTimes", cap))
+                                .tag(cap)
+                        }
+                    }
+                    .labelsHidden()
+                    .frame(width: 90)
+                }
+                if !settings.aiCostEstimateAvailable {
+                    Text("ai.cost.unavailable".localized)
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
+                if let perCall = settings.estimatedAICostPerCallMicros {
+                    Text(L10n.string(
+                        "ai.cost.perCall",
+                        AICostFormat.yuan(perCall),
+                        AICostFormat.yuan(perCall * 200),
+                        AICostFormat.yuan(perCall * 500)
+                    ))
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                }
+            }
+        } header: {
+            Text("ai.limit".localized)
+        } footer: {
+            Text("ai.limit.footer".localized)
+        }
+    }
+
+    @ViewBuilder
+    private var researchSections: some View {
+        Section {
+            Toggle("ai.search.enabled".localized, isOn: Binding(
+                get: { settings.aiSearchEnabled },
+                set: { settings.aiSearchEnabled = $0 }
+            ))
+            if settings.aiSearchEnabled {
+                Toggle("ai.search.web".localized, isOn: Binding(
+                    get: { settings.aiSearchUseWeb },
+                    set: { settings.aiSearchUseWeb = $0 }
+                ))
+                Picker("ai.search.pages".localized, selection: Binding(
+                    get: { settings.aiSearchPageCount },
+                    set: { settings.aiSearchPageCount = $0 }
                 )) {
-                    if !settings.currentAIModels.contains(settings.aiModel) {
-                        Text("ai.models.unselected".localized).tag(settings.aiModel)
+                    ForEach(Array(AppSettings.validAISearchPageCounts).sorted(), id: \.self) { value in
+                        Text("\(value)").tag(value)
                     }
-                    ForEach(settings.providerModels(forID: selectedProviderID), id: \.self) { model in
+                }
+                Picker("ai.search.model".localized, selection: Binding(
+                    get: { settings.aiSearchModel },
+                    set: { settings.aiSearchModel = $0 }
+                )) {
+                    Text(L10n.string(
+                        "ai.search.inherit",
+                        settings.effectiveAISearchModel.isEmpty ? "—" : settings.effectiveAISearchModel
+                    )).tag("")
+                    if !settings.aiSearchModel.isEmpty,
+                       !settings.currentAIModels.contains(settings.aiSearchModel) {
+                        Text(settings.aiSearchModel).tag(settings.aiSearchModel)
+                    }
+                    ForEach(settings.currentAIModels, id: \.self) { model in
                         Text(model).tag(model)
                     }
                 }
-                .disabled((settings.currentAIModels.isEmpty && !settings.aiModelManuallyEntered) || settings.isLoadingModelCatalog)
-
-                Toggle("ai.model.manual".localized, isOn: Binding(
-                    get: { settings.aiModelManuallyEntered },
-                    set: { settings.aiModelManuallyEntered = $0 }
-                ))
-
-                if settings.aiModelManuallyEntered {
-                    HStack(spacing: 6) {
-                        TextField("ai.model.manualPlaceholder".localized, text: Binding(
-                            get: { settings.aiModel },
-                            set: { settings.aiModel = $0 }
-                        ))
-                        .textFieldStyle(.roundedBorder)
-                        .font(.system(size: 12, design: .monospaced))
-                        .accessibilityLabel("ai.model.manual".localized)
-                        Text(settings.isAIModelCatalogValidated ? "ai.model.verified".localized : "ai.model.unverified".localized)
-                            .font(.caption2.weight(.bold))
-                            .foregroundStyle(settings.isAIModelCatalogValidated ? .green : .orange)
-                            .accessibilityLabel(settings.isAIModelCatalogValidated
-                                ? "ai.model.verified".localized
-                                : "ai.model.unverified".localized)
-                    }
-                }
-
-                HStack {
-                    if settings.isLoadingModelCatalog {
-                        ProgressView().controlSize(.small)
-                        Text("ai.models.loading".localized).font(.caption).foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                    Button {
-                        Task { await settings.refreshModelCatalog(force: true) }
-                    } label: {
-                        Label("ai.models.refresh".localized, systemImage: "arrow.clockwise")
-                    }
-                    .buttonStyle(EditorialActionButtonStyle(compact: true))
-                    .disabled(settings.isLoadingModelCatalog)
-                }
-
-                if let error = settings.modelCatalogError {
-                    Text(error.message(language: settings.appLanguage))
-                        .font(.caption).foregroundStyle(.orange)
-                }
-                if let updated = settings.modelCatalogUpdatedAt {
-                    HStack(spacing: 4) {
-                        Text(settings.modelCatalogIsStale ? "ai.models.stale".localized : "ai.models.updated".localized)
-                        Text(updated, style: .relative)
-                    }
-                    .font(.caption2).foregroundStyle(.secondary)
-                }
-            } header: {
-                Text("ai.modelSettings".localized)
-            } footer: {
-                Text(settings.aiModelManuallyEntered ? "ai.model.manual.footer".localized : "ai.model.footer".localized)
-            }
-
-            Section {
-                // The legacy switch is only meaningful for a connection that
-                // actually exposes a DeepSeek-style binary toggle. Other
-                // providers get a capability note instead of a misleading knob.
-                if settings.resolvedAIConnection.thinkingStyle == .deepseekToggle {
-                    Toggle("ai.disableThinking".localized, isOn: Binding(
-                        get: { settings.aiDisableDeepSeekThinking },
-                        set: { settings.aiDisableDeepSeekThinking = $0 }
-                    ))
-                }
-                if let note = settings.resolvedAIConnection.thinkingStyle.capabilityNote(settings.appLanguage) {
-                    Text(note)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-            } footer: {
-                if settings.resolvedAIConnection.thinkingStyle == .deepseekToggle {
-                    Text("ai.disableThinking.footer".localized)
-                }
-            }
-
-            Section {
-                Toggle("ai.search.enabled".localized, isOn: Binding(
-                    get: { settings.aiSearchEnabled },
-                    set: { settings.aiSearchEnabled = $0 }
-                ))
-                if settings.aiSearchEnabled {
-                    Toggle("ai.search.web".localized, isOn: Binding(
-                        get: { settings.aiSearchUseWeb },
-                        set: { settings.aiSearchUseWeb = $0 }
-                    ))
-                    Picker("ai.search.pages".localized, selection: Binding(
-                        get: { settings.aiSearchPageCount },
-                        set: { settings.aiSearchPageCount = $0 }
-                    )) {
-                        ForEach(Array(AppSettings.validAISearchPageCounts).sorted(), id: \.self) { value in
-                            Text("\(value)").tag(value)
-                        }
-                    }
-                    Picker("ai.search.model".localized, selection: Binding(
-                        get: { settings.aiSearchModel },
-                        set: { settings.aiSearchModel = $0 }
-                    )) {
-                        Text(L10n.string(
-                            "ai.search.inherit",
-                            settings.effectiveAISearchModel.isEmpty ? "—" : settings.effectiveAISearchModel
-                        )).tag("")
-                        if !settings.aiSearchModel.isEmpty,
-                           !settings.currentAIModels.contains(settings.aiSearchModel) {
-                            Text(settings.aiSearchModel).tag(settings.aiSearchModel)
-                        }
-                        ForEach(settings.currentAIModels, id: \.self) { model in
-                            Text(model).tag(model)
-                        }
-                    }
-                    .disabled(settings.isLoadingModelCatalog)
+                .disabled(settings.isLoadingModelCatalog)
+                if settings.resolvedAIConnection.thinkingStyle != .none {
                     Picker("ai.search.thinking".localized, selection: Binding(
                         get: { settings.aiSearchThinking },
                         set: { settings.aiSearchThinking = $0 }
@@ -387,288 +723,61 @@ struct AITab: View {
                         Text(AIThinkingLevel.high.title(settings.appLanguage)).tag(AIThinkingLevel.high)
                     }
                 }
-            } header: {
-                Text("ai.search.section".localized)
-            } footer: {
-                Text("ai.search.footer".localized)
             }
+        } header: {
+            Text("ai.search.section".localized)
+        } footer: {
+            Text("ai.search.footer".localized)
+        }
 
-            Section {
-                Picker("settings.selectionWeb", selection: Binding(
-                    get: { settings.selectionWebMode },
-                    set: { settings.selectionWebMode = $0 }
-                )) {
-                    ForEach(SelectionWebMode.allCases) { mode in
-                        Text(mode.title(settings.appLanguage)).tag(mode)
-                    }
+        Section {
+            Picker("settings.selectionWeb".localized, selection: Binding(
+                get: { settings.selectionWebMode },
+                set: { settings.selectionWebMode = $0 }
+            )) {
+                ForEach(SelectionWebMode.allCases) { mode in
+                    Text(mode.title(settings.appLanguage)).tag(mode)
                 }
-                Text(settings.selectionWebMode.detail(settings.appLanguage))
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            } header: {
-                Text("settings.selectionWeb.section".localized)
             }
+            Text(settings.selectionWebMode.detail(settings.appLanguage))
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        } header: {
+            Text("settings.selectionWeb.section".localized)
+        }
 
-            Section {
-                summaryLengthRow(
-                    title: "ai.summaryLength".localized,
-                    selection: Binding(
-                        get: { settings.aiDashboardMaxWords },
-                        set: { settings.aiDashboardMaxWords = $0 }
-                    ),
-                    presets: Array(AppSettings.validAIDashboardMaxWords).sorted()
-                )
-            } header: {
-                Text("ai.summaryLength".localized)
-            } footer: {
-                Text("ai.summaryLength.footer".localized)
-            }
+        Section {
+            summaryLengthRow(
+                title: "ai.summaryLength".localized,
+                selection: Binding(
+                    get: { settings.aiDashboardMaxWords },
+                    set: { settings.aiDashboardMaxWords = $0 }
+                ),
+                presets: Array(AppSettings.validAIDashboardMaxWords).sorted()
+            )
+        } header: {
+            Text("ai.summaryLength".localized)
+        } footer: {
+            Text("ai.summaryLength.footer".localized)
+        }
 
-            Section {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("ai.pricing".localized)
-                        .font(.caption)
+        ResearchSettingsSection()
+
+        Section {
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(alignment: .top, spacing: 8) {
+                    Image(systemName: "hand.raised.fill")
+                        .font(.system(size: 12))
                         .foregroundStyle(.secondary)
-                    ForEach(settings.providerPricingInfo(forID: selectedProviderID), id: \.title) { item in
-                        Text("\(item.title): \(item.detail)")
-                            .font(.caption2)
-                            .foregroundStyle(.tertiary)
-                    }
-                }
-            } header: {
-                Text("ai.pricing".localized)
-            }
-
-            Section {
-                VStack(alignment: .leading, spacing: 6) {
-                    HStack {
-                        Text("ai.usage.today".localized)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        Spacer()
-                        Text(usageValueText)
-                            .font(.system(size: 12, weight: .medium, design: .monospaced))
-                            .foregroundStyle(usageIsAtLimit ? .red : .primary)
-                    }
-                    if let fraction = usageFraction {
-                        ProgressView(value: fraction)
-                            .tint(usageIsAtLimit ? .red : .blue)
-                    } else {
-                        Text("ai.usage.unlimitedHint".localized)
-                            .font(.caption2)
-                            .foregroundStyle(.tertiary)
-                    }
-
-                    if settings.effectiveAILimitMode == .cost {
-                        if settings.todayAIInputTokens > 0 || settings.todayAIOutputTokens > 0 {
-                            Text(L10n.string(
-                                "ai.cost.tokens",
-                                settings.todayAIInputTokens,
-                                settings.todayAIOutputTokens
-                            ))
-                            .font(.caption2)
-                            .foregroundStyle(.tertiary)
-                        }
-                        Text("ai.cost.footer".localized)
-                            .font(.caption2)
-                            .foregroundStyle(.tertiary)
-                        if settings.todayAIUnpricedCalls > 0 {
-                            Text(L10n.string("ai.cost.unpriced", settings.todayAIUnpricedCalls))
-                                .font(.caption2)
-                                .foregroundStyle(.orange)
-                        }
-                    }
-
-                    Text("ai.usage.shared".localized)
+                    Text("ai.privacy.body".localized)
                         .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                    Text("ai.usage.reset".localized)
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                }
-            } header: {
-                Text("ai.usage".localized)
-            }
-
-            Section {
-                if settings.aiCostEstimateAvailable {
-                    Picker("ai.limitMode".localized, selection: Binding(
-                        get: { settings.effectiveAILimitMode },
-                        set: { settings.aiLimitMode = $0 }
-                    )) {
-                        Text("ai.limitMode.count".localized).tag(AILimitMode.count)
-                        Text("ai.limitMode.cost".localized).tag(AILimitMode.cost)
-                    }
-                    .pickerStyle(.segmented)
-                }
-
-                if settings.effectiveAILimitMode == .cost {
-                    HStack {
-                        Text("ai.costCap".localized)
-                        Spacer()
-                        Text("¥")
-                            .font(.system(size: 12, design: .monospaced))
-                            .foregroundStyle(.secondary)
-                        TextField("5.00", text: $costInput)
-                            .frame(width: 72)
-                            .multilineTextAlignment(.trailing)
-                            .focused($costFieldFocused)
-                            .onSubmit(commitCostInput)
-                    }
-                    HStack(spacing: 6) {
-                        ForEach(Self.costPresets, id: \.self) { value in
-                            Button("¥\(Int(value))") { setCostCap(value) }
-                                .buttonStyle(.bordered)
-                                .controlSize(.small)
-                        }
-                    }
-                    if let perCall = settings.estimatedAICostPerCallMicros {
-                        Text(L10n.string(
-                            "ai.cost.perCall",
-                            AICostFormat.yuan(perCall),
-                            AICostFormat.yuan(perCall * 200),
-                            AICostFormat.yuan(perCall * 500)
-                        ))
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                    }
-                } else {
-                    HStack {
-                        Text("ai.dailyCap".localized)
-                        Spacer()
-                        Picker("", selection: Binding(
-                            get: { settings.aiDailyCap },
-                            set: { settings.aiDailyCap = $0 }
-                        )) {
-                            ForEach(Array(AppSettings.validAICaps).sorted(), id: \.self) { cap in
-                                Text(cap < 0 ? "ai.cap.unlimited".localized : L10n.string("ai.capTimes", cap))
-                                    .tag(cap)
-                            }
-                        }
-                        .labelsHidden()
-                        .frame(width: 90)
-                    }
-                    if !settings.aiCostEstimateAvailable {
-                        Text("ai.cost.unavailable".localized)
-                            .font(.caption2)
-                            .foregroundStyle(.tertiary)
-                    }
-                    if let perCall = settings.estimatedAICostPerCallMicros {
-                        Text(L10n.string(
-                            "ai.cost.perCall",
-                            AICostFormat.yuan(perCall),
-                            AICostFormat.yuan(perCall * 200),
-                            AICostFormat.yuan(perCall * 500)
-                        ))
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                    }
-                }
-            } header: {
-                Text("ai.limit".localized)
-            } footer: {
-                Text("ai.limit.footer".localized)
-            }
-
-            Section {
-                Label("ai.researchSection".localized, systemImage: "globe")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
-            ResearchSettingsSection()
-
-            Section {
-                VStack(alignment: .leading, spacing: 6) {
-                    HStack(alignment: .top, spacing: 8) {
-                        Image(systemName: "hand.raised.fill")
-                            .font(.system(size: 12))
-                            .foregroundStyle(.secondary)
-                        Text("ai.privacy.body".localized)
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                            .lineSpacing(3)
-                    }
-                }
-            } header: {
-                Text("ai.privacy".localized)
-            }
-        }
-        .formStyle(.grouped)
-        .scrollContentBackground(.hidden)
-        .onAppear {
-            costInput = Self.costText(settings.aiCostCapMicros)
-            settings.refreshAIUsageMirror()
-        }
-        .onChange(of: settings.aiCostCapMicros) { _, value in
-            let text = Self.costText(value)
-            if text != costInput { costInput = text }
-        }
-        .onChange(of: costFieldFocused) { _, focused in
-            if !focused { commitCostInput() }
-        }
-        .onChange(of: settings.aiProvider) { _, _ in
-            if settings.aiLimitMode == .cost, !settings.aiCostEstimateAvailable {
-                settings.aiLimitMode = .count
-            }
-        }
-        .onChange(of: settings.aiModel) { _, _ in
-            if settings.aiLimitMode == .cost, !settings.aiCostEstimateAvailable {
-                settings.aiLimitMode = .count
-            }
-        }
-        .task(id: settings.modelCatalogRevision) {
-            selectedProviderID = settings.aiProvider
-            await settings.refreshModelCatalog()
-        }
-        .sheet(isPresented: $showCustomEditor) {
-            CustomAIProviderEditor(provider: editingCustom) { saved in
-                editingCustom = nil
-                showCustomEditor = false
-                if let saved, !saved.id.isEmpty {
-                    let customID = "custom:\(saved.id)"
-                    selectedProviderID = customID
-                    settings.aiProvider = customID
-                    settings.cachedAPIKey = nil
-                    apiKeyInput = ""
-                    testResult = nil
-                    keyFeedback = nil
-                    onePasswordFeedback = nil
+                        .foregroundStyle(.secondary)
+                        .lineSpacing(3)
                 }
             }
-            .environment(settings)
-            .frame(minWidth: 460, minHeight: 460)
-        }
-        .confirmationDialog(
-            "ai.deleteCustom.title".localized,
-            isPresented: Binding(
-                get: { pendingCustomDeletion != nil },
-                set: { if !$0 { pendingCustomDeletion = nil } }
-            ),
-            presenting: pendingCustomDeletion
-        ) { custom in
-            Button(L10n.string("ai.deleteCustom.confirm", custom.name), role: .destructive) {
-                deleteCustomProvider(custom)
-            }
-            Button("ai.cancel".localized, role: .cancel) { }
-        } message: { custom in
-            Text(L10n.string("ai.deleteCustom.message", custom.name))
-        }
-        .confirmationDialog(
-            "ai.deleteKey.title".localized,
-            isPresented: $pendingKeyDeletion
-        ) {
-            Button("ai.deleteKey.confirm".localized, role: .destructive) {
-                deleteAPIKey()
-            }
-            Button("ai.cancel".localized, role: .cancel) { }
-        } message: {
-            Text("ai.deleteKey.message".localized)
-        }
-        .task(id: settings.activeAPIKeyAccount) {
-            await refreshKeyStatus()
-            await loadScopedOnePasswordRef()
+        } header: {
+            Text("ai.privacy".localized)
         }
     }
 

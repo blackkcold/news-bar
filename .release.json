@@ -13,7 +13,7 @@
   "release_branch": true,
   "auto_merge": false,
   "release_note_style": "structured-cn",
-  "summary": "AI 答案画布、流式作答与划词自动联网判定",
-  "summary_en": "AI answer canvas, streaming answers, and automatic look-up for selections",
-  "validation": "swift test 1220/1220（3 skipped）+ swift build -c release + scripts/build.sh + codesign verify 通过"
+  "summary": "OpenCode Go/Zen 恢复、价目表与设置页七组",
+  "summary_en": "OpenCode Go/Zen restore, price list, and seven-group settings",
+  "validation": "swift test 1300 项（3 项公网测试跳过，0 失败）+ swift build -c release + scripts/build.sh + codesign verify 通过"
 }

@@ -1,5 +1,35 @@
 ## [Unreleased]
 
+## [v2.13.0] - 2026-10-31
+
+### ✨ 新增
+
+- **设置页改为侧边栏七组**：原来的 8 个 Tab 换成侧边栏七组 —— 通用 / 阅读 / AI / 通知 / 隐私与数据 / 高级 / 关于。分组按「人会去哪里找」，不按子系统：兴趣画像、阅读器 Cookie/历史、研究数据清理原本散在通用、浏览器、关于三处，现在同属「隐私与数据」；刷新诊断、阅读器代理与开发者测试工具同属「高级」。窗口由 640×560 放大到 860×620。
+- **AI 拆三页**：AI 页的 17 节、66 个控件拆成「连接（6 节）/ 用量与限额（3 节）/ 研究与应用（8 节）」，页签状态挂在 AI 页本身，切页不会丢掉半途输入的 Key。
+- **全是搬家，没有删减**：152 个控件一个不少；只是不再同屏。
+- **阅读页统一外观**：RSS 页由 `List(.inset)` 改为 `Form(.grouped)`，与其余六页的分组卡片一致。
+- **OpenCode 价目表**：设置 → AI → 用量与限额 → 「查看完整价目表」打开一张静态表。Go 28 个模型（含 2 个免费）、Zen 70 个付费模型，逐行列出输入 / 输出 / 缓存读单价；Go 系还能在 Go / Go Plus / Teams 之间切换，看各档的月额度。模型价由 `scripts/generate-opencode-prices.py` 从官方目录生成（更新 2026-10-31），月额度来自 `opencode.ai/docs/console/go#usage-limits`，以 `GO_ALLOWANCES` 写在生成脚本里；缺额度的 Go 模型会让生成器直接失败，所以表里不会出现空档。
+- **读数细节**：`$` / `¥` 一键切换（按 7.2 估算，与本地账本同一汇率）；当前模型置顶并标「当前」，其余按名称排序；搜索即时过滤并显示 `3 / 28`；未公布的价格显示 `—` 而不是 `$0`；免费模型显示「不限」，Zen 则整列显示「按量」。
+- **不联网**：上一版设想的 `/zen/go/v1/usage` 额度查询、Workspace ID 输入、60 秒缓存与 401/403 分类全部删除。那需要用户先去 console 抄一个 `wrk_`，而数字本来就在 console 里。
+
+### 🛠 修复
+
+- **OpenCode Go 恢复可用**：端点迁移至 `opencode.ai/inference/go/openai/v1/chat/completions`，模型目录改读 `/inference/go/v1/models`（OpenAI 格式），并按官方要求发送稳定的 `x-opencode-session`。旧的 `open-code-go.aiizhi.com` Key 已失效，需要在 `opencode.ai/console → Go` 重新获取。
+- **OpenCode Zen 恢复可用**：端点迁移至 `opencode.ai/inference/openai/v1/chat/completions`，目录改读 `/inference/v1/models`，统一使用 OpenAI 协议、Bearer 鉴权和 `x-opencode-session`。目录解析新增 `cost` 与 `api` 字段：Zen 的免费模型只允许 OpenCode 客户端调用（第三方 403），System One 的 `jev-*` 不是聊天模型，二者都不再出现在模型选择器里，默认选中付费的 `deepseek-v4.1-flash`。
+- **按服务端实报金额结算**：解析 OpenAI / Anthropic 响应里的 `usage.cost`、`opencode.allowance`、`opencode.list_cost`、`billing_source` 与 `opencode.tokens`。Go 套餐内按 `allowance` 记「等效成本」，余额或 Extra Usage 按实际 `cost`，免费模型记 0，BYOK 估算按 `estimated`；缺失时才回退本地价目表，不再把 Go 调用记成「未定价」。
+- **费用说明分账**：设置页分别说明 Go 的「套餐额度等效成本」与 Zen 的「实际扣费」；Go 只有开启 Extra Usage 并超出额度后才产生余额扣款，Zen 免费模型仅限 OpenCode 客户端。
+- **模型目录兼容 OpenCode 元数据**：OpenCode 的 `capabilities` 是对象而非字符串数组，旧解析器会因此判定整个目录格式异常；现在对象形状安全降级，目录可正常读取。
+- **网络错误可定位**：模型目录请求失败时区分 DNS 无法解析、TLS 失败和超时，不再一律提示「检查网络」。
+- **空目录可手动输入**：模型列表为空且刷新失败时，错误下方直接提供「改为手动输入模型 ID」，不再只靠下方开关。
+- **品牌拼写**：`Opencode` → `OpenCode`。
+- **设置页三处噪音**：费用说明标题重复一遍、`ai.researchSection` 与 `research.settings.title` 连着两个同名标题、划词解释的选择器把原始 key `settings.selectionWeb` 直接显示出来。
+- **复古主题分段控件**：系统分段控件在复古纸色主题下渲染成白字不可读，改为自绘 chip（新增 `EditorialButtonTone.selected`）；费用说明从三段散文压成一行摘要 + 入口。
+
+### ✅ 测试
+
+- `swift test`：1300 项，0 失败（3 项需显式开启的公网测试跳过；基线 1260 项）。
+- 新增 40 项：设置页七组、AI 三页与价目表页的本地化及离屏渲染 4 项（输出 `.build/settings-ia-validation/`，含复古/现代、浅色/深色）；价目表的行映射、Go 三档额度、Zen 过滤、排序、搜索、格式化、货币切换与目录不变量 14 项；Go/Zen 端点、目录过滤、请求协议与会话头、实报成本解析与结算 22 项。
+
 ## [v2.12.2] - 2026-10-31
 
 ### ✨ 新增

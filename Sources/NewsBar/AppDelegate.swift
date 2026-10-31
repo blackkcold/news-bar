@@ -30,7 +30,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private static let startupDelay: TimeInterval = 2
     private static let updateCheckDelay: TimeInterval = 10
     private static let popoverSize = NSSize(width: 400, height: 520)
-    private static let settingsSize = NSSize(width: 640, height: 560)
+    private static let settingsSize = NSSize(width: 860, height: 620)
     private static let dashboardSize = NSSize(width: 1180, height: 860)
     private static let dashboardMinimumSize = NSSize(width: 960, height: 720)
     private static let researchCenterSize = NSSize(width: 1120, height: 760)
@@ -582,7 +582,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             return
         }
 
-        let initialTab = toAITab ? 3 : 0
+        let initialPane: SettingsPane = toAITab ? .ai : .general
 
         let window = NSWindow(
             contentRect: NSRect(origin: .zero, size: Self.settingsSize),
@@ -593,7 +593,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         window.title = "NewsBar Settings"
         window.center()
         window.contentView = NSHostingView(
-            rootView: SettingsWindow(initialTab: initialTab)
+            rootView: SettingsWindow(initialPane: initialPane)
                 .environment(settings)
                 .environment(\.cacheClearAction) { [weak self] in
                     guard let self, let orchestrator = self.orchestrator else { return }

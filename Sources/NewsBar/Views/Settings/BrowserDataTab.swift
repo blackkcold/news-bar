@@ -1,7 +1,9 @@
 import SwiftUI
 
-/// "浏览器" settings tab: cookie memory and local reading history.
-/// Both lists start collapsed so the page stays short.
+/// Browser memory and local reading history. It contributes sections to the
+/// privacy pane rather than owning a Form, so its rows share one scroll with
+/// interests and storage cleanup. Both lists start collapsed so the page stays
+/// short.
 struct BrowserDataTab: View {
     @Environment(AppSettings.self) private var settings
     @State private var controller = BrowserDataController.shared
@@ -16,7 +18,7 @@ struct BrowserDataTab: View {
     private var english: Bool { settings.appLanguage == .en }
 
     var body: some View {
-        Form {
+        Group {
             Section {
                 Toggle(english ? "Remember site sign-ins (cookies)" : "记住网站登录（Cookie）", isOn: Binding(
                     get: { settings.readerCookieMemoryEnabled },
@@ -139,8 +141,6 @@ struct BrowserDataTab: View {
                 }
             }
         }
-        .formStyle(.grouped)
-        .scrollContentBackground(.hidden)
         .task {
             await controller.prepare()
             await archiveController.prepare()

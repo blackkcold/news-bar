@@ -92,7 +92,7 @@ struct AboutTab: View {
 
             Section {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("DeepSeek · MiniMax · Opencode Go/Zen · Google AI Studio")
+                    Text("DeepSeek · MiniMax · OpenCode Go/Zen · Google AI Studio")
                         .font(.caption)
                     Text("about.aiModels".localized)
                         .font(.caption2)
@@ -101,8 +101,6 @@ struct AboutTab: View {
             } header: {
                 Text("about.aiProviders".localized)
             }
-
-            ResearchDataSection()
 
             Section {
                 VStack(alignment: .leading, spacing: 4) {

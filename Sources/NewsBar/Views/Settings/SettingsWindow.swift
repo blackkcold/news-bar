@@ -1,105 +1,176 @@
 import SwiftUI
 
+/// The seven settings groups. A group is a place a person would look for a
+/// thing, not a subsystem: the RSS sources, the interest profile and the
+/// cleanup actions used to be scattered across three tabs.
+enum SettingsPane: String, CaseIterable, Identifiable {
+    case general
+    case reading
+    case ai
+    case notifications
+    case privacy
+    case advanced
+    case about
+
+    var id: String { rawValue }
+
+    /// Short form for the sidebar.
+    var titleKey: String { "settings.group.\(rawValue)" }
+
+    /// Long form for the pane masthead.
+    var headingKey: String {
+        switch self {
+        case .general: return "settings.general"
+        case .reading: return "settings.rss"
+        case .ai: return "settings.ai"
+        case .notifications: return "settings.reminder"
+        case .privacy: return "settings.group.privacy"
+        case .advanced: return "settings.group.advanced"
+        case .about: return "settings.about"
+        }
+    }
+
+    var subtitleKey: String {
+        switch self {
+        case .general: return "settings.general.subtitle"
+        case .reading: return "settings.rss.subtitle"
+        case .ai: return "settings.ai.subtitle"
+        case .notifications: return "settings.reminder.subtitle"
+        case .privacy: return "settings.privacy.subtitle"
+        case .advanced: return "settings.advanced.subtitle"
+        case .about: return "settings.about.subtitle"
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .general: return "gearshape"
+        case .reading: return "antenna.radiowaves.left.and.right"
+        case .ai: return "sparkles"
+        case .notifications: return "bell.fill"
+        case .privacy: return "lock.shield"
+        case .advanced: return "wrench.and.screwdriver"
+        case .about: return "info.circle"
+        }
+    }
+}
+
 struct SettingsWindow: View {
     @Environment(AppSettings.self) private var settings
-    @State private var selectedTab: Int
+    @State private var pane: SettingsPane
 
-    init(initialTab: Int = 0) {
-        self._selectedTab = State(initialValue: initialTab)
+    init(initialPane: SettingsPane = .general) {
+        _pane = State(initialValue: initialPane)
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            settingsHeader
-
-            TabView(selection: $selectedTab) {
-                GeneralTab()
-                    .tabItem {
-                        Label("settings.tab.general".localized, systemImage: "gearshape")
-                    }
-                    .tag(0)
-
-                RefreshDiagnosticsTab()
-                    .tabItem {
-                        Label("settings.tab.refresh".localized, systemImage: "arrow.triangle.2.circlepath")
-                    }
-                    .tag(1)
-
-                RSSTab()
-                    .tabItem {
-                        Label("settings.tab.rss".localized, systemImage: "antenna.radiowaves.left.and.right")
-                    }
-                    .tag(2)
-
-                AITab()
-                    .tabItem {
-                        Label("settings.tab.ai".localized, systemImage: "sparkles")
-                    }
-                    .tag(3)
-
-                ReminderTab()
-                    .tabItem {
-                        Label("settings.tab.reminder".localized, systemImage: "bell.fill")
-                    }
-                    .tag(4)
-
-                DeveloperTab()
-                    .tabItem {
-                        Label("settings.tab.developer".localized, systemImage: "hammer")
-                    }
-                    .tag(5)
-
-                AboutTab()
-                    .tabItem {
-                        Label("settings.tab.about".localized, systemImage: "info.circle")
-                    }
-                    .tag(6)
-
-                BrowserDataTab()
-                    .tabItem {
-                        Label("settings.tab.browser".localized, systemImage: "globe")
-                    }
-                    .tag(7)
-            }
-            .onReceive(NotificationCenter.default.publisher(for: .switchToAITab)) { _ in
-                selectedTab = 3
-            }
-            .onReceive(NotificationCenter.default.publisher(for: .switchToInterestSettings)) { _ in
-                selectedTab = 0
-            }
-            .onReceive(NotificationCenter.default.publisher(for: .switchToBrowserTab)) { _ in
-                selectedTab = 7
-            }
+        HStack(spacing: 0) {
+            sidebar
+                .frame(width: 194)
 
             Divider()
 
-            HStack {
-                Spacer()
-                Button {
-                    NSApplication.shared.terminate(nil)
-                } label: {
-                    Text("settings.quit".localized)
-                        .font(.system(size: 12))
-                }
-                .buttonStyle(EditorialActionButtonStyle(tone: .destructive, compact: true))
-                .controlSize(.small)
-            }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 8)
+            detail
         }
-        .frame(minWidth: 640, minHeight: 560)
-        .padding(.top, 8)
-        .adaptiveColorScheme()
+        .frame(minWidth: 780, minHeight: 580)
+        .adaptiveColorScheme(forcing: settings.appTheme == .retroEditorial ? .light : nil)
         .appThemeSurface()
     }
 
-    private var settingsHeader: some View {
+    // MARK: - Sidebar
+
+    private var sidebar: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            brand
+            List(selection: selection) {
+                ForEach(SettingsPane.allCases) { item in
+                    Label(L10n.string(item.titleKey), systemImage: item.symbol)
+                        .font(.system(size: 12.5))
+                        .padding(.vertical, 2)
+                        .tag(item)
+                }
+            }
+            .listStyle(.sidebar)
+            .scrollContentBackground(.hidden)
+        }
+        .background(sidebarFill)
+    }
+
+    private var selection: Binding<SettingsPane?> {
+        Binding(
+            get: { pane },
+            set: { if let next = $0 { pane = next } }
+        )
+    }
+
+    private var sidebarFill: Color {
+        settings.appTheme == .retroEditorial
+            ? RetroEditorialTokens.raisedPaper
+            : Color(nsColor: .underPageBackgroundColor)
+    }
+
+    private var brand: some View {
+        HStack(spacing: 8) {
+            EditorialSymbolBadge(
+                symbol: "newspaper.fill",
+                fallbackTint: RetroEditorialTokens.brick,
+                size: 26,
+                rotation: -2
+            )
+
+            VStack(alignment: .leading, spacing: 0) {
+                Text("NewsBar")
+                    .editorialHeading(size: 14)
+                    .lineLimit(1)
+                Text("v\(AppVersion.current)")
+                    .font(.system(size: 9))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 12)
+        .padding(.top, 14)
+        .padding(.bottom, 6)
+        .accessibilityElement(children: .combine)
+    }
+
+    // MARK: - Detail
+
+    private var detail: some View {
+        VStack(spacing: 0) {
+            paneHeader
+
+            content
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+            Divider()
+
+            footer
+        }
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        switch pane {
+        case .general: GeneralTab()
+        case .reading: RSSTab()
+        case .ai: AITab()
+        case .notifications: ReminderTab()
+        case .privacy: PrivacyTab()
+        case .advanced: AdvancedTab()
+        case .about: AboutTab()
+        }
+    }
+
+    private var paneHeader: some View {
         HStack(spacing: 10) {
-            if selectedTab == 2 {
+            if pane == .reading {
                 EditorialSourceBadge(mark: .rss, fallbackTint: .blue, size: 32, rotation: -1)
             } else {
                 EditorialSymbolBadge(
-                    symbol: selectedTabSymbol,
+                    symbol: pane.symbol,
                     fallbackTint: .accentColor,
                     size: 32,
                     rotation: -1
@@ -107,10 +178,10 @@ struct SettingsWindow: View {
             }
 
             VStack(alignment: .leading, spacing: 1) {
-                Text(selectedTabTitle)
+                Text(L10n.string(pane.headingKey))
                     .editorialHeading(size: 16)
                     .lineLimit(1)
-                Text(selectedTabSubtitle)
+                Text(L10n.string(pane.subtitleKey))
                     .font(.system(size: 10))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -118,7 +189,11 @@ struct SettingsWindow: View {
 
             Spacer(minLength: 8)
 
-            EditorialTag(text: "settings.badge".localized, fallbackTint: .secondary, filled: settings.appTheme == .retroEditorial)
+            EditorialTag(
+                text: "settings.badge".localized,
+                fallbackTint: .secondary,
+                filled: settings.appTheme == .retroEditorial
+            )
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 9)
@@ -126,42 +201,19 @@ struct SettingsWindow: View {
         .accessibilityElement(children: .combine)
     }
 
-    private var selectedTabTitle: String {
-        switch selectedTab {
-        case 1: return "settings.refresh".localized
-        case 2: return "settings.rss".localized
-        case 3: return "settings.ai".localized
-        case 4: return "settings.reminder".localized
-        case 5: return "settings.developer".localized
-        case 6: return "settings.about".localized
-        case 7: return "settings.browser".localized
-        default: return "settings.general".localized
+    private var footer: some View {
+        HStack {
+            Spacer()
+            Button {
+                NSApplication.shared.terminate(nil)
+            } label: {
+                Text("settings.quit".localized)
+                    .font(.system(size: 12))
+            }
+            .buttonStyle(EditorialActionButtonStyle(tone: .destructive, compact: true))
+            .controlSize(.small)
         }
-    }
-
-    private var selectedTabSubtitle: String {
-        switch selectedTab {
-        case 1: return "settings.refresh.subtitle".localized
-        case 2: return "settings.rss.subtitle".localized
-        case 3: return "settings.ai.subtitle".localized
-        case 4: return "settings.reminder.subtitle".localized
-        case 5: return "settings.developer.subtitle".localized
-        case 6: return "settings.about.subtitle".localized
-        case 7: return "settings.browser.subtitle".localized
-        default: return "settings.general.subtitle".localized
-        }
-    }
-
-    private var selectedTabSymbol: String {
-        switch selectedTab {
-        case 1: return "arrow.triangle.2.circlepath"
-        case 2: return "antenna.radiowaves.left.and.right"
-        case 3: return "sparkles"
-        case 4: return "bell.fill"
-        case 5: return "hammer"
-        case 6: return "info.circle"
-        case 7: return "globe"
-        default: return "gearshape"
-        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
     }
 }
