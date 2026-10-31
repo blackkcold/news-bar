@@ -795,19 +795,38 @@ private struct ReaderWebSurface: NSViewRepresentable {
 struct NewsReaderView: View {
     @State private var model: NewsReaderModel
     @Environment(AppSettings.self) private var settings
+    var activeNewsItems: [NewsItem] = []
+    var readerPresented = true
     var onOpenSettings: () -> Void = {}
     var onOpenResearch: (String) -> Void = { _ in }
     var onConfigureAI: () -> Void = {}
 
-    init(request: NewsReaderRequest, onOpenSettings: @escaping () -> Void = {}, onOpenResearch: @escaping (String) -> Void = { _ in }, onConfigureAI: @escaping () -> Void = {}) {
+    init(
+        request: NewsReaderRequest,
+        activeNewsItems: [NewsItem] = [],
+        readerPresented: Bool = true,
+        onOpenSettings: @escaping () -> Void = {},
+        onOpenResearch: @escaping (String) -> Void = { _ in },
+        onConfigureAI: @escaping () -> Void = {}
+    ) {
         _model = State(initialValue: NewsReaderModel(request: request))
+        self.activeNewsItems = activeNewsItems
+        self.readerPresented = readerPresented
         self.onOpenSettings = onOpenSettings
         self.onOpenResearch = onOpenResearch
         self.onConfigureAI = onConfigureAI
     }
 
     var body: some View {
-        ReaderContentView(model: model, onClose: { ReaderTransitionCoordinator.shared.requestClose() }, onOpenSettings: onOpenSettings, onOpenResearch: onOpenResearch, onConfigureAI: onConfigureAI)
+        ReaderContentView(
+            model: model,
+            activeNewsItems: activeNewsItems,
+            readerPresented: readerPresented,
+            onClose: { ReaderTransitionCoordinator.shared.requestClose() },
+            onOpenSettings: onOpenSettings,
+            onOpenResearch: onOpenResearch,
+            onConfigureAI: onConfigureAI
+        )
             .task {
                 await model.start(options: NewsReaderModel.SessionOptions(
                     cookieMemoryEnabled: settings.readerCookieMemoryEnabled,
@@ -826,6 +845,8 @@ struct NewsReaderView: View {
 /// the owning NewsReaderView controls the web-session lifecycle.
 struct ReaderContentView: View {
     @Bindable var model: NewsReaderModel
+    var activeNewsItems: [NewsItem] = []
+    var readerPresented = true
     var onClose: () -> Void
     var onOpenSettings: () -> Void = {}
     var onOpenResearch: (String) -> Void = { _ in }
@@ -838,7 +859,10 @@ struct ReaderContentView: View {
     @State private var research = ReaderResearchPanelModel()
     @State private var explainModel = SelectionExplainModel()
     @State private var searchModel = AISearchPanelModel()
-    @State private var showAISearch = false
+    @State private var quickSearchModel = QuickSearchModel()
+    @State private var showQuickSearch = false
+    @State private var quickSearchInitialSurface: QuickSearchSurface = .ai
+    @State private var archiveController = AISearchArchiveController.shared
     @State private var browserData = BrowserDataController.shared
     @Environment(AppSettings.self) private var settings
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -918,6 +942,24 @@ struct ReaderContentView: View {
                 }
             }
             .animation(reduceMotion ? nil : DashboardMotion.micro, value: model.notice != nil)
+            .overlay(alignment: .trailing) {
+                QuickSearchEdgeButton(
+                    isPresented: $showQuickSearch,
+                    isVisible: QuickSearchEdgeButton.shouldBeVisible(
+                        readerPresented: readerPresented,
+                        researchOpen: showResearch,
+                        searchOrArchiveOpen: showQuickSearch,
+                        selectionExplanationOpen: explainModel.state != .idle
+                    ),
+                    language: settings.appLanguage,
+                    action: { openQuickSearch(.web) }
+                )
+                .padding(.trailing, 8)
+            }
+            .animation(
+                reduceMotion ? nil : DashboardMotion.micro,
+                value: showQuickSearch || showResearch || explainModel.state != .idle
+            )
             .overlay(alignment: .bottomTrailing) {
                 if explainModel.state != .idle {
                     explainPanel
@@ -931,26 +973,27 @@ struct ReaderContentView: View {
             }
             .animation(reduceMotion ? nil : DashboardMotion.micro, value: explainModel.state)
             .overlay(alignment: .topTrailing) {
-                if showAISearch {
-                    AISearchPanel(
-                        model: searchModel,
+                if showQuickSearch {
+                    QuickSearchPanel(
+                        model: quickSearchModel,
+                        aiModel: searchModel,
+                        archiveController: archiveController,
+                        activeNewsItems: activeNewsItems,
+                        readingHistory: browserData.history,
+                        settings: settings,
                         language: settings.appLanguage,
-                        providerName: settings.providerDisplayName(forID: settings.aiProvider),
-                        modelName: settings.effectiveAISearchModel,
-                        webEnabled: settings.aiSearchUseWeb,
-                        onSubmit: { searchModel.submit(settings: settings) },
-                        onRetry: { searchModel.retry(settings: settings) },
-                        onClose: { closeAISearch() },
-                        onOpenCitation: { url in
-                            closeAISearch()
+                        initialSurface: quickSearchInitialSurface,
+                        onOpenResult: { url in
+                            closeQuickSearch()
                             model.openReaderModeLink(url)
                         },
-                        onCopy: { text in
-                            NSPasteboard.general.clearContents()
-                            NSPasteboard.general.setString(text, forType: .string)
+                        onOpenSource: { url in
+                            closeQuickSearch()
+                            model.openReaderModeLink(url)
                         },
-                        onOpenSettings: {
-                            closeAISearch()
+                        onClose: closeQuickSearch,
+                        onConfigureAI: {
+                            closeQuickSearch()
                             onConfigureAI()
                         }
                     )
@@ -962,7 +1005,7 @@ struct ReaderContentView: View {
                     }
                 }
             }
-            .animation(reduceMotion ? nil : DashboardMotion.micro, value: showAISearch)
+            .animation(reduceMotion ? nil : DashboardMotion.micro, value: showQuickSearch)
             .overlay(alignment: .bottom) {
                 ZStack {
                     if let message = feedbackMessage {
@@ -985,6 +1028,44 @@ struct ReaderContentView: View {
                 guard let text = await model.currentPagePlainText(), !text.isEmpty else { return nil }
                 return AISearchPageContext(url: model.currentURL, title: model.pageTitle, text: text)
             }
+            searchModel.onCompletion = { query, scope, page, answer in
+                guard AISearchArchivePolicy.shouldRecord(
+                    isEnabled: settings.aiSearchHistoryEnabled,
+                    isPrivateSession: model.request.privateSession,
+                    isPrivateReading: InterestController.shared.privateReading,
+                    mode: answer.mode
+                ) else { return }
+                await AISearchArchiveController.shared.record(AISearchArchiveEntry(
+                    query: query,
+                    scope: scope,
+                    origin: .readerSearch,
+                    pageTitle: page?.title,
+                    pageURL: page?.url,
+                    providerName: settings.providerDisplayName(forID: settings.aiProvider),
+                    answer: answer
+                ))
+            }
+            explainModel.onOnlineCompletion = { query, answer in
+                guard AISearchArchivePolicy.shouldRecord(
+                    isEnabled: settings.aiSearchHistoryEnabled,
+                    isPrivateSession: model.request.privateSession,
+                    isPrivateReading: InterestController.shared.privateReading,
+                    mode: answer.mode
+                ) else { return }
+                await AISearchArchiveController.shared.record(AISearchArchiveEntry(
+                    query: query,
+                    scope: .web,
+                    origin: .selectionLookup,
+                    pageTitle: model.pageTitle,
+                    pageURL: model.currentURL,
+                    providerName: settings.providerDisplayName(forID: settings.aiProvider),
+                    answer: answer
+                ))
+            }
+        }
+        .task {
+            await browserData.prepare()
+            await archiveController.prepare()
         }
         .onChange(of: model.selectionExplainRequest) { _, request in
             guard let request else { return }
@@ -992,8 +1073,8 @@ struct ReaderContentView: View {
         }
         .onChange(of: model.currentURL) { _, _ in
             explainModel.dismiss()
-            // A page-scoped answer must not survive navigation.
-            if showAISearch { closeAISearch() }
+            // An answer tied to the previous reader page must not survive navigation.
+            if showQuickSearch { closeQuickSearch() }
         }
         .onReceive(NotificationCenter.default.publisher(for: .researchRecordsChanged)) { _ in
             Task { await refreshResearch() }
@@ -1092,7 +1173,7 @@ struct ReaderContentView: View {
                 }
                 .frame(minWidth: 28, minHeight: 28)
             }
-            .keyboardShortcut(showResearch || explainModel.state != .idle ? nil : KeyboardShortcut(.escape, modifiers: []))
+            .keyboardShortcut(showResearch || explainModel.state != .idle || showQuickSearch ? nil : KeyboardShortcut(.escape, modifiers: []))
             .accessibilityLabel(english ? "Back to list" : "返回列表")
             .help(english ? "Back to list (Esc)" : "返回列表（Esc）")
             HStack(spacing: 2) {
@@ -1121,7 +1202,7 @@ struct ReaderContentView: View {
                 .help(english ? "Reload page (⌘R)" : "重新加载网页（⌘R）")
             if settings.aiSearchEnabled {
                 Button {
-                    toggleAISearch()
+                    toggleQuickSearch()
                 } label: {
                     Image(systemName: "magnifyingglass")
                         .frame(width: 28, height: 28)
@@ -1209,17 +1290,22 @@ struct ReaderContentView: View {
         .controlSize(.regular)
     }
 
-    private func toggleAISearch() {
-        if showAISearch {
-            closeAISearch()
+    private func toggleQuickSearch() {
+        if showQuickSearch {
+            closeQuickSearch()
         } else {
-            showAISearch = true
-            searchModel.present()
+            openQuickSearch(.ai)
         }
     }
 
-    private func closeAISearch() {
-        showAISearch = false
+    private func openQuickSearch(_ surface: QuickSearchSurface) {
+        quickSearchInitialSurface = surface
+        showQuickSearch = true
+        if surface == .ai { searchModel.present() }
+    }
+
+    private func closeQuickSearch() {
+        showQuickSearch = false
         searchModel.dismiss()
     }
 

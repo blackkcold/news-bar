@@ -5,10 +5,12 @@ import SwiftUI
 struct BrowserDataTab: View {
     @Environment(AppSettings.self) private var settings
     @State private var controller = BrowserDataController.shared
+    @State private var archiveController = AISearchArchiveController.shared
     @State private var showCookieSites = false
     @State private var showHistory = false
     @State private var clearCookiesPrompt = false
     @State private var clearHistoryPrompt = false
+    @State private var clearAISearchHistoryPrompt = false
     @State private var inspectingSite: ReaderSavedSite?
 
     private var english: Bool { settings.appLanguage == .en }
@@ -89,6 +91,46 @@ struct BrowserDataTab: View {
                 Text(english ? "History" : "历史")
             }
 
+            Section {
+                Toggle(
+                    L10n.string("settings.browser.aiSearchHistory.enabled", language: settings.appLanguage),
+                    isOn: Binding(
+                        get: { settings.aiSearchHistoryEnabled },
+                        set: { settings.aiSearchHistoryEnabled = $0 }
+                    )
+                )
+                Text(L10n.string("settings.browser.aiSearchHistory.detail", language: settings.appLanguage))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text(L10n.string(
+                    "settings.browser.aiSearchHistory.count",
+                    language: settings.appLanguage,
+                    archiveController.entries.count
+                ))
+                    .font(.caption)
+                if let error = archiveController.storageError {
+                    Text(L10n.string(
+                        "settings.browser.aiSearchHistory.error",
+                        language: settings.appLanguage,
+                        error
+                    ))
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                }
+                Button(
+                    L10n.string("settings.browser.aiSearchHistory.clear", language: settings.appLanguage),
+                    role: .destructive
+                ) {
+                    clearAISearchHistoryPrompt = true
+                }
+                .disabled(
+                    !archiveController.isReady
+                        || (archiveController.entries.isEmpty && archiveController.storageError == nil)
+                )
+            } header: {
+                Text(L10n.string("settings.browser.aiSearchHistory.title", language: settings.appLanguage))
+            }
+
             if let error = controller.storageError {
                 Section {
                     Text(error)
@@ -99,7 +141,10 @@ struct BrowserDataTab: View {
         }
         .formStyle(.grouped)
         .scrollContentBackground(.hidden)
-        .task { await controller.prepare() }
+        .task {
+            await controller.prepare()
+            await archiveController.prepare()
+        }
         .confirmationDialog(
             english ? "Clear all saved cookies?" : "清除全部已保存 Cookie？",
             isPresented: $clearCookiesPrompt
@@ -119,6 +164,23 @@ struct BrowserDataTab: View {
             }
         } message: {
             Text(english ? "Only the local list of opened articles is removed; personalization data is untouched." : "只删除本机的已打开文章列表，不影响个性化数据。")
+        }
+        .confirmationDialog(
+            L10n.string("settings.browser.aiSearchHistory.clear.title", language: settings.appLanguage),
+            isPresented: $clearAISearchHistoryPrompt
+        ) {
+            Button(
+                L10n.string("settings.browser.aiSearchHistory.clear.confirm", language: settings.appLanguage),
+                role: .destructive
+            ) {
+                Task { await archiveController.clear() }
+            }
+            Button(
+                L10n.string("settings.browser.aiSearchHistory.clear.cancel", language: settings.appLanguage),
+                role: .cancel
+            ) {}
+        } message: {
+            Text(L10n.string("settings.browser.aiSearchHistory.clear.message", language: settings.appLanguage))
         }
         .sheet(item: $inspectingSite) { site in
             CookieSiteInspector(

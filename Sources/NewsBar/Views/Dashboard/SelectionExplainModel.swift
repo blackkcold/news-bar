@@ -44,8 +44,11 @@ final class SelectionExplainModel {
     @ObservationIgnored private let explainer: ((String) async throws -> AnswerDocument)?
     @ObservationIgnored private let planner: ((String) async -> SelectionPlan?)?
     @ObservationIgnored private let onlineAnswer: ((String) async throws -> AnswerDocument)?
+    @ObservationIgnored var onOnlineCompletion: (@MainActor (String, AnswerDocument) async -> Void)?
     @ObservationIgnored private var cachedService: SelectionExplainService?
     @ObservationIgnored private var cachedServiceIdentity: String?
+
+    private typealias RunResult = (answer: AnswerDocument, onlineQuery: String?)
 
     init() {
         explainer = nil
@@ -79,10 +82,13 @@ final class SelectionExplainModel {
         task = Task { [weak self] in
             guard let self else { return }
             do {
-                let answer = try await self.run(trimmed, settings: settings)
+                let result = try await self.run(trimmed, settings: settings)
                 try Task.checkCancellation()
-                self.reveal.finish(with: answer)
-                self.state = .ready(answer)
+                self.reveal.finish(with: result.answer)
+                self.state = .ready(result.answer)
+                if let query = result.onlineQuery, !result.answer.isOffline {
+                    await self.onOnlineCompletion?(query, result.answer)
+                }
             } catch is CancellationError {
                 return
             } catch SelectionExplainService.Failure.quotaUnavailable {
@@ -125,13 +131,17 @@ final class SelectionExplainModel {
         state = .loading
         reveal.reset()
         reveal.begin()
+        let query = selection
         task = Task { [weak self] in
             guard let self else { return }
             do {
-                let result = try await self.lookUp(self.selection, settings: settings)
+                let result = try await self.lookUp(query, settings: settings)
                 try Task.checkCancellation()
                 self.reveal.finish(with: result)
                 self.state = .ready(result)
+                if !result.isOffline {
+                    await self.onOnlineCompletion?(query, result)
+                }
             } catch is CancellationError {
                 return
             } catch {
@@ -155,33 +165,36 @@ final class SelectionExplainModel {
     /// skips the question. A failed look-up falls back to the offline answer
     /// instead of leaving the user with an error — and says so, because an
     /// unannounced fallback looks exactly like a deliberate offline answer.
-    private func run(_ text: String, settings: AppSettings) async throws -> AnswerDocument {
+    private func run(_ text: String, settings: AppSettings) async throws -> RunResult {
         switch settings.selectionWebMode {
         case .offline:
-            return try await answer(for: text, settings: settings)
+            return (try await answer(for: text, settings: settings), nil)
         case .always:
-            return try await lookUp(text, settings: settings)
+            let result = try await lookUp(text, settings: settings)
+            return (result, result.isOffline ? nil : text)
         case .auto:
             // Without a provider the look-up cannot run at all. Say that up
             // front instead of spending a classification call and then falling
             // back for a reason the user cannot see.
             guard settings.aiSearchEnabled, !settings.researchSearchProviders.isEmpty else {
                 lookupNotice = .searchUnavailable
-                return try await answer(for: text, settings: settings)
+                return (try await answer(for: text, settings: settings), nil)
             }
             let plan = await classify(text, settings: settings)
             guard SelectionLookupPolicy.shouldLookUp(plan, in: text) else {
                 lookupNotice = .judgedOffline
-                return try await answer(for: text, settings: settings)
+                return (try await answer(for: text, settings: settings), nil)
             }
             let query = plan?.query.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             do {
-                return try await lookUp(query.isEmpty ? text : query, settings: settings)
+                let actualQuery = query.isEmpty ? text : query
+                let result = try await lookUp(actualQuery, settings: settings)
+                return (result, result.isOffline ? nil : actualQuery)
             } catch is CancellationError {
                 throw CancellationError()
             } catch {
                 lookupNotice = .lookupFailed
-                return try await answer(for: text, settings: settings)
+                return (try await answer(for: text, settings: settings), nil)
             }
         }
     }
