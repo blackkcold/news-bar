@@ -121,7 +121,8 @@ struct SelectionExplainPanel: View {
                     if let url = URL(string: source.url) { onOpenSource(url) }
                 },
                 onLookUp: canLookUp ? onLookUp : nil,
-                notice: noticeText
+                notice: noticeText,
+                isStreaming: model.isRevealing
             )
             HStack(spacing: 8) {
                 Button(L10n.string("reader.selection.retry", language: language), action: onRetry)
@@ -155,7 +156,8 @@ struct SelectionExplainPanel: View {
                 onOpenSource: { source in
                     if let url = URL(string: source.url) { onOpenSource(url) }
                 },
-                notice: noticeText
+                notice: noticeText,
+                isStreaming: model.isRevealing
             )
         case .noKey, .quota:
             Text(L10n.string(model.state == .noKey ? "reader.selection.noKey" : "reader.selection.quota", language: language))

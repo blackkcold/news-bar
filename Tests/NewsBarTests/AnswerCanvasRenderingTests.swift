@@ -35,6 +35,43 @@ final class AnswerCanvasRenderingTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(size.height, 96)
     }
 
+    // MARK: - Streaming canvas
+
+    /// While text streams the canvas holds its cap. A card that resizes on every
+    /// revealed character resized the scroll view ~15 times a second, which is
+    /// where the previous frame's glyphs were left on screen.
+    func testStreamingCanvasHoldsItsCapAndOnlyTheFinishedAnswerHugs() {
+        XCTAssertEqual(AnswerDocumentView.canvasHeight(contentHeight: 120, maxHeight: 380, isStreaming: true), 380)
+        XCTAssertEqual(AnswerDocumentView.canvasHeight(contentHeight: 120, maxHeight: 380, isStreaming: false), 120)
+        XCTAssertEqual(AnswerDocumentView.canvasHeight(contentHeight: 900, maxHeight: 380, isStreaming: false), 380)
+        XCTAssertEqual(AnswerDocumentView.canvasHeight(contentHeight: 0, maxHeight: 380, isStreaming: false), 380)
+    }
+
+    @MainActor
+    func testStreamingAnswerFillsTheCapAndTheFinishedOneShrinks() {
+        let document = Self.eventDocument(blocks: 3)
+        let streaming = AnswerDocumentView(
+            document: document,
+            language: .zh,
+            maxHeight: 380,
+            onOpenSource: { _ in },
+            isStreaming: true
+        )
+        .frame(width: 392)
+        XCTAssertEqual(Self.fittingSize(streaming).height, 380, accuracy: 0.5)
+
+        let finished = AnswerDocumentView(
+            document: document,
+            language: .zh,
+            maxHeight: 380,
+            onOpenSource: { _ in }
+        )
+        .frame(width: 392)
+        let height = Self.fittingSize(finished).height
+        XCTAssertLessThanOrEqual(height, 380.5)
+        XCTAssertGreaterThanOrEqual(height, 96)
+    }
+
     @MainActor
     func testDegradedAnswerWithoutBlocksStillRenders() {
         let document = AnswerDocument(

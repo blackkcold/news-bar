@@ -102,6 +102,9 @@ final class AppSettings {
     var readerHistoryEnabled: Bool {
         didSet { UserDefaults.standard.set(readerHistoryEnabled, forKey: "readerHistoryEnabled") }
     }
+    var aiSearchHistoryEnabled: Bool {
+        didSet { UserDefaults.standard.set(aiSearchHistoryEnabled, forKey: "aiSearchHistoryEnabled") }
+    }
     /// Reader-mode typography. Values are relative multipliers, never pixels:
     /// the native reader multiplies a base point size by `readerModeFontScale`.
     var readerModeFontScale: Double {
@@ -466,6 +469,7 @@ final class AppSettings {
         self.rssTitleTranslationEnabled = defaults.boolIfPresent(forKey: "rssTitleTranslationEnabled") ?? false
         self.readerCookieMemoryEnabled = defaults.boolIfPresent(forKey: "readerCookieMemoryEnabled") ?? true
         self.readerHistoryEnabled = defaults.boolIfPresent(forKey: "readerHistoryEnabled") ?? true
+        self.aiSearchHistoryEnabled = defaults.boolIfPresent(forKey: "aiSearchHistoryEnabled") ?? true
         let storedFontScale = defaults.doubleIfPresent(forKey: "readerModeFontScale") ?? 1.0
         self.readerModeFontScale = [0.9, 1.0, 1.15, 1.35].contains(storedFontScale) ? storedFontScale : 1.0
         let storedLineSpacing = defaults.doubleIfPresent(forKey: "readerModeLineSpacing") ?? 1.55

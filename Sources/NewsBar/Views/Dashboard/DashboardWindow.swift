@@ -77,7 +77,7 @@ struct DashboardWindow: View {
                     .zIndex(0)
 
                 if let request = displayedRequest {
-                    readerPane(request)
+                    readerPane(request, readerPresented: readerVisible)
                         .frame(
                             width: readerFrame.width,
                             height: readerFrame.height,
@@ -154,9 +154,11 @@ struct DashboardWindow: View {
         min(listMaxWidth, max(listMinWidth, listWidth))
     }
 
-    private func readerPane(_ request: NewsReaderRequest) -> some View {
+    private func readerPane(_ request: NewsReaderRequest, readerPresented: Bool) -> some View {
         NewsReaderView(
             request: request,
+            activeNewsItems: orchestrator.allActiveItems(settings: settings),
+            readerPresented: readerPresented,
             onOpenSettings: openInterestSettings,
             onOpenResearch: { onOpenResearchCenter($0) },
             onConfigureAI: onConfigureAI ?? {}

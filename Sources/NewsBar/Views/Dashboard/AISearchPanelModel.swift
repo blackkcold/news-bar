@@ -45,6 +45,12 @@ final class AISearchPanelModel {
     /// Supplied by the reader view. It captures the reader model only, so it
     /// can be called on the main actor without capturing a SwiftUI view.
     @ObservationIgnored var pageContextProvider: (@MainActor () async -> AISearchPageContext?)?
+    @ObservationIgnored var onCompletion: (@MainActor (
+        String,
+        AISearchScope,
+        AISearchPageContext?,
+        AnswerDocument
+    ) async -> Void)?
 
     @ObservationIgnored private var task: Task<Void, Never>?
     @ObservationIgnored private let runner: Runner?
@@ -115,6 +121,8 @@ final class AISearchPanelModel {
         task = Task { [weak self] in
             guard let self else { return }
             do {
+                let archiveContext = await self.pageContextProvider?() ?? page
+                try Task.checkCancellation()
                 let result = try await runner(trimmed, scope, page) { stage in
                     await MainActor.run { self.apply(stage) }
                 }
@@ -122,6 +130,7 @@ final class AISearchPanelModel {
                 self.reveal.finish(with: result)
                 self.state = .done
                 self.progress = 1
+                await self.onCompletion?(trimmed, scope, archiveContext, result)
             } catch {
                 self.handle(error, language: L10n.currentLanguage)
             }
@@ -144,7 +153,9 @@ final class AISearchPanelModel {
             guard let self else { return }
             do {
                 let service = try await self.makeService(settings: settings)
-                let page = scope == .currentPage ? await self.pageContextProvider?() : nil
+                let archiveContext = await self.pageContextProvider?()
+                try Task.checkCancellation()
+                let page = scope == .currentPage ? archiveContext : nil
                 let result = try await service.run(question: question, scope: scope, page: page) { stage in
                     await MainActor.run { self.apply(stage) }
                 }
@@ -152,6 +163,7 @@ final class AISearchPanelModel {
                 self.reveal.finish(with: result)
                 self.state = .done
                 self.progress = 1
+                await self.onCompletion?(question, scope, archiveContext, result)
             } catch {
                 self.handle(error, language: settings.appLanguage)
             }

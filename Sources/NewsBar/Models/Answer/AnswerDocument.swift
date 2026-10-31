@@ -161,6 +161,7 @@ enum AnswerFormatter {
     static func lines(_ body: String) -> [AnswerLine] {
         var result: [AnswerLine] = []
         var paragraph = ""
+        var quote = ""
 
         func flushParagraph() {
             let trimmed = paragraph.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -168,18 +169,31 @@ enum AnswerFormatter {
             paragraph = ""
         }
 
+        /// Consecutive `>` lines are one quotation, not one per line: every
+        /// `.quote` draws its own rule, so a three-line quotation used to read
+        /// as three separate ones.
+        func flushQuote() {
+            let trimmed = quote.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty { result.append(.quote(trimmed)) }
+            quote = ""
+        }
+
         for rawLine in body.components(separatedBy: .newlines) {
             let line = rawLine.trimmingCharacters(in: .whitespaces)
             if line.isEmpty {
                 flushParagraph()
+                flushQuote()
                 continue
             }
             if line.hasPrefix("> ") || line == ">" {
                 flushParagraph()
                 let quoted = String(line.dropFirst()).trimmingCharacters(in: .whitespaces)
-                if !quoted.isEmpty { result.append(.quote(quoted)) }
+                if !quoted.isEmpty {
+                    quote = quote.isEmpty ? quoted : quote + "\n" + quoted
+                }
                 continue
             }
+            flushQuote()
             if line.hasPrefix("- ") || line.hasPrefix("* ") {
                 flushParagraph()
                 let item = String(line.dropFirst(2)).trimmingCharacters(in: .whitespaces)
@@ -194,6 +208,7 @@ enum AnswerFormatter {
             paragraph = paragraph.isEmpty ? line : join(paragraph, line)
         }
         flushParagraph()
+        flushQuote()
         return result
     }
 

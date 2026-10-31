@@ -15,6 +15,8 @@ struct AISearchPanel: View {
     let onOpenCitation: (URL) -> Void
     let onCopy: (String) -> Void
     let onOpenSettings: () -> Void
+    var onReturnToSearch: () -> Void = {}
+    var onOpenArchive: () -> Void = {}
 
     @FocusState private var questionFocused: Bool
 
@@ -48,6 +50,18 @@ struct AISearchPanel: View {
                 .foregroundStyle(.secondary)
             Text(L10n.string("reader.search.title", language: language))
                 .font(.headline)
+            Button(action: onReturnToSearch) {
+                Image(systemName: "chevron.left")
+            }
+            .buttonStyle(.borderless)
+            .accessibilityLabel(QuickSearchAccessibilityLabels.returnToSearch(language: language))
+            .help(QuickSearchAccessibilityLabels.returnToSearch(language: language))
+            Button(action: onOpenArchive) {
+                Image(systemName: "clock.arrow.circlepath")
+            }
+            .buttonStyle(.borderless)
+            .accessibilityLabel(QuickSearchAccessibilityLabels.openArchive(language: language))
+            .help(QuickSearchAccessibilityLabels.openArchive(language: language))
             Spacer(minLength: 0)
             if let answer = model.answer {
                 Button {
@@ -181,7 +195,8 @@ struct AISearchPanel: View {
             maxHeight: 360,
             onOpenSource: { source in
                 if let url = URL(string: source.url) { onOpenCitation(url) }
-            }
+            },
+            isStreaming: model.isRevealing
         )
     }
 
