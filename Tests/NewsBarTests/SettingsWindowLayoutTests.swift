@@ -43,8 +43,11 @@ final class SettingsWindowLayoutTests: XCTestCase {
         let size = CGSize(width: 860, height: 620)
         // Retro/zh covers the panes. Modern/dark/en covers the material sidebar
         // and the wider English labels on the three densest panes.
+        // Modern/light/zh exists because the sidebar regression only showed in
+        // light mode: in dark the same fill differed from the content by 3/255.
         let variants: [(name: String, theme: AppTheme, language: AppLanguage, scheme: String)] = [
             ("retro-zh", .retroEditorial, .zh, "light"),
+            ("modern-zh-light", .modern, .zh, "light"),
             ("modern-en-dark", .modern, .en, "dark")
         ]
         for variant in variants {
@@ -54,9 +57,9 @@ final class SettingsWindowLayoutTests: XCTestCase {
             // `.notifications` is left out: ReminderTab asks UNUserNotificationCenter
             // for its status on appear, and that call raises when the xctest host
             // has no app bundle. The pane itself is unchanged by this refactor.
-            let panes: [SettingsPane] = variant.name == "retro-zh"
-                ? SettingsPane.allCases.filter { $0 != .notifications }
-                : [.general, .ai, .privacy]
+            let panes: [SettingsPane] = variant.name == "modern-en-dark"
+                ? [.general, .ai, .privacy]
+                : SettingsPane.allCases.filter { $0 != .notifications }
             for pane in panes {
                 let view = SettingsWindow(initialPane: pane)
                     .environment(settings)
