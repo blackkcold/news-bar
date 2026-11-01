@@ -13,10 +13,6 @@ struct DashboardWindow: View {
     @State private var browseScroll = ScrollPosition()
     @State private var forYou = true
     @State private var listWidth: CGFloat = 400
-    @State private var phase: ReaderPresentationPhase = .idle
-    @State private var displayedRequest: NewsReaderRequest?
-    @State private var readerVisible = false
-    @State private var hero: ReaderHeroState?
 
     var onOpenSettings: () -> Void = {}
     var onConfigureAI: (() -> Void)? = nil
@@ -24,9 +20,6 @@ struct DashboardWindow: View {
 
     private let layoutBreakpoint: CGFloat = 960
     private let sidebarWidth: CGFloat = 336
-    private let dividerWidth: CGFloat = 9
-    private let listMinWidth: CGFloat = 320
-    private let listMaxWidth: CGFloat = 480
 
     private var normalizedSearchQuery: String? {
         DashboardSearch.normalized(debouncedSearchText)
@@ -58,74 +51,26 @@ struct DashboardWindow: View {
 
     var body: some View {
         @Bindable var router = NewsNavigationRouter.shared
-        GeometryReader { geometry in
-            let selection = NewsNavigationRouter.shared.selection
-            let isWide = geometry.size.width >= 1100
-            let readerFrame = self.readerFrame(for: geometry.size, isWide: isWide)
-            // Keep the compact column while the reader fades out; expand only
-            // after it is gone so the reflow is never visible under a fade.
-            let listWidthForPhase: CGFloat = (phase == .presented || phase == .dismissing)
-                ? clampedListWidth
-                : geometry.size.width
-
-            ZStack(alignment: .topLeading) {
-                browsePane
-                    // Compact reader covers the list; wide split keeps it visible.
-                    .environment(\.dashboardListObscured, phase != .idle && !isWide)
-                    .frame(width: listWidthForPhase, height: geometry.size.height, alignment: .topLeading)
-                    .allowsHitTesting(!(phase == .presented && !isWide))
-                    .zIndex(0)
-
-                if let request = displayedRequest {
-                    readerPane(request, readerPresented: readerVisible)
-                        .frame(
-                            width: readerFrame.width,
-                            height: readerFrame.height,
-                            alignment: .topLeading
-                        )
-                        .offset(x: readerFrame.minX, y: readerFrame.minY)
-                        .opacity(readerVisible ? 1 : 0)
-                        .allowsHitTesting(readerVisible)
-                        .zIndex(2)
-                }
-
-                if isWide, phase == .presented, displayedRequest != nil {
-                    DashboardSplitter(width: $listWidth)
-                        .frame(width: dividerWidth, height: geometry.size.height)
-                        .offset(x: clampedListWidth)
-                        .zIndex(3)
-                }
-
-                if let hero {
-                    ReaderHeroOverlay(state: hero) {
-                        self.hero = nil
-                    }
-                    .zIndex(20)
-                }
+        DashboardReaderPresentation(
+            selection: $router.selection,
+            listWidth: $listWidth,
+            isRetro: settings.appTheme == .retroEditorial,
+            reduceMotion: reduceMotion,
+            transitionOriginProvider: { ReaderTransitionCoordinator.shared.consume() }
+        ) { context in
+            browsePane(isReaderCompact: context.isReaderCompact, phase: context.phase)
+        } readerContent: { request, readerPresented in
+            readerPane(request, readerPresented: readerPresented)
+        }
+        .task(id: searchText) {
+            let trimmed = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else {
+                debouncedSearchText = ""
+                return
             }
-            .coordinateSpace(name: "dashboardRoot")
-            .onAppear {
-                if let request = selection, displayedRequest == nil {
-                    beginReaderTransition(request: request, size: geometry.size, isWide: isWide)
-                }
-            }
-            .onChange(of: selection?.id) { _, _ in
-                if let request = selection {
-                    beginReaderTransition(request: request, size: geometry.size, isWide: isWide)
-                } else if displayedRequest != nil {
-                    beginReaderDismissal()
-                }
-            }
-            .task(id: searchText) {
-                let trimmed = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-                guard !trimmed.isEmpty else {
-                    debouncedSearchText = ""
-                    return
-                }
-                try? await Task.sleep(for: .milliseconds(150))
-                guard !Task.isCancelled else { return }
-                debouncedSearchText = searchText
-            }
+            try? await Task.sleep(for: .milliseconds(150))
+            guard !Task.isCancelled else { return }
+            debouncedSearchText = searchText
         }
         .frame(minWidth: 960, minHeight: 720)
         .adaptiveColorScheme()
@@ -150,10 +95,6 @@ struct DashboardWindow: View {
         }
     }
 
-    private var clampedListWidth: CGFloat {
-        min(listMaxWidth, max(listMinWidth, listWidth))
-    }
-
     private func readerPane(_ request: NewsReaderRequest, readerPresented: Bool) -> some View {
         NewsReaderView(
             request: request,
@@ -167,70 +108,7 @@ struct DashboardWindow: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
-    private func readerFrame(for size: CGSize, isWide: Bool) -> CGRect {
-        if isWide {
-            let x = clampedListWidth + dividerWidth
-            return CGRect(x: x, y: 0, width: max(0, size.width - x), height: size.height)
-        }
-        return CGRect(origin: .zero, size: size)
-    }
-
-    private func beginReaderTransition(request: NewsReaderRequest, size: CGSize, isWide: Bool) {
-        let origin = ReaderTransitionCoordinator.shared.consume()
-
-        // Already split open: swap the article without replaying the open
-        // transition. The list stays compact and the reader keeps its frame.
-        if phase == .presented, displayedRequest != nil {
-            displayedRequest = request
-            hero = nil
-            return
-        }
-
-        // Commit the layout change outside any animation. The list reflows once
-        // in a single frame; animating it would re-layout every frame of the
-        // transition for no visual gain behind the reader.
-        displayedRequest = request
-        phase = .presented
-        readerVisible = false
-
-        if !reduceMotion, let origin, origin.frame.width > 2, origin.frame.height > 2 {
-            hero = ReaderHeroState(
-                origin: origin.frame,
-                target: readerFrame(for: size, isWide: isWide),
-                title: origin.title.isEmpty ? request.title : origin.title,
-                host: URL(string: request.url)?.host ?? "",
-                isRetro: settings.appTheme == .retroEditorial
-            )
-        } else {
-            hero = nil
-        }
-
-        Task { @MainActor in
-            await Task.yield()
-            withAnimation(reduceMotion ? DashboardMotion.reduced : DashboardMotion.structural) {
-                readerVisible = true
-            }
-        }
-    }
-
-    private func beginReaderDismissal() {
-        guard phase == .presented else { return }
-        hero = nil
-        phase = .dismissing
-        withAnimation(reduceMotion ? DashboardMotion.reduced : DashboardMotion.reveal) {
-            readerVisible = false
-        }
-
-        let settleDelay = reduceMotion ? 80 : 180
-        Task { @MainActor in
-            try? await Task.sleep(for: .milliseconds(settleDelay + 120))
-            guard phase == .dismissing else { return }
-            displayedRequest = nil
-            phase = .idle
-        }
-    }
-
-    private var browsePane: some View {
+    private func browsePane(isReaderCompact: Bool, phase: ReaderPresentationPhase) -> some View {
         GeometryReader { proxy in
             let isWideLayout = proxy.size.width >= layoutBreakpoint
 
@@ -246,10 +124,7 @@ struct DashboardWindow: View {
                         debouncedQuery: normalizedSearchQuery
                     )
 
-                    contentLayout(
-                        isWideLayout: isWideLayout,
-                        isReaderCompact: phase == .presented || phase == .dismissing
-                    )
+                    contentLayout(isWideLayout: isWideLayout, isReaderCompact: isReaderCompact)
                 }
                 .padding(20)
                 .frame(maxWidth: .infinity, alignment: .topLeading)
@@ -1263,66 +1138,5 @@ private struct DashboardToolbarAction: View {
         .disabled(isDisabled)
         .help(title)
         .accessibilityLabel(title)
-    }
-}
-
-private struct DashboardSplitter: View {
-    @Binding var width: CGFloat
-    @State private var dragStart: CGFloat?
-    @State private var proposedWidth: CGFloat?
-
-    private let minWidth: CGFloat = 320
-    private let maxWidth: CGFloat = 480
-
-    var body: some View {
-        ZStack(alignment: .topLeading) {
-            Rectangle()
-                .fill(Color.clear)
-                .contentShape(Rectangle())
-
-            Rectangle()
-                .fill(Color(nsColor: .separatorColor))
-                .frame(width: 1)
-
-            if let proposedWidth {
-                // Show the target position while dragging; commit the real
-                // width once on release so the list does not reflow per frame.
-                Rectangle()
-                    .fill(Color.accentColor.opacity(0.7))
-                    .frame(width: 1)
-                    .frame(maxHeight: .infinity)
-                    .offset(x: proposedWidth - width)
-                    .allowsHitTesting(false)
-            }
-        }
-        .onHover { hovering in
-            if hovering {
-                NSCursor.resizeLeftRight.set()
-            } else {
-                NSCursor.arrow.set()
-            }
-        }
-        .onDisappear { NSCursor.arrow.set() }
-        .gesture(
-            DragGesture(minimumDistance: 1)
-                .onChanged { value in
-                    if dragStart == nil { dragStart = width }
-                    let start = dragStart ?? width
-                    proposedWidth = min(maxWidth, max(minWidth, start + value.translation.width))
-                }
-                .onEnded { _ in
-                    if let proposedWidth {
-                        width = proposedWidth
-                    }
-                    dragStart = nil
-                    proposedWidth = nil
-                }
-        )
-        .onTapGesture(count: 2) {
-            dragStart = nil
-            proposedWidth = nil
-            width = 400
-        }
-        .accessibilityLabel("Resize news list")
     }
 }
