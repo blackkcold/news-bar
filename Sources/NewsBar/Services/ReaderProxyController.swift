@@ -3,7 +3,17 @@ import Foundation
 import Network
 import Observation
 
+/// `strict` is the persisted raw value for the automatic system-network mode,
+/// kept for compatibility with existing preferences. The strict opt-out is the
+/// separate `blocksFakeIP` flag.
 enum ReaderNetworkMode: String, Codable { case strict, trustedProxy }
+
+/// Automatic-mode diagnostics for the settings page.
+enum FakeIPStatus: Equatable {
+    case unknown
+    case checking
+    case resolved(FakeIPDetection)
+}
 
 enum ReaderProxyError: Error, Equatable {
     case invalidEndpoint, credentialsRequired, storageFailed, trustRequired, contextChanged, unavailable
@@ -92,6 +102,15 @@ final class ReaderProxyController {
             invalidateTrust()
         }
     }
+    /// Opt-out for users who prefer the previous behavior: never accept a
+    /// Fake-IP answer, even on a detected transparent-proxy network.
+    var blocksFakeIP: Bool {
+        didSet {
+            guard blocksFakeIP != oldValue else { return }
+            defaults.set(blocksFakeIP, forKey: "readerBlocksFakeIP")
+        }
+    }
+    private(set) var fakeIPStatus: FakeIPStatus = .unknown
     private(set) var endpoint: ReaderProxyEndpoint?
     private(set) var networkAvailable = false
     private(set) var revision = UUID()
@@ -100,15 +119,25 @@ final class ReaderProxyController {
     private let defaults: UserDefaults
     private let credentials: ReaderProxyCredentialStore
     @ObservationIgnored private let monitor: NWPathMonitor?
+    @ObservationIgnored private let fakeIPDetector: ReaderFakeIPDetector
     @ObservationIgnored private var sleepObserver: NSObjectProtocol?
     @ObservationIgnored private var wakeObserver: NSObjectProtocol?
     @ObservationIgnored private var activeProbe: (id: UUID, task: Task<Void, Error>)?
+    @ObservationIgnored private var fakeIPDetection: (epoch: UUID, detection: FakeIPDetection)?
+    @ObservationIgnored private var activeFakeIPDetection: (id: UUID, epoch: UUID, task: Task<FakeIPDetection, Never>)?
 
-    init(defaults: UserDefaults = .standard, credentials: ReaderProxyCredentialStore = .encrypted, monitor: NWPathMonitor? = NWPathMonitor()) {
+    init(
+        defaults: UserDefaults = .standard,
+        credentials: ReaderProxyCredentialStore = .encrypted,
+        monitor: NWPathMonitor? = NWPathMonitor(),
+        fakeIPDetector: ReaderFakeIPDetector = .live
+    ) {
         self.defaults = defaults
         self.credentials = credentials
         self.monitor = monitor
+        self.fakeIPDetector = fakeIPDetector
         mode = ReaderNetworkMode(rawValue: defaults.string(forKey: "readerNetworkMode") ?? "") ?? .strict
+        blocksFakeIP = defaults.bool(forKey: "readerBlocksFakeIP")
         endpoint = defaults.data(forKey: "readerProxyEndpoint").flatMap { try? JSONDecoder().decode(ReaderProxyEndpoint.self, from: $0) }
         monitor?.pathUpdateHandler = { [weak self] path in
             let available = path.status == .satisfied
@@ -131,6 +160,7 @@ final class ReaderProxyController {
         if let sleepObserver { NSWorkspace.shared.notificationCenter.removeObserver(sleepObserver) }
         if let wakeObserver { NSWorkspace.shared.notificationCenter.removeObserver(wakeObserver) }
         activeProbe?.task.cancel()
+        activeFakeIPDetection?.task.cancel()
     }
 
     /// Any network path event conservatively revokes trust, even if the new
@@ -139,6 +169,10 @@ final class ReaderProxyController {
     func updateNetwork(available: Bool) {
         networkAvailable = available
         networkEpoch = UUID()
+        fakeIPDetection = nil
+        activeFakeIPDetection?.task.cancel()
+        activeFakeIPDetection = nil
+        fakeIPStatus = .unknown
         if mode == .trustedProxy { invalidateTrust() }
     }
 
@@ -160,6 +194,53 @@ final class ReaderProxyController {
 
     func isCurrent(_ candidate: ReaderProxySession) -> Bool {
         mode == .trustedProxy && networkAvailable && session?.id == candidate.id && candidate.networkEpoch == networkEpoch
+    }
+
+    /// Whether the reader may accept a destination that resolved only to the
+    /// local Fake-IP block. Real private ranges are never relaxed here.
+    func allowsFakeIPDestination() async -> Bool {
+        guard mode == .strict, !blocksFakeIP, networkAvailable else { return false }
+        guard let detection = await detectFakeIP() else { return false }
+        return detection.isFakeIPNetwork
+    }
+
+    /// Settings diagnostics: discard the cached result and probe again.
+    func refreshFakeIPStatus() async {
+        guard mode == .strict, networkAvailable else {
+            fakeIPStatus = .unknown
+            return
+        }
+        // Keep an in-flight detection alive: the reader may be awaiting it.
+        // Dropping the cache is enough; detectFakeIP joins the active probe.
+        fakeIPDetection = nil
+        _ = await detectFakeIP()
+    }
+
+    private func detectFakeIP() async -> FakeIPDetection? {
+        let epoch = networkEpoch
+        if let cached = fakeIPDetection, cached.epoch == epoch {
+            fakeIPStatus = .resolved(cached.detection)
+            return cached.detection
+        }
+        if let active = activeFakeIPDetection, active.epoch == epoch {
+            let detection = await active.task.value
+            guard epoch == networkEpoch else { return nil }
+            fakeIPDetection = (epoch, detection)
+            fakeIPStatus = .resolved(detection)
+            return detection
+        }
+
+        let id = UUID()
+        let detector = fakeIPDetector
+        fakeIPStatus = .checking
+        let task = Task.detached(priority: .utility) { await detector.detect() }
+        activeFakeIPDetection = (id, epoch, task)
+        let detection = await task.value
+        if activeFakeIPDetection?.id == id { activeFakeIPDetection = nil }
+        guard epoch == networkEpoch else { return nil }
+        fakeIPDetection = (epoch, detection)
+        fakeIPStatus = .resolved(detection)
+        return detection
     }
 
     func trust(endpoint: ReaderProxyEndpoint, username: String, password: String) async throws {

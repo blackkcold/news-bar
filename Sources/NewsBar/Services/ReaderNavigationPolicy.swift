@@ -2,11 +2,25 @@ import Darwin
 import Foundation
 
 enum ReaderNavigationPolicy {
-    enum DestinationResolution: Equatable { case publicDestination, privateDestination, unresolved }
+    enum DestinationResolution: Equatable {
+        case publicDestination
+        /// Every address is a local transparent-proxy Fake-IP, or Fake-IP mixed
+        /// with public addresses. The caller may allow it only when the current
+        /// network has been positively identified as a Fake-IP network.
+        case fakeIPDestination
+        case privateDestination
+        case unresolved
+    }
 
     static func classifyAddresses(_ addresses: [String]) -> DestinationResolution {
         guard !addresses.isEmpty else { return .unresolved }
-        return addresses.allSatisfy(isPublicAddress) ? .publicDestination : .privateDestination
+        if addresses.allSatisfy(isPublicAddress) { return .publicDestination }
+
+        let hasFakeIP = addresses.contains(where: IPAddress.isFakeIP)
+        let onlyPublicOrFake = addresses.allSatisfy {
+            IPAddress.isPublic($0) || IPAddress.isFakeIP($0)
+        }
+        return hasFakeIP && onlyPublicOrFake ? .fakeIPDestination : .privateDestination
     }
     static func allowedURL(_ raw: String) -> URL? {
         guard let c = URLComponents(string: raw), c.scheme?.lowercased() == "https",
@@ -50,24 +64,40 @@ enum ReaderNavigationPolicy {
         await resolveDestination(url) == .publicDestination
     }
 
-    static func resolveDestination(_ url: URL) async -> DestinationResolution {
-        guard let host = url.host else { return .unresolved }
-        return await Task.detached(priority: .userInitiated) {
+    /// The system resolver path shared by the navigation gate and the local
+    /// Fake-IP detector. Returns numeric addresses in the order the resolver
+    /// produced them, or an empty array when resolution fails.
+    static func resolveAddresses(_ host: String) async -> [String] {
+        await Task.detached(priority: .userInitiated) {
             var hints = addrinfo()
             hints.ai_socktype = SOCK_STREAM
             var result: UnsafeMutablePointer<addrinfo>?
-            guard getaddrinfo(host, nil, &hints, &result) == 0, let first = result else { return DestinationResolution.unresolved }
+            guard getaddrinfo(host, nil, &hints, &result) == 0, let first = result else { return [] }
             defer { freeaddrinfo(first) }
             var cursor: UnsafeMutablePointer<addrinfo>? = first
             var addresses: [String] = []
             while let node = cursor {
                 var buffer = [CChar](repeating: 0, count: Int(NI_MAXHOST))
-                guard getnameinfo(node.pointee.ai_addr, node.pointee.ai_addrlen, &buffer, socklen_t(buffer.count), nil, 0, NI_NUMERICHOST) == 0 else { return DestinationResolution.unresolved }
+                guard getnameinfo(node.pointee.ai_addr, node.pointee.ai_addrlen, &buffer, socklen_t(buffer.count), nil, 0, NI_NUMERICHOST) == 0 else { return [] }
                 addresses.append(String(cString: buffer))
                 cursor = node.pointee.ai_next
             }
-            return classifyAddresses(addresses)
+            return addresses
         }.value
+    }
+
+    static func resolveDestination(_ url: URL) async -> DestinationResolution {
+        guard let host = url.host else { return .unresolved }
+        return classifyAddresses(await resolveAddresses(host))
+    }
+
+    /// Test seam for deterministic navigation decisions without host DNS.
+    static func resolveDestination(
+        _ url: URL,
+        addresses: @Sendable (String) async -> [String]
+    ) async -> DestinationResolution {
+        guard let host = url.host else { return .unresolved }
+        return classifyAddresses(await addresses(host))
     }
 
     static var resourceRules: String {

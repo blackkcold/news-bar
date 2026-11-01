@@ -23,6 +23,28 @@ final class ReaderPolicyTests: XCTestCase {
     }
 
     @MainActor
+    func testPublicWeiboPageUsesAutomaticFakeIPModeWhenExplicitlyEnabled() async throws {
+        guard ProcessInfo.processInfo.environment["NEWSBAR_VALIDATE_FAKE_IP_READER"] == "1" else {
+            throw XCTSkip("Live Fake-IP reader validation is opt-in; default tests remain offline.")
+        }
+        let controller = ReaderProxyController(
+            defaults: try XCTUnwrap(UserDefaults(suiteName: "live-fakeip-reader-\(UUID())")),
+            credentials: ReaderProxyCredentialStore(read: { _ in nil }, save: { _, _ in true }),
+            monitor: nil
+        )
+        controller.updateNetwork(available: true)
+        let request = NewsReaderRequest(url: "https://s.weibo.com/", title: "微博", item: nil, surface: "publicValidation", contextID: nil, consentEpoch: UUID(), privateSession: true)
+        let model = NewsReaderModel(request: request, proxyController: controller)
+        defer { model.stop() }
+        await model.start()
+        let settled = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in model.failure != nil || model.progress >= 1 }, object: nil)
+        await fulfillment(of: [settled], timeout: 60)
+        XCTAssertNotEqual(model.failure, .privateDestination)
+        XCTAssertNotNil(model.webView?.url)
+        XCTAssertFalse(model.blockedByFakeIPPolicy)
+    }
+
+    @MainActor
     func testBlankSubframeDoesNotReplaceArticleWithSecurityError() async throws {
         let request = NewsReaderRequest(url: "https://www.ifanr.com/", title: "Article", item: nil, surface: "test", contextID: nil, consentEpoch: UUID(), privateSession: true)
         let model = NewsReaderModel(request: request)

@@ -58,7 +58,9 @@ final class NewsReaderModel: NSObject, WKNavigationDelegate, WKUIDelegate, WKScr
     var errorMessage: String? { failure?.message(language: L10n.currentLanguage) }
     var canRetry: Bool { failure?.canRetry ?? true }
     var canOpenExternally: Bool {
-        failure != .privateDestination && ReaderNavigationPolicy.allowedURL(currentURL) != nil
+        guard ReaderNavigationPolicy.allowedURL(currentURL) != nil else { return false }
+        if failure == .privateDestination { return blockedByFakeIPPolicy }
+        return true
     }
     private(set) var progress: Double = 0
     private(set) var pageTitle: String
@@ -104,6 +106,11 @@ final class NewsReaderModel: NSObject, WKNavigationDelegate, WKUIDelegate, WKScr
     private let proxyController: ReaderProxyController
     private var proxySession: ReaderProxySession?
     private var networkRevision: UUID
+    private let destinationResolver: @Sendable (URL) async -> ReaderNavigationPolicy.DestinationResolution
+    /// The failure came from a Fake-IP destination that automatic mode did not
+    /// accept. Only that case may offer the browser escape hatch; real private
+    /// destinations keep the previous no-external-open behavior.
+    private(set) var blockedByFakeIPPolicy = false
 
     var usesTrustedProxy: Bool { proxySession != nil }
     private var networkContextIsCurrent: Bool {
@@ -116,10 +123,17 @@ final class NewsReaderModel: NSObject, WKNavigationDelegate, WKUIDelegate, WKScr
         self.init(request: request, proxyController: .shared)
     }
 
-    init(request: NewsReaderRequest, proxyController: ReaderProxyController) {
+    init(
+        request: NewsReaderRequest,
+        proxyController: ReaderProxyController,
+        destinationResolver: @escaping @Sendable (URL) async -> ReaderNavigationPolicy.DestinationResolution = {
+            await ReaderNavigationPolicy.resolveDestination($0)
+        }
+    ) {
         self.request = request
         self.proxyController = proxyController
         self.networkRevision = proxyController.revision
+        self.destinationResolver = destinationResolver
         currentURL = request.url
         pageTitle = request.title
         super.init()
@@ -129,6 +143,7 @@ final class NewsReaderModel: NSObject, WKNavigationDelegate, WKUIDelegate, WKScr
         guard webView == nil, !stopped else { return }
         ReaderSessionRegistry.active = self
         if let options { sessionOptions = options }
+        blockedByFakeIPPolicy = false
         networkRevision = proxyController.revision
         do { proxySession = try proxyController.authorizedSession() }
         catch { fail(.proxyTrustRequired); return }
@@ -268,12 +283,14 @@ final class NewsReaderModel: NSObject, WKNavigationDelegate, WKUIDelegate, WKScr
             fail(.unsupportedURL, kind: .blocked)
             return
         }
+        blockedByFakeIPPolicy = false
         failure = nil
         webView?.load(URLRequest(url: url))
     }
 
     func reload() {
         guard canRetry, !stopped else { return }
+        blockedByFakeIPPolicy = false
         failure = nil
         notice = nil
         loading = true
@@ -545,9 +562,23 @@ final class NewsReaderModel: NSObject, WKNavigationDelegate, WKUIDelegate, WKScr
         // Local Fake-IP is not evidence of its final destination; all URL and
         // download restrictions still apply. Strict sessions keep DNS checks.
         if proxySession == nil {
-            let destination = await ReaderNavigationPolicy.resolveDestination(url)
-            guard destination == .publicDestination else {
-                if !isSubframe { blockMainNavigation(destination == .privateDestination ? .privateDestination : .dnsUnavailable) }
+            if !isSubframe { blockedByFakeIPPolicy = false }
+            let destination = await destinationResolver(url)
+            switch destination {
+            case .publicDestination:
+                break
+            case .fakeIPDestination:
+                guard await proxyController.allowsFakeIPDestination() else {
+                    if !isSubframe {
+                        blockedByFakeIPPolicy = true
+                        blockMainNavigation(.privateDestination)
+                    }
+                    return .cancel
+                }
+            case .privateDestination, .unresolved:
+                if !isSubframe {
+                    blockMainNavigation(destination == .privateDestination ? .privateDestination : .dnsUnavailable)
+                }
                 return .cancel
             }
         }
@@ -1370,8 +1401,15 @@ struct ReaderContentView: View {
             Image(systemName: failure.symbol).font(.system(size: 36, weight: .light)).foregroundStyle(.secondary).accessibilityHidden(true)
             Text(failure.title(language: settings.appLanguage)).font(.title3.weight(.semibold))
             Text(failure.message(language: settings.appLanguage)).font(.callout).foregroundStyle(.secondary).lineSpacing(4)
+            if model.blockedByFakeIPPolicy {
+                Text(english
+                     ? "This network uses a router Fake-IP range. Automatic detection did not accept it, or strict Fake-IP blocking is on. Open the article in your browser, or check Reader network settings."
+                     : "当前网络使用旁路由 Fake-IP。自动检测未通过，或已开启严格阻止。可在浏览器打开原文，或检查阅读器网络设置。")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
             HStack(spacing: 12) {
-                if failure == .proxyTrustRequired || failure == .proxyUnavailable {
+                if failure == .proxyTrustRequired || failure == .proxyUnavailable
+                    || (failure == .privateDestination && model.blockedByFakeIPPolicy) {
                     Button(english ? "Reader network settings" : "阅读器网络设置", action: onOpenSettings)
                         .buttonStyle(EditorialActionButtonStyle())
                 }

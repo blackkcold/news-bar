@@ -18,8 +18,11 @@ struct ReaderProxySettingsSection: View {
     var body: some View {
         Section {
             Picker(english ? "Reader network" : "阅读器网络", selection: Binding(get: { controller.mode }, set: { controller.mode = $0 })) {
-                Text(english ? "Strict (default)" : "严格模式（默认）").tag(ReaderNetworkMode.strict)
+                Text(english ? "Automatic (recommended)" : "自动跟随系统网络（推荐）").tag(ReaderNetworkMode.strict)
                 Text(english ? "Trusted HTTP CONNECT proxy" : "受信任 HTTP CONNECT 代理").tag(ReaderNetworkMode.trustedProxy)
+            }
+            if controller.mode == .strict {
+                automaticNetworkStatus
             }
             if controller.mode == .trustedProxy {
                 TextField(english ? "LAN IPv4 address" : "局域网 IPv4 地址", text: $host)
@@ -61,18 +64,83 @@ struct ReaderProxySettingsSection: View {
             Text(english ? "Reader proxy & Fake-IP compatibility" : "阅读器代理与 Fake-IP 兼容")
         } footer: {
             Text(english
-                 ? "Reader only. No system or router settings are changed. Credentials use this app's local encrypted store; authorization is not connectivity verification. Testing makes one HTTPS request to Apple's connectivity page, not an AI request."
-                 : "仅影响内嵌阅读器，不修改系统或软路由。凭据使用应用既有本机加密存储；授权不等于连接验证。测试仅请求 Apple 连通性页面，不调用 AI。")
+                 ? "Reader only. Automatic mode follows the system DNS and gateway; no system or router settings are changed. Trusted-proxy credentials use this app's local encrypted store; authorization is not connectivity verification."
+                 : "仅影响内嵌阅读器。自动模式跟随系统 DNS 与网关，不修改系统或软路由。受信任代理的凭据使用应用既有本机加密存储；授权不等于连接验证。")
         }
         .onAppear {
             host = controller.endpoint?.host ?? "192.168.0.14"
             port = controller.endpoint.map { String($0.port) } ?? "7890"
+        }
+        .task(id: controller.mode) {
+            guard controller.mode == .strict else { return }
+            if case .unknown = controller.fakeIPStatus {
+                await controller.refreshFakeIPStatus()
+            }
         }
         .onChange(of: controller.revision) { _, _ in
             acceptsRisk = false
             password = ""
             result = nil
         }
+    }
+
+    @ViewBuilder
+    private var automaticNetworkStatus: some View {
+        switch controller.fakeIPStatus {
+        case .unknown:
+            Label(english ? "Not checked yet; the reader checks when it opens an article." : "尚未检测；打开文章时会自动检测。",
+                  systemImage: "questionmark.circle")
+                .font(.caption).foregroundStyle(.secondary)
+        case .checking:
+            HStack(spacing: 6) {
+                ProgressView().controlSize(.small)
+                Text(english ? "Checking this network…" : "正在检测当前网络…")
+            }
+            .font(.caption).foregroundStyle(.secondary)
+        case .resolved(let detection):
+            Label(detection.isFakeIPNetwork
+                  ? (english ? "Router Fake-IP detected; the reader follows the system network." : "已识别旁路由 Fake-IP；阅读器自动跟随系统网络。")
+                  : (english ? "No Fake-IP detected; the reader uses the normal public-IP check." : "未识别到 Fake-IP；阅读器使用常规公网 IP 校验。"),
+                  systemImage: detection.isFakeIPNetwork ? "checkmark.shield" : "network")
+                .font(.caption)
+                .foregroundStyle(detection.isFakeIPNetwork ? Color.green : Color.secondary)
+            if let router = detection.router {
+                Text(verbatim: english ? "Gateway: \(router)" : "网关：\(router)")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            if let probe = detection.probes.first {
+                Text(verbatim: "\(probe.host) → \(probe.addresses.isEmpty ? "—" : probe.addresses.joined(separator: ", "))")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        }
+
+        Toggle(english ? "Strictly block Fake-IP (not recommended)" : "严格阻止 Fake-IP（不推荐）",
+               isOn: Binding(get: { controller.blocksFakeIP }, set: { controller.blocksFakeIP = $0 }))
+            .toggleStyle(.checkbox)
+            .font(.caption)
+
+        Text(english
+             ? "Automatic mode accepts only the local 198.18.0.0/15 Fake-IP block, and only after a private gateway and at least two public canaries agree. Real private, loopback, link-local and CGNAT addresses remain blocked."
+             : "自动模式只在私网网关 + 至少两个公网样例都返回 198.18.0.0/15 时放行 Fake-IP。真实私网、回环、链路本地和 CGNAT 地址仍然拦截。")
+            .font(.caption).foregroundStyle(.secondary)
+
+        HStack(spacing: 8) {
+            Button(english ? "Detect again" : "重新检测") {
+                Task { await controller.refreshFakeIPStatus() }
+            }
+            .buttonStyle(EditorialActionButtonStyle(compact: true))
+            .disabled(!controller.networkAvailable || isChecking)
+            if isChecking { ProgressView().controlSize(.small) }
+        }
+        if !controller.networkAvailable {
+            Text(english ? "Waiting for an available network…" : "正在等待可用网络…")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
+    private var isChecking: Bool {
+        if case .checking = controller.fakeIPStatus { return true }
+        return false
     }
 
     private func authorize() {

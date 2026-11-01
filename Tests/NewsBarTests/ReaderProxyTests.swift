@@ -4,11 +4,16 @@ import WebKit
 @testable import NewsBar
 
 final class ReaderProxyTests: XCTestCase {
-    func testFakeIPAndPrivateDestinationsRemainRejectedByStrictPolicy() {
-        for ip in ["198.18.0.182", "198.19.1.1", "127.0.0.1", "192.168.0.14", "100.83.165.48"] {
+    func testFakeIPIsClassifiedSeparatelyFromRealPrivateDestinations() {
+        XCTAssertEqual(ReaderNavigationPolicy.classifyAddresses(["198.18.0.182"]), .fakeIPDestination)
+        XCTAssertEqual(ReaderNavigationPolicy.classifyAddresses(["198.19.1.1"]), .fakeIPDestination)
+        XCTAssertEqual(ReaderNavigationPolicy.classifyAddresses(["198.18.0.182", "8.8.8.8"]), .fakeIPDestination)
+        XCTAssertEqual(ReaderNavigationPolicy.classifyAddresses(["198.18.0.182", "10.0.0.5"]), .privateDestination)
+        for ip in ["127.0.0.1", "192.168.0.14", "100.83.165.48"] {
             XCTAssertEqual(ReaderNavigationPolicy.classifyAddresses([ip]), .privateDestination)
             XCTAssertNil(ReaderNavigationPolicy.allowedURL("https://\(ip)/"))
         }
+        XCTAssertNil(ReaderNavigationPolicy.allowedURL("https://198.18.0.182/"))
         XCTAssertEqual(ReaderNavigationPolicy.classifyAddresses(["8.8.8.8"]), .publicDestination)
     }
 
@@ -253,6 +258,129 @@ final class ReaderProxyTests: XCTestCase {
         await fulfillment(of: [cancelled], timeout: 2)
         proxy.stop()
         await task.value
+    }
+
+    @MainActor
+    func testAutomaticModeAllowsFakeIPOnlyAfterPrivateGatewayCanaryDetection() async throws {
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: "reader-fakeip-tests-\(UUID())"))
+        let detector = ReaderFakeIPDetector(
+            resolver: { _ in ["198.18.28.202"] },
+            routerProvider: { "192.168.0.14" },
+            timeout: 0.1
+        )
+        let controller = ReaderProxyController(
+            defaults: defaults,
+            credentials: ProxyCredentialFixture().store,
+            monitor: nil,
+            fakeIPDetector: detector
+        )
+        controller.updateNetwork(available: true)
+        XCTAssertEqual(controller.mode, .strict)
+        XCTAssertFalse(controller.blocksFakeIP)
+        let allowed = await controller.allowsFakeIPDestination()
+        XCTAssertTrue(allowed)
+
+        controller.blocksFakeIP = true
+        let blocked = await controller.allowsFakeIPDestination()
+        XCTAssertFalse(blocked)
+
+        let reloaded = ReaderProxyController(
+            defaults: defaults,
+            credentials: ProxyCredentialFixture().store,
+            monitor: nil,
+            fakeIPDetector: detector
+        )
+        XCTAssertTrue(reloaded.blocksFakeIP)
+    }
+
+    @MainActor
+    func testNetworkChangeClearsFakeIPDetectionCache() async throws {
+        let counter = FakeIPProbeCounter()
+        let detector = ReaderFakeIPDetector(
+            resolver: { _ in counter.next() <= 3 ? ["198.18.28.202"] : ["8.8.8.8"] },
+            routerProvider: { "192.168.0.14" },
+            timeout: 0.1
+        )
+        let controller = ReaderProxyController(
+            defaults: try XCTUnwrap(UserDefaults(suiteName: "reader-fakeip-tests-\(UUID())")),
+            credentials: ProxyCredentialFixture().store,
+            monitor: nil,
+            fakeIPDetector: detector
+        )
+        controller.updateNetwork(available: true)
+        let first = await controller.allowsFakeIPDestination()
+        XCTAssertTrue(first)
+
+        controller.updateNetwork(available: true)
+        let second = await controller.allowsFakeIPDestination()
+        XCTAssertFalse(second)
+    }
+
+    @MainActor
+    func testReaderBlocksFakeIPDestinationWhenAutomaticModeIsDisabled() async throws {
+        let controller = ReaderProxyController(
+            defaults: try XCTUnwrap(UserDefaults(suiteName: "reader-fakeip-tests-\(UUID())")),
+            credentials: ProxyCredentialFixture().store,
+            monitor: nil,
+            fakeIPDetector: ReaderFakeIPDetector(
+                resolver: { _ in ["198.18.28.202"] },
+                routerProvider: { "192.168.0.14" },
+                timeout: 0.1
+            )
+        )
+        controller.updateNetwork(available: true)
+        controller.blocksFakeIP = true
+        let request = NewsReaderRequest(url: "https://reader-fakeip-fixture.example/", title: "Fake-IP", item: nil, surface: "test", contextID: nil, consentEpoch: UUID(), privateSession: true)
+        let model = NewsReaderModel(
+            request: request,
+            proxyController: controller,
+            destinationResolver: { _ in .fakeIPDestination }
+        )
+        defer { model.stop() }
+        await model.start()
+        let blocked = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in model.failure == .privateDestination }, object: nil)
+        await fulfillment(of: [blocked], timeout: 5)
+        XCTAssertTrue(model.blockedByFakeIPPolicy)
+        XCTAssertTrue(model.canOpenExternally)
+    }
+
+    @MainActor
+    func testRealPrivateDestinationKeepsBrowserEscapeClosed() async throws {
+        let controller = ReaderProxyController(
+            defaults: try XCTUnwrap(UserDefaults(suiteName: "reader-fakeip-tests-\(UUID())")),
+            credentials: ProxyCredentialFixture().store,
+            monitor: nil,
+            fakeIPDetector: ReaderFakeIPDetector(
+                resolver: { _ in ["10.0.0.5"] },
+                routerProvider: { "192.168.0.14" },
+                timeout: 0.1
+            )
+        )
+        controller.updateNetwork(available: true)
+        let request = NewsReaderRequest(url: "https://reader-private-fixture.example/", title: "Private", item: nil, surface: "test", contextID: nil, consentEpoch: UUID(), privateSession: true)
+        let model = NewsReaderModel(
+            request: request,
+            proxyController: controller,
+            destinationResolver: { _ in .privateDestination }
+        )
+        defer { model.stop() }
+        await model.start()
+        let blocked = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in model.failure == .privateDestination }, object: nil)
+        await fulfillment(of: [blocked], timeout: 5)
+        XCTAssertFalse(model.blockedByFakeIPPolicy)
+        XCTAssertFalse(model.canOpenExternally)
+    }
+}
+
+private final class FakeIPProbeCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+
+    func next() -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        count += 1
+        return count
     }
 }
 
