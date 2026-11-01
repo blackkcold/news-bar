@@ -63,6 +63,24 @@ enum IPAddress {
             : isPublicIPv6(parsed.bytes)
     }
 
+    /// The local transparent-proxy Fake-IP block (RFC 2544 benchmarking space).
+    ///
+    /// A router in Fake-IP mode answers every proxied hostname with an address
+    /// from this range and maps the address back to the hostname when the
+    /// connection reaches it. The address is therefore not a real destination:
+    /// it must not be treated as a private host, but it also must not be
+    /// accepted by the general public-address classifier. The reader only
+    /// relaxes this block after it has positively detected a local Fake-IP
+    /// network.
+    static func isFakeIP(_ raw: String) -> Bool {
+        guard let parsed = parse(raw), parsed.family == AF_INET else { return false }
+        return isFakeIPv4(parsed.bytes)
+    }
+
+    static func isFakeIPv4(_ bytes: [UInt8]) -> Bool {
+        bytes.count == 4 && bytes[0] == 198 && (bytes[1] == 18 || bytes[1] == 19)
+    }
+
     static func isPublicIPv4(_ bytes: [UInt8]) -> Bool {
         guard bytes.count == 4 else { return false }
         let a = bytes[0], b = bytes[1], c = bytes[2]

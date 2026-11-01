@@ -9,6 +9,13 @@ final class ReaderPresentationTests: XCTestCase {
         XCTAssertEqual(ReaderNavigationPolicy.classifyAddresses(["122.9.119.16", "127.0.0.1"]), .privateDestination)
     }
 
+    func testFakeIPIsNotReportedAsPrivateDestination() {
+        XCTAssertEqual(ReaderNavigationPolicy.classifyAddresses(["198.18.28.202"]), .fakeIPDestination)
+        XCTAssertEqual(ReaderNavigationPolicy.classifyAddresses(["198.19.1.1"]), .fakeIPDestination)
+        XCTAssertEqual(ReaderNavigationPolicy.classifyAddresses(["198.18.28.202", "8.8.8.8"]), .fakeIPDestination)
+        XCTAssertEqual(ReaderNavigationPolicy.classifyAddresses(["198.18.28.202", "127.0.0.1"]), .privateDestination)
+    }
+
     func testFailureTextUsesOneSelectedLanguageAndActionableRecovery() {
         XCTAssertTrue(ReaderFailure.networkUnavailable.message(language: .zh).contains("网络"))
         XCTAssertFalse(ReaderFailure.networkUnavailable.message(language: .zh).contains("Network"))
