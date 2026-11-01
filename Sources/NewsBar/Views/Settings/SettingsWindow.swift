@@ -91,9 +91,16 @@ struct SettingsWindow: View {
                 }
             }
             .listStyle(.sidebar)
-            .scrollContentBackground(.hidden)
+            // The retro paper needs its own fill; the modern theme must let the
+            // sidebar list draw the system background. Hiding it and painting a
+            // solid colour on top is what turned the column into a grey slab.
+            .scrollContentBackground(isRetro ? .hidden : .automatic)
         }
-        .background(sidebarFill)
+        .background(isRetro ? RetroEditorialTokens.raisedPaper : Color.clear)
+    }
+
+    private var isRetro: Bool {
+        settings.appTheme == .retroEditorial
     }
 
     private var selection: Binding<SettingsPane?> {
@@ -101,12 +108,6 @@ struct SettingsWindow: View {
             get: { pane },
             set: { if let next = $0 { pane = next } }
         )
-    }
-
-    private var sidebarFill: Color {
-        settings.appTheme == .retroEditorial
-            ? RetroEditorialTokens.raisedPaper
-            : Color(nsColor: .underPageBackgroundColor)
     }
 
     private var brand: some View {
