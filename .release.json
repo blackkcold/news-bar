@@ -13,7 +13,7 @@
   "release_branch": true,
   "auto_merge": false,
   "release_note_style": "structured-cn",
-  "summary": "阅读器自动兼容旁路由 Fake-IP",
-  "summary_en": "Automatic router Fake-IP compatibility for the reader",
-  "validation": "swift test 1314 项（5 项测试跳过，0 失败）+ swift build -c release + scripts/build.sh + codesign verify 通过"
+  "summary": "阅读器侧窗呈现壳与竞态修复",
+  "summary_en": "Dashboard reader presentation shell and race fixes",
+  "validation": "swift test 1325 项（5 项测试跳过，0 失败）+ swift build -c release + scripts/build.sh + codesign verify 通过"
 }

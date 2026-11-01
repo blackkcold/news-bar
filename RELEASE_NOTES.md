@@ -1,5 +1,26 @@
 ## [Unreleased]
 
+## [v2.13.2] - 2026-11-01
+
+### ♻️ 重构
+
+- **阅读器侧窗独立呈现层**：Dashboard 的开合状态从 `DashboardWindow` 抽到 `DashboardReaderPresentation`，相位、当前请求、hero 过渡、列表宽度、分割线与异步任务身份集中管理；窗口只提供浏览列表和阅读器内容，侧窗几何按当前窗口尺寸计算。
+- **关闭沿用同一套结构动画**：紧凑布局关闭阅读器后，列表宽度回到整窗时走 `DashboardMotion.structural`（Reduce Motion 下用短淡入），不再瞬间铺满。
+
+### 🛠 修复
+
+- **旧关闭任务不再结束新一次关闭**：连续开合时，先发起的延迟结算会校验 generation 与当前相位，被新操作取代的旧任务直接退出。
+- **旧 hero 完成回调不再清除替换后的 hero**：切换文章时，前一张卡片的完成回调只清理自己，不误清正在播放的新卡片。
+- **打开后立即关闭不再闪现阅读器**：首次 `Task.yield()` 前就关闭时，该次打开不会把阅读器设为可见。
+- **hero 装饰层不进入辅助功能树**：过渡卡片标记 `accessibilityHidden(true)`，VoiceOver 不会读到重复标题。
+- **Reduce Motion 下不播放位移动画**：hero 直接结束，阅读器改用短淡入。
+
+### ✅ 测试
+
+- `swift test`：1325 项，6 项跳过，0 失败。
+- 新增 11 项阅读器侧窗测试：旧关闭/旧 hero 竞态、打开后立即关闭、紧凑与分栏几何、窗口缩放跟随、关闭宽度动画 transaction、Reduce Motion、无障碍可见性、hero 两态渲染与 16 张截图矩阵（现代/复古 × 浅色/深色 × 中英）。
+- `swift build -c release` 通过；`scripts/build.sh` 生成 2.13.2 的 app、DMG 与 SHA256。
+
 ## [v2.13.1] - 2026-11-01
 
 ### 🛠 修复

@@ -36,6 +36,7 @@ struct ReaderHeroOverlay: View {
         .offset(x: frame.minX, y: frame.minY)
         .opacity(visible ? 1 : 0)
         .allowsHitTesting(false)
+        .accessibilityHidden(true)
         .task {
             guard !reduceMotion else {
                 onFinished()
