@@ -20,6 +20,10 @@ final class DashboardReaderPresentationState {
     private(set) var displayedRequest: NewsReaderRequest?
     private(set) var readerVisible = false
     private(set) var hero: ReaderHeroState?
+    /// True only while the reader is presented. The exit gives the list its
+    /// width back in the same update as the reader fade, so the browse pane is
+    /// never left in its narrow reader column after the reader has faded out.
+    var isBrowseCompact: Bool { phase == .presented }
     @ObservationIgnored private var generation = 0
     @ObservationIgnored private var openingTask: Task<Void, Never>?
     @ObservationIgnored private var dismissalTask: Task<Void, Never>?
@@ -164,14 +168,16 @@ struct DashboardReaderPresentation<BrowseContent: View, ReaderContent: View>: Vi
     var body: some View {
         GeometryReader { geometry in
             let isWide = geometry.size.width >= 1100
-            let isReaderCompact = presentationState.phase == .presented || presentationState.phase == .dismissing
+            let isReaderCompact = presentationState.isBrowseCompact
             let clampedListWidth = min(480, max(320, listWidth))
             let listWidthForPhase = isReaderCompact ? clampedListWidth : geometry.size.width
             let context = DashboardReaderPresentationContext(
                 phase: presentationState.phase,
                 isWide: isWide,
                 isReaderCompact: isReaderCompact,
-                listObscured: isReaderCompact && !isWide,
+                // Exposure gating stays latched until the reader has fully left,
+                // not just until the list regains its width.
+                listObscured: presentationState.phase != .idle && !isWide,
                 readerVisible: presentationState.readerVisible
             )
             let readerFrame = DashboardReaderPresentationState.readerFrame(
@@ -184,6 +190,9 @@ struct DashboardReaderPresentation<BrowseContent: View, ReaderContent: View>: Vi
                 browseContent(context)
                     .environment(\.dashboardListObscured, context.listObscured)
                     .frame(width: listWidthForPhase, height: geometry.size.height, alignment: .topLeading)
+                    // Commit the list layout once, alongside the reader surface
+                    // fade. Animating this frame would re-layout the whole news
+                    // subtree on every animation tick.
                     .allowsHitTesting(!(presentationState.phase == .presented && !isWide))
                     .accessibilityHidden(context.browseAccessibilityHidden)
                     .zIndex(0)
