@@ -223,18 +223,6 @@ struct NewsSection: View {
         }
     }
 
-    private var cardShape: RoundedRectangle {
-        RoundedRectangle(cornerRadius: 18, style: .continuous)
-    }
-
-    private var cardBackground: some View {
-        cardShape.fill(.ultraThinMaterial)
-    }
-
-    private var cardStroke: some View {
-        cardShape.strokeBorder(.separator.opacity(0.32), lineWidth: 1)
-    }
-
     @ViewBuilder
     private func statusPill(text: String, tint: Color) -> some View {
         Text(text)

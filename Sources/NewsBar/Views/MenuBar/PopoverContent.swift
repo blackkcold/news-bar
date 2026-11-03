@@ -142,7 +142,14 @@ struct PopoverContent: View {
             .padding(.horizontal, PopoverLayout.horizontalInset)
             .padding(.bottom, 6)
         }
-        .background(isRetro ? AnyShapeStyle(RetroEditorialTokens.raisedPaper) : AnyShapeStyle(.regularMaterial))
+        // The native popover already supplies the material. Only the retro
+        // theme paints a paper header; the modern header stays clear so the
+        // system material is visible.
+        .background {
+            if isRetro {
+                RetroEditorialTokens.raisedPaper
+            }
+        }
         .overlay(alignment: .bottom) {
             VStack(spacing: 2) {
                 Rectangle()

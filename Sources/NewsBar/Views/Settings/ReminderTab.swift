@@ -169,12 +169,17 @@ struct ReminderTab: View {
         .background {
             if settings.appTheme == .retroEditorial {
                 Rectangle().fill(RetroEditorialTokens.raisedPaper)
+            } else {
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .fill(Color(nsColor: .controlBackgroundColor))
             }
         }
-        .glassSettingsSurface(cornerRadius: 14)
         .overlay {
             if settings.appTheme == .retroEditorial {
                 Rectangle().strokeBorder(RetroEditorialTokens.ink, lineWidth: 1.2)
+            } else {
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .strokeBorder(Color(nsColor: .separatorColor).opacity(0.35), lineWidth: 1)
             }
         }
     }
@@ -198,12 +203,15 @@ struct ReminderTab: View {
         .background {
             if settings.appTheme == .retroEditorial {
                 Rectangle().fill(RetroEditorialTokens.brick.opacity(0.12))
+            } else {
+                Capsule().fill(Color.primary.opacity(0.08))
             }
         }
-        .glassSettingsSurface(cornerRadius: 40, interactive: true)
         .overlay {
             if settings.appTheme == .retroEditorial {
                 Rectangle().strokeBorder(RetroEditorialTokens.ink, lineWidth: 1)
+            } else {
+                Capsule().strokeBorder(Color(nsColor: .separatorColor).opacity(0.35), lineWidth: 1)
             }
         }
     }

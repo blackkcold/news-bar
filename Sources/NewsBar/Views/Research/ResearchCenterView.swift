@@ -128,7 +128,13 @@ private struct ResearchSidebar: View {
             .foregroundStyle(.secondary)
             .padding(12)
         }
-        .background(isRetro ? AnyShapeStyle(RetroEditorialTokens.raisedPaper) : AnyShapeStyle(.thinMaterial))
+        // Let the NavigationSplitView sidebar draw its own material in the
+        // modern theme. Only the retro paper needs a custom background.
+        .background {
+            if isRetro {
+                RetroEditorialTokens.raisedPaper
+            }
+        }
     }
 
     private func filterButton(_ filter: ResearchCenterFilter) -> some View {

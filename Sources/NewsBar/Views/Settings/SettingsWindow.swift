@@ -64,6 +64,27 @@ struct SettingsWindow: View {
     }
 
     var body: some View {
+        Group {
+            if isRetro {
+                legacyShell
+            } else {
+                splitShell
+            }
+        }
+        .frame(minWidth: 780, minHeight: 580)
+        .adaptiveColorScheme(forcing: isRetro ? .light : nil)
+        .appThemeSurface()
+        // Settings has a fixed pane list; a collapsible sidebar would leave
+        // the window without navigation. Apply the removal at the window root
+        // so it also works when NavigationSplitView is hosted in an AppKit
+        // NSWindow rather than a SwiftUI WindowGroup.
+        .toolbar(removing: .sidebarToggle)
+    }
+
+    /// The retro paper theme keeps its existing two-column shell: the paper
+    /// surface and hard rules are part of the skin, and a floating system
+    /// sidebar would fight it.
+    private var legacyShell: some View {
         HStack(spacing: 0) {
             sidebar
                 .frame(width: 194)
@@ -72,9 +93,18 @@ struct SettingsWindow: View {
 
             detail
         }
-        .frame(minWidth: 780, minHeight: 580)
-        .adaptiveColorScheme(forcing: settings.appTheme == .retroEditorial ? .light : nil)
-        .appThemeSurface()
+    }
+
+    /// The modern theme lets NavigationSplitView provide the floating sidebar,
+    /// its material and its selection behavior.
+    private var splitShell: some View {
+        NavigationSplitView {
+            sidebar
+                .navigationSplitViewColumnWidth(min: 180, ideal: 194, max: 230)
+        } detail: {
+            detail
+        }
+        .navigationSplitViewStyle(.balanced)
     }
 
     // MARK: - Sidebar
@@ -91,12 +121,20 @@ struct SettingsWindow: View {
                 }
             }
             .listStyle(.sidebar)
-            // The retro paper needs its own fill; the modern theme must let the
-            // sidebar list draw the system background. Hiding it and painting a
-            // solid colour on top is what turned the column into a grey slab.
-            .scrollContentBackground(isRetro ? .hidden : .automatic)
+            // The host provides the background: the native sidebar material in
+            // the modern theme, the paper surface in the retro theme. Hiding the
+            // List's own background lets that surface show through instead of
+            // painting a second, opaque column on top of it.
+            .scrollContentBackground(.hidden)
         }
-        .background(isRetro ? RetroEditorialTokens.raisedPaper : Color.clear)
+        .background {
+            if isRetro {
+                RetroEditorialTokens.raisedPaper
+            }
+        }
+        // NavigationSplitView proposes the sidebar column size; the VStack must
+        // accept it so the brand and the List are not compressed to zero height.
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
     private var isRetro: Bool {

@@ -59,8 +59,12 @@ struct ReaderResearchPanel: View {
         }
         .frame(width: 320)
         .frame(maxHeight: .infinity)
-        .background(.regularMaterial)
-        .shadow(color: .black.opacity(0.14), radius: 12, x: -3)
+        .floatingPanelSurface(
+            Rectangle(),
+            shadowRadius: 12,
+            shadowX: -3,
+            shadowY: 0
+        )
         .accessibilityElement(children: .contain)
     }
 

@@ -54,26 +54,11 @@ struct AnswerDocumentView: View {
                 }
             }
             .frame(maxHeight: canvasHeight)
-            // A cut-off card must look cut off. Without this the last visible
-            // heading reads as an empty section and the sources look absent.
-            // An overlay (not a mask) because a mask does not reach scrolled
-            // content on macOS.
-            .overlay(alignment: .bottom) {
-                if isOverflowing {
-                    Rectangle()
-                        .fill(.ultraThinMaterial)
-                        .frame(height: 28)
-                        .mask(
-                            LinearGradient(
-                                colors: [.clear, .black],
-                                startPoint: .top,
-                                endPoint: .bottom
-                            )
-                        )
-                        .allowsHitTesting(false)
-                        .accessibilityHidden(true)
-                }
-            }
+            // A cut-off card must look cut off. macOS 26 provides the system
+            // scroll edge effect, which adapts to the theme and material. The
+            // fallback for older systems uses a plain background-coloured
+            // gradient instead of a second material layer.
+            .modifier(AnswerScrollEdgeModifier(isOverflowing: isOverflowing))
         }
     }
 
@@ -287,5 +272,41 @@ private struct AnswerSourceRow: View {
             L10n.string("answer.cite", language: language, source.index) + ", " + source.title
         )
         .accessibilityHint(source.host)
+    }
+}
+
+/// Keeps the answer canvas' bottom edge legible without stacking another
+/// material sheet on top of the card. macOS 26 and later use the system scroll
+/// edge effect; older systems get a neutral gradient that matches the window
+/// background.
+private struct AnswerScrollEdgeModifier: ViewModifier {
+    let isOverflowing: Bool
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if #available(macOS 26.0, *) {
+            content.scrollEdgeEffectStyle(.soft, for: .bottom)
+        } else {
+            // Standard-material scroll fade for macOS 15–25. It matches the
+            // floating panel behind the answer canvas better than an opaque
+            // window colour, especially in dark mode. This is not Liquid Glass;
+            // it is the same content-layer material the answer used before.
+            content.overlay(alignment: .bottom) {
+                if isOverflowing {
+                    Rectangle()
+                        .fill(.ultraThinMaterial)
+                        .frame(height: 28)
+                        .mask(
+                            LinearGradient(
+                                colors: [.clear, .black],
+                                startPoint: .top,
+                                endPoint: .bottom
+                            )
+                        )
+                        .allowsHitTesting(false)
+                        .accessibilityHidden(true)
+                }
+            }
+        }
     }
 }

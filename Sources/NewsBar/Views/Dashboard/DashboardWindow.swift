@@ -512,12 +512,17 @@ private struct DashboardFilterBar: View {
             .background {
                 if settings.appTheme == .retroEditorial {
                     Rectangle().fill(RetroEditorialTokens.raisedPaper)
+                } else {
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .fill(Color(nsColor: .controlBackgroundColor))
                 }
             }
-            .glassSettingsSurface(cornerRadius: 12)
             .overlay {
                 if settings.appTheme == .retroEditorial {
                     Rectangle().strokeBorder(RetroEditorialTokens.ink, lineWidth: 1.4)
+                } else {
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .strokeBorder(Color(nsColor: .separatorColor).opacity(0.45), lineWidth: 1)
                 }
             }
 
@@ -552,12 +557,22 @@ private struct DashboardFilterBar: View {
                 .background {
                     if settings.appTheme == .retroEditorial {
                         Rectangle().fill(isSelected ? RetroEditorialTokens.brick : RetroEditorialTokens.raisedPaper)
+                    } else {
+                        Capsule().fill(
+                            isSelected
+                                ? Color.accentColor.opacity(0.16)
+                                : Color(nsColor: .controlBackgroundColor)
+                        )
                     }
                 }
-                .glassSettingsSurface(cornerRadius: 40, interactive: true)
                 .overlay {
                     if settings.appTheme == .retroEditorial {
                         Rectangle().strokeBorder(RetroEditorialTokens.ink, lineWidth: 1)
+                    } else {
+                        Capsule().strokeBorder(
+                            Color(nsColor: .separatorColor).opacity(0.35),
+                            lineWidth: 1
+                        )
                     }
                 }
                 .foregroundStyle(

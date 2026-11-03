@@ -91,6 +91,9 @@ final class PopoverLayoutRenderingTests: XCTestCase {
             }
             .frame(width: 400, height: 900)
             .background(AppThemeBackground())
+            // The hosting view is transparent; the real popover supplies the
+            // material. Use the window colour as a stable layout backdrop.
+            .background(Color(nsColor: .windowBackgroundColor))
             .environment(settings)
             .preferredColorScheme(variant.scheme)
 
@@ -101,6 +104,11 @@ final class PopoverLayoutRenderingTests: XCTestCase {
                 backing: .buffered,
                 defer: false
             )
+            // `AppThemeBackground` is clear for the modern theme; the window
+            // supplies the backdrop. This PNG is a layout fixture, not a
+            // material reference.
+            window.isOpaque = true
+            window.backgroundColor = .windowBackgroundColor
             window.contentView = host
             host.frame = NSRect(x: 0, y: 0, width: 400, height: 900)
             host.layoutSubtreeIfNeeded()
@@ -134,6 +142,8 @@ final class PopoverLayoutRenderingTests: XCTestCase {
             backing: .buffered,
             defer: false
         )
+        window.isOpaque = true
+        window.backgroundColor = .windowBackgroundColor
         window.contentView = host
         host.frame = NSRect(x: 0, y: 0, width: 400, height: 80)
         host.layoutSubtreeIfNeeded()

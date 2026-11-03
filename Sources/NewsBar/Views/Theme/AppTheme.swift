@@ -1,5 +1,19 @@
 import SwiftUI
 
+/// The theme a chrome component should draw. Keeping this separate from
+/// `AppSettings` lets standalone panels and previews render without injecting
+/// the whole settings object; the default is the modern theme.
+private struct NewsBarThemeKey: EnvironmentKey {
+    static let defaultValue: AppTheme = .modern
+}
+
+extension EnvironmentValues {
+    var newsBarTheme: AppTheme {
+        get { self[NewsBarThemeKey.self] }
+        set { self[NewsBarThemeKey.self] = newValue }
+    }
+}
+
 enum RetroEditorialTokens {
     static let paper = Color(red: 0.94, green: 0.87, blue: 0.76)
     static let raisedPaper = Color(red: 0.98, green: 0.92, blue: 0.83)
@@ -42,11 +56,13 @@ struct EditorialSurfaceShape: Shape, InsettableShape {
 }
 
 enum EditorialSurfaceTokens {
-    /// Near-opaque card fill: the window keeps one material layer; cards only
-    /// paint a solid surface, which avoids one offscreen material pass per row.
+    /// Solid card fill. The window itself provides the opaque content surface;
+    /// cards only paint one layer and rely on the hairline border for
+    /// separation. Reduce Transparency uses a fully opaque control background
+    /// so a card never disappears into the window.
     static func cardFill(colorScheme: ColorScheme, reduceTransparency: Bool) -> Color {
         if reduceTransparency {
-            return Color(nsColor: .windowBackgroundColor)
+            return Color(nsColor: .controlBackgroundColor)
         }
         return Color(nsColor: .controlBackgroundColor)
             .opacity(colorScheme == .dark ? 0.82 : 0.78)
@@ -330,9 +346,13 @@ struct EditorialActionButtonStyle: ButtonStyle {
     }
 }
 
+/// The retro theme paints its own paper. The modern theme deliberately paints
+/// nothing: the window, sheet, popover and toolbar already provide the correct
+/// system background and Liquid Glass material. Painting another material here
+/// would cover them and, inside an opaque window, collapse into a flat grey
+/// sheet because there is no desktop behind it to sample.
 struct AppThemeBackground: View {
     @Environment(AppSettings.self) private var settings
-    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
     var body: some View {
         Group {
@@ -349,37 +369,12 @@ struct AppThemeBackground: View {
                     )
                     RetroPaperGrain()
                 }
-            } else if reduceTransparency {
-                Rectangle().fill(Color(nsColor: .windowBackgroundColor))
             } else {
-                Rectangle().fill(.regularMaterial)
+                Color.clear
             }
         }
         .ignoresSafeArea()
         .accessibilityHidden(true)
-    }
-}
-
-private struct GlassSettingsSurfaceModifier: ViewModifier {
-    @Environment(AppSettings.self) private var settings
-    let cornerRadius: CGFloat
-    let interactive: Bool
-
-    func body(content: Content) -> some View {
-        if settings.appTheme == .retroEditorial {
-            content
-        } else if #available(macOS 26, *) {
-            if interactive {
-                content.glassEffect(.regular.interactive(), in: .rect(cornerRadius: cornerRadius))
-            } else {
-                content.glassEffect(.regular, in: .rect(cornerRadius: cornerRadius))
-            }
-        } else {
-            content.background(
-                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                    .fill(.quaternary.opacity(0.4))
-            )
-        }
     }
 }
 
@@ -444,7 +439,14 @@ private struct AppThemeSurfaceModifier: ViewModifier {
             .fontDesign(settings.appTheme == .retroEditorial ? .serif : nil)
             .tint(settings.appTheme == .retroEditorial ? RetroEditorialTokens.brick : .accentColor)
             .foregroundStyle(settings.appTheme == .retroEditorial ? RetroEditorialTokens.ink : .primary)
-            .background { AppThemeBackground() }
+            .environment(\.newsBarTheme, settings.appTheme)
+            // The modern theme leaves the background to the host window, sheet
+            // or popover. Only the retro paper is painted by the app.
+            .background {
+                if settings.appTheme == .retroEditorial {
+                    AppThemeBackground()
+                }
+            }
     }
 }
 
@@ -452,6 +454,7 @@ private struct NewsCardSurfaceModifier: ViewModifier {
     @Environment(AppSettings.self) private var settings
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @Environment(\.colorSchemeContrast) private var colorSchemeContrast
     let cornerRadius: CGFloat
     let rotation: Double
     let isHovering: Bool
@@ -469,6 +472,17 @@ private struct NewsCardSurfaceModifier: ViewModifier {
         return EditorialSurfaceTokens.cardFill(colorScheme: colorScheme, reduceTransparency: reduceTransparency)
     }
 
+    private var borderColor: Color {
+        if retro { return RetroEditorialTokens.rule }
+        return Color(nsColor: .separatorColor)
+            .opacity(colorSchemeContrast == .increased ? 1.0 : 0.34)
+    }
+
+    private var borderWidth: CGFloat {
+        if retro { return 1.7 }
+        return colorSchemeContrast == .increased ? 1.5 : 1
+    }
+
     func body(content: Content) -> some View {
         content
             .background { shape.fill(fill) }
@@ -480,11 +494,8 @@ private struct NewsCardSurfaceModifier: ViewModifier {
                 }
             }
             .overlay {
-                shape.strokeBorder(
-                    retro ? RetroEditorialTokens.rule : Color(nsColor: .separatorColor).opacity(0.34),
-                    lineWidth: retro ? 1.7 : 1
-                )
-                .allowsHitTesting(false)
+                shape.strokeBorder(borderColor, lineWidth: borderWidth)
+                    .allowsHitTesting(false)
             }
             .overlay(alignment: .top) {
                 if retro {
@@ -503,6 +514,41 @@ private struct NewsCardSurfaceModifier: ViewModifier {
                 }
             }
             .rotationEffect(.degrees(retro ? rotation : 0))
+    }
+}
+
+/// Chrome for a floating panel that sits above the reading surface. The modern
+/// theme uses one standard material layer; the retro theme uses opaque paper,
+/// a hard ink border and an offset shadow, matching the rest of the paper skin.
+private struct AppFloatingPanelSurfaceModifier<S: InsettableShape>: ViewModifier {
+    @Environment(\.newsBarTheme) private var theme
+    let shape: S
+    let shadowRadius: CGFloat
+    let shadowX: CGFloat
+    let shadowY: CGFloat
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if theme == .retroEditorial {
+            content
+                .background(Rectangle().fill(RetroEditorialTokens.raisedPaper))
+                .overlay(Rectangle().strokeBorder(RetroEditorialTokens.ink, lineWidth: 1.2))
+                .background(
+                    Rectangle()
+                        .fill(RetroEditorialTokens.ink.opacity(0.7))
+                        .offset(x: 3, y: 3)
+                )
+        } else {
+            content
+                .background(shape.fill(.regularMaterial))
+                .overlay(shape.strokeBorder(.quaternary, lineWidth: 1))
+                .shadow(
+                    color: .black.opacity(0.16),
+                    radius: shadowRadius,
+                    x: shadowX,
+                    y: shadowY
+                )
+        }
     }
 }
 
@@ -583,11 +629,21 @@ extension View {
         modifier(AppThemeSurfaceModifier())
     }
 
-    /// Applies Liquid Glass on macOS 26+ (standard theme), falling back to a
-    /// translucent material on older macOS. The retro editorial theme is left
-    /// untouched so its paper surface stays intact.
-    func glassSettingsSurface(cornerRadius: CGFloat, interactive: Bool = false) -> some View {
-        modifier(GlassSettingsSurfaceModifier(cornerRadius: cornerRadius, interactive: interactive))
+    /// Shared chrome for a floating panel above the reading surface.
+    func floatingPanelSurface<S: InsettableShape>(
+        _ shape: S,
+        shadowRadius: CGFloat = 14,
+        shadowX: CGFloat = 0,
+        shadowY: CGFloat = 4
+    ) -> some View {
+        modifier(
+            AppFloatingPanelSurfaceModifier(
+                shape: shape,
+                shadowRadius: shadowRadius,
+                shadowX: shadowX,
+                shadowY: shadowY
+            )
+        )
     }
 
     func newsCardSurface(

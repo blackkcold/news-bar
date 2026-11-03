@@ -5,7 +5,9 @@ import XCTest
 
 /// Guards the settings re-organization: every sidebar pane must exist, be
 /// localized in both languages, and actually render. The PNGs are written for
-/// manual review, not compared pixel by pixel.
+/// layout review, not compared pixel by pixel. Material and translucency must
+/// be judged in a real window on a real desktop; an offscreen window has no
+/// desktop backdrop for a material to sample.
 final class SettingsWindowLayoutTests: XCTestCase {
     @MainActor
     func testEveryPaneAndAIPageIsLocalized() {
@@ -64,7 +66,17 @@ final class SettingsWindowLayoutTests: XCTestCase {
                 let view = SettingsWindow(initialPane: pane)
                     .environment(settings)
                     .frame(width: size.width, height: size.height)
-                try await snapshot(view, size: size, name: "\(variant.name)-\(pane.rawValue)", to: output)
+                    // The hosting view is transparent; the real app's window
+                    // supplies this backdrop. Without it, light-mode text is
+                    // captured as dark-on-transparent and disappears.
+                    .background(Color(nsColor: .windowBackgroundColor))
+                try await snapshot(
+                    view,
+                    size: size,
+                    name: "\(variant.name)-\(pane.rawValue)",
+                    to: output,
+                    appearance: variant.scheme == "dark" ? .darkAqua : .aqua
+                )
             }
         }
 
@@ -78,6 +90,7 @@ final class SettingsWindowLayoutTests: XCTestCase {
             let view = AITab(page: page)
                 .appThemeSurface()
                 .frame(width: contentSize.width, height: contentSize.height)
+                .background(Color(nsColor: .windowBackgroundColor))
                 .adaptiveColorScheme()
                 .environment(settings)
             try await snapshot(view, size: contentSize, name: "ai-\(page.rawValue)", to: output)
@@ -106,6 +119,7 @@ final class SettingsWindowLayoutTests: XCTestCase {
             let view = OpenCodePricingView(currentModel: "deepseek-v4.1-flash", initialPlan: plan)
                 .adaptiveColorScheme()
                 .environment(settings)
+                .background(Color(nsColor: .windowBackgroundColor))
             try await snapshot(view, size: size, name: "pricing-\(plan.rawValue)", to: output)
         }
     }
@@ -141,6 +155,7 @@ final class SettingsWindowLayoutTests: XCTestCase {
         let view = AITab(page: .usage)
             .appThemeSurface()
             .frame(width: size.width, height: size.height)
+            .background(Color(nsColor: .windowBackgroundColor))
             .adaptiveColorScheme()
             .environment(settings)
         try await snapshot(view, size: size, name: "ai-usage-go", to: output)
@@ -151,15 +166,28 @@ final class SettingsWindowLayoutTests: XCTestCase {
         _ view: some View,
         size: CGSize,
         name: String,
-        to output: URL
+        to output: URL,
+        appearance: NSAppearance.Name = .aqua
     ) async throws {
         let host = NSHostingView(rootView: view)
         let window = NSWindow(
             contentRect: NSRect(origin: .zero, size: size),
-            styleMask: [.borderless],
+            // A titled window matches the real Settings window. A borderless
+            // host does not give NavigationSplitView the window chrome it uses
+            // to lay out and composite its sidebar.
+            styleMask: [.titled, .closable, .resizable],
             backing: .buffered,
             defer: false
         )
+        window.title = "NewsBar Settings"
+        // Give the offscreen window the same opaque backdrop and appearance as
+        // the real settings window. The NavigationSplitView sidebar is drawn by
+        // AppKit and follows the window appearance, not only SwiftUI's
+        // preferredColorScheme; without this a dark fixture gets a light
+        // sidebar material.
+        window.isOpaque = true
+        window.appearance = NSAppearance(named: appearance)
+        window.backgroundColor = .windowBackgroundColor
         window.contentView = host
         host.layoutSubtreeIfNeeded()
         // Let the panes' first async pass (key status, cookie store, logs) land

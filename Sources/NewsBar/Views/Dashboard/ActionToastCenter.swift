@@ -63,9 +63,7 @@ struct ActionToastView: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 9)
-        .background(.regularMaterial, in: Capsule())
-        .overlay(Capsule().strokeBorder(Color.secondary.opacity(0.18)))
-        .shadow(color: .black.opacity(0.14), radius: 10, y: 4)
+        .floatingPanelSurface(Capsule(), shadowRadius: 10, shadowX: 0, shadowY: 4)
         .accessibilityElement(children: .contain)
     }
 }
