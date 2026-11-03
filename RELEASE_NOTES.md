@@ -1,5 +1,34 @@
 ## [Unreleased]
 
+## [v2.13.4] - 2026-11-03
+
+### ♻️ 重构
+
+- **Liquid Glass 层级归位**：现代主题不再给每个窗口铺一层 `.regularMaterial`，窗口、sheet、popover 的背景交还系统；设置页改用 `NavigationSplitView`，侧栏恢复浮动材质、原生选择与折叠行为。复古主题保留原有纸面 HStack 壳。
+- **内容层去玻璃**：Dashboard 搜索框与来源筛选、Reminder 关键词卡片与 chip 改为实色 + 细边；Popover 页眉、Research 侧栏移除自定义 material；来源徽章统一为 tint fill。
+- **浮层统一 chrome**：新增 `floatingPanelSurface`，现代主题一层标准材质，复古主题纸面 + 硬边 + 偏移阴影；阅读器 AI 搜索、划词解释、研究侧栏与 toast 共用。
+- **Answer 滚动边缘**：macOS 26+ 使用 `scrollEdgeEffectStyle(.soft)`；旧系统保留标准 material 渐隐。
+- **可访问性**：卡片在 Reduce Transparency 下使用不透明 control background；提高对比度时边框加粗。
+- **清理**：删除 `View+Glass` 死 helper、未使用的卡片 material 属性与 `GlassSettingsSurfaceModifier`。
+
+### 🛠 修复
+
+- **设置页不再是灰板**：现代主题交还系统背景 + `NavigationSplitView`，侧栏与内容恢复层级；浅色/深色不再靠 1px 分隔线区分。
+- **Popover / 卡片不再发灰**：去掉窗口 + 页眉 + 卡片三层材质叠加；内容卡片只保留一层实色，浮层才使用标准材质。
+- **Retro 主题浮层一致**：阅读器浮层、关键词 chip、来源徽章不再出现灰色 material 块。
+
+### ✅ 测试
+
+- `swift test`：1325 项，6 项跳过，0 失败。
+- `swift build -c release` 通过；`scripts/build.sh` 生成 2.13.4 的 app、DMG 与 SHA256。
+- Settings / Popover / Research / Answer / AISettings 定向渲染测试通过；真实浅色窗口确认设置侧栏浮动。
+- `glass-audit`：0 处 `glassEffect`、0 个 `GlassEffectContainer`；剩余材质仅为浮动面板标准材质、macOS 15–25 Answer 渐隐和 `#Preview`。
+
+### 📝 说明
+
+- 深色真实窗口的侧栏仍需一次实拍确认；离屏快照无法捕获 AppKit 合成的侧栏。
+- 设置标题栏保留 macOS 26 `NavigationSplitView` 原生侧栏折叠按钮。
+
 ## [v2.13.3] - 2026-11-01
 
 ### 🛠 修复

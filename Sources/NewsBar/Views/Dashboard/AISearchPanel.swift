@@ -34,12 +34,7 @@ struct AISearchPanel: View {
         }
         .padding(14)
         .frame(width: 420, alignment: .leading)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .strokeBorder(.quaternary, lineWidth: 1)
-        }
-        .shadow(color: .black.opacity(0.16), radius: 14, y: 4)
+        .floatingPanelSurface(RoundedRectangle(cornerRadius: 12, style: .continuous))
         .accessibilityElement(children: .contain)
         .onAppear { questionFocused = true }
     }

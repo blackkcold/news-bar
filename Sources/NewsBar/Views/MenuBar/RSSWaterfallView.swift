@@ -249,18 +249,6 @@ struct RSSWaterfallView: View {
         .padding(.top, 8)
     }
 
-    private var cardShape: RoundedRectangle {
-        RoundedRectangle(cornerRadius: 18, style: .continuous)
-    }
-
-    private var cardBackground: some View {
-        cardShape.fill(.ultraThinMaterial)
-    }
-
-    private var cardStroke: some View {
-        cardShape.strokeBorder(.separator.opacity(0.32), lineWidth: 1)
-    }
-
     @ViewBuilder
     private func statusPill(text: String, tint: Color) -> some View {
         Text(text)
@@ -391,10 +379,6 @@ struct RSSImageCard: View {
         tint(for: item.source)
     }
 
-    private var cardShape: RoundedRectangle {
-        RoundedRectangle(cornerRadius: 16, style: .continuous)
-    }
-
     var body: some View {
         Button {
             NewsNavigationRouter.shared.open(item, surface: "menuRSSImage")
@@ -508,7 +492,7 @@ struct RSSImageCard: View {
         .foregroundStyle(sourceTint)
         .padding(.horizontal, 6)
         .padding(.vertical, 2)
-        .background(.ultraThinMaterial)
+        .background(sourceTint.opacity(0.12))
         .editorialClipShape(cornerRadius: 20)
         .accessibilityHidden(true)
     }
@@ -526,18 +510,6 @@ struct RSSImageCard: View {
                 .foregroundStyle(.tertiary)
                 .opacity(isHovering ? 1 : 0.55)
         }
-    }
-
-    private var cardBackground: some View {
-        cardShape.fill(.ultraThinMaterial)
-    }
-
-    private var cardStroke: some View {
-        cardShape.strokeBorder(imageStrokeStyle, lineWidth: 1)
-    }
-
-    private var imageStrokeStyle: AnyShapeStyle {
-        AnyShapeStyle(.separator.opacity(isHovering ? 0.45 : 0.28))
     }
 
     private func tint(for source: NewsSource) -> Color {

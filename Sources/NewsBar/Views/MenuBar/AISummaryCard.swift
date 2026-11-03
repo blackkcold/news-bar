@@ -621,7 +621,7 @@ private struct SourceBadge: View {
             }
             .padding(.horizontal, 5)
             .padding(.vertical, 2)
-            .background(.ultraThinMaterial)
+            .background(sourceTint.opacity(0.12))
             .editorialClipShape(cornerRadius: 20)
         }
         .buttonStyle(.plain)
