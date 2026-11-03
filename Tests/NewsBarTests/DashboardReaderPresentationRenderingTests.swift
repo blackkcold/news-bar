@@ -124,7 +124,7 @@ final class DashboardReaderPresentationRenderingTests: XCTestCase {
         let compactDismissal = DashboardReaderPresentationContext(
             phase: .dismissing,
             isWide: false,
-            isReaderCompact: true,
+            isReaderCompact: false,
             listObscured: true,
             readerVisible: false
         )
@@ -217,7 +217,7 @@ final class DashboardReaderPresentationRenderingTests: XCTestCase {
         window.contentView = nil
     }
 
-    func testCompactBrowseWidthRestorationUsesAnimationTransaction() async throws {
+    func testDismissalSettleUsesAnimationTransaction() async throws {
         let model = PresentationHarnessModel(selection: makeRequest(title: "Dismissal layout fixture"))
         let size = CGSize(width: 960, height: 720)
         let window = NSWindow(
@@ -405,6 +405,172 @@ final class DashboardReaderPresentationRenderingTests: XCTestCase {
         }
     }
 
+    func testDismissalLeavesReaderColumnAsSoonAsExitStarts() async throws {
+        let state = DashboardReaderPresentationState()
+        state.present(
+            request: makeRequest(title: "Dismissal column fixture"),
+            size: CGSize(width: 960, height: 720),
+            isWide: false,
+            listWidth: 400,
+            reduceMotion: false,
+            isRetro: false,
+            origin: nil
+        )
+        try await Task.sleep(for: .milliseconds(30))
+        XCTAssertTrue(state.readerVisible)
+        XCTAssertTrue(state.isBrowseCompact)
+
+        state.dismiss(reduceMotion: false)
+
+        XCTAssertFalse(state.readerVisible)
+        XCTAssertFalse(
+            state.isBrowseCompact,
+            "The list must leave the reader column as soon as the reader starts leaving; otherwise it is still narrow after the reader has faded out."
+        )
+
+        try await Task.sleep(for: .milliseconds(340))
+        XCTAssertEqual(state.phase, .idle)
+        XCTAssertFalse(state.isBrowseCompact)
+    }
+
+    func testDismissalRestoresBrowseWidthBeforeReaderFadeFinishes() async throws {
+        for size in [
+            CGSize(width: 960, height: 720),
+            CGSize(width: 1099, height: 720),
+            CGSize(width: 1100, height: 720),
+            CGSize(width: 1180, height: 860),
+        ] {
+            let model = PresentationHarnessModel(selection: makeRequest(title: "Dismissal width fixture"))
+            let window = NSWindow(
+                contentRect: NSRect(origin: .zero, size: size),
+                styleMask: [.borderless],
+                backing: .buffered,
+                defer: false
+            )
+            let host = NSHostingView(rootView: PresentationHarnessView(model: model))
+            window.contentView = host
+            host.frame = NSRect(origin: .zero, size: size)
+            host.layoutSubtreeIfNeeded()
+
+            let openDeadline = ContinuousClock.now.advanced(by: .seconds(2))
+            while !model.presentationState.readerVisible, ContinuousClock.now < openDeadline {
+                try await Task.sleep(for: .milliseconds(10))
+                host.layoutSubtreeIfNeeded()
+            }
+            XCTAssertEqual(model.browseSize.width, 400, accuracy: 1)
+
+            model.selection = nil
+            let dismissalDeadline = ContinuousClock.now.advanced(by: .seconds(1))
+            while (model.presentationState.phase != .dismissing || model.readerVisibilityAnimations.count < 2),
+                  ContinuousClock.now < dismissalDeadline {
+                try await Task.sleep(for: .milliseconds(10))
+                host.layoutSubtreeIfNeeded()
+            }
+            XCTAssertEqual(model.presentationState.phase, .dismissing)
+            XCTAssertEqual(model.browseSize.width, size.width, accuracy: 1)
+            XCTAssertEqual(model.lastContext?.isReaderCompact, false)
+            XCTAssertEqual(model.browseCompactionAnimations, [false, false])
+            XCTAssertEqual(model.readerVisibilityAnimations, [true, true])
+            // Exposure gating keeps treating the list as obscured while the
+            // reader surface fades out.
+            XCTAssertEqual(model.lastContext?.listObscured, size.width < 1100)
+            window.contentView = nil
+        }
+    }
+
+    func testReduceMotionDismissalRestoresBrowseWidthDuringCrossfade() async throws {
+        let model = PresentationHarnessModel(selection: makeRequest(title: "Reduced motion dismissal fixture"))
+        let size = CGSize(width: 960, height: 720)
+        let window = NSWindow(
+            contentRect: NSRect(origin: .zero, size: size),
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
+        )
+        let host = NSHostingView(rootView: PresentationHarnessView(model: model, reduceMotion: true))
+        window.contentView = host
+        host.frame = NSRect(origin: .zero, size: size)
+        host.layoutSubtreeIfNeeded()
+
+        let openDeadline = ContinuousClock.now.advanced(by: .seconds(2))
+        while !model.presentationState.readerVisible, ContinuousClock.now < openDeadline {
+            try await Task.sleep(for: .milliseconds(10))
+            host.layoutSubtreeIfNeeded()
+        }
+
+        model.selection = nil
+        let dismissalDeadline = ContinuousClock.now.advanced(by: .seconds(1))
+        while (model.presentationState.phase != .dismissing || model.readerVisibilityAnimations.count < 2),
+              ContinuousClock.now < dismissalDeadline {
+            try await Task.sleep(for: .milliseconds(10))
+            host.layoutSubtreeIfNeeded()
+        }
+
+        XCTAssertEqual(model.presentationState.phase, .dismissing)
+        XCTAssertEqual(model.browseSize.width, size.width, accuracy: 1)
+        XCTAssertEqual(model.browseCompactionAnimations, [false, false])
+        XCTAssertEqual(model.readerVisibilityAnimations, [true, true])
+        window.contentView = nil
+    }
+
+    func testBrowseWidthCommitsStayDiscreteOnOpenDismissalAndInterruptedReopen() async throws {
+        let model = PresentationHarnessModel(selection: makeRequest(title: "First reader fixture"))
+        let size = CGSize(width: 960, height: 720)
+        let window = NSWindow(
+            contentRect: NSRect(origin: .zero, size: size),
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
+        )
+        let host = NSHostingView(rootView: PresentationHarnessView(model: model))
+        window.contentView = host
+        host.frame = NSRect(origin: .zero, size: size)
+        host.layoutSubtreeIfNeeded()
+
+        let openDeadline = ContinuousClock.now.advanced(by: .seconds(2))
+        while !model.presentationState.readerVisible, ContinuousClock.now < openDeadline {
+            try await Task.sleep(for: .milliseconds(10))
+            host.layoutSubtreeIfNeeded()
+        }
+        XCTAssertEqual(model.browseCompactionAnimations, [false], "Initial opening must keep its single-frame width commit")
+        XCTAssertEqual(model.readerVisibilityAnimations, [true])
+
+        model.selection = nil
+        let dismissalDeadline = ContinuousClock.now.advanced(by: .seconds(1))
+        while (model.presentationState.phase != .dismissing || model.readerVisibilityAnimations.count < 2),
+              ContinuousClock.now < dismissalDeadline {
+            try await Task.sleep(for: .milliseconds(10))
+            host.layoutSubtreeIfNeeded()
+        }
+        XCTAssertEqual(model.presentationState.phase, .dismissing)
+        XCTAssertEqual(model.readerVisibilityAnimations, [true, true])
+
+        let replacementRequest = makeRequest(title: "Replacement reader fixture")
+        model.selection = replacementRequest
+        let reopeningDeadline = ContinuousClock.now.advanced(by: .seconds(1))
+        while (
+            !model.presentationState.readerVisible
+                || model.presentationState.displayedRequest?.id != replacementRequest.id
+                || model.browseCompactionAnimations.count < 3
+                || model.readerVisibilityAnimations.count < 3
+        ), ContinuousClock.now < reopeningDeadline {
+            try await Task.sleep(for: .milliseconds(10))
+            host.layoutSubtreeIfNeeded()
+        }
+
+        XCTAssertEqual(model.presentationState.phase, .presented)
+        XCTAssertEqual(model.selection?.id, replacementRequest.id)
+        XCTAssertEqual(model.presentationState.displayedRequest?.id, replacementRequest.id)
+        XCTAssertEqual(model.browseSize.width, 400, accuracy: 1)
+        XCTAssertEqual(
+            model.browseCompactionAnimations,
+            [false, false, false],
+            "Browse width changes must remain discrete; animate only the reader surface, not the entire list subtree"
+        )
+        XCTAssertEqual(model.readerVisibilityAnimations, [true, true, true])
+        window.contentView = nil
+    }
+
     private func accessibilityLabels(in element: any NSAccessibilityProtocol, depth: Int = 0) -> [String] {
         guard depth < 12 else { return [] }
 
@@ -456,6 +622,8 @@ private final class PresentationHarnessModel {
     var lastContext: DashboardReaderPresentationContext?
     var lastReaderVisible = false
     var lastDismissalTransactionHasAnimation: Bool?
+    var browseCompactionAnimations: [Bool] = []
+    var readerVisibilityAnimations: [Bool] = []
     let presentationState = DashboardReaderPresentationState()
 
     init(selection: NewsReaderRequest? = nil) {
@@ -488,6 +656,58 @@ private struct ReaderAnimationTransactionProbe: NSViewRepresentable {
     @MainActor
     final class Coordinator {
         var previousPhase: ReaderPresentationPhase?
+    }
+}
+
+@MainActor
+private struct BrowseWidthAnimationTransactionProbe: NSViewRepresentable {
+    let isCompact: Bool
+    let onChange: (Bool, Bool, Bool) -> Void
+
+    func makeNSView(context: Context) -> NSView {
+        NSView(frame: .zero)
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        if let oldValue = context.coordinator.previousValue, oldValue != isCompact {
+            onChange(oldValue, isCompact, context.transaction.animation != nil)
+        }
+        context.coordinator.previousValue = isCompact
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator()
+    }
+
+    @MainActor
+    final class Coordinator {
+        var previousValue: Bool?
+    }
+}
+
+@MainActor
+private struct ReaderVisibilityAnimationTransactionProbe: NSViewRepresentable {
+    let isVisible: Bool
+    let onChange: (Bool) -> Void
+
+    func makeNSView(context: Context) -> NSView {
+        NSView(frame: .zero)
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        if let oldValue = context.coordinator.previousValue, oldValue != isVisible {
+            onChange(context.transaction.animation != nil)
+        }
+        context.coordinator.previousValue = isVisible
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator()
+    }
+
+    @MainActor
+    final class Coordinator {
+        var previousValue: Bool?
     }
 }
 
@@ -534,6 +754,11 @@ private struct PresentationHarnessView: View {
                     .onChange(of: proxy.size) { _, size in model.browseSize = size }
                     .onChange(of: context) { _, value in model.lastContext = value }
                     .overlay {
+                        BrowseWidthAnimationTransactionProbe(isCompact: context.isReaderCompact) { _, _, hasAnimation in
+                            model.browseCompactionAnimations.append(hasAnimation)
+                        }
+                        .allowsHitTesting(false)
+
                         ReaderAnimationTransactionProbe(phase: context.phase) { oldPhase, newPhase, hasAnimation in
                             if oldPhase == .dismissing, newPhase == .idle {
                                 model.lastDismissalTransactionHasAnimation = hasAnimation
@@ -559,6 +784,12 @@ private struct PresentationHarnessView: View {
                     }
                     .onChange(of: proxy.size) { _, size in model.readerSize = size }
                     .onChange(of: visible) { _, value in model.lastReaderVisible = value }
+                    .overlay {
+                        ReaderVisibilityAnimationTransactionProbe(isVisible: visible) { hasAnimation in
+                            model.readerVisibilityAnimations.append(hasAnimation)
+                        }
+                        .allowsHitTesting(false)
+                    }
                 }
             }
         }
