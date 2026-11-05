@@ -342,15 +342,15 @@ final class AppSettingsBudgetCapTests: XCTestCase {
 
     /// Snapshot the raw object for a UserDefaults key so we can restore it in defer.
     private func snapshotObject(forKey key: String) -> Any? {
-        UserDefaults.standard.object(forKey: key)
+        TestIsolation.defaults.object(forKey: key)
     }
 
     /// Restore a previously snapshotted raw object (or remove if it was nil).
     private func restoreObject(_ object: Any?, forKey key: String) {
         if let obj = object {
-            UserDefaults.standard.set(obj, forKey: key)
+            TestIsolation.defaults.set(obj, forKey: key)
         } else {
-            UserDefaults.standard.removeObject(forKey: key)
+            TestIsolation.defaults.removeObject(forKey: key)
         }
     }
 
@@ -386,7 +386,7 @@ final class AppSettingsBudgetCapTests: XCTestCase {
         let prior = snapshotObject(forKey: "aiDailyCap")
         defer { restoreObject(prior, forKey: "aiDailyCap") }
 
-        UserDefaults.standard.set(500, forKey: "aiDailyCap")
+        TestIsolation.defaults.set(500, forKey: "aiDailyCap")
         let settings = AppSettings()
         XCTAssertEqual(settings.aiDailyCap, 500)
     }
@@ -395,7 +395,7 @@ final class AppSettingsBudgetCapTests: XCTestCase {
         let prior = snapshotObject(forKey: "aiDailyCap")
         defer { restoreObject(prior, forKey: "aiDailyCap") }
 
-        UserDefaults.standard.set(42, forKey: "aiDailyCap")
+        TestIsolation.defaults.set(42, forKey: "aiDailyCap")
         let settings = AppSettings()
         XCTAssertEqual(settings.aiDailyCap, 200, "Unknown caps migrate to 200")
     }
@@ -404,7 +404,7 @@ final class AppSettingsBudgetCapTests: XCTestCase {
         let prior = snapshotObject(forKey: "aiDailyCap")
         defer { restoreObject(prior, forKey: "aiDailyCap") }
 
-        UserDefaults.standard.removeObject(forKey: "aiDailyCap")
+        TestIsolation.defaults.removeObject(forKey: "aiDailyCap")
         let settings = AppSettings()
         XCTAssertEqual(settings.aiDailyCap, 200, "Missing cap should default to 200")
     }
@@ -414,7 +414,7 @@ final class AppSettingsBudgetCapTests: XCTestCase {
         defer { restoreObject(prior, forKey: "aiDailyCap") }
 
         for legacy in [20, 100] {
-            UserDefaults.standard.set(legacy, forKey: "aiDailyCap")
+            TestIsolation.defaults.set(legacy, forKey: "aiDailyCap")
             let settings = AppSettings()
             XCTAssertEqual(settings.aiDailyCap, 200)
         }
@@ -424,7 +424,7 @@ final class AppSettingsBudgetCapTests: XCTestCase {
         let prior = snapshotObject(forKey: "aiDailyCap")
         defer { restoreObject(prior, forKey: "aiDailyCap") }
 
-        UserDefaults.standard.set(-1, forKey: "aiDailyCap")
+        TestIsolation.defaults.set(-1, forKey: "aiDailyCap")
         let settings = AppSettings()
         XCTAssertEqual(settings.aiDailyCap, -1)
         XCTAssertNil(settings.aiCountLimit)
@@ -434,7 +434,7 @@ final class AppSettingsBudgetCapTests: XCTestCase {
         let prior = snapshotObject(forKey: "aiDailyCap")
         defer { restoreObject(prior, forKey: "aiDailyCap") }
 
-        UserDefaults.standard.set(0, forKey: "aiDailyCap")
+        TestIsolation.defaults.set(0, forKey: "aiDailyCap")
         let settings = AppSettings()
         XCTAssertEqual(settings.aiDailyCap, 200, "Zero cap should fall back to 200")
     }
@@ -443,7 +443,7 @@ final class AppSettingsBudgetCapTests: XCTestCase {
         let snapshot = snapshotAIKeys()
         defer { restoreAIKeys(snapshot) }
 
-        UserDefaults.standard.set(50, forKey: "aiDailyCap")
+        TestIsolation.defaults.set(50, forKey: "aiDailyCap")
         let settings = AppSettings()
         let before = settings.todayAIRequestCount
         settings.recordAIRequests(3)
@@ -454,7 +454,7 @@ final class AppSettingsBudgetCapTests: XCTestCase {
         let snapshot = snapshotAIKeys()
         defer { restoreAIKeys(snapshot) }
 
-        UserDefaults.standard.set(50, forKey: "aiDailyCap")
+        TestIsolation.defaults.set(50, forKey: "aiDailyCap")
         let settings = AppSettings()
         let before = settings.todayAIRequestCount
         settings.recordAIRequests(0)
@@ -467,7 +467,7 @@ final class AppSettingsBudgetCapTests: XCTestCase {
         let snapshot = snapshotAIKeys()
         defer { restoreAIKeys(snapshot) }
 
-        UserDefaults.standard.set(500, forKey: "aiDailyCap")
+        TestIsolation.defaults.set(500, forKey: "aiDailyCap")
         let settings = AppSettings()
         settings.todayAIRequestCount = 3
         XCTAssertTrue(settings.aiUsageText.contains("3"))
@@ -480,7 +480,7 @@ final class AppSettingsBudgetCapTests: XCTestCase {
         let snapshot = snapshotAIKeys()
         defer { restoreAIKeys(snapshot) }
 
-        UserDefaults.standard.removeObject(forKey: "aiBudgetMode")
+        TestIsolation.defaults.removeObject(forKey: "aiBudgetMode")
         let settings = AppSettings()
         XCTAssertEqual(settings.aiBudgetMode, .shared)
     }
@@ -489,7 +489,7 @@ final class AppSettingsBudgetCapTests: XCTestCase {
         let snapshot = snapshotAIKeys()
         defer { restoreAIKeys(snapshot) }
 
-        UserDefaults.standard.set("independent", forKey: "aiBudgetMode")
+        TestIsolation.defaults.set("independent", forKey: "aiBudgetMode")
         let settings = AppSettings()
         XCTAssertEqual(settings.aiBudgetMode, .independent)
     }
@@ -498,7 +498,7 @@ final class AppSettingsBudgetCapTests: XCTestCase {
         let snapshot = snapshotAIKeys()
         defer { restoreAIKeys(snapshot) }
 
-        UserDefaults.standard.set("invalid", forKey: "aiBudgetMode")
+        TestIsolation.defaults.set("invalid", forKey: "aiBudgetMode")
         let settings = AppSettings()
         XCTAssertEqual(settings.aiBudgetMode, .shared)
     }
@@ -509,7 +509,7 @@ final class AppSettingsBudgetCapTests: XCTestCase {
         let snapshot = snapshotAIKeys()
         defer { restoreAIKeys(snapshot) }
 
-        UserDefaults.standard.removeObject(forKey: "aiPopupDailyCap")
+        TestIsolation.defaults.removeObject(forKey: "aiPopupDailyCap")
         let settings = AppSettings()
         XCTAssertEqual(settings.aiPopupDailyCap, 200)
     }
@@ -518,7 +518,7 @@ final class AppSettingsBudgetCapTests: XCTestCase {
         let snapshot = snapshotAIKeys()
         defer { restoreAIKeys(snapshot) }
 
-        UserDefaults.standard.removeObject(forKey: "aiDashboardDailyCap")
+        TestIsolation.defaults.removeObject(forKey: "aiDashboardDailyCap")
         let settings = AppSettings()
         XCTAssertEqual(settings.aiDashboardDailyCap, 200)
     }
@@ -527,7 +527,7 @@ final class AppSettingsBudgetCapTests: XCTestCase {
         let snapshot = snapshotAIKeys()
         defer { restoreAIKeys(snapshot) }
 
-        UserDefaults.standard.set(500, forKey: "aiPopupDailyCap")
+        TestIsolation.defaults.set(500, forKey: "aiPopupDailyCap")
         let settings = AppSettings()
         XCTAssertEqual(settings.aiPopupDailyCap, 500)
     }
@@ -536,7 +536,7 @@ final class AppSettingsBudgetCapTests: XCTestCase {
         let snapshot = snapshotAIKeys()
         defer { restoreAIKeys(snapshot) }
 
-        UserDefaults.standard.set(42, forKey: "aiPopupDailyCap")
+        TestIsolation.defaults.set(42, forKey: "aiPopupDailyCap")
         let settings = AppSettings()
         XCTAssertEqual(settings.aiPopupDailyCap, 200)
     }
@@ -545,7 +545,7 @@ final class AppSettingsBudgetCapTests: XCTestCase {
         let snapshot = snapshotAIKeys()
         defer { restoreAIKeys(snapshot) }
 
-        UserDefaults.standard.set(200, forKey: "aiDashboardDailyCap")
+        TestIsolation.defaults.set(200, forKey: "aiDashboardDailyCap")
         let settings = AppSettings()
         XCTAssertEqual(settings.aiDashboardDailyCap, 200)
     }
@@ -556,10 +556,10 @@ final class AppSettingsBudgetCapTests: XCTestCase {
         let snapshot = snapshotAIKeys()
         defer { restoreAIKeys(snapshot) }
 
-        UserDefaults.standard.set("shared", forKey: "aiBudgetMode")
-        UserDefaults.standard.set(500, forKey: "aiDailyCap")
-        UserDefaults.standard.set(200, forKey: "aiPopupDailyCap")
-        UserDefaults.standard.set(200, forKey: "aiDashboardDailyCap")
+        TestIsolation.defaults.set("shared", forKey: "aiBudgetMode")
+        TestIsolation.defaults.set(500, forKey: "aiDailyCap")
+        TestIsolation.defaults.set(200, forKey: "aiPopupDailyCap")
+        TestIsolation.defaults.set(200, forKey: "aiDashboardDailyCap")
         let settings = AppSettings()
         XCTAssertEqual(settings.effectiveDailyCap(for: .popup), 500)
         XCTAssertEqual(settings.effectiveDailyCap(for: .dashboard), 500)
@@ -569,10 +569,10 @@ final class AppSettingsBudgetCapTests: XCTestCase {
         let snapshot = snapshotAIKeys()
         defer { restoreAIKeys(snapshot) }
 
-        UserDefaults.standard.set("independent", forKey: "aiBudgetMode")
-        UserDefaults.standard.set(500, forKey: "aiDailyCap")
-        UserDefaults.standard.set(200, forKey: "aiPopupDailyCap")
-        UserDefaults.standard.set(500, forKey: "aiDashboardDailyCap")
+        TestIsolation.defaults.set("independent", forKey: "aiBudgetMode")
+        TestIsolation.defaults.set(500, forKey: "aiDailyCap")
+        TestIsolation.defaults.set(200, forKey: "aiPopupDailyCap")
+        TestIsolation.defaults.set(500, forKey: "aiDashboardDailyCap")
         let settings = AppSettings()
         XCTAssertEqual(settings.effectiveDailyCap(for: .popup), 200)
         XCTAssertEqual(settings.effectiveDailyCap(for: .dashboard), 500)
@@ -584,9 +584,9 @@ final class AppSettingsBudgetCapTests: XCTestCase {
         let snapshot = snapshotAIKeys()
         defer { restoreAIKeys(snapshot) }
 
-        UserDefaults.standard.removeObject(forKey: "todayAIRequestCount")
-        UserDefaults.standard.removeObject(forKey: "todayPopupAIRequestCount")
-        UserDefaults.standard.removeObject(forKey: "todayDashboardAIRequestCount")
+        TestIsolation.defaults.removeObject(forKey: "todayAIRequestCount")
+        TestIsolation.defaults.removeObject(forKey: "todayPopupAIRequestCount")
+        TestIsolation.defaults.removeObject(forKey: "todayDashboardAIRequestCount")
         let settings = AppSettings()
         let popupBefore = settings.todayPopupAIRequestCount
         let totalBefore = settings.todayAIRequestCount
@@ -600,9 +600,9 @@ final class AppSettingsBudgetCapTests: XCTestCase {
         let snapshot = snapshotAIKeys()
         defer { restoreAIKeys(snapshot) }
 
-        UserDefaults.standard.removeObject(forKey: "todayAIRequestCount")
-        UserDefaults.standard.removeObject(forKey: "todayPopupAIRequestCount")
-        UserDefaults.standard.removeObject(forKey: "todayDashboardAIRequestCount")
+        TestIsolation.defaults.removeObject(forKey: "todayAIRequestCount")
+        TestIsolation.defaults.removeObject(forKey: "todayPopupAIRequestCount")
+        TestIsolation.defaults.removeObject(forKey: "todayDashboardAIRequestCount")
         let settings = AppSettings()
         settings.recordAIRequests(3, for: .popup)
         let dashboardBefore = settings.todayDashboardAIRequestCount
@@ -616,7 +616,7 @@ final class AppSettingsBudgetCapTests: XCTestCase {
         let snapshot = snapshotAIKeys()
         defer { restoreAIKeys(snapshot) }
 
-        UserDefaults.standard.removeObject(forKey: "todayPopupAIRequestCount")
+        TestIsolation.defaults.removeObject(forKey: "todayPopupAIRequestCount")
         let settings = AppSettings()
         let before = settings.todayPopupAIRequestCount
         settings.recordAIRequests(0, for: .popup)
@@ -629,9 +629,9 @@ final class AppSettingsBudgetCapTests: XCTestCase {
         let snapshot = snapshotAIKeys()
         defer { restoreAIKeys(snapshot) }
 
-        UserDefaults.standard.removeObject(forKey: "todayAIRequestCount")
-        UserDefaults.standard.removeObject(forKey: "todayPopupAIRequestCount")
-        UserDefaults.standard.removeObject(forKey: "todayDashboardAIRequestCount")
+        TestIsolation.defaults.removeObject(forKey: "todayAIRequestCount")
+        TestIsolation.defaults.removeObject(forKey: "todayPopupAIRequestCount")
+        TestIsolation.defaults.removeObject(forKey: "todayDashboardAIRequestCount")
         let settings = AppSettings()
         settings.recordAIRequests(3, for: .popup)
         settings.recordAIRequests(7, for: .dashboard)
@@ -645,9 +645,9 @@ final class AppSettingsBudgetCapTests: XCTestCase {
         let snapshot = snapshotAIKeys()
         defer { restoreAIKeys(snapshot) }
 
-        UserDefaults.standard.set(15, forKey: "todayAIRequestCount")
-        UserDefaults.standard.removeObject(forKey: "todayPopupAIRequestCount")
-        UserDefaults.standard.removeObject(forKey: "todayDashboardAIRequestCount")
+        TestIsolation.defaults.set(15, forKey: "todayAIRequestCount")
+        TestIsolation.defaults.removeObject(forKey: "todayPopupAIRequestCount")
+        TestIsolation.defaults.removeObject(forKey: "todayDashboardAIRequestCount")
         let settings = AppSettings()
         XCTAssertEqual(settings.todayAIRequestCount, 15)
         XCTAssertEqual(settings.todayPopupAIRequestCount, 15)
@@ -658,9 +658,9 @@ final class AppSettingsBudgetCapTests: XCTestCase {
         let snapshot = snapshotAIKeys()
         defer { restoreAIKeys(snapshot) }
 
-        UserDefaults.standard.set(15, forKey: "todayAIRequestCount")
-        UserDefaults.standard.set(5, forKey: "todayPopupAIRequestCount")
-        UserDefaults.standard.set(10, forKey: "todayDashboardAIRequestCount")
+        TestIsolation.defaults.set(15, forKey: "todayAIRequestCount")
+        TestIsolation.defaults.set(5, forKey: "todayPopupAIRequestCount")
+        TestIsolation.defaults.set(10, forKey: "todayDashboardAIRequestCount")
         let settings = AppSettings()
         XCTAssertEqual(settings.todayAIRequestCount, 15)
         XCTAssertEqual(settings.todayPopupAIRequestCount, 5)
@@ -1085,15 +1085,15 @@ final class NewsOrchestratorBudgetBaselineTests: XCTestCase {
     private func restore(_ snapshot: [String: Any?]) {
         for (key, value) in snapshot {
             if let value {
-                UserDefaults.standard.set(value, forKey: key)
+                TestIsolation.defaults.set(value, forKey: key)
             } else {
-                UserDefaults.standard.removeObject(forKey: key)
+                TestIsolation.defaults.removeObject(forKey: key)
             }
         }
     }
 
     func testSharedModeUsesTotalDailyCountAsBaseline() {
-        let snapshot = Dictionary(uniqueKeysWithValues: baselineKeys.map { ($0, UserDefaults.standard.object(forKey: $0)) })
+        let snapshot = Dictionary(uniqueKeysWithValues: baselineKeys.map { ($0, TestIsolation.defaults.object(forKey: $0)) })
         defer { restore(snapshot) }
         let settings = AppSettings()
         settings.aiBudgetMode = .shared
@@ -1106,7 +1106,7 @@ final class NewsOrchestratorBudgetBaselineTests: XCTestCase {
     }
 
     func testIndependentModeUsesTargetSpecificCountAsBaseline() {
-        let snapshot = Dictionary(uniqueKeysWithValues: baselineKeys.map { ($0, UserDefaults.standard.object(forKey: $0)) })
+        let snapshot = Dictionary(uniqueKeysWithValues: baselineKeys.map { ($0, TestIsolation.defaults.object(forKey: $0)) })
         defer { restore(snapshot) }
         let settings = AppSettings()
         settings.aiBudgetMode = .independent

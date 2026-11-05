@@ -17,6 +17,18 @@ enum AISummaryBudgetMode: String, Sendable, CaseIterable {
     case independent
 }
 
+struct AISummaryEnablementRevision {
+    private(set) var value = UUID()
+
+    mutating func noteChange(from oldValue: Bool, to newValue: Bool) {
+        if oldValue != newValue { value = UUID() }
+    }
+
+    func isCurrent(_ started: UUID, enabled: Bool) -> Bool {
+        enabled && started == value
+    }
+}
+
 enum AppTheme: String, Sendable, CaseIterable, Identifiable {
     case modern
     case retroEditorial
@@ -73,54 +85,154 @@ enum AppLanguage: String, Sendable, Codable, CaseIterable, Identifiable {
     }
 }
 
+struct AIKeyContext: Equatable {
+    let providerID: String
+    let account: String
+    let revision: UUID
+    let endpointIdentity: String?
+
+    var inputContext: AICredentialInputContext {
+        AICredentialInputContext(providerID: providerID, endpointIdentity: endpointIdentity)
+    }
+
+    init(providerID: String, account: String, revision: UUID, endpointIdentity: String? = nil) {
+        self.providerID = providerID
+        self.account = account
+        self.revision = revision
+        self.endpointIdentity = endpointIdentity
+    }
+}
+
+struct AICredentialInputContext: Equatable {
+    let providerID: String
+    let endpointIdentity: String?
+}
+
+struct AICredentialUIContext: Equatable {
+    let keyContext: AIKeyContext
+    let intent: UUID
+}
+
+struct ProviderBoundKey: Equatable {
+    let key: String
+    let context: AIKeyContext
+}
+
+/// Prevents a pending credential write or deletion from racing a fresh read.
+struct AIKeyMutationGate {
+    private var pending: [String: Set<UUID>] = [:]
+
+    mutating func begin(account: String, token: UUID) {
+        pending[account, default: []].insert(token)
+    }
+
+    mutating func finish(account: String, token: UUID) {
+        pending[account]?.remove(token)
+        if pending[account]?.isEmpty == true { pending[account] = nil }
+    }
+
+    func isPending(account: String) -> Bool {
+        !(pending[account]?.isEmpty ?? true)
+    }
+}
+
+@MainActor
+enum AIKeyAccess {
+    nonisolated static func mayUseCachedKey(context: AIKeyContext, cachedEndpointIdentity: String?) -> Bool {
+        guard context.providerID.hasPrefix("custom:") else { return true }
+        guard let identity = context.endpointIdentity else { return false }
+        return cachedEndpointIdentity == identity
+    }
+
+    /// A result captured before a provider change or credential mutation must
+    /// not be published into the settings UI after that change completes.
+    static func readForPresentation<Value>(
+        isCurrent: () -> Bool,
+        read: () async -> Value
+    ) async -> Value? {
+        guard !Task.isCancelled, isCurrent() else { return nil }
+        let result = await read()
+        guard !Task.isCancelled, isCurrent() else { return nil }
+        return result
+    }
+
+    static func read(
+        started: AIKeyContext,
+        current: () -> AIKeyContext,
+        read: (String) async -> EncryptedKeyStore.ReadResult,
+        activate: (String) -> Bool
+    ) async throws -> ProviderBoundKey {
+        let result = await read(started.account)
+        try Task.checkCancellation()
+        guard current() == started else { throw AISearchError.configurationChanged }
+        let key: String
+        switch result {
+        case let .found(value): key = value
+        case .missing: key = ""
+        case .failed: throw AISearchError.keyReadFailed
+        }
+        guard !key.isEmpty else { return ProviderBoundKey(key: "", context: started) }
+        guard activate(key) else { throw AISearchError.configurationChanged }
+        let activatedContext = current()
+        guard activatedContext.providerID == started.providerID,
+              activatedContext.account == started.account,
+              activatedContext.endpointIdentity == started.endpointIdentity else { throw AISearchError.configurationChanged }
+        return ProviderBoundKey(key: key, context: activatedContext)
+    }
+
+    static func isCurrent(_ bound: ProviderBoundKey, context: AIKeyContext, cachedKey: String?) -> Bool {
+        bound.context == context && bound.key == (cachedKey ?? "")
+    }
+}
+
 @Observable
 final class AppSettings {
     var autoRefreshEnabled: Bool {
-        didSet { UserDefaults.standard.set(autoRefreshEnabled, forKey: "autoRefreshEnabled") }
+        didSet { TestIsolation.defaults.set(autoRefreshEnabled, forKey: "autoRefreshEnabled") }
     }
     var launchAtLogin: Bool {
-        didSet { UserDefaults.standard.set(launchAtLogin, forKey: "launchAtLogin") }
+        didSet { TestIsolation.defaults.set(launchAtLogin, forKey: "launchAtLogin") }
     }
     var colorScheme: String {
-        didSet { UserDefaults.standard.set(colorScheme, forKey: "colorScheme") }
+        didSet { TestIsolation.defaults.set(colorScheme, forKey: "colorScheme") }
     }
     var appTheme: AppTheme {
-        didSet { UserDefaults.standard.set(appTheme.rawValue, forKey: "appTheme") }
+        didSet { TestIsolation.defaults.set(appTheme.rawValue, forKey: "appTheme") }
     }
     var appLanguage: AppLanguage {
         didSet {
-            UserDefaults.standard.set(appLanguage.rawValue, forKey: "appLanguage")
+            TestIsolation.defaults.set(appLanguage.rawValue, forKey: "appLanguage")
             L10n.currentLanguage = appLanguage
         }
     }
     var rssTitleTranslationEnabled: Bool {
-        didSet { UserDefaults.standard.set(rssTitleTranslationEnabled, forKey: "rssTitleTranslationEnabled") }
+        didSet { TestIsolation.defaults.set(rssTitleTranslationEnabled, forKey: "rssTitleTranslationEnabled") }
     }
     var readerCookieMemoryEnabled: Bool {
-        didSet { UserDefaults.standard.set(readerCookieMemoryEnabled, forKey: "readerCookieMemoryEnabled") }
+        didSet { TestIsolation.defaults.set(readerCookieMemoryEnabled, forKey: "readerCookieMemoryEnabled") }
     }
     var readerHistoryEnabled: Bool {
-        didSet { UserDefaults.standard.set(readerHistoryEnabled, forKey: "readerHistoryEnabled") }
+        didSet { TestIsolation.defaults.set(readerHistoryEnabled, forKey: "readerHistoryEnabled") }
     }
     var aiSearchHistoryEnabled: Bool {
-        didSet { UserDefaults.standard.set(aiSearchHistoryEnabled, forKey: "aiSearchHistoryEnabled") }
+        didSet { TestIsolation.defaults.set(aiSearchHistoryEnabled, forKey: "aiSearchHistoryEnabled") }
     }
     /// Reader-mode typography. Values are relative multipliers, never pixels:
     /// the native reader multiplies a base point size by `readerModeFontScale`.
     var readerModeFontScale: Double {
-        didSet { UserDefaults.standard.set(readerModeFontScale, forKey: "readerModeFontScale") }
+        didSet { TestIsolation.defaults.set(readerModeFontScale, forKey: "readerModeFontScale") }
     }
     var readerModeLineSpacing: Double {
-        didSet { UserDefaults.standard.set(readerModeLineSpacing, forKey: "readerModeLineSpacing") }
+        didSet { TestIsolation.defaults.set(readerModeLineSpacing, forKey: "readerModeLineSpacing") }
     }
     /// Maximum text column width in points (620…760).
     var readerModeWidth: Double {
-        didSet { UserDefaults.standard.set(readerModeWidth, forKey: "readerModeWidth") }
+        didSet { TestIsolation.defaults.set(readerModeWidth, forKey: "readerModeWidth") }
     }
     /// `auto` follows the app theme, `paper` is a warm light page, `dark` is a
     /// low-light page.
     var readerModeTheme: String {
-        didSet { UserDefaults.standard.set(readerModeTheme, forKey: "readerModeTheme") }
+        didSet { TestIsolation.defaults.set(readerModeTheme, forKey: "readerModeTheme") }
     }
     @ObservationIgnored var resolvedColorScheme: ColorScheme? {
         if appTheme == .retroEditorial { return .light }
@@ -132,38 +244,48 @@ final class AppSettings {
     }
 
     var aiSummaryEnabled: Bool {
-        didSet { UserDefaults.standard.set(aiSummaryEnabled, forKey: "aiSummaryEnabled") }
+        didSet {
+            aiSummaryEnablementRevision.noteChange(from: oldValue, to: aiSummaryEnabled)
+            TestIsolation.defaults.set(aiSummaryEnabled, forKey: "aiSummaryEnabled")
+        }
+    }
+    @ObservationIgnored private var aiSummaryEnablementRevision = AISummaryEnablementRevision()
+
+    var aiSummaryRunRevision: UUID { aiSummaryEnablementRevision.value }
+
+    func isCurrentAISummaryRun(_ revision: UUID) -> Bool {
+        aiSummaryEnablementRevision.isCurrent(revision, enabled: aiSummaryEnabled)
     }
     var aiModel: String {
-        didSet { UserDefaults.standard.set(aiModel, forKey: "aiModel") }
+        didSet { TestIsolation.defaults.set(aiModel, forKey: "aiModel") }
     }
     /// True only when the user typed the model id by hand. A manual id may be
     /// used when the provider exposes no model catalog; the UI marks it as
     /// unverified, and API-key and quota checks still apply.
     var aiModelManuallyEntered: Bool {
-        didSet { UserDefaults.standard.set(aiModelManuallyEntered, forKey: "aiModelManuallyEntered") }
+        didSet { TestIsolation.defaults.set(aiModelManuallyEntered, forKey: "aiModelManuallyEntered") }
     }
     var aiPopupMaxWords: Int {
-        didSet { UserDefaults.standard.set(aiPopupMaxWords, forKey: "aiPopupMaxWords") }
+        didSet { TestIsolation.defaults.set(aiPopupMaxWords, forKey: "aiPopupMaxWords") }
     }
     var aiDashboardMaxWords: Int {
-        didSet { UserDefaults.standard.set(aiDashboardMaxWords, forKey: "aiDashboardMaxWords") }
+        didSet { TestIsolation.defaults.set(aiDashboardMaxWords, forKey: "aiDashboardMaxWords") }
     }
     var aiMaxWords: Int {
-        didSet { UserDefaults.standard.set(aiMaxWords, forKey: "aiMaxWords") }
+        didSet { TestIsolation.defaults.set(aiMaxWords, forKey: "aiMaxWords") }
     }
     /// Daily AI call cap for the whole app. `-1` means unlimited. The gate
     /// always works through `aiQuotaPolicy`, never through this raw value.
     var aiDailyCap: Int {
-        didSet { UserDefaults.standard.set(aiDailyCap, forKey: "aiDailyCap") }
+        didSet { TestIsolation.defaults.set(aiDailyCap, forKey: "aiDailyCap") }
     }
     /// Active limit style: call count or money budget. Exactly one applies.
     var aiLimitMode: AILimitMode {
-        didSet { UserDefaults.standard.set(aiLimitMode.rawValue, forKey: "aiLimitMode") }
+        didSet { TestIsolation.defaults.set(aiLimitMode.rawValue, forKey: "aiLimitMode") }
     }
     /// Money budget in micros of the display currency. Read only in `.cost` mode.
     var aiCostCapMicros: Int64 {
-        didSet { UserDefaults.standard.set(aiCostCapMicros, forKey: "aiCostCapMicros") }
+        didSet { TestIsolation.defaults.set(aiCostCapMicros, forKey: "aiCostCapMicros") }
     }
     /// Transient: false when today's quota record cannot be read. The UI says
     /// so instead of painting a fake zero.
@@ -175,49 +297,49 @@ final class AppSettings {
     var todayAIInputTokens = 0
     var todayAIOutputTokens = 0
     var aiBudgetMode: AISummaryBudgetMode {
-        didSet { UserDefaults.standard.set(aiBudgetMode.rawValue, forKey: "aiBudgetMode") }
+        didSet { TestIsolation.defaults.set(aiBudgetMode.rawValue, forKey: "aiBudgetMode") }
     }
     /// When true, DeepSeek V4's thinking mode is disabled for faster,
     /// non-truncated summaries. Exposed in Settings → AI.
     var aiDisableDeepSeekThinking: Bool {
-        didSet { UserDefaults.standard.set(aiDisableDeepSeekThinking, forKey: "aiDisableDeepSeekThinking") }
+        didSet { TestIsolation.defaults.set(aiDisableDeepSeekThinking, forKey: "aiDisableDeepSeekThinking") }
     }
     var aiPopupDailyCap: Int {
-        didSet { UserDefaults.standard.set(aiPopupDailyCap, forKey: "aiPopupDailyCap") }
+        didSet { TestIsolation.defaults.set(aiPopupDailyCap, forKey: "aiPopupDailyCap") }
     }
     /// Reader AI search is a first-class feature, but it is independent from the
     /// RSS summary settings: its own model, thinking level and page budget.
     var aiSearchEnabled: Bool {
-        didSet { UserDefaults.standard.set(aiSearchEnabled, forKey: "aiSearchEnabled") }
+        didSet { TestIsolation.defaults.set(aiSearchEnabled, forKey: "aiSearchEnabled") }
     }
     /// Allows the web-search scope. When off, only the current page can be used
     /// as context, and no search provider is contacted.
     var aiSearchUseWeb: Bool {
-        didSet { UserDefaults.standard.set(aiSearchUseWeb, forKey: "aiSearchUseWeb") }
+        didSet { TestIsolation.defaults.set(aiSearchUseWeb, forKey: "aiSearchUseWeb") }
     }
 
     /// Selected-text look-up mode. Offline by default; see SelectionWebMode.
     var selectionWebMode: SelectionWebMode {
-        didSet { UserDefaults.standard.set(selectionWebMode.rawValue, forKey: "selectionWebMode") }
+        didSet { TestIsolation.defaults.set(selectionWebMode.rawValue, forKey: "selectionWebMode") }
     }
     /// Empty means "inherit `aiModel`". Never written implicitly.
     var aiSearchModel: String {
-        didSet { UserDefaults.standard.set(aiSearchModel, forKey: "aiSearchModel") }
+        didSet { TestIsolation.defaults.set(aiSearchModel, forKey: "aiSearchModel") }
     }
     var aiSearchThinking: AIThinkingLevel {
-        didSet { UserDefaults.standard.set(aiSearchThinking.rawValue, forKey: "aiSearchThinking") }
+        didSet { TestIsolation.defaults.set(aiSearchThinking.rawValue, forKey: "aiSearchThinking") }
     }
     /// 3 / 5 / 8 pages per web search.
     var aiSearchPageCount: Int {
-        didSet { UserDefaults.standard.set(aiSearchPageCount, forKey: "aiSearchPageCount") }
+        didSet { TestIsolation.defaults.set(aiSearchPageCount, forKey: "aiSearchPageCount") }
     }
     var aiDashboardDailyCap: Int {
-        didSet { UserDefaults.standard.set(aiDashboardDailyCap, forKey: "aiDashboardDailyCap") }
+        didSet { TestIsolation.defaults.set(aiDashboardDailyCap, forKey: "aiDashboardDailyCap") }
     }
     var aiProvider: String {
         didSet {
             guard !isInitializing else { return }
-            UserDefaults.standard.set(aiProvider, forKey: "aiProvider")
+            TestIsolation.defaults.set(aiProvider, forKey: "aiProvider")
             cachedAPIKey = nil
             invalidateModelCatalog(clearSelection: true)
         }
@@ -225,6 +347,7 @@ final class AppSettings {
     var onePasswordRef: String {
         didSet {
             guard !isInitializing else { return }
+            noteAICredentialIntent()
             Task {
                 let store = EncryptedKeyStore()
                 if onePasswordRef.isEmpty {
@@ -237,34 +360,34 @@ final class AppSettings {
     }
     var selectedRSSSourceIDs: Set<String> {
         didSet {
-            UserDefaults.standard.set(Array(selectedRSSSourceIDs), forKey: "selectedRSSSourceIDs")
+            TestIsolation.defaults.set(Array(selectedRSSSourceIDs), forKey: "selectedRSSSourceIDs")
         }
     }
     var todayRefreshCount: Int {
-        didSet { UserDefaults.standard.set(todayRefreshCount, forKey: "todayRefreshCount") }
+        didSet { TestIsolation.defaults.set(todayRefreshCount, forKey: "todayRefreshCount") }
     }
     var todayAIRequestCount: Int {
-        didSet { UserDefaults.standard.set(todayAIRequestCount, forKey: "todayAIRequestCount") }
+        didSet { TestIsolation.defaults.set(todayAIRequestCount, forKey: "todayAIRequestCount") }
     }
     var todayPopupAIRequestCount: Int {
-        didSet { UserDefaults.standard.set(todayPopupAIRequestCount, forKey: "todayPopupAIRequestCount") }
+        didSet { TestIsolation.defaults.set(todayPopupAIRequestCount, forKey: "todayPopupAIRequestCount") }
     }
     var todayDashboardAIRequestCount: Int {
-        didSet { UserDefaults.standard.set(todayDashboardAIRequestCount, forKey: "todayDashboardAIRequestCount") }
+        didSet { TestIsolation.defaults.set(todayDashboardAIRequestCount, forKey: "todayDashboardAIRequestCount") }
     }
     var lastRefreshTimestamp: Double {
-        didSet { UserDefaults.standard.set(lastRefreshTimestamp, forKey: "lastRefreshTimestamp") }
+        didSet { TestIsolation.defaults.set(lastRefreshTimestamp, forKey: "lastRefreshTimestamp") }
     }
     var statsDayTimestamp: Double {
-        didSet { UserDefaults.standard.set(statsDayTimestamp, forKey: "statsDayTimestamp") }
+        didSet { TestIsolation.defaults.set(statsDayTimestamp, forKey: "statsDayTimestamp") }
     }
 
     var updateDevMode: Bool {
-        didSet { UserDefaults.standard.set(updateDevMode, forKey: "updateDevMode") }
+        didSet { TestIsolation.defaults.set(updateDevMode, forKey: "updateDevMode") }
     }
 
     var showAllAIModels: Bool {
-        didSet { UserDefaults.standard.set(showAllAIModels, forKey: "showAllAIModels") }
+        didSet { TestIsolation.defaults.set(showAllAIModels, forKey: "showAllAIModels") }
     }
 
     var customAIProviders: [CustomAIProviderConfig] {
@@ -272,52 +395,56 @@ final class AppSettings {
             saveCustomAIProviders()
             guard !isInitializing else { return }
             let old = oldValue.first { "custom:\($0.id)" == aiProvider }
+            if old?.resolvedConnection().credentialEndpointIdentity
+                != selectedCustomProvider?.resolvedConnection().credentialEndpointIdentity {
+                cachedAPIKey = nil
+            }
             if old != selectedCustomProvider { invalidateModelCatalog(clearSelection: true) }
         }
     }
 
     var hourlyPushEnabled: Bool {
-        didSet { UserDefaults.standard.set(hourlyPushEnabled, forKey: "hourlyPushEnabled") }
+        didSet { TestIsolation.defaults.set(hourlyPushEnabled, forKey: "hourlyPushEnabled") }
     }
     var dailyPushEnabled: Bool {
-        didSet { UserDefaults.standard.set(dailyPushEnabled, forKey: "dailyPushEnabled") }
+        didSet { TestIsolation.defaults.set(dailyPushEnabled, forKey: "dailyPushEnabled") }
     }
     var pushCount: Int {
-        didSet { UserDefaults.standard.set(pushCount, forKey: "pushCount") }
+        didSet { TestIsolation.defaults.set(pushCount, forKey: "pushCount") }
     }
     var dailyPushHour: Int {
-        didSet { UserDefaults.standard.set(dailyPushHour, forKey: "dailyPushHour") }
+        didSet { TestIsolation.defaults.set(dailyPushHour, forKey: "dailyPushHour") }
     }
     var dailyPushMinute: Int {
-        didSet { UserDefaults.standard.set(dailyPushMinute, forKey: "dailyPushMinute") }
+        didSet { TestIsolation.defaults.set(dailyPushMinute, forKey: "dailyPushMinute") }
     }
 
     /// Master toggle for the Weibo "爆" burst-topic realtime push + research.
     var burstPushEnabled: Bool {
-        didSet { UserDefaults.standard.set(burstPushEnabled, forKey: "burstPushEnabled") }
+        didSet { TestIsolation.defaults.set(burstPushEnabled, forKey: "burstPushEnabled") }
     }
     /// Master toggle for automatic research records (burst detection). Manual
     /// verification from a news item always remains available.
     var researchAutoEnabled: Bool {
-        didSet { UserDefaults.standard.set(researchAutoEnabled, forKey: "researchAutoEnabled") }
+        didSet { TestIsolation.defaults.set(researchAutoEnabled, forKey: "researchAutoEnabled") }
     }
     /// Maximum new burst topics enqueued per refresh round.
     var researchDetectionLimit: Int {
-        didSet { UserDefaults.standard.set(researchDetectionLimit, forKey: "researchDetectionLimit") }
+        didSet { TestIsolation.defaults.set(researchDetectionLimit, forKey: "researchDetectionLimit") }
     }
     /// Shows the compact research entry above the popover feed.
     var researchShowPopoverChip: Bool {
-        didSet { UserDefaults.standard.set(researchShowPopoverChip, forKey: "researchShowPopoverChip") }
+        didSet { TestIsolation.defaults.set(researchShowPopoverChip, forKey: "researchShowPopoverChip") }
     }
     /// Opening a finished research record clears its unread marker. Active runs
     /// never do. Turning this off keeps the unread badge until a manual mark.
     var researchMarkReadOnOpen: Bool {
-        didSet { UserDefaults.standard.set(researchMarkReadOnOpen, forKey: "researchMarkReadOnOpen") }
+        didSet { TestIsolation.defaults.set(researchMarkReadOnOpen, forKey: "researchMarkReadOnOpen") }
     }
     /// Lets the local interest profile add non-burst topics to automatic
     /// research. Effective only while local learning is enabled.
     var researchUsePersonalization: Bool {
-        didSet { UserDefaults.standard.set(researchUsePersonalization, forKey: "researchUsePersonalization") }
+        didSet { TestIsolation.defaults.set(researchUsePersonalization, forKey: "researchUsePersonalization") }
     }
     /// Read-only mirror of the last automatic selection result. Written by the
     /// orchestrator so settings can explain a skipped hour; never persisted as
@@ -327,9 +454,9 @@ final class AppSettings {
     func updateResearchLastAutomaticDecision(_ text: String?) {
         researchLastAutomaticDecision = text
         if let text {
-            UserDefaults.standard.set(text, forKey: "researchLastAutomaticDecision")
+            TestIsolation.defaults.set(text, forKey: "researchLastAutomaticDecision")
         } else {
-            UserDefaults.standard.removeObject(forKey: "researchLastAutomaticDecision")
+            TestIsolation.defaults.removeObject(forKey: "researchLastAutomaticDecision")
         }
     }
     /// Shows the one-sentence summary in the completion notification. Turning
@@ -337,7 +464,7 @@ final class AppSettings {
     /// screen.
     var researchNotificationShowsSummary: Bool {
         didSet {
-            UserDefaults.standard.set(
+            TestIsolation.defaults.set(
                 researchNotificationShowsSummary,
                 forKey: "researchNotificationShowsSummary"
             )
@@ -345,48 +472,48 @@ final class AppSettings {
     }
     /// Research depth preset (quick / standard / deep).
     var researchDepth: ResearchDepth {
-        didSet { UserDefaults.standard.set(researchDepth.rawValue, forKey: "researchDepth") }
+        didSet { TestIsolation.defaults.set(researchDepth.rawValue, forKey: "researchDepth") }
     }
     /// Shared daily task cap, counted across origins.
     var researchDailyTaskCap: Int {
-        didSet { UserDefaults.standard.set(researchDailyTaskCap, forKey: "researchDailyTaskCap") }
+        didSet { TestIsolation.defaults.set(researchDailyTaskCap, forKey: "researchDailyTaskCap") }
     }
     /// Maximum research tasks running at once.
     var researchMaxConcurrent: Int {
-        didSet { UserDefaults.standard.set(researchMaxConcurrent, forKey: "researchMaxConcurrent") }
+        didSet { TestIsolation.defaults.set(researchMaxConcurrent, forKey: "researchMaxConcurrent") }
     }
     /// Default time window; `auto` derives it from the seed's publish date.
     var researchDefaultRecency: ResearchDefaultRecency {
-        didSet { UserDefaults.standard.set(researchDefaultRecency.rawValue, forKey: "researchDefaultRecency") }
+        didSet { TestIsolation.defaults.set(researchDefaultRecency.rawValue, forKey: "researchDefaultRecency") }
     }
     /// Enabled search providers, stored as raw values (Tavily → Firecrawl → Brave).
     var researchSearchProviders: [String] {
         didSet {
-            UserDefaults.standard.set(researchSearchProviders, forKey: "researchSearchProviders")
+            TestIsolation.defaults.set(researchSearchProviders, forKey: "researchSearchProviders")
         }
     }
     var researchHistoryLimit: Int {
-        didSet { UserDefaults.standard.set(researchHistoryLimit, forKey: "researchHistoryLimit") }
+        didSet { TestIsolation.defaults.set(researchHistoryLimit, forKey: "researchHistoryLimit") }
     }
     var researchRetentionDays: Int {
-        didSet { UserDefaults.standard.set(researchRetentionDays, forKey: "researchRetentionDays") }
+        didSet { TestIsolation.defaults.set(researchRetentionDays, forKey: "researchRetentionDays") }
     }
     var researchTempCacheMB: Int {
-        didSet { UserDefaults.standard.set(researchTempCacheMB, forKey: "researchTempCacheMB") }
+        didSet { TestIsolation.defaults.set(researchTempCacheMB, forKey: "researchTempCacheMB") }
     }
     var researchTempCacheTTLHours: Int {
-        didSet { UserDefaults.standard.set(researchTempCacheTTLHours, forKey: "researchTempCacheTTLHours") }
+        didSet { TestIsolation.defaults.set(researchTempCacheTTLHours, forKey: "researchTempCacheTTLHours") }
     }
     var researchConsentVersion: Int {
-        didSet { UserDefaults.standard.set(researchConsentVersion, forKey: "researchConsentVersion") }
+        didSet { TestIsolation.defaults.set(researchConsentVersion, forKey: "researchConsentVersion") }
     }
     /// Enables the developer test-mode toggle that fires a fake burst push.
     var burstTestMode: Bool {
-        didSet { UserDefaults.standard.set(burstTestMode, forKey: "burstTestMode") }
+        didSet { TestIsolation.defaults.set(burstTestMode, forKey: "burstTestMode") }
     }
     /// The user-entered hot-search title used by the burst test push.
     var burstTestTopic: String {
-        didSet { UserDefaults.standard.set(burstTestTopic, forKey: "burstTestTopic") }
+        didSet { TestIsolation.defaults.set(burstTestTopic, forKey: "burstTestTopic") }
     }
     /// Legacy Firecrawl key, kept only for the one-time migration into the
     /// encrypted store. New values are never written back as plaintext;
@@ -394,37 +521,37 @@ final class AppSettings {
     var firecrawlAPIKey: String {
         didSet {
             guard firecrawlAPIKey.isEmpty else { return }
-            UserDefaults.standard.removeObject(forKey: "firecrawlAPIKey")
+            TestIsolation.defaults.removeObject(forKey: "firecrawlAPIKey")
         }
     }
     /// Independent daily cap for burst research AI requests.
     var burstDailyCap: Int {
-        didSet { UserDefaults.standard.set(burstDailyCap, forKey: "burstDailyCap") }
+        didSet { TestIsolation.defaults.set(burstDailyCap, forKey: "burstDailyCap") }
     }
     var todayBurstResearchCount: Int {
-        didSet { UserDefaults.standard.set(todayBurstResearchCount, forKey: "todayBurstResearchCount") }
+        didSet { TestIsolation.defaults.set(todayBurstResearchCount, forKey: "todayBurstResearchCount") }
     }
 
     /// Master toggle for custom-keyword realtime push + research.
     var keywordTrackingEnabled: Bool {
-        didSet { UserDefaults.standard.set(keywordTrackingEnabled, forKey: "keywordTrackingEnabled") }
+        didSet { TestIsolation.defaults.set(keywordTrackingEnabled, forKey: "keywordTrackingEnabled") }
     }
     /// User-entered keywords; a news item whose title contains any keyword
     /// (case-insensitive) triggers a research push.
     var keywordList: [String] {
         didSet {
-            UserDefaults.standard.set(keywordList, forKey: "keywordList")
+            TestIsolation.defaults.set(keywordList, forKey: "keywordList")
         }
     }
 
     var rssUnifiedDisplayCount: Bool {
-        didSet { UserDefaults.standard.set(rssUnifiedDisplayCount, forKey: "rssUnifiedDisplayCount") }
+        didSet { TestIsolation.defaults.set(rssUnifiedDisplayCount, forKey: "rssUnifiedDisplayCount") }
     }
     var rssDefaultTextCount: Int {
-        didSet { UserDefaults.standard.set(rssDefaultTextCount, forKey: "rssDefaultTextCount") }
+        didSet { TestIsolation.defaults.set(rssDefaultTextCount, forKey: "rssDefaultTextCount") }
     }
     var rssDefaultImageCount: Int {
-        didSet { UserDefaults.standard.set(rssDefaultImageCount, forKey: "rssDefaultImageCount") }
+        didSet { TestIsolation.defaults.set(rssDefaultImageCount, forKey: "rssDefaultImageCount") }
     }
 
     var rssSources: [RSSSourceConfig] {
@@ -433,9 +560,39 @@ final class AppSettings {
 
     @ObservationIgnored var cachedAPIKey: String? {
         didSet {
+            if cachedAPIKey == nil || cachedAPIKey != oldValue { cachedKeyEndpointIdentity = nil }
             if !isInitializing, cachedAPIKey != oldValue { invalidateModelCatalog(clearSelection: false) }
         }
     }
+    @ObservationIgnored private var cachedKeyEndpointIdentity: String?
+    @ObservationIgnored private(set) var aiCredentialIntentRevision = UUID()
+    @ObservationIgnored private var aiKeyMutationGate = AIKeyMutationGate()
+
+    func noteAICredentialIntent() {
+        aiCredentialIntentRevision = UUID()
+    }
+
+    @MainActor
+    func beginAICredentialMutation(account: String) -> UUID {
+        noteAICredentialIntent()
+        let token = aiCredentialIntentRevision
+        aiKeyMutationGate.begin(account: account, token: token)
+        // Invalidate reads that started before the user's mutation intent.
+        invalidateModelCatalog(clearSelection: false)
+        return token
+    }
+
+    @MainActor
+    func finishAICredentialMutation(account: String, token: UUID) -> Bool {
+        aiKeyMutationGate.finish(account: account, token: token)
+        let settled = !aiKeyMutationGate.isPending(account: account)
+        if settled, account == activeAPIKeyAccount {
+            // A model refresh may have stopped while the gate was closed.
+            invalidateModelCatalog(clearSelection: false)
+        }
+        return token == aiCredentialIntentRevision && settled
+    }
+
     private let modelService: ProviderModelService
     private(set) var availableProviderModels: [ProviderModel] = []
     private(set) var modelCatalogProviderID: String?
@@ -457,7 +614,7 @@ final class AppSettings {
 
     init(modelService: ProviderModelService = .shared) {
         self.modelService = modelService
-        let defaults = UserDefaults.standard
+        let defaults = TestIsolation.defaults
 
         self.autoRefreshEnabled = defaults.boolIfPresent(forKey: "autoRefreshEnabled") ?? false
         self.launchAtLogin = defaults.boolIfPresent(forKey: "launchAtLogin") ?? false
@@ -638,29 +795,29 @@ final class AppSettings {
             let newFlag = AIProvider.deepseek.keyExistsFlag()
             let accountFlag = "hasAIKey-\(newAccount)"
 
-            guard UserDefaults.standard.bool(forKey: "hasDeepSeekAPIKey") else { return }
+            guard TestIsolation.defaults.bool(forKey: "hasDeepSeekAPIKey") else { return }
 
-            if UserDefaults.standard.bool(forKey: newFlag) || UserDefaults.standard.bool(forKey: accountFlag) {
-                UserDefaults.standard.set(true, forKey: newFlag)
-                UserDefaults.standard.removeObject(forKey: "hasDeepSeekAPIKey")
+            if TestIsolation.defaults.bool(forKey: newFlag) || TestIsolation.defaults.bool(forKey: accountFlag) {
+                TestIsolation.defaults.set(true, forKey: newFlag)
+                TestIsolation.defaults.removeObject(forKey: "hasDeepSeekAPIKey")
                 return
             }
 
             let exists = await store.checkAPIKeyExistence(account: newAccount)
             guard !exists else {
-                UserDefaults.standard.removeObject(forKey: "hasDeepSeekAPIKey")
+                TestIsolation.defaults.removeObject(forKey: "hasDeepSeekAPIKey")
                 return
             }
 
             guard let oldKey = KeychainManager.readLegacyAPIKey(), !oldKey.isEmpty else {
-                UserDefaults.standard.removeObject(forKey: "hasDeepSeekAPIKey")
+                TestIsolation.defaults.removeObject(forKey: "hasDeepSeekAPIKey")
                 return
             }
 
             if await store.saveAPIKey(oldKey, account: newAccount) {
                 KeychainManager.deleteLegacyAPIKey()
-                UserDefaults.standard.removeObject(forKey: "hasDeepSeekAPIKey")
-                UserDefaults.standard.set(true, forKey: newFlag)
+                TestIsolation.defaults.removeObject(forKey: "hasDeepSeekAPIKey")
+                TestIsolation.defaults.set(true, forKey: newFlag)
             }
         }
     }
@@ -677,7 +834,7 @@ final class AppSettings {
 
     private func saveRSSSources() {
         if let data = try? JSONEncoder().encode(rssSources) {
-            UserDefaults.standard.set(data, forKey: "rssSources")
+            TestIsolation.defaults.set(data, forKey: "rssSources")
         }
     }
 
@@ -693,19 +850,23 @@ final class AppSettings {
 
     private func saveCustomAIProviders() {
         if let data = try? JSONEncoder().encode(customAIProviders) {
-            UserDefaults.standard.set(data, forKey: "customAIProviders")
+            TestIsolation.defaults.set(data, forKey: "customAIProviders")
         }
     }
 
     /// Persisted `aiProvider` uses `custom:<uuid>` to reference a custom provider.
     var selectedCustomProvider: CustomAIProviderConfig? {
-        guard aiProvider.hasPrefix("custom:"),
-              let uuid = aiProvider.split(separator: ":").last.map(String.init) else { return nil }
-        return customAIProviders.first { $0.id == uuid }
+        customProvider(byID: aiProvider)
     }
 
     var isUsingCustomProvider: Bool {
         selectedCustomProvider != nil
+    }
+
+    var hasUsableProviderSelection: Bool {
+        AIProviderAccountPolicy.canUseConnection(
+            providerID: aiProvider, customProviderExists: selectedCustomProvider != nil
+        )
     }
 
     var resolvedAIConnection: ResolvedAIConnection {
@@ -722,7 +883,15 @@ final class AppSettings {
     /// Encrypted-key account for the active provider. Custom providers store
     /// under `custom:<uuid>`, built-ins under `ai-key-<rawValue>`.
     var activeAPIKeyAccount: String {
-        isUsingCustomProvider ? aiProvider : currentProvider.apiKeyAccount()
+        AIProviderAccountPolicy.account(for: aiProvider)
+    }
+
+    /// Credential actions require an existing custom provider or a known
+    /// built-in; an invalid persisted selection must not create an orphan key.
+    var usableAPIKeyAccount: String? {
+        AIProviderAccountPolicy.credentialAccount(
+            for: aiProvider, customProviderExists: selectedCustomProvider != nil
+        )
     }
 
     /// All selectable provider IDs (built-ins + custom), with display names.
@@ -762,7 +931,7 @@ final class AppSettings {
     var isAIModelCatalogValidated: Bool {
         guard modelCatalogProviderID == aiProvider,
               let updated = modelCatalogUpdatedAt, Date().timeIntervalSince(updated) <= 24 * 3600,
-              modelCatalogIdentity == ProviderModelService.identity(providerID: aiProvider, connection: resolvedAIConnection, apiKey: cachedAPIKey ?? "") else { return false }
+              modelCatalogIdentity == ProviderModelService.identity(providerID: aiProvider, connection: resolvedAIConnection, apiKey: usableCachedAPIKey ?? "") else { return false }
         return availableProviderModels.contains { $0.id == aiModel }
     }
 
@@ -774,17 +943,87 @@ final class AppSettings {
 
     @discardableResult
     func activateAPIKey(_ key: String, providerID: String, revision: UUID) -> Bool {
-        guard providerID == aiProvider, revision == modelCatalogRevision else { return false }
+        guard hasUsableProviderSelection, providerID == aiProvider, revision == modelCatalogRevision,
+              !aiKeyMutationGate.isPending(account: activeAPIKeyAccount) else { return false }
         cachedAPIKey = key
+        cachedKeyEndpointIdentity = selectedCustomProvider?.resolvedConnection().credentialEndpointIdentity
         return true
     }
 
+    var usableCachedAPIKey: String? {
+        guard let cachedAPIKey else { return nil }
+        let context = AIKeyContext(
+            providerID: aiProvider, account: activeAPIKeyAccount, revision: modelCatalogRevision,
+            endpointIdentity: selectedCustomProvider?.resolvedConnection().credentialEndpointIdentity
+        )
+        return AIKeyAccess.mayUseCachedKey(context: context, cachedEndpointIdentity: cachedKeyEndpointIdentity)
+            ? cachedAPIKey : nil
+    }
+
     @MainActor
-    func validatedAIConfiguration(apiKey: String) async -> ValidatedAIConfiguration? {
+    var aiKeyContext: AIKeyContext {
+        AIKeyContext(
+            providerID: aiProvider, account: activeAPIKeyAccount, revision: modelCatalogRevision,
+            endpointIdentity: selectedCustomProvider?.resolvedConnection().credentialEndpointIdentity
+        )
+    }
+
+    @MainActor
+    var aiCredentialUIContext: AICredentialUIContext {
+        AICredentialUIContext(keyContext: aiKeyContext, intent: aiCredentialIntentRevision)
+    }
+
+    @MainActor
+    func isCurrentAICredentialUIContext(_ started: AICredentialUIContext) -> Bool {
+        hasUsableProviderSelection && started == aiCredentialUIContext
+            && !aiKeyMutationGate.isPending(account: started.keyContext.account)
+    }
+
+    @MainActor
+    func resolveBoundAPIKey(expected: AIKeyContext) async throws -> ProviderBoundKey {
+        guard hasUsableProviderSelection, expected == aiKeyContext,
+              !aiKeyMutationGate.isPending(account: expected.account) else {
+            throw AISearchError.configurationChanged
+        }
+        if let cachedAPIKey = usableCachedAPIKey, !cachedAPIKey.isEmpty {
+            return ProviderBoundKey(key: cachedAPIKey, context: expected)
+        }
+        return try await AIKeyAccess.read(
+            started: expected,
+            current: { self.aiKeyContext },
+            read: { account in
+                let store = EncryptedKeyStore()
+                guard expected.providerID.hasPrefix("custom:") else {
+                    return await store.readAPIKeyResult(account: account)
+                }
+                guard let identity = expected.endpointIdentity else { return .missing }
+                switch await store.readBoundCustomKeyResult(account: account, endpointIdentity: identity) {
+                case let .found(key): return .found(key)
+                case .missing, .unbound, .endpointMismatch: return .missing
+                case .failed: return .failed
+                }
+            },
+            activate: { key in
+                self.activateAPIKey(key, providerID: expected.providerID, revision: expected.revision)
+            }
+        )
+    }
+
+    @MainActor
+    func isCurrentAIKey(_ bound: ProviderBoundKey) -> Bool {
+        hasUsableProviderSelection && !aiKeyMutationGate.isPending(account: bound.context.account)
+            && AIKeyAccess.isCurrent(bound, context: aiKeyContext, cachedKey: usableCachedAPIKey)
+    }
+
+    @MainActor
+    func validatedAIConfiguration(boundKey bound: ProviderBoundKey) async -> ValidatedAIConfiguration? {
         // A key is mandatory for every provider except Ollama Cloud, which also
         // accepts a local/account-less call. A manual model id never skips this.
+        let apiKey = bound.key
         guard !apiKey.isEmpty || aiProvider == AIProvider.ollamaCloud.rawValue else { return nil }
-        let catalogValidated = await refreshModelCatalog(apiKey: apiKey)
+        guard isCurrentAIKey(bound) else { return nil }
+        let catalogValidated = await refreshModelCatalog(boundKey: bound)
+        guard isCurrentAIKey(bound) else { return nil }
         guard canUseCurrentAIModel else { return nil }
         if !catalogValidated, !(aiModelManuallyEntered && !aiModel.isEmpty) { return nil }
         return ValidatedAIConfiguration(providerID: aiProvider, connection: resolvedAIConnection,
@@ -792,18 +1031,31 @@ final class AppSettings {
     }
 
     func isCurrentAIConfiguration(_ configuration: ValidatedAIConfiguration) -> Bool {
-        canUseCurrentAIModel && configuration.revision == modelCatalogRevision
+        hasUsableProviderSelection && canUseCurrentAIModel && configuration.revision == modelCatalogRevision
             && configuration.providerID == aiProvider && configuration.model == aiModel
-            && configuration.apiKey == cachedAPIKey
+            && configuration.apiKey == (usableCachedAPIKey ?? "")
+            && (!configuration.apiKey.isEmpty || configuration.providerID == AIProvider.ollamaCloud.rawValue)
     }
 
     /// A connection test must not activate an unsaved credential or make a
-    /// billable generation request. Stale results are returned as stale.
+    /// billable generation request. The key is tied to its captured context
+    /// before a request can be sent, not only when its result returns.
     @MainActor
-    func checkModelConnection(apiKey: String) async throws -> ProviderModelResult {
-        let revision = modelCatalogRevision
-        let result = try await modelService.catalog(providerID: aiProvider, connection: resolvedAIConnection, apiKey: apiKey, force: true)
-        guard revision == modelCatalogRevision else { throw CancellationError() }
+    func checkModelConnection(apiKey: String, expected: AIKeyContext) async throws -> ProviderModelResult {
+        guard hasUsableProviderSelection else { throw ProviderModelError.invalidEndpoint }
+        guard expected == aiKeyContext, !aiKeyMutationGate.isPending(account: expected.account) else {
+            throw AISearchError.configurationChanged
+        }
+        try Task.checkCancellation()
+        let connection = resolvedAIConnection
+        let result = try await modelService.catalog(
+            providerID: expected.providerID, connection: connection, apiKey: apiKey, force: true
+        )
+        try Task.checkCancellation()
+        guard hasUsableProviderSelection, expected == aiKeyContext,
+              !aiKeyMutationGate.isPending(account: expected.account) else {
+            throw AISearchError.configurationChanged
+        }
         return result
     }
 
@@ -826,15 +1078,32 @@ final class AppSettings {
     /// metadata-only and never triggers a summary or research request itself.
     @MainActor
     @discardableResult
-    func refreshModelCatalog(apiKey providedKey: String? = nil, force: Bool = false) async -> Bool {
+    func refreshModelCatalog(boundKey providedKey: ProviderBoundKey? = nil, force: Bool = false) async -> Bool {
+        guard hasUsableProviderSelection else {
+            modelCatalogError = .invalidEndpoint
+            return false
+        }
         let provider = aiProvider
-        let startingRevision = modelCatalogRevision
         let connection = resolvedAIConnection
-        var key = providedKey ?? cachedAPIKey ?? ""
-        if key.isEmpty, provider != AIProvider.ollamaCloud.rawValue {
-            let account = activeAPIKeyAccount
-            key = await EncryptedKeyStore().readAPIKey(account: account) ?? ""
-            guard provider == aiProvider, startingRevision == modelCatalogRevision else { return false }
+        let key: String
+        if let providedKey {
+            // The caller may have suspended since capturing its key. Validate
+            // the full provider/account/revision/endpoint before dispatch, for
+            // built-in providers as well as custom endpoints.
+            guard isCurrentAIKey(providedKey) else { return false }
+            key = providedKey.key
+        } else {
+            let expected = aiKeyContext
+            do {
+                let bound = try await resolveBoundAPIKey(expected: expected)
+                guard isCurrentAIKey(bound) else { return false }
+                key = bound.key
+            } catch AISearchError.keyReadFailed {
+                if expected == aiKeyContext { modelCatalogError = .keyReadFailed }
+                return false
+            } catch {
+                return false
+            }
         }
         guard provider == AIProvider.ollamaCloud.rawValue || !key.isEmpty else {
             modelCatalogError = .unauthorized
@@ -848,7 +1117,7 @@ final class AppSettings {
         do {
             let result = try await modelService.catalog(providerID: provider, connection: connection, apiKey: key, force: force)
             guard revision == modelCatalogRevision, provider == aiProvider,
-                  identity == ProviderModelService.identity(providerID: aiProvider, connection: resolvedAIConnection, apiKey: cachedAPIKey ?? "") else { return false }
+                  identity == ProviderModelService.identity(providerID: aiProvider, connection: resolvedAIConnection, apiKey: usableCachedAPIKey ?? "") else { return false }
             modelCatalogProviderID = provider
             modelCatalogIdentity = identity
             availableProviderModels = result.snapshot.models

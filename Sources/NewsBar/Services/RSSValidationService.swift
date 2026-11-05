@@ -96,6 +96,7 @@ enum RSSValidationService {
 
         // 2. Check for errors
         if let error = error {
+            if error is CancellationError { return .cancelled }
             let nsError = error as NSError
             if nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorCancelled {
                 return .cancelled
@@ -139,8 +140,9 @@ enum RSSValidationService {
             }
 
             let outcome = await validateSingleFeed(name: feed.name, url: feed.url)
-            results.append(.init(feedName: feed.name, url: feed.url, outcome: outcome))
-            onOutcome(feed.name, feed.url, outcome)
+            let finalOutcome: RSSValidationOutcome = Task.isCancelled ? .cancelled : outcome
+            results.append(.init(feedName: feed.name, url: feed.url, outcome: finalOutcome))
+            onOutcome(feed.name, feed.url, finalOutcome)
         }
 
         return RSSValidationSummary(outcomes: results)
@@ -194,6 +196,7 @@ enum RSSValidationService {
     }
 
     private static func classifyNetworkError(_ error: Error) -> RSSValidationOutcome {
+        if error is CancellationError { return .cancelled }
         let nsError = error as NSError
         if nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorCancelled {
             return .cancelled

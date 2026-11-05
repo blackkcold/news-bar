@@ -61,7 +61,7 @@ final class ResearchConsentTests: XCTestCase {
 
         XCTAssertTrue(success)
         XCTAssertNil(settings.researchLastAutomaticDecision)
-        XCTAssertNil(UserDefaults.standard.string(forKey: "researchLastAutomaticDecision"))
+        XCTAssertNil(TestIsolation.defaults.string(forKey: "researchLastAutomaticDecision"))
     }
 
     func testMissingProviderAndModelHaveReadableFallbacks() {

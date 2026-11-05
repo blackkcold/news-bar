@@ -36,8 +36,6 @@ struct AISearchService: Sendable {
     let search: SearchHandler
     let read: ReadHandler
     let answer: AnswerHandler
-    let reserve: @Sendable () async -> Bool
-    let settle: @Sendable (AIChatResponse) async -> Void
     /// Quota check that does not consume a call. It runs before the first
     /// network hop so a reader who is out of budget does not spend search
     /// requests and page fetches on an answer that will be refused.
@@ -136,20 +134,20 @@ struct AISearchService: Sendable {
             guard !sources.isEmpty else { throw AISearchError.noSourcesReadable }
         }
 
-        try Task.checkCancellation()
-        await onStage(.answering)
-        // The global daily ledger is the single quota authority; an AI search
-        // call is reserved exactly like a summary call.
-        guard await reserve() else { throw AISearchError.quotaUnavailable }
-
         let system = AnswerPrompt.search(language)
         let user = AISearchPrompts.user(
             question: cleanedQuestion,
             scope: scope,
             sources: sources,
-            language: language
+            language: language,
+            maxSourceCharacters: profile.maxSourceCharacters,
+            maxTotalCharacters: profile.maxTotalCharacters
         )
         let mode: AnswerMode = scope == .currentPage ? .currentPage : .web
+
+        try Task.checkCancellation()
+        await onStage(.answering)
+        try Task.checkCancellation()
 
         var text = ""
         var usage: AIUsage?
@@ -188,13 +186,13 @@ struct AISearchService: Sendable {
                 usage = response.usage
                 truncated = response.truncated
             }
-        } catch is CancellationError {
-            throw CancellationError()
+        } catch let error as AIChatError {
+            if error == .quotaUnavailable { throw AISearchError.quotaUnavailable }
+            throw AISearchError.modelFailed("AI call failed")
         } catch {
+            if error is CancellationError { throw CancellationError() }
             throw AISearchError.modelFailed(error.localizedDescription)
         }
-
-        await settle(AIChatResponse(text: text, truncated: truncated, usage: usage))
 
         let parsed = AnswerParser.parse(text, fallbackKind: .term)
         // An answer built from fetched pages that points at none of them is

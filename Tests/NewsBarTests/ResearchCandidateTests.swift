@@ -90,6 +90,19 @@ final class ResearchCandidateTests: XCTestCase {
         XCTAssertEqual(decisions[1].confidence, 0)
     }
 
+    func testTriageReservationIncludesPromptAndOutputBudget() {
+        let request = AIChatRequest(messages: [
+            AIChatMessage(role: .system, content: "aaa"),
+            AIChatMessage(role: .user, content: "bbbbbb"),
+        ], maxTokens: 10)
+        let price = ModelPrice(
+            provider: "fictional", modelPrefix: "fixture", inputPerMTok: 1, outputPerMTok: 2,
+            cacheReadPerMTok: nil, cacheWritePerMTok: nil, currency: "CNY", updatedAt: "fixture"
+        )
+        XCTAssertEqual(ResearchTriage.reservedCost(for: request, price: price), 23)
+        XCTAssertEqual(ResearchTriage.reservedCost(for: request, price: nil), 0)
+    }
+
     func testTriageParserRejectsProseWithoutArray() {
         XCTAssertTrue(ResearchTriage.parse("I cannot help with that.").isEmpty)
     }

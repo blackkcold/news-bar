@@ -61,6 +61,15 @@ struct BrowserDataTab: View {
                     clearCookiesPrompt = true
                 }
                 .disabled(controller.sites.isEmpty)
+                if controller.cookieRecoveryPending {
+                    Button(english ? "Retry reading saved cookies" : "重试读取已保存 Cookie") {
+                        Task { await controller.retryCookieRecovery() }
+                    }
+                } else if controller.cookieDurabilityPending {
+                    Button(english ? "Retry cookie disk synchronization" : "重试 Cookie 磁盘同步") {
+                        Task { await controller.retryCookieDurability() }
+                    }
+                }
             } header: {
                 Text(english ? "Cookies" : "Cookie")
             }
@@ -153,7 +162,9 @@ struct BrowserDataTab: View {
                 Task { await controller.clearCookies() }
             }
         } message: {
-            Text(english ? "Saved sign-ins will be removed from this Mac. This cannot be undone." : "将删除本机保存的所有站点登录 Cookie，无法撤销。")
+            Text(english
+                 ? "Saved sign-ins will be removed from this Mac. Open readers remain signed in until closed; use “Remember this site's sign-in” to save again. This cannot be undone."
+                 : "将删除本机保存的所有站点登录 Cookie，无法撤销。已打开的阅读器会保持当前登录至关闭；如需再次保存，请使用“记住此站登录”。")
         }
         .confirmationDialog(
             english ? "Clear reading history?" : "清除阅读历史？",

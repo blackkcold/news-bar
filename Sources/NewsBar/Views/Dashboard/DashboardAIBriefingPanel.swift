@@ -1,5 +1,21 @@
 import SwiftUI
 
+enum AISummaryPresentationPolicy {
+    static func needsAutomaticGeneration(state: AISummaryState, enabled: Bool) -> Bool {
+        guard enabled else { return false }
+        switch state {
+        case .idle, .error:
+            return true
+        case .noKey, .fetching, .summarizing, .done, .truncated:
+            return false
+        }
+    }
+
+    static func canRegenerate(enabled: Bool, isRefreshing: Bool, isCoolingDown: Bool) -> Bool {
+        enabled && !isRefreshing && !isCoolingDown
+    }
+}
+
 struct DashboardAIBriefingPanel: View {
     @Environment(AppSettings.self) private var settings
     let orchestrator: NewsOrchestrator
@@ -88,6 +104,7 @@ struct DashboardAIBriefingPanel: View {
     }
 
     private var cardStateText: String {
+        guard settings.aiSummaryEnabled else { return "dash.state.disabled".localized }
         switch summaryState {
         case .idle: return "dash.state.idle".localized
         case .noKey: return "dash.state.noKey".localized
@@ -102,38 +119,53 @@ struct DashboardAIBriefingPanel: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             header
-            if let manifest = orchestrator.aiSummaryManifest {
+            if settings.aiSummaryEnabled, let manifest = orchestrator.aiSummaryManifest {
                 Text(settings.appLanguage == .en
                      ? "Based on collected titles · \(manifest.coverageStart.formatted(date: .omitted, time: .shortened))–\(manifest.asOf.formatted(date: .omitted, time: .shortened)) · not a complete daily archive"
                      : "基于已采集标题 · \(manifest.coverageStart.formatted(date: .omitted, time: .shortened))–\(manifest.asOf.formatted(date: .omitted, time: .shortened)) · 非完整全天报道")
                     .font(.caption2).foregroundStyle(.secondary)
             }
 
-            switch summaryState {
-            case .idle:
-                emptyState(message: cardStateText, systemImage: "sparkles")
-            case .noKey:
-                emptyState(message: cardStateText, systemImage: "key.fill", actionTitle: "dash.configureKey".localized) {
+            if !settings.aiSummaryEnabled {
+                emptyState(message: cardStateText, systemImage: "sparkles", actionTitle: "dash.openSettings".localized) {
                     onConfigureAI()
                 }
-            case .fetching:
-                loadingState(message: cardStateText)
-            case .summarizing:
-                loadingState(message: cardStateText)
-            case .error(let message):
-                errorState(message: message)
-            case .done, .truncated:
-                if hasCitationSnapshot, let parsedSummary {
-                    briefingContent(parsedSummary: parsedSummary)
-                } else if let text = resolvedSummaryText {
-                    fallbackSummary(
-                        text,
-                        note: hasCitationSnapshot
-                            ? nil
-                            : "dash.fallbackNote".localized
-                    )
-                } else {
-                    emptyState(message: "dash.noBriefing".localized, systemImage: "sparkles")
+            } else {
+                switch summaryState {
+                case .idle:
+                    emptyState(message: cardStateText, systemImage: "sparkles")
+                case .noKey:
+                    emptyState(message: cardStateText, systemImage: "key.fill", actionTitle: "dash.configureKey".localized) {
+                        onConfigureAI()
+                    }
+                case .fetching:
+                    loadingState(message: cardStateText)
+                case .summarizing:
+                    loadingState(message: cardStateText)
+                case .error(let message):
+                    errorState(message: message)
+                case .done, .truncated:
+                    if hasCitationSnapshot, let parsedSummary {
+                        briefingContent(parsedSummary: parsedSummary)
+                    } else if let text = resolvedSummaryText {
+                        fallbackSummary(
+                            text,
+                            note: hasCitationSnapshot
+                                ? nil
+                                : "dash.fallbackNote".localized
+                        )
+                    } else {
+                        emptyState(message: "dash.noBriefing".localized, systemImage: "sparkles")
+                    }
+                    if case .truncated = summaryState {
+                        HStack(spacing: 8) {
+                            Label("aiCard.maybeIncomplete".localized, systemImage: "exclamationmark.triangle.fill")
+                                .font(.caption)
+                                .foregroundStyle(.orange)
+                            Spacer(minLength: 0)
+                            retryButton
+                        }
+                    }
                 }
             }
         }
@@ -186,14 +218,11 @@ struct DashboardAIBriefingPanel: View {
             guard !Task.isCancelled, sharedSummaryNeedsGeneration else { return }
             await orchestrator.generateSharedSummaryIfNeeded(settings: settings)
         }
-        .task(id: isSummaryRefreshing) {
-            // Keep the manual-regeneration cooldown ticking so the refresh
-            // button un-disables promptly instead of getting stuck.
-            while regenerationCooldownRemaining > 0 || AISummaryService.regenerationCooldownRemaining() > 0 {
-                regenerationCooldownRemaining = AISummaryService.regenerationCooldownRemaining()
-                try? await Task.sleep(nanoseconds: 1_000_000_000)
-            }
-            regenerationCooldownRemaining = 0
+        .task(id: AISummaryService.manualRegenerationCooldown.lastRegeneration) {
+            await AISummaryCooldownTicker.run(
+                remaining: { AISummaryService.regenerationCooldownRemaining() },
+                update: { regenerationCooldownRemaining = $0 }
+            )
         }
     }
 
@@ -251,7 +280,7 @@ struct DashboardAIBriefingPanel: View {
             }
             .buttonStyle(EditorialActionButtonStyle(compact: true))
             .controlSize(.small)
-            .disabled(isSummaryRefreshing || regenerationCooldownRemaining > 0)
+            .disabled(!canRegenerate)
             .help("dash.refresh".localized)
             .accessibilityLabel("dash.refresh".localized)
         }
@@ -349,12 +378,24 @@ struct DashboardAIBriefingPanel: View {
                 Spacer()
             }
 
-            Button("dash.openSettings".localized) {
-                onConfigureAI()
+            HStack(spacing: 8) {
+                retryButton
+                Button("dash.openSettings".localized) {
+                    onConfigureAI()
+                }
+                .buttonStyle(EditorialActionButtonStyle(compact: true))
+                .controlSize(.small)
             }
-            .buttonStyle(EditorialActionButtonStyle(compact: true))
-            .controlSize(.small)
         }
+    }
+
+    private var retryButton: some View {
+        Button("aiCard.regenerate".localized) {
+            Task { await orchestrator.regenerateAISummary(settings: settings) }
+        }
+        .buttonStyle(EditorialActionButtonStyle(compact: true))
+        .controlSize(.small)
+        .disabled(!canRegenerate)
     }
 
     private func emptyState(message: String, systemImage: String, actionTitle: String? = nil, action: (() -> Void)? = nil) -> some View {
@@ -393,6 +434,7 @@ struct DashboardAIBriefingPanel: View {
     }
 
     private var stateTint: Color {
+        guard settings.aiSummaryEnabled else { return .secondary }
         switch summaryState {
         case .idle: return .secondary
         case .noKey: return .orange
@@ -405,12 +447,15 @@ struct DashboardAIBriefingPanel: View {
     }
 
     private var sharedSummaryNeedsGeneration: Bool {
-        switch summaryState {
-        case .idle, .error, .truncated:
-            return true
-        default:
-            return false
-        }
+        AISummaryPresentationPolicy.needsAutomaticGeneration(state: summaryState, enabled: settings.aiSummaryEnabled)
+    }
+
+    private var canRegenerate: Bool {
+        AISummaryPresentationPolicy.canRegenerate(
+            enabled: settings.aiSummaryEnabled,
+            isRefreshing: isSummaryRefreshing,
+            isCoolingDown: regenerationCooldownRemaining > 0
+        )
     }
 
     private var isSummaryRefreshing: Bool {

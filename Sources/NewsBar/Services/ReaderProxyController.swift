@@ -196,11 +196,17 @@ final class ReaderProxyController {
         mode == .trustedProxy && networkAvailable && session?.id == candidate.id && candidate.networkEpoch == networkEpoch
     }
 
+    /// Changes for every path update, including automatic mode where no proxy
+    /// authorization is present to provide a session epoch.
+    var networkContextID: UUID { networkEpoch }
+
     /// Whether the reader may accept a destination that resolved only to the
     /// local Fake-IP block. Real private ranges are never relaxed here.
     func allowsFakeIPDestination() async -> Bool {
         guard mode == .strict, !blocksFakeIP, networkAvailable else { return false }
-        guard let detection = await detectFakeIP() else { return false }
+        let epoch = networkEpoch
+        guard let detection = await detectFakeIP(), epoch == networkEpoch,
+              mode == .strict, !blocksFakeIP, networkAvailable else { return false }
         return detection.isFakeIPNetwork
     }
 

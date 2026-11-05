@@ -225,7 +225,7 @@ enum NotificationService {
         let content = UNMutableNotificationContent()
         content.title = L10n.string("research.notif.title", language: language)
         content.subtitle = record.topic
-        let showsSummary = UserDefaults.standard
+        let showsSummary = TestIsolation.defaults
             .object(forKey: "researchNotificationShowsSummary") as? Bool ?? true
         content.body = showsSummary
             ? ResearchNotificationSummary.make(report: report, language: language)

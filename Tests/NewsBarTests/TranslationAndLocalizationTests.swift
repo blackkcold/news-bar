@@ -27,6 +27,43 @@ final class TranslationCacheStoreTests: XCTestCase {
         XCTAssertNil(other)
     }
 
+    func testTitlesWithSlashAndUnderscoreDoNotShareCachedTranslation() async {
+        let store = tempStore()
+        await store.saveTranslation("Slash title", for: "a/b", targetLang: "en")
+        let beforeSave = await store.cachedTranslation(for: "a_b", targetLang: "en")
+        XCTAssertNil(beforeSave)
+
+        await store.saveTranslation("Underscore title", for: "a_b", targetLang: "en")
+        let slash = await store.cachedTranslation(for: "a/b", targetLang: "en")
+        let underscore = await store.cachedTranslation(for: "a_b", targetLang: "en")
+        XCTAssertEqual(slash, "Slash title")
+        XCTAssertEqual(underscore, "Underscore title")
+    }
+
+    func testLongTitleCanBeCached() async {
+        let store = tempStore()
+        let title = String(repeating: "长", count: 400)
+
+        await store.saveTranslation("Long title", for: title, targetLang: "en")
+
+        let cached = await store.cachedTranslation(for: title, targetLang: "en")
+        XCTAssertEqual(cached, "Long title")
+    }
+
+    func testAmbiguousLegacyTranslationIsNotAssignedToEitherTitle() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("NewsBarTranslationLegacy-\(UUID().uuidString)")
+        let store = TranslationCacheStore(cacheDirectory: directory)
+        let oldURL = directory.appendingPathComponent("en|a_b.json")
+        try Data(#"{"translated":"unknown origin","timestamp":0}"#.utf8).write(to: oldURL)
+
+        let slash = await store.cachedTranslation(for: "a/b", targetLang: "en")
+        let underscore = await store.cachedTranslation(for: "a_b", targetLang: "en")
+
+        XCTAssertNil(slash)
+        XCTAssertNil(underscore)
+    }
+
     func testClearRemovesAllEntries() async {
         let store = tempStore()
         await store.saveTranslation("Title", for: "标题", targetLang: "en")

@@ -75,6 +75,9 @@ struct DashboardWindow: View {
         .frame(minWidth: 960, minHeight: 720)
         .adaptiveColorScheme()
         .appThemeSurface()
+        // Rebuild the surface when the process-wide language changes so every
+        // `.localized` label, not only the ones reading `settings`, refreshes.
+        .id(settings.appLanguage)
         .toolbar {
             ToolbarItem(placement: .principal) { toolbarTitle }
             ToolbarItemGroup(placement: .primaryAction) {

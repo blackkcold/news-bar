@@ -17,19 +17,19 @@ final class RSSDisplayCountTests: XCTestCase {
 
     func testAppSettingsDefaults() {
         let keys = ["rssUnifiedDisplayCount", "rssDefaultTextCount", "rssDefaultImageCount"]
-        for key in keys { UserDefaults.standard.removeObject(forKey: key) }
+        for key in keys { TestIsolation.defaults.removeObject(forKey: key) }
 
         let settings = AppSettings()
         XCTAssertTrue(settings.rssUnifiedDisplayCount)
         XCTAssertEqual(settings.rssDefaultTextCount, 10)
         XCTAssertEqual(settings.rssDefaultImageCount, 4)
 
-        for key in keys { UserDefaults.standard.removeObject(forKey: key) }
+        for key in keys { TestIsolation.defaults.removeObject(forKey: key) }
     }
 
     func testAppSettingsPersistsValues() {
         let keys = ["rssUnifiedDisplayCount", "rssDefaultTextCount", "rssDefaultImageCount"]
-        for key in keys { UserDefaults.standard.removeObject(forKey: key) }
+        for key in keys { TestIsolation.defaults.removeObject(forKey: key) }
 
         let settings = AppSettings()
         settings.rssUnifiedDisplayCount = false
@@ -41,48 +41,48 @@ final class RSSDisplayCountTests: XCTestCase {
         XCTAssertEqual(settings2.rssDefaultTextCount, 5)
         XCTAssertEqual(settings2.rssDefaultImageCount, 8)
 
-        for key in keys { UserDefaults.standard.removeObject(forKey: key) }
+        for key in keys { TestIsolation.defaults.removeObject(forKey: key) }
     }
 
     // MARK: - AppSettings whitelist validation on init
 
     func testAppSettingsRejectsInvalidTextCount() {
         let keys = ["rssUnifiedDisplayCount", "rssDefaultTextCount", "rssDefaultImageCount"]
-        for key in keys { UserDefaults.standard.removeObject(forKey: key) }
-        UserDefaults.standard.set(99, forKey: "rssDefaultTextCount")
-        UserDefaults.standard.set(7, forKey: "rssDefaultImageCount")
+        for key in keys { TestIsolation.defaults.removeObject(forKey: key) }
+        TestIsolation.defaults.set(99, forKey: "rssDefaultTextCount")
+        TestIsolation.defaults.set(7, forKey: "rssDefaultImageCount")
 
         let settings = AppSettings()
         XCTAssertEqual(settings.rssDefaultTextCount, 10)
         XCTAssertEqual(settings.rssDefaultImageCount, 4)
 
-        for key in keys { UserDefaults.standard.removeObject(forKey: key) }
+        for key in keys { TestIsolation.defaults.removeObject(forKey: key) }
     }
 
     func testAppSettingsAcceptsValidTextCounts() {
         let keys = ["rssUnifiedDisplayCount", "rssDefaultTextCount", "rssDefaultImageCount"]
-        for key in keys { UserDefaults.standard.removeObject(forKey: key) }
-        UserDefaults.standard.set(5, forKey: "rssDefaultTextCount")
+        for key in keys { TestIsolation.defaults.removeObject(forKey: key) }
+        TestIsolation.defaults.set(5, forKey: "rssDefaultTextCount")
 
         let settings = AppSettings()
         XCTAssertEqual(settings.rssDefaultTextCount, 5)
 
-        UserDefaults.standard.set(10, forKey: "rssDefaultTextCount")
+        TestIsolation.defaults.set(10, forKey: "rssDefaultTextCount")
         let settings2 = AppSettings()
         XCTAssertEqual(settings2.rssDefaultTextCount, 10)
 
-        for key in keys { UserDefaults.standard.removeObject(forKey: key) }
+        for key in keys { TestIsolation.defaults.removeObject(forKey: key) }
     }
 
     func testAppSettingsAcceptsValidImageCounts() {
         let keys = ["rssUnifiedDisplayCount", "rssDefaultTextCount", "rssDefaultImageCount"]
-        for key in keys { UserDefaults.standard.removeObject(forKey: key) }
-        UserDefaults.standard.set(6, forKey: "rssDefaultImageCount")
+        for key in keys { TestIsolation.defaults.removeObject(forKey: key) }
+        TestIsolation.defaults.set(6, forKey: "rssDefaultImageCount")
 
         let settings = AppSettings()
         XCTAssertEqual(settings.rssDefaultImageCount, 6)
 
-        for key in keys { UserDefaults.standard.removeObject(forKey: key) }
+        for key in keys { TestIsolation.defaults.removeObject(forKey: key) }
     }
 
     // MARK: - RSSSourceConfig effectiveTextCount — override chain (unified OFF mode)
@@ -213,9 +213,9 @@ final class RSSDisplayCountTests: XCTestCase {
 
     func testUnifiedON_TextIgnoresOverrideUsesGlobal() {
         let keys = ["rssUnifiedDisplayCount", "rssDefaultTextCount", "rssDefaultImageCount"]
-        for key in keys { UserDefaults.standard.removeObject(forKey: key) }
-        UserDefaults.standard.set(true, forKey: "rssUnifiedDisplayCount")
-        UserDefaults.standard.set(5, forKey: "rssDefaultTextCount")
+        for key in keys { TestIsolation.defaults.removeObject(forKey: key) }
+        TestIsolation.defaults.set(true, forKey: "rssUnifiedDisplayCount")
+        TestIsolation.defaults.set(5, forKey: "rssDefaultTextCount")
 
         let settings = AppSettings()
         let source = RSSSourceConfig(name: "X", url: "https://x.com", displayMode: .text,
@@ -223,14 +223,14 @@ final class RSSDisplayCountTests: XCTestCase {
         let result = settings.effectiveTextDisplayCount(for: source)
         XCTAssertEqual(result, 5, "unified ON must ignore per-source override (10) and use global (5)")
 
-        for key in keys { UserDefaults.standard.removeObject(forKey: key) }
+        for key in keys { TestIsolation.defaults.removeObject(forKey: key) }
     }
 
     func testUnifiedON_ImageIgnoresOverrideUsesGlobal() {
         let keys = ["rssUnifiedDisplayCount", "rssDefaultTextCount", "rssDefaultImageCount"]
-        for key in keys { UserDefaults.standard.removeObject(forKey: key) }
-        UserDefaults.standard.set(true, forKey: "rssUnifiedDisplayCount")
-        UserDefaults.standard.set(8, forKey: "rssDefaultImageCount")
+        for key in keys { TestIsolation.defaults.removeObject(forKey: key) }
+        TestIsolation.defaults.set(true, forKey: "rssUnifiedDisplayCount")
+        TestIsolation.defaults.set(8, forKey: "rssDefaultImageCount")
 
         let settings = AppSettings()
         let source = RSSSourceConfig(name: "Y", url: "https://y.com", displayMode: .image,
@@ -238,30 +238,30 @@ final class RSSDisplayCountTests: XCTestCase {
         let result = settings.effectiveImageDisplayCount(for: source)
         XCTAssertEqual(result, 8, "unified ON must ignore per-source override (4) and use global (8)")
 
-        for key in keys { UserDefaults.standard.removeObject(forKey: key) }
+        for key in keys { TestIsolation.defaults.removeObject(forKey: key) }
     }
 
     func testUnifiedON_TextReturnsGlobalDefaultWhenNoOverrideSet() {
         let keys = ["rssUnifiedDisplayCount", "rssDefaultTextCount", "rssDefaultImageCount"]
-        for key in keys { UserDefaults.standard.removeObject(forKey: key) }
-        UserDefaults.standard.set(true, forKey: "rssUnifiedDisplayCount")
-        UserDefaults.standard.set(10, forKey: "rssDefaultTextCount")
+        for key in keys { TestIsolation.defaults.removeObject(forKey: key) }
+        TestIsolation.defaults.set(true, forKey: "rssUnifiedDisplayCount")
+        TestIsolation.defaults.set(10, forKey: "rssDefaultTextCount")
 
         let settings = AppSettings()
         let source = RSSSourceConfig(name: "Z", url: "https://z.com", displayMode: .text)
         let result = settings.effectiveTextDisplayCount(for: source)
         XCTAssertEqual(result, 10)
 
-        for key in keys { UserDefaults.standard.removeObject(forKey: key) }
+        for key in keys { TestIsolation.defaults.removeObject(forKey: key) }
     }
 
     // MARK: - Unified OFF: override wins, global as fallback
 
     func testUnifiedOFF_TextOverrideWins() {
         let keys = ["rssUnifiedDisplayCount", "rssDefaultTextCount", "rssDefaultImageCount"]
-        for key in keys { UserDefaults.standard.removeObject(forKey: key) }
-        UserDefaults.standard.set(false, forKey: "rssUnifiedDisplayCount")
-        UserDefaults.standard.set(5, forKey: "rssDefaultTextCount")
+        for key in keys { TestIsolation.defaults.removeObject(forKey: key) }
+        TestIsolation.defaults.set(false, forKey: "rssUnifiedDisplayCount")
+        TestIsolation.defaults.set(5, forKey: "rssDefaultTextCount")
 
         let settings = AppSettings()
         let source = RSSSourceConfig(name: "X", url: "https://x.com", displayMode: .text,
@@ -269,28 +269,28 @@ final class RSSDisplayCountTests: XCTestCase {
         let result = settings.effectiveTextDisplayCount(for: source)
         XCTAssertEqual(result, 10, "unified OFF must honor valid per-source override")
 
-        for key in keys { UserDefaults.standard.removeObject(forKey: key) }
+        for key in keys { TestIsolation.defaults.removeObject(forKey: key) }
     }
 
     func testUnifiedOFF_TextFallsToGlobalWhenNoOverride() {
         let keys = ["rssUnifiedDisplayCount", "rssDefaultTextCount", "rssDefaultImageCount"]
-        for key in keys { UserDefaults.standard.removeObject(forKey: key) }
-        UserDefaults.standard.set(false, forKey: "rssUnifiedDisplayCount")
-        UserDefaults.standard.set(10, forKey: "rssDefaultTextCount")
+        for key in keys { TestIsolation.defaults.removeObject(forKey: key) }
+        TestIsolation.defaults.set(false, forKey: "rssUnifiedDisplayCount")
+        TestIsolation.defaults.set(10, forKey: "rssDefaultTextCount")
 
         let settings = AppSettings()
         let source = RSSSourceConfig(name: "X", url: "https://x.com", displayMode: .text)
         let result = settings.effectiveTextDisplayCount(for: source)
         XCTAssertEqual(result, 10, "unified OFF falls to global when no override")
 
-        for key in keys { UserDefaults.standard.removeObject(forKey: key) }
+        for key in keys { TestIsolation.defaults.removeObject(forKey: key) }
     }
 
     func testUnifiedOFF_ImageOverrideWins() {
         let keys = ["rssUnifiedDisplayCount", "rssDefaultTextCount", "rssDefaultImageCount"]
-        for key in keys { UserDefaults.standard.removeObject(forKey: key) }
-        UserDefaults.standard.set(false, forKey: "rssUnifiedDisplayCount")
-        UserDefaults.standard.set(4, forKey: "rssDefaultImageCount")
+        for key in keys { TestIsolation.defaults.removeObject(forKey: key) }
+        TestIsolation.defaults.set(false, forKey: "rssUnifiedDisplayCount")
+        TestIsolation.defaults.set(4, forKey: "rssDefaultImageCount")
 
         let settings = AppSettings()
         let source = RSSSourceConfig(name: "X", url: "https://x.com", displayMode: .image,
@@ -298,28 +298,28 @@ final class RSSDisplayCountTests: XCTestCase {
         let result = settings.effectiveImageDisplayCount(for: source)
         XCTAssertEqual(result, 8, "unified OFF must honor valid per-source override")
 
-        for key in keys { UserDefaults.standard.removeObject(forKey: key) }
+        for key in keys { TestIsolation.defaults.removeObject(forKey: key) }
     }
 
     func testUnifiedOFF_ImageFallsToGlobalWhenNoOverride() {
         let keys = ["rssUnifiedDisplayCount", "rssDefaultTextCount", "rssDefaultImageCount"]
-        for key in keys { UserDefaults.standard.removeObject(forKey: key) }
-        UserDefaults.standard.set(false, forKey: "rssUnifiedDisplayCount")
-        UserDefaults.standard.set(6, forKey: "rssDefaultImageCount")
+        for key in keys { TestIsolation.defaults.removeObject(forKey: key) }
+        TestIsolation.defaults.set(false, forKey: "rssUnifiedDisplayCount")
+        TestIsolation.defaults.set(6, forKey: "rssDefaultImageCount")
 
         let settings = AppSettings()
         let source = RSSSourceConfig(name: "X", url: "https://x.com", displayMode: .image)
         let result = settings.effectiveImageDisplayCount(for: source)
         XCTAssertEqual(result, 6, "unified OFF falls to global when no override")
 
-        for key in keys { UserDefaults.standard.removeObject(forKey: key) }
+        for key in keys { TestIsolation.defaults.removeObject(forKey: key) }
     }
 
     func testUnifiedOFF_TextFallsToFallbackWhenBothInvalid() {
         let keys = ["rssUnifiedDisplayCount", "rssDefaultTextCount", "rssDefaultImageCount"]
-        for key in keys { UserDefaults.standard.removeObject(forKey: key) }
-        UserDefaults.standard.set(false, forKey: "rssUnifiedDisplayCount")
-        UserDefaults.standard.set(7, forKey: "rssDefaultTextCount")
+        for key in keys { TestIsolation.defaults.removeObject(forKey: key) }
+        TestIsolation.defaults.set(false, forKey: "rssUnifiedDisplayCount")
+        TestIsolation.defaults.set(7, forKey: "rssDefaultTextCount")
 
         let settings = AppSettings()
         let source = RSSSourceConfig(name: "X", url: "https://x.com", displayMode: .text,
@@ -327,14 +327,14 @@ final class RSSDisplayCountTests: XCTestCase {
         let result = settings.effectiveTextDisplayCount(for: source)
         XCTAssertEqual(result, 10, "unified OFF falls to hard-coded fallback when override and global both invalid")
 
-        for key in keys { UserDefaults.standard.removeObject(forKey: key) }
+        for key in keys { TestIsolation.defaults.removeObject(forKey: key) }
     }
 
     func testUnifiedOFF_ImageFallsToFallbackWhenBothInvalid() {
         let keys = ["rssUnifiedDisplayCount", "rssDefaultTextCount", "rssDefaultImageCount"]
-        for key in keys { UserDefaults.standard.removeObject(forKey: key) }
-        UserDefaults.standard.set(false, forKey: "rssUnifiedDisplayCount")
-        UserDefaults.standard.set(5, forKey: "rssDefaultImageCount")
+        for key in keys { TestIsolation.defaults.removeObject(forKey: key) }
+        TestIsolation.defaults.set(false, forKey: "rssUnifiedDisplayCount")
+        TestIsolation.defaults.set(5, forKey: "rssDefaultImageCount")
 
         let settings = AppSettings()
         let source = RSSSourceConfig(name: "X", url: "https://x.com", displayMode: .image,
@@ -342,7 +342,7 @@ final class RSSDisplayCountTests: XCTestCase {
         let result = settings.effectiveImageDisplayCount(for: source)
         XCTAssertEqual(result, 4, "unified OFF falls to hard-coded fallback when override and global both invalid")
 
-        for key in keys { UserDefaults.standard.removeObject(forKey: key) }
+        for key in keys { TestIsolation.defaults.removeObject(forKey: key) }
     }
 
     // MARK: - RSSSourceConfig hashable / equatable with overrides

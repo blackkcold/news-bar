@@ -9,6 +9,7 @@ struct ResearchDetailView: View {
     @State private var copied = false
     @State private var showDeleteConfirmation = false
     @State private var verificationExpanded = false
+    @State private var changeHistory: [ResearchChange] = []
 
     private static let relativeFormatter: RelativeDateTimeFormatter = {
         let formatter = RelativeDateTimeFormatter()
@@ -41,6 +42,10 @@ struct ResearchDetailView: View {
                 } else if !record.status.isActive {
                     emptyReport
                 }
+
+                if !changeHistory.isEmpty {
+                    changesSection
+                }
             }
             .padding(20)
             .frame(maxWidth: .infinity, alignment: .topLeading)
@@ -70,6 +75,9 @@ struct ResearchDetailView: View {
         // so a retry restarts the poll without a manual refresh.
         .task(id: "\(record.id)|\(record.status.isActive)") {
             await model.poll(id: record.id)
+        }
+        .task(id: record.id) {
+            changeHistory = await model.changeHistory(for: record)
         }
     }
 
@@ -265,6 +273,58 @@ struct ResearchDetailView: View {
         }
         .padding(10)
         .newsCardSurface(cornerRadius: 10)
+    }
+
+    private var changesSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Image(systemName: "clock.arrow.circlepath")
+                    .font(.system(size: 12))
+                    .foregroundStyle(accent)
+                Text("research.changes.title".localized)
+                    .font(.headline)
+                Spacer()
+                Text(L10n.string("research.changes.count", changeHistory.count))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            ForEach(changeHistory) { change in
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(spacing: 6) {
+                        Text(Self.relativeFormatter.localizedString(
+                            for: change.updatedAt, relativeTo: Date()
+                        ))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        if change.summaryChanged {
+                            EditorialTag(
+                                text: "research.changes.summaryChanged".localized,
+                                fallbackTint: accent
+                            )
+                        }
+                        Spacer(minLength: 4)
+                    }
+                    Text(change.summary.isEmpty ? change.overview : change.summary)
+                        .font(.callout)
+                        .lineLimit(3)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Text(L10n.string(
+                        "research.changes.metrics",
+                        change.evidenceCount,
+                        change.timelineCount,
+                        change.sourceCount
+                    ))
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                }
+                .padding(10)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .newsCardSurface(cornerRadius: 8)
+            }
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("research.changes.title".localized)
     }
 
     private var emptyReport: some View {

@@ -65,6 +65,9 @@ struct PopoverContent: View {
         .frame(width: 400)
         .adaptiveColorScheme()
         .appThemeSurface()
+        // `.localized` reads a process-wide language; changing it must rebuild
+        // the surface so every label refreshes immediately.
+        .id(settings.appLanguage)
         .task {
             await orchestrator.loadCached(settings: settings)
         }

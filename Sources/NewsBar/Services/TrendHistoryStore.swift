@@ -15,6 +15,8 @@ actor TrendHistoryStore {
     init(fileURL: URL? = nil) {
         if let fileURL {
             self.fileURL = fileURL
+        } else if TestIsolation.isActive {
+            self.fileURL = TestIsolation.directory("Trend").appendingPathComponent("trend-history.json")
         } else {
             let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
                 ?? FileManager.default.temporaryDirectory
@@ -28,8 +30,10 @@ actor TrendHistoryStore {
     func record(
         weibo: [NewsItem],
         bilibili: [NewsItem],
-        now: Date = Date()
+        now: Date = Date(),
+        token: CacheWriteToken? = nil
     ) -> TrendChangeSummary {
+        guard token?.isCurrent != false else { return .none }
         loadIfNeeded()
         prune(now: now)
 

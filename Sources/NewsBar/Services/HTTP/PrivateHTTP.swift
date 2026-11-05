@@ -11,13 +11,26 @@ enum PrivateHTTPError: Error, Equatable {
 /// can validate each hop, and enforces the body ceiling *while* the response
 /// is streaming instead of after it has been buffered.
 enum PrivateHTTP {
+    /// One ephemeral session for outbound feed traffic. Reusing it keeps the
+    /// connection pool, TLS session cache and resolver cache warm; each task
+    /// still carries its own redirect delegate.
+    private static let sharedSession: URLSession = {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.httpCookieStorage = nil
+        configuration.httpCookieAcceptPolicy = .never
+        configuration.urlCache = nil
+        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
+        configuration.timeoutIntervalForResource = 300
+        return URLSession(configuration: configuration)
+    }()
+
     enum RedirectPolicy: Sendable {
         /// Hand the 3xx response back to the caller, which validates the
         /// `Location` target itself.
         case deny
         /// Follow a hop only after the target passes the public-URL and DNS
         /// checks.
-        case followValidatedPublic
+        case followValidatedPublic(RSSDestinationPolicy)
     }
 
     static let defaultMaxBytes = 4 * 1024 * 1024
@@ -35,26 +48,17 @@ enum PrivateHTTP {
         var request = request
         if let timeout { request.timeoutInterval = timeout }
 
-        let configuration = URLSessionConfiguration.ephemeral
-        configuration.httpCookieStorage = nil
-        configuration.httpCookieAcceptPolicy = .never
-        configuration.urlCache = nil
-        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
-        configuration.timeoutIntervalForRequest = request.timeoutInterval
-        configuration.timeoutIntervalForResource = 300
-        let session = URLSession(configuration: configuration)
+        let session = sharedSession
 
         let (bytes, response) = try await session.bytes(
             for: request,
             delegate: RequestDelegate(policy: redirectPolicy)
         )
         guard let http = response as? HTTPURLResponse else {
-            session.invalidateAndCancel()
             throw PrivateHTTPError.invalidResponse
         }
         if let declared = http.value(forHTTPHeaderField: "Content-Length").flatMap(Int.init),
            declared > maxBytes {
-            session.invalidateAndCancel()
             throw PrivateHTTPError.tooLarge(maxBytes)
         }
 
@@ -77,11 +81,9 @@ enum PrivateHTTP {
                 } catch {
                     continuation.finish(throwing: error)
                 }
-                session.invalidateAndCancel()
             }
             continuation.onTermination = { _ in
                 task.cancel()
-                session.invalidateAndCancel()
             }
         }
         return (stream, http)
@@ -105,17 +107,12 @@ enum PrivateHTTP {
         if let session {
             active = session
         } else {
-            let configuration = URLSessionConfiguration.ephemeral
-            configuration.httpCookieStorage = nil
-            configuration.httpCookieAcceptPolicy = .never
-            configuration.urlCache = nil
-            configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
-            configuration.timeoutIntervalForRequest = request.timeoutInterval
-            configuration.timeoutIntervalForResource = max(request.timeoutInterval, 30)
-            active = URLSession(configuration: configuration)
+            active = sharedSession
         }
         defer {
-            if ownedSession { active.invalidateAndCancel() }
+            // The shared session is reused; a caller-provided session stays
+            // owned by the caller.
+            _ = ownedSession
         }
 
         let (bytes, response) = try await active.bytes(
@@ -126,7 +123,8 @@ enum PrivateHTTP {
             throw PrivateHTTPError.invalidResponse
         }
 
-        if let declared = http.value(forHTTPHeaderField: "Content-Length").flatMap(Int.init),
+        if http.statusCode != 304,
+           let declared = http.value(forHTTPHeaderField: "Content-Length").flatMap(Int.init),
            declared > maxBytes {
             throw PrivateHTTPError.tooLarge(maxBytes)
         }
@@ -169,10 +167,10 @@ private final class RequestDelegate: NSObject, URLSessionTaskDelegate, @unchecke
         switch policy {
         case .deny:
             return nil
-        case .followValidatedPublic:
+        case .followValidatedPublic(let destinationPolicy):
             guard let url = request.url,
-                  SecurityPolicies.validatePublicHTTPURL(url.absoluteString).url != nil,
-                  await ReaderNavigationPolicy.resolveDestination(url) == .publicDestination else {
+                  url.scheme?.lowercased() == "https",
+                  (try? await destinationPolicy.allows(url)) == true else {
                 return nil
             }
             return request

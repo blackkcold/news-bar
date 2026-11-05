@@ -44,7 +44,7 @@ enum KeychainManager {
     /// Disable: `defaults delete com.newsbar.app debugDisableKeychainAccess`
     static var isDisabled: Bool {
         #if DEBUG
-        return UserDefaults.standard.bool(forKey: "debugDisableKeychainAccess")
+        return TestIsolation.defaults.bool(forKey: "debugDisableKeychainAccess")
         #else
         return false
         #endif
@@ -78,20 +78,20 @@ enum KeychainManager {
     }
 
     private static func markAPIKeySaved(account: String) {
-        UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: "apiKeyLastSaved-\(account)")
+        TestIsolation.defaults.set(Date().timeIntervalSince1970, forKey: "apiKeyLastSaved-\(account)")
         // Keep the older account-scoped flag for users upgrading from builds
         // that saved `hasAIKey-ai-key-{provider}` before provider-scoped flags
         // became the app-level precheck source.
-        UserDefaults.standard.set(true, forKey: "hasAIKey-\(account)")
+        TestIsolation.defaults.set(true, forKey: "hasAIKey-\(account)")
         if let providerFlag = providerKeyExistsFlag(for: account) {
-            UserDefaults.standard.set(true, forKey: providerFlag)
+            TestIsolation.defaults.set(true, forKey: providerFlag)
         }
     }
 
     private static func clearAPIKeySavedFlag(account: String) {
-        UserDefaults.standard.removeObject(forKey: "hasAIKey-\(account)")
+        TestIsolation.defaults.removeObject(forKey: "hasAIKey-\(account)")
         if let providerFlag = providerKeyExistsFlag(for: account) {
-            UserDefaults.standard.removeObject(forKey: providerFlag)
+            TestIsolation.defaults.removeObject(forKey: providerFlag)
         }
     }
 
@@ -270,7 +270,7 @@ enum KeychainManager {
     // MARK: - Staleness
 
     static func isKeyStale(account: String) -> Bool {
-        let lastSaved = UserDefaults.standard.double(forKey: "apiKeyLastSaved-\(account)")
+        let lastSaved = TestIsolation.defaults.double(forKey: "apiKeyLastSaved-\(account)")
         guard lastSaved > 0 else { return true }
         return Date().timeIntervalSince1970 - lastSaved > 30 * 24 * 3600
     }

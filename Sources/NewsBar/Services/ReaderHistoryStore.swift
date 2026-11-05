@@ -16,6 +16,9 @@ struct FileReaderHistoryPersistence: ReaderHistoryPersisting {
     }
 
     static func defaultFileURL() -> URL {
+        if TestIsolation.isActive {
+            return TestIsolation.directory("ReaderHistory").appendingPathComponent("history.json")
+        }
         let appSupport = FileManager.default.urls(
             for: .applicationSupportDirectory, in: .userDomainMask
         ).first ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Application Support")

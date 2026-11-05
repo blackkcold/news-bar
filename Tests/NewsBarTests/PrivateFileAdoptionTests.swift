@@ -23,7 +23,9 @@ final class PrivateFileAdoptionTests: XCTestCase {
 
         await store.saveTranslation("Title", for: "标题", targetLang: "en")
 
-        let url = directory.appendingPathComponent("en|标题.json")
+        let files = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
+        XCTAssertEqual(files.count, 1)
+        let url = try XCTUnwrap(files.first)
         XCTAssertEqual(try mode(directory), 0o700)
         XCTAssertEqual(try mode(url), 0o600)
     }

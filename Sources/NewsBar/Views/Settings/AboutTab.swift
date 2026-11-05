@@ -16,6 +16,10 @@ private struct SearchAuthRetryActionKey: EnvironmentKey {
     static let defaultValue: (@MainActor (SearchProviderID) async -> Void)? = nil
 }
 
+private struct RSSHealthActionKey: EnvironmentKey {
+    static let defaultValue: (@MainActor (AppSettings) -> [RSSSourceHealth])? = nil
+}
+
 extension EnvironmentValues {
     var cacheClearAction: (() -> Void)? {
         get { self[CacheClearActionKey.self] }
@@ -37,6 +41,11 @@ extension EnvironmentValues {
     var searchAuthRetryAction: (@MainActor (SearchProviderID) async -> Void)? {
         get { self[SearchAuthRetryActionKey.self] }
         set { self[SearchAuthRetryActionKey.self] = newValue }
+    }
+
+    var rssHealthAction: (@MainActor (AppSettings) -> [RSSSourceHealth])? {
+        get { self[RSSHealthActionKey.self] }
+        set { self[RSSHealthActionKey.self] = newValue }
     }
 }
 

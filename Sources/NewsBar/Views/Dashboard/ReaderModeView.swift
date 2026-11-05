@@ -53,14 +53,38 @@ struct ReaderModeView: View {
     // MARK: - Controls
 
     private var controlBar: some View {
+        // The full bar needs roughly 700 pt. In a narrow reader pane, fall
+        // back to a compact menu so every control stays reachable instead of
+        // clipping the word count or the theme picker.
+        ViewThatFits(in: .horizontal) {
+            fullControlBar
+            compactControlBar
+        }
+        .padding(.horizontal, 12)
+        .frame(height: 42)
+        .background(style.controlBackground)
+    }
+
+    private var exitControl: some View {
+        Button(action: onExit) {
+            Label(english ? "Web page" : "网页", systemImage: "safari")
+                .font(.system(size: 11, weight: .medium))
+        }
+        .buttonStyle(.borderless)
+        .help(english ? "Leave reader mode and show the web page" : "退出阅读模式，返回网页")
+        .accessibilityLabel(english ? "Leave reader mode" : "退出阅读模式")
+    }
+
+    private var wordCountLabel: some View {
+        Text(english ? "\(document.wordCount) words" : "\(document.wordCount) 字")
+            .font(.system(size: 10, design: .monospaced))
+            .foregroundStyle(style.secondary)
+            .accessibilityLabel(english ? "\(document.wordCount) words" : "全文约 \(document.wordCount) 字")
+    }
+
+    private var fullControlBar: some View {
         HStack(spacing: 10) {
-            Button(action: onExit) {
-                Label(english ? "Web page" : "网页", systemImage: "safari")
-                    .font(.system(size: 11, weight: .medium))
-            }
-            .buttonStyle(.borderless)
-            .help(english ? "Leave reader mode and show the web page" : "退出阅读模式，返回网页")
-            .accessibilityLabel(english ? "Leave reader mode" : "退出阅读模式")
+            exitControl
 
             Divider().frame(height: 14)
 
@@ -124,15 +148,50 @@ struct ReaderModeView: View {
             .accessibilityLabel(english ? "Reader page theme" : "阅读页面主题")
 
             Spacer(minLength: 4)
-
-            Text(english ? "\(document.wordCount) words" : "\(document.wordCount) 字")
-                .font(.system(size: 10, design: .monospaced))
-                .foregroundStyle(style.secondary)
-                .accessibilityLabel(english ? "\(document.wordCount) words" : "全文约 \(document.wordCount) 字")
+            wordCountLabel
         }
-        .padding(.horizontal, 12)
-        .frame(height: 42)
-        .background(style.controlBackground)
+    }
+
+    private var compactControlBar: some View {
+        HStack(spacing: 10) {
+            exitControl
+
+            Divider().frame(height: 14)
+
+            Menu {
+                Section(english ? "Text size" : "字号") {
+                    Button(english ? "Small" : "小") { settings.readerModeFontScale = 0.9 }
+                    Button(english ? "Standard" : "标准") { settings.readerModeFontScale = 1.0 }
+                    Button(english ? "Large" : "大") { settings.readerModeFontScale = 1.15 }
+                    Button(english ? "Extra large" : "特大") { settings.readerModeFontScale = 1.35 }
+                }
+                Section(english ? "Line spacing" : "行距") {
+                    Button(english ? "Tight" : "紧凑") { settings.readerModeLineSpacing = 1.35 }
+                    Button(english ? "Normal" : "标准") { settings.readerModeLineSpacing = 1.55 }
+                    Button(english ? "Loose" : "宽松") { settings.readerModeLineSpacing = 1.75 }
+                }
+                Section(english ? "Text width" : "正文宽度") {
+                    Button(english ? "Narrow" : "窄") { settings.readerModeWidth = 620 }
+                    Button(english ? "Standard" : "标准") { settings.readerModeWidth = 690 }
+                    Button(english ? "Wide" : "宽") { settings.readerModeWidth = 760 }
+                }
+                Section(english ? "Page" : "页面") {
+                    Button(english ? "Auto" : "自动") { settings.readerModeTheme = "auto" }
+                    Button(english ? "Paper" : "纸张") { settings.readerModeTheme = "paper" }
+                    Button(english ? "Dark" : "深色") { settings.readerModeTheme = "dark" }
+                }
+            } label: {
+                Label("Aa", systemImage: "textformat.size")
+                    .font(.system(size: 11, weight: .semibold))
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            .help(english ? "Reader appearance" : "阅读外观")
+            .accessibilityLabel(english ? "Reader appearance" : "阅读外观")
+
+            Spacer(minLength: 4)
+            wordCountLabel
+        }
     }
 
     // MARK: - Header / footer
@@ -385,62 +444,10 @@ private struct ReaderModeImageBlock: View {
                 return
             }
             image = loaded
+        } catch is CancellationError {
+            return
         } catch {
             failed = true
         }
     }
-}
-
-/// Small, bounded image fetcher for reader mode. It replays only this site's
-/// saved first-party cookies and sends the article URL as referer, matching the
-/// reader's own privacy model. Failures are local: the text never waits.
-actor ReaderModeImageLoader {
-    static let shared = ReaderModeImageLoader()
-    static let maxBytes = 8 * 1024 * 1024
-
-    private let session: URLSession
-
-    init() {
-        let configuration = URLSessionConfiguration.ephemeral
-        configuration.timeoutIntervalForRequest = 15
-        configuration.timeoutIntervalForResource = 20
-        configuration.httpMaximumConnectionsPerHost = 4
-        configuration.requestCachePolicy = .returnCacheDataElseLoad
-        session = URLSession(configuration: configuration)
-    }
-
-    func load(_ url: URL, cookies: [HTTPCookie], referer: String?) async throws -> Data {
-        guard url.scheme?.lowercased() == "https",
-              ReaderNavigationPolicy.allowedURL(url.absoluteString) != nil else {
-            throw ReaderModeImageError.invalidURL
-        }
-        var request = URLRequest(url: url)
-        request.httpMethod = "GET"
-        request.timeoutInterval = 15
-        request.setValue(
-            "image/avif,image/webp,image/png,image/jpeg,image/*;q=0.8,*/*;q=0.5",
-            forHTTPHeaderField: "Accept"
-        )
-        request.setValue(ReaderUserAgent.value(), forHTTPHeaderField: "User-Agent")
-        if !cookies.isEmpty {
-            for (name, value) in HTTPCookie.requestHeaderFields(with: cookies) {
-                request.setValue(value, forHTTPHeaderField: name)
-            }
-        }
-        if let referer, let refererURL = URL(string: referer), refererURL.host != nil {
-            request.setValue(refererURL.absoluteString, forHTTPHeaderField: "Referer")
-        }
-        let (data, response) = try await session.data(for: request)
-        guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
-            throw ReaderModeImageError.http
-        }
-        guard data.count <= Self.maxBytes else { throw ReaderModeImageError.tooLarge }
-        return data
-    }
-}
-
-enum ReaderModeImageError: Error, Equatable {
-    case invalidURL
-    case http
-    case tooLarge
 }

@@ -53,15 +53,13 @@ final class AISearchTests: XCTestCase {
                 truncated: false
             )
         },
-        reserve: @escaping @Sendable () async -> Bool = { true },
-        settle: @escaping @Sendable (AIChatResponse) async -> Void = { _ in }
+        preflight: @escaping @Sendable () async -> Bool = { true }
     ) -> AISearchService {
         AISearchService(
             search: search,
             read: read,
             answer: answer,
-            reserve: reserve,
-            settle: settle,
+            preflight: preflight,
             now: { Date(timeIntervalSince1970: 1_800_000_000) },
             pageCount: pageCount,
             thinking: .medium,
@@ -196,7 +194,7 @@ final class AISearchTests: XCTestCase {
         XCTAssertEqual(answer.citationIndices, [1, 2])
     }
 
-    func testQuotaIsReservedBeforeAnswering() async {
+    func testQuotaIsCheckedBeforeAnswering() async {
         let answered = Counter()
         let service = self.service(
             search: { _, _ in [self.hit(1)] },
@@ -205,7 +203,7 @@ final class AISearchTests: XCTestCase {
                 answered.increment()
                 return AIChatResponse(text: self.answerText("a"), truncated: false)
             },
-            reserve: { false }
+            preflight: { false }
         )
         do {
             _ = try await service.run(question: "q", scope: .web, page: nil)
@@ -214,6 +212,19 @@ final class AISearchTests: XCTestCase {
             XCTAssertEqual(error as? AISearchError, .quotaUnavailable)
             XCTAssertEqual(answered.count, 0)
         }
+    }
+
+    func testProfileLimitsApplyToTheRequestSentForTheCurrentPage() async throws {
+        var service = self.service(answer: { _, user, _ in
+            XCTAssertTrue(user.contains("ABCDE"))
+            XCTAssertFalse(user.contains("FGHIJ"))
+            return AIChatResponse(text: "## 概览\nfixture[1]", truncated: false)
+        })
+        service.profile = SearchProfile(maxSourceCharacters: 5, maxTotalCharacters: 5)
+        let page = AISearchPageContext(
+            url: "https://page.example.com/story", title: "Page", text: "ABCDEFGHIJ"
+        )
+        _ = try await service.run(question: "q", scope: .currentPage, page: page)
     }
 
     func testSearchFailureIsTypedAndDoesNotCallTheModel() async {
@@ -321,6 +332,22 @@ final class AISearchTests: XCTestCase {
         }
         XCTAssertFalse(message.isEmpty)
         XCTAssertEqual(model.progress, 0)
+    }
+
+    @MainActor
+    func testConfigurationChangeStopsSearchAndShowsRetryableFailure() async {
+        let model = AISearchPanelModel(
+            runner: { _, _, _, _ in throw AISearchError.configurationChanged },
+            privacyAcknowledged: false
+        )
+        model.runInjected(question: "fictional question", scope: .web, page: nil)
+        await waitForIdle(model)
+
+        XCTAssertEqual(model.state, .failed(AISearchError.configurationChanged.message(L10n.currentLanguage)))
+        XCTAssertFalse(model.state.isBusy)
+        XCTAssertFalse(model.isRevealing)
+        XCTAssertEqual(model.progress, 0)
+        XCTAssertEqual(model.lastQuestion, "fictional question")
     }
 
     @MainActor

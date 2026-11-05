@@ -41,7 +41,7 @@ struct ResearchMaintenance: Sendable {
     @MainActor
     @discardableResult
     func migrateAIQuotaIfNeeded(settings: AppSettings) -> Bool {
-        guard UserDefaults.standard.integer(forKey: Self.aiQuotaMigrationKey) < 1 else {
+        guard TestIsolation.defaults.integer(forKey: Self.aiQuotaMigrationKey) < 1 else {
             return false
         }
         settings.resetDailyStatsIfNeeded()
@@ -52,7 +52,7 @@ struct ResearchMaintenance: Sendable {
             researchCount: research,
             at: now()
         ) else { return false }
-        UserDefaults.standard.set(1, forKey: Self.aiQuotaMigrationKey)
+        TestIsolation.defaults.set(1, forKey: Self.aiQuotaMigrationKey)
         settings.refreshAIUsageMirror(at: now())
         return true
     }

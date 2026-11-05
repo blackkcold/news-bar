@@ -14,6 +14,9 @@ struct FileAISearchArchivePersistence: AISearchArchivePersisting {
     }
 
     static func defaultFileURL() -> URL {
+        if TestIsolation.isActive {
+            return TestIsolation.directory("SearchArchive").appendingPathComponent("ai-search-history.json")
+        }
         let appSupport = FileManager.default.urls(
             for: .applicationSupportDirectory,
             in: .userDomainMask

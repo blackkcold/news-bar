@@ -40,6 +40,14 @@ final class AIQuotaStore: Sendable {
         }
     }
 
+    /// A reservation belongs to exactly one open request in this store. Its
+    /// identifier is deliberately opaque to callers.
+    struct Reservation: Sendable, Hashable {
+        fileprivate let id: UUID
+        fileprivate let day: Int
+        fileprivate let costMicros: Int64
+    }
+
     /// Every added field must decode with a default. A missing key must never
     /// turn an existing record into a corrupt one, because the store fails
     /// closed and would pause all AI usage.
@@ -89,6 +97,7 @@ final class AIQuotaStore: Sendable {
     private struct State: Sendable {
         var record: Record?
         var availability: Availability = .loading
+        var openReservations: [UUID: Reservation] = [:]
     }
 
     private let fileURL: URL
@@ -96,7 +105,10 @@ final class AIQuotaStore: Sendable {
     private let lock: OSAllocatedUnfairLock<State>
 
     static var defaultFileURL: URL {
-        FileManager.default
+        if TestIsolation.isActive {
+            return TestIsolation.directory("Quota").appendingPathComponent("quota.json")
+        }
+        return FileManager.default
             .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("com.newsbar.app/AIQuota/quota.json")
     }
@@ -142,6 +154,11 @@ final class AIQuotaStore: Sendable {
 
     /// Reserve one call before dispatch. Never refunded on failure: the request
     /// may already have reached the provider.
+    ///
+    /// Retained for existing callers and tests. Production paths use
+    /// `reserveTracked` so a late settlement cannot consume another request's
+    /// ceiling.
+    @available(*, deprecated, message: "Use reserveTracked and settle(_:usage:price:)")
     @discardableResult
     func reserve(
         _ origin: AIQuotaOrigin,
@@ -149,28 +166,134 @@ final class AIQuotaStore: Sendable {
         reservedCostMicros: Int64 = 0,
         at date: Date = Date()
     ) -> Bool {
+        reserveInternal(
+            origin, policy: policy, reservedCostMicros: reservedCostMicros, at: date, tracked: false
+        ) != nil
+    }
+
+    /// Reserve a request whose later settlement must be tied to this exact
+    /// amount and calendar day. A reset or rollover invalidates old handles.
+    func reserveTracked(
+        _ origin: AIQuotaOrigin,
+        policy: AIQuotaPolicy,
+        reservedCostMicros: Int64 = 0,
+        at date: Date = Date()
+    ) -> Reservation? {
+        reserveInternal(
+            origin, policy: policy, reservedCostMicros: reservedCostMicros, at: date, tracked: true
+        )
+    }
+
+    private func reserveInternal(
+        _ origin: AIQuotaOrigin,
+        policy: AIQuotaPolicy,
+        reservedCostMicros: Int64,
+        at date: Date,
+        tracked: Bool
+    ) -> Reservation? {
         lock.withLock { state in
-            guard state.availability.isUsable else { return false }
+            guard state.availability.isUsable else { return nil }
             let today = AIQuotaStore.dayKey(for: date, calendar: calendar)
+            // A backward clock adjustment must not reopen yesterday's budget.
+            guard (state.record?.day ?? today) <= today else { return nil }
             var record = AIQuotaStore.rolling(state.record, to: today)
             let reserved = max(0, reservedCostMicros)
-            guard !policy.blocks(count: record.count, costMicros: record.costMicros + reserved) else {
-                return false
+            let (nextCost, costOverflow) = record.costMicros.addingReportingOverflow(reserved)
+            let (nextCount, countOverflow) = record.count.addingReportingOverflow(1)
+            let (nextOriginCount, originOverflow) = (record.origins[origin.rawValue] ?? 0).addingReportingOverflow(1)
+            guard !costOverflow, !countOverflow, !originOverflow,
+                  !policy.blocks(count: record.count, costMicros: nextCost) else {
+                return nil
             }
-            record.count += 1
-            record.origins[origin.rawValue, default: 0] += 1
-            record.costMicros += reserved
+            record.count = nextCount
+            record.origins[origin.rawValue] = nextOriginCount
+            record.costMicros = nextCost
+            let reservation = Reservation(id: UUID(), day: today, costMicros: reserved)
+            let rolledOver = state.record.map { $0.day != today } ?? false
 
             do {
                 try write(record)
                 state.record = record
                 state.availability = .available
+                if rolledOver { state.openReservations.removeAll() }
+                if tracked { state.openReservations[reservation.id] = reservation }
+                return reservation
+            } catch {
+                state.availability = AIQuotaStore.availability(for: error)
+                return nil
+            }
+        }
+    }
+
+    /// A stale, duplicated, foreign, or reset reservation never changes the
+    /// current total. Consume the identity before writing so even a post-rename
+    /// failure cannot be replayed against another request's balance.
+    @discardableResult
+    func settle(
+        _ reservation: Reservation,
+        actualCostMicros: Int64,
+        inputTokens: Int,
+        outputTokens: Int,
+        priced: Bool,
+        at date: Date = Date()
+    ) -> Bool {
+        lock.withLock { state in
+            guard state.availability.isUsable,
+                  state.openReservations[reservation.id] == reservation else { return false }
+            state.openReservations.removeValue(forKey: reservation.id)
+            let today = AIQuotaStore.dayKey(for: date, calendar: calendar)
+            guard today == reservation.day, var record = state.record, record.day == reservation.day else {
+                return false
+            }
+            guard record.costMicros >= reservation.costMicros else {
+                state.availability = .corrupt
+                return false
+            }
+            let (nextCost, costOverflow) = (record.costMicros - reservation.costMicros)
+                .addingReportingOverflow(max(0, actualCostMicros))
+            let (nextInput, inputOverflow) = record.inputTokens.addingReportingOverflow(max(0, inputTokens))
+            let (nextOutput, outputOverflow) = record.outputTokens.addingReportingOverflow(max(0, outputTokens))
+            let (nextUnpriced, unpricedOverflow) = record.unpricedCalls.addingReportingOverflow(priced ? 0 : 1)
+            guard !costOverflow, !inputOverflow, !outputOverflow, !unpricedOverflow else {
+                state.availability = .ioUnavailable
+                return false
+            }
+            record.costMicros = nextCost
+            record.inputTokens = nextInput
+            record.outputTokens = nextOutput
+            record.unpricedCalls = nextUnpriced
+            do {
+                try write(record)
+                state.record = record
                 return true
             } catch {
                 state.availability = AIQuotaStore.availability(for: error)
                 return false
             }
         }
+    }
+
+    @discardableResult
+    func settle(
+        _ reservation: Reservation, usage: AIUsage?, price: ModelPrice?, at date: Date = Date()
+    ) -> Bool {
+        let actual: Int64
+        let priced: Bool
+        if let reported = usage?.reportedCost {
+            actual = reported.cnyMicros
+            priced = true
+        } else if let price, let usage {
+            actual = AICostEstimator.costMicros(usage: usage, price: price)
+            priced = true
+        } else {
+            actual = reservation.costMicros
+            priced = false
+        }
+        return settle(
+            reservation, actualCostMicros: actual,
+            inputTokens: usage?.inputTokens ?? 0, outputTokens: usage?.outputTokens ?? 0,
+            priced: priced, at: date
+        )
     }
 
     /// Settle a dispatched call against its reservation. The estimate is
@@ -188,19 +311,35 @@ final class AIQuotaStore: Sendable {
         lock.withLock { state in
             guard state.availability.isUsable else { return false }
             let today = AIQuotaStore.dayKey(for: date, calendar: calendar)
+            guard (state.record?.day ?? today) <= today else { return false }
+            let rolledOver = state.record.map { $0.day != today } ?? false
             var record = AIQuotaStore.rolling(state.record, to: today)
             let delta = max(0, actualCostMicros) - max(0, reservedCostMicros)
-            record.costMicros = max(0, record.costMicros + delta)
-            record.inputTokens += max(0, inputTokens)
-            record.outputTokens += max(0, outputTokens)
-            if !priced {
-                record.unpricedCalls += 1
+            // Never let a legacy (identity-less) settlement push the pool below
+            // an in-flight tracked reservation: that would make the tracked
+            // settle fail its invariant and lock the whole ledger as corrupt.
+            let protectedTotal = state.openReservations.values.reduce(Int64(0)) { partial, reservation in
+                let (next, overflow) = partial.addingReportingOverflow(reservation.costMicros)
+                return overflow ? Int64.max : next
             }
+            let (adjustedCost, costOverflow) = record.costMicros.addingReportingOverflow(delta)
+            let (nextInput, inputOverflow) = record.inputTokens.addingReportingOverflow(max(0, inputTokens))
+            let (nextOutput, outputOverflow) = record.outputTokens.addingReportingOverflow(max(0, outputTokens))
+            let (nextUnpriced, unpricedOverflow) = record.unpricedCalls.addingReportingOverflow(priced ? 0 : 1)
+            guard !costOverflow, !inputOverflow, !outputOverflow, !unpricedOverflow else {
+                state.availability = .ioUnavailable
+                return false
+            }
+            record.costMicros = max(protectedTotal, max(0, adjustedCost))
+            record.inputTokens = nextInput
+            record.outputTokens = nextOutput
+            record.unpricedCalls = nextUnpriced
 
             do {
                 try write(record)
                 state.record = record
                 state.availability = .available
+                if rolledOver { state.openReservations.removeAll() }
                 return true
             } catch {
                 state.availability = AIQuotaStore.availability(for: error)
@@ -229,6 +368,7 @@ final class AIQuotaStore: Sendable {
         return lock.withLock { state in
             guard state.availability.isUsable else { return false }
             let today = AIQuotaStore.dayKey(for: date, calendar: calendar)
+            guard (state.record?.day ?? today) <= today else { return false }
             var record = AIQuotaStore.rolling(state.record, to: today)
             guard record.count == 0 else { return true }
             record.count = summary + research
@@ -242,6 +382,7 @@ final class AIQuotaStore: Sendable {
             do {
                 try write(record)
                 state.record = record
+                state.openReservations.removeAll()
                 state.availability = .available
                 return true
             } catch {
@@ -264,6 +405,7 @@ final class AIQuotaStore: Sendable {
                 try archiveExistingFile()
                 try write(record)
                 state.record = record
+                state.openReservations.removeAll()
                 state.availability = .available
                 return true
             } catch {

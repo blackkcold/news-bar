@@ -18,22 +18,13 @@ actor SelectionExplainService {
 
     private let client: any AIChatClienting
     private let modelName: String
-    private let reserve: @Sendable () async -> Bool
-    private let settle: @Sendable (AIChatResponse, ModelPrice?) async -> Void
     private var cache: [String: AnswerDocument] = [:]
     private var recency: [String] = []
     private let cacheLimit = 50
 
-    init(
-        client: any AIChatClienting,
-        modelName: String,
-        reserve: @escaping @Sendable () async -> Bool,
-        settle: @escaping @Sendable (AIChatResponse, ModelPrice?) async -> Void
-    ) {
+    init(client: any AIChatClienting, modelName: String) {
         self.client = client
         self.modelName = modelName
-        self.reserve = reserve
-        self.settle = settle
     }
 
     func explain(
@@ -53,10 +44,6 @@ actor SelectionExplainService {
             touch(key)
             return cached
         }
-        try Task.checkCancellation()
-        guard await reserve() else { throw Failure.quotaUnavailable }
-        try Task.checkCancellation()
-
         let escaped = cleaned.replacingOccurrences(of: "&", with: "&amp;")
             .replacingOccurrences(of: "<", with: "&lt;")
             .replacingOccurrences(of: ">", with: "&gt;")
@@ -64,6 +51,7 @@ actor SelectionExplainService {
             AIChatMessage(role: .system, content: AnswerPrompt.selection(language)),
             AIChatMessage(role: .user, content: "<untrusted_source>\n\(escaped)\n</untrusted_source>"),
         ], maxTokens: Self.maxTokens, temperature: 0.3)
+        try Task.checkCancellation()
         var text = ""
         var usage: AIUsage?
         var truncated = false
@@ -85,10 +73,14 @@ actor SelectionExplainService {
                     truncated = truncated || value
                 }
             }
-        } catch is CancellationError {
-            throw CancellationError()
+        } catch let error as AIChatError {
+            if error == .quotaUnavailable { throw Failure.quotaUnavailable }
+            if error is CancellationError { throw CancellationError() }
+            throw error
+        } catch {
+            if error is CancellationError { throw CancellationError() }
+            throw error
         }
-        await settle(AIChatResponse(text: text, truncated: truncated, usage: usage), client.price)
         try Task.checkCancellation()
         let answer = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !answer.isEmpty else { throw Failure.emptyResponse }

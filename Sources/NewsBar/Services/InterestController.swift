@@ -83,6 +83,9 @@ final class InterestController {
     /// Highest revision confirmed written to disk. `flush(revision:)` reports
     /// success only when this covers the caller's target.
     @ObservationIgnored private var lastPersistedRevision = 0
+    /// Bumped when personal data is cleared. An ingest that suspended before
+    /// the clear must not commit the old items afterwards.
+    @ObservationIgnored private var contentEpoch = 0
     private var loading: Task<Void, Never>?
 
     init(store: LocalInterestStore = LocalInterestStore()) { self.store = store }
@@ -128,8 +131,9 @@ final class InterestController {
 
     func ingest(_ items: [NewsItem]) async {
         guard !isResetting else { return }
+        let epoch = contentEpoch
         await prepare()
-        guard isReady, storageError == nil, !isResetting else { return }
+        guard epoch == contentEpoch, isReady, storageError == nil, !isResetting else { return }
         // Loading a cached item is not a new source observation.
         state.ingest(items, usingFetchTimestamps: true)
         persist()
@@ -356,6 +360,7 @@ final class InterestController {
         // Invalidate ranked state before any await so nothing built from the
         // old profile can be selected or shown during the reset.
         rankingGeneration = UUID()
+        contentEpoch += 1
         recommendations = nil
         sessionFeedback = []
         replacedFeedback = [:]

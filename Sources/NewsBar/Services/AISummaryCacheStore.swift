@@ -9,6 +9,14 @@ struct AISummaryCacheEntry: Codable, Sendable {
     let trendItemCount: Int
     let language: AppLanguage
     let manifest: SummaryManifest?
+    let wasTruncated: Bool
+
+    var presentationState: AISummaryState {
+        .content(summary, wasTruncated: wasTruncated)
+    }
+
+    var completedContentHash: String? { wasTruncated ? nil : contentHash }
+    var truncatedContentHash: String? { wasTruncated ? contentHash : nil }
 
     init(
         summary: String,
@@ -18,7 +26,8 @@ struct AISummaryCacheEntry: Codable, Sendable {
         generatedAt: Date,
         trendItemCount: Int,
         language: AppLanguage = .zh,
-        manifest: SummaryManifest? = nil
+        manifest: SummaryManifest? = nil,
+        wasTruncated: Bool = false
     ) {
         self.summary = summary
         self.items = items
@@ -28,10 +37,11 @@ struct AISummaryCacheEntry: Codable, Sendable {
         self.trendItemCount = trendItemCount
         self.language = language
         self.manifest = manifest
+        self.wasTruncated = wasTruncated
     }
 
     private enum CodingKeys: String, CodingKey {
-        case summary, items, contentHash, trendHistoryHash, generatedAt, trendItemCount, language, manifest
+        case summary, items, contentHash, trendHistoryHash, generatedAt, trendItemCount, language, manifest, wasTruncated
     }
 
     init(from decoder: Decoder) throws {
@@ -44,6 +54,22 @@ struct AISummaryCacheEntry: Codable, Sendable {
         trendItemCount = try c.decode(Int.self, forKey: .trendItemCount)
         language = (try? c.decodeIfPresent(AppLanguage.self, forKey: .language)) ?? .zh
         manifest = try c.decodeIfPresent(SummaryManifest.self, forKey: .manifest)
+        wasTruncated = try c.decodeIfPresent(Bool.self, forKey: .wasTruncated) ?? false
+    }
+}
+
+@MainActor
+enum AISummaryCacheRestore {
+    /// Re-check after the asynchronous read so an older disk snapshot cannot
+    /// replace a newer in-memory result or an active generation.
+    static func loadIfEligible(
+        isEligible: () -> Bool,
+        load: () async -> AISummaryCacheEntry?
+    ) async -> AISummaryCacheEntry? {
+        guard !Task.isCancelled, isEligible() else { return nil }
+        let cached = await load()
+        guard !Task.isCancelled, isEligible() else { return nil }
+        return cached
     }
 }
 
@@ -53,6 +79,9 @@ actor AISummaryCacheStore {
     init(fileURL: URL? = nil, language: AppLanguage = .zh) {
         if let fileURL {
             self.fileURL = fileURL
+        } else if TestIsolation.isActive {
+            self.fileURL = TestIsolation.directory("Summary")
+                .appendingPathComponent("ai-summary-\(language.rawValue).json")
         } else {
             let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
                 ?? FileManager.default.temporaryDirectory
@@ -69,7 +98,8 @@ actor AISummaryCacheStore {
         return try? JSONDecoder().decode(AISummaryCacheEntry.self, from: data)
     }
 
-    func save(_ entry: AISummaryCacheEntry) {
+    func save(_ entry: AISummaryCacheEntry, token: CacheWriteToken? = nil) {
+        guard token?.isCurrent != false else { return }
         do {
             let data = try JSONEncoder().encode(entry)
             try PrivateFile.write(data, to: fileURL, durable: false)

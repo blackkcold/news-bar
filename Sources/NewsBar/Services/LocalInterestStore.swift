@@ -9,8 +9,10 @@ actor LocalInterestStore {
     private var current: LocalInterestState?
 
     init(fileURL: URL? = nil) {
-        self.fileURL = fileURL ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("com.newsbar.app/Interest/interest.sqlite")
+        self.fileURL = fileURL ?? (TestIsolation.isActive
+            ? TestIsolation.directory("Interest").appendingPathComponent("interest.sqlite")
+            : FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+                .appendingPathComponent("com.newsbar.app/Interest/interest.sqlite"))
     }
 
     deinit { if let database { sqlite3_close(database) } }

@@ -13,21 +13,19 @@ enum AISearchServiceFactory {
         onPartial: @escaping @Sendable (AnswerDocument) -> Void = { _ in }
     ) async throws -> AISearchService {
 
+        let expected = settings.aiKeyContext
+        let connection = settings.resolvedAIConnection
         let model = settings.effectiveAISearchModel.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !model.isEmpty else { throw AISearchError.noModel }
 
-        let key: String
-        if let cached = settings.cachedAPIKey, !cached.isEmpty {
-            key = cached
-        } else {
-            key = await EncryptedKeyStore().readAPIKey(account: settings.activeAPIKeyAccount) ?? ""
-            if !key.isEmpty { settings.cachedAPIKey = key }
-        }
+        let bound = try await settings.resolveBoundAPIKey(expected: expected)
+        try Task.checkCancellation()
+        guard settings.isCurrentAIKey(bound) else { throw AISearchError.configurationChanged }
+        let key = bound.key
         guard !key.isEmpty || settings.aiProvider == AIProvider.ollamaCloud.rawValue else {
             throw AISearchError.noKey
         }
 
-        let connection = settings.resolvedAIConnection
         let language = settings.appLanguage
         let pageCount = settings.aiSearchPageCount
         let thinking = settings.aiSearchThinking
@@ -37,30 +35,66 @@ enum AISearchServiceFactory {
         // research. The ticket caps this run at six HTTP attempts.
         let providerIDs = Set(settings.researchSearchProviders.compactMap(SearchProviderID.init(rawValue:)))
         let searchKeys = await SearchKeyStore.loadAll()
+        try Task.checkCancellation()
+        guard settings.isCurrentAIKey(bound) else { throw AISearchError.configurationChanged }
         let searchConfiguration = SearchRouterConfiguration(enabled: providerIDs, keys: searchKeys)
         let router = SearchRouter()
         let firecrawlKey = searchKeys[.firecrawl] ?? ""
         let pageReader = PageReader(isScrapeEnabled: !firecrawlKey.isEmpty)
+
+        let price = connection.customPrice
+            ?? AIPriceCatalog.price(for: connection.providerID, model: model)
 
         let client = HTTPAIChatClient(
             connection: connection,
             apiKey: key,
             model: model,
             thinking: thinking,
-            timeout: 45
+            timeout: 45,
+            quota: AIChatQuota(
+                reserve: { request, outputTokens in
+                    let system = request.messages.filter { $0.role == .system }.map(\.content).joined(separator: "\n")
+                    let user = request.messages.filter { $0.role != .system }.map(\.content).joined(separator: "\n")
+                    let reserved = price.map {
+                        AICostEstimator.reserveMicros(
+                            inputTokens: AICostEstimator.estimateInputTokens(system: system, user: user),
+                            maxOutputTokens: outputTokens,
+                            price: $0
+                        )
+                    } ?? 0
+                    return AIQuotaStore.shared.reserveTracked(
+                        .aiSearch, policy: policy, reservedCostMicros: reserved
+                    )
+                },
+                settle: { reservation, outcome in
+                    switch outcome {
+                    case let .completed(usage, price):
+                        AIQuotaStore.shared.settle(reservation, usage: usage, price: price)
+                    case .unknown:
+                        AIQuotaStore.shared.settle(reservation, usage: nil, price: nil)
+                    case .notDispatched:
+                        AIQuotaStore.shared.settle(
+                            reservation, actualCostMicros: 0,
+                            inputTokens: 0, outputTokens: 0, priced: true
+                        )
+                    }
+                }
+            )
         )
 
-        let price = connection.customPrice
-            ?? AIPriceCatalog.price(for: connection.providerID, model: model)
-        let reserved = price.map {
+        let estimatedSourceCharacters = min(
+            max(1, profile.maxTotalCharacters),
+            max(1, pageCount) * max(1, profile.maxSourceCharacters)
+        )
+        let preflightOutputTokens = effectiveOutputTokens(
+            connection: connection, thinking: thinking, requested: AISearchService.answerTokens
+        )
+        let preflightReservation = price.map {
             AICostEstimator.reserveMicros(
-                // Prompt caps are 6 000 characters per page and 24 000 in total.
-                // One Chinese character costs about one token here, so a page
-                // can be 6 000 tokens; 1 200 under-reserved cost-capped accounts
-                // by 5x. The shared 24 000-character budget makes this a ceiling,
-                // never a charge.
-                inputTokens: max(1, pageCount * 6_000),
-                maxOutputTokens: AISearchService.answerTokens,
+                // Before retrieval the prompt is not yet known. Include room
+                // for source metadata and instructions in this preflight only.
+                inputTokens: estimatedSourceCharacters + max(1, pageCount) * 1_024 + 2_048,
+                maxOutputTokens: preflightOutputTokens,
                 price: $0
             )
         } ?? 0
@@ -104,22 +138,12 @@ enum AISearchServiceFactory {
                     temperature: 0.2
                 ))
             },
-            reserve: {
-                AIQuotaStore.shared.reserve(.aiSearch, policy: policy, reservedCostMicros: reserved)
-            },
-            settle: { response in
-                AIQuotaStore.shared.settle(
-                    reservedCostMicros: reserved,
-                    usage: response.usage,
-                    price: price
-                )
-            },
             preflight: {
                 let snapshot = AIQuotaStore.shared.snapshot()
                 guard snapshot.isUsable else { return false }
                 return !policy.blocks(
                     count: snapshot.count,
-                    costMicros: snapshot.costMicros + reserved
+                    costMicros: snapshot.costMicros + preflightReservation
                 )
             },
             streamAnswer: { system, user, maxTokens in
@@ -141,5 +165,14 @@ enum AISearchServiceFactory {
             profile: profile
         )
     
+    }
+
+    nonisolated private static func effectiveOutputTokens(
+        connection: ResolvedAIConnection, thinking: AIThinkingLevel, requested: Int
+    ) -> Int {
+        var body: [String: Any] = [:]
+        return AIThinkingApplication.apply(
+            style: connection.thinkingStyle, level: thinking, body: &body, maxTokens: max(1, requested)
+        ).maxTokens
     }
 }

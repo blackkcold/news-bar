@@ -140,6 +140,7 @@ struct ResearchPipeline: Sendable {
         }
 
         func callAI(_ request: AIChatRequest) async -> AIChatResponse? {
+            guard !Task.isCancelled else { return nil }
             guard state.aiCalls < profile.aiCallLimit else {
                 state.aiLimitReached = true
                 return nil
@@ -162,7 +163,7 @@ struct ResearchPipeline: Sendable {
                 )
             } ?? 0
 
-            guard quota.reserve(
+            guard let reservation = quota.reserveTracked(
                 .research,
                 policy: configuration.quotaPolicy,
                 reservedCostMicros: reserved
@@ -170,19 +171,27 @@ struct ResearchPipeline: Sendable {
                 state.budgetExhausted = true
                 return nil
             }
+            if Task.isCancelled {
+                quota.settle(
+                    reservation, actualCostMicros: 0,
+                    inputTokens: 0, outputTokens: 0, priced: true
+                )
+                return nil
+            }
             _ = ledger.recordAICalls(1, origin: origin)
             state.aiCalls += 1
             do {
                 let response = try await ai.complete(request)
                 quota.settle(
-                    reservedCostMicros: reserved,
+                    reservation,
                     usage: response.usage,
                     price: price
                 )
                 return response
-            } catch is CancellationError {
-                return nil
             } catch {
+                // Once the client has been called, cancellation and errors do
+                // not prove that the provider failed to bill the request.
+                quota.settle(reservation, usage: nil, price: price)
                 return nil
             }
         }

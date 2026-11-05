@@ -51,7 +51,7 @@ enum AIRequestBuilder {
         }
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue(
-            "\(connection.authHeaderPrefix)\(apiKey)",
+            apiKey.isEmpty ? nil : "\(connection.authHeaderPrefix)\(apiKey)",
             forHTTPHeaderField: connection.authHeaderName
         )
         if connection.responseFormat == .anthropic, let version = connection.apiVersion {

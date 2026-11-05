@@ -220,6 +220,10 @@ enum SecurityPolicies {
     ///
     /// - Returns: 清洗后的 Data，如果原数据没有非法字符，返回原数据避免内存拷贝。
     static func sanitizeXMLData(_ data: Data) -> Data {
+        // A UTF-16/UTF-32 document is full of 0x00 bytes that are part of its
+        // code units, not invalid XML characters. Filtering them destroys the
+        // document, so wide encodings are handed to XMLParser untouched.
+        if hasWideEncodingBOM(data) { return data }
         let hasInvalid = data.contains { byte in
             byte < 0x20 && byte != 0x09 && byte != 0x0A && byte != 0x0D
         }
@@ -228,6 +232,17 @@ enum SecurityPolicies {
         return data.filter { byte in
             byte >= 0x20 || byte == 0x09 || byte == 0x0A || byte == 0x0D
         }
+    }
+
+    /// Byte-order marks for UTF-16LE/BE and UTF-32LE/BE.
+    static func hasWideEncodingBOM(_ data: Data) -> Bool {
+        let bytes = [UInt8](data.prefix(4))
+        guard bytes.count >= 2 else { return false }
+        if bytes[0] == 0xFF, bytes[1] == 0xFE { return true }
+        if bytes[0] == 0xFE, bytes[1] == 0xFF { return true }
+        if bytes.count >= 4, bytes[0] == 0x00, bytes[1] == 0x00,
+           bytes[2] == 0xFE, bytes[3] == 0xFF { return true }
+        return false
     }
 
     /// Repairs bare `&` (unescaped ampersands) that are NOT part of a valid XML entity or character
@@ -245,6 +260,8 @@ enum SecurityPolicies {
     /// - Returns: The repaired `Data`. If no bare `&` is found, the original `Data` is returned
     ///   unchanged (zero-copy fast path).
     static func sanitizeXMLEntities(_ data: Data) -> Data {
+        // ASCII byte rewriting would corrupt UTF-16/UTF-32 code units.
+        if hasWideEncodingBOM(data) { return data }
         let bytes = [UInt8](data)
         guard !bytes.isEmpty else { return data }
 

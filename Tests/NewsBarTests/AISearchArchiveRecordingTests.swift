@@ -206,7 +206,7 @@ final class AISearchArchiveRecordingTests: XCTestCase {
     }
 
     func testArchiveEnabledPreferenceDefaultsOnAndPersists() {
-        let defaults = UserDefaults.standard
+        let defaults = TestIsolation.defaults
         let key = "aiSearchHistoryEnabled"
         let oldValue = defaults.object(forKey: key)
         let oldLanguage = L10n.currentLanguage
