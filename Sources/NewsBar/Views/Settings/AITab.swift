@@ -18,16 +18,28 @@ struct AITab: View {
     @State private var page: Page
     @State private var selectedProviderID: String
     @State private var apiKeyInput = ""
+    @State private var keyInputContext: AICredentialInputContext?
     @State private var onePasswordRef = ""
+    @State private var onePasswordReferenceEdited = false
+    @State private var referenceInputContext: AICredentialInputContext?
     @State private var testResult: String?
     @State private var testSucceeded = false
     @State private var isTesting = false
     @State private var isSaving = false
     @State private var isDeletingKey = false
+    @State private var isDeletingCustomProvider = false
+    @State private var isSavingOnePasswordReference = false
+    @State private var keyDeletionRetryAccounts: Set<String> = []
+    @State private var keySaveSyncAccounts: Set<String> = []
+    @State private var pendingOnePasswordReferences: [String: AIKeyReferencePolicy.PendingUpdate] = [:]
     @State private var keyFeedback: AIKeyFeedback?
     @State private var onePasswordFeedback: AIKeyFeedback?
     @State private var keyStatus: AIKeyStatus = .missing
     @State private var pendingKeyDeletion = false
+    /// The credential state the user is looking at. A save, import or delete
+    /// is conditional on this snapshot, never on a state read after the intent.
+    @State private var credentialStateSnapshot: EncryptedKeyStore.CustomProviderCredentialState?
+    @State private var isBindingLegacyCredentials = false
     @State private var isLoadingFrom1Password = false
     @State private var showCustomEditor = false
     @State private var editingCustom: CustomAIProviderConfig?
@@ -37,9 +49,17 @@ struct AITab: View {
     @FocusState private var costFieldFocused: Bool
 
     init(page: Page = .connection) {
-        let saved = UserDefaults.standard.string(forKey: "aiProvider") ?? AIProvider.deepseek.rawValue
+        let saved = TestIsolation.defaults.string(forKey: "aiProvider") ?? AIProvider.deepseek.rawValue
         _selectedProviderID = State(initialValue: saved)
         _page = State(initialValue: page)
+    }
+
+    private func setSelectedProviderID(_ providerID: String) {
+        if selectedProviderID != providerID { onePasswordReferenceEdited = false }
+        onePasswordRef = AIKeyReferencePolicy.referenceAfterProviderChange(
+            onePasswordRef, from: selectedProviderID, to: providerID
+        )
+        selectedProviderID = providerID
     }
 
     /// Red only when a finite cap is actually reached; unlimited never is.
@@ -121,6 +141,7 @@ struct AITab: View {
                 }
             }
             .formStyle(.grouped)
+            .disabled(isDeletingCustomProvider)
             .scrollContentBackground(.hidden)
             .onAppear {
                 costInput = Self.costText(settings.aiCostCapMicros)
@@ -138,28 +159,56 @@ struct AITab: View {
                     settings.aiLimitMode = .count
                 }
             }
+            .onChange(of: settings.aiKeyContext.inputContext) { _, _ in
+                apiKeyInput = ""
+                keyInputContext = nil
+                onePasswordRef = ""
+                onePasswordReferenceEdited = false
+                referenceInputContext = nil
+                testResult = nil
+                onePasswordFeedback = nil
+            }
             .onChange(of: settings.aiModel) { _, _ in
                 if settings.aiLimitMode == .cost, !settings.aiCostEstimateAvailable {
                     settings.aiLimitMode = .count
                 }
             }
             .task(id: settings.modelCatalogRevision) {
-                selectedProviderID = settings.aiProvider
+                setSelectedProviderID(settings.aiProvider)
                 await settings.refreshModelCatalog()
             }
             .sheet(isPresented: $showCustomEditor) {
                 CustomAIProviderEditor(provider: editingCustom) { saved in
+                    let previous = editingCustom
                     editingCustom = nil
                     showCustomEditor = false
                     if let saved, !saved.id.isEmpty {
                         let customID = "custom:\(saved.id)"
-                        selectedProviderID = customID
+                        let credentialsReset = previous.map {
+                            AICustomProviderConnectionPolicy.requiresCredentialReset(from: $0, to: saved)
+                        } ?? false
+                        setSelectedProviderID(customID)
                         settings.aiProvider = customID
                         settings.cachedAPIKey = nil
                         apiKeyInput = ""
                         testResult = nil
-                        keyFeedback = nil
+                        if credentialsReset {
+                            keyDeletionRetryAccounts.remove(customID)
+                            keySaveSyncAccounts.remove(customID)
+                            pendingOnePasswordReferences.removeValue(forKey: customID)
+                            onePasswordRef = ""
+                            onePasswordReferenceEdited = false
+                            keyStatus = .missing
+                        }
+                        keyFeedback = credentialsReset ? .customProviderCredentialsReset : nil
                         onePasswordFeedback = nil
+                    } else {
+                        // A failed, unconfirmed reset may already have removed
+                        // the old entries even though the configuration stayed.
+                        Task {
+                            await refreshKeyStatus()
+                            await loadScopedOnePasswordRef()
+                        }
                     }
                 }
                 .environment(settings)
@@ -198,7 +247,7 @@ struct AITab: View {
             } message: {
                 Text("ai.deleteKey.message".localized)
             }
-            .task(id: settings.activeAPIKeyAccount) {
+            .task(id: settings.aiKeyContext) {
                 await refreshKeyStatus()
                 await loadScopedOnePasswordRef()
             }
@@ -223,6 +272,58 @@ struct AITab: View {
         .padding(.bottom, 6)
     }
 
+    private var legacyBindingSection: some View {
+        Section {
+            VStack(alignment: .leading, spacing: 8) {
+                Label("ai.legacyBinding.title".localized, systemImage: "key.horizontal")
+                    .font(.callout.weight(.semibold))
+                Text("ai.legacyBinding.body".localized)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Button {
+                    bindLegacyCustomCredentials()
+                } label: {
+                    Label("ai.legacyBinding.action".localized, systemImage: "link")
+                }
+                .disabled(isBindingLegacyCredentials || isSaving || isDeletingKey)
+            }
+            .padding(.vertical, 4)
+        }
+    }
+
+    private func bindLegacyCustomCredentials() {
+        guard let account = settings.usableAPIKeyAccount,
+              let identity = settings.aiKeyContext.endpointIdentity else { return }
+        isBindingLegacyCredentials = true
+        let started = settings.aiCredentialUIContext
+        Task {
+            let result = await EncryptedKeyStore().bindLegacyCustomCredentialsResult(
+                account: account, endpointIdentity: identity
+            )
+            await MainActor.run {
+                isBindingLegacyCredentials = false
+                guard settings.isCurrentAICredentialUIContext(started) else { return }
+                switch result {
+                case .durable:
+                    settings.cachedAPIKey = nil
+                    keyFeedback = .saved
+                    Task {
+                        await refreshKeyStatus()
+                        await loadScopedOnePasswordRef()
+                    }
+                case .committedDurabilityUnknown:
+                    keyFeedback = .saveDurabilityUnknown
+                    Task { await refreshKeyStatus() }
+                case .unverified:
+                    keyFeedback = .saveUnverified
+                case .notCommitted:
+                    keyFeedback = .saveFailed
+                }
+            }
+        }
+    }
+
     @ViewBuilder
     private var connectionSections: some View {
         Section {
@@ -234,11 +335,16 @@ struct AITab: View {
             Text("ai.feature".localized)
         }
 
+        if settings.isUsingCustomProvider, keyStatus == .unbound,
+           settings.aiKeyContext.endpointIdentity != nil {
+            legacyBindingSection
+        }
+
         Section {
             Picker("ai.provider".localized, selection: Binding(
                 get: { selectedProviderID },
                 set: { newProvider in
-                    selectedProviderID = newProvider
+                    setSelectedProviderID(newProvider)
                     settings.aiProvider = newProvider
                     settings.cachedAPIKey = nil
                     apiKeyInput = ""
@@ -262,6 +368,7 @@ struct AITab: View {
                 .font(.caption)
                 .buttonStyle(EditorialActionButtonStyle(compact: true))
                 .controlSize(.small)
+                .disabled(isSaving || isDeletingKey || isLoadingFrom1Password || isSavingOnePasswordReference)
 
                 Spacer()
 
@@ -275,6 +382,7 @@ struct AITab: View {
                     .font(.caption)
                     .buttonStyle(EditorialActionButtonStyle(compact: true))
                     .controlSize(.small)
+                    .disabled(isSaving || isDeletingKey || isLoadingFrom1Password || isSavingOnePasswordReference)
 
                     Button {
                         pendingCustomDeletion = custom
@@ -284,7 +392,13 @@ struct AITab: View {
                     .font(.caption)
                     .foregroundStyle(.red)
                     .controlSize(.small)
+                    .disabled(isSaving || isDeletingKey || isLoadingFrom1Password || isSavingOnePasswordReference)
                 }
+            }
+            if !settings.hasUsableProviderSelection {
+                Text("ai.provider.unavailable".localized)
+                    .font(.caption)
+                    .foregroundStyle(.orange)
             }
         } header: {
             Text("ai.provider".localized)
@@ -305,7 +419,13 @@ struct AITab: View {
                 Spacer()
             }
 
-            SecureField(settings.providerApiKeyPlaceholder(forID: selectedProviderID), text: $apiKeyInput)
+            SecureField(settings.providerApiKeyPlaceholder(forID: selectedProviderID), text: Binding(
+                get: { apiKeyInput },
+                set: {
+                    apiKeyInput = $0
+                    keyInputContext = settings.aiKeyContext.inputContext
+                }
+            ))
                 .textFieldStyle(.roundedBorder)
                 .font(.system(size: 12, design: .monospaced))
                 .onChange(of: selectedProviderID) { _, _ in
@@ -319,7 +439,7 @@ struct AITab: View {
                 } label: {
                     Text(isSaving ? "ai.saving".localized : "ai.save".localized)
                 }
-                .disabled(apiKeyInput.isEmpty || isSaving)
+                .disabled(apiKeyInput.isEmpty || isSaving || isDeletingKey || isLoadingFrom1Password || isSavingOnePasswordReference)
                 .buttonStyle(EditorialActionButtonStyle(tone: .primary, compact: true))
                 .controlSize(.small)
 
@@ -328,7 +448,7 @@ struct AITab: View {
                 } label: {
                     Text(isTesting ? "ai.testing".localized : "ai.test".localized)
                 }
-                .disabled((apiKeyInput.isEmpty && (settings.cachedAPIKey?.isEmpty ?? true)) || isTesting)
+                .disabled((apiKeyInput.isEmpty && (settings.usableCachedAPIKey?.isEmpty ?? true)) || isTesting)
                 .buttonStyle(EditorialActionButtonStyle(compact: true))
                 .controlSize(.small)
 
@@ -339,7 +459,7 @@ struct AITab: View {
                 } label: {
                     Text("ai.deleteKey".localized)
                 }
-                .disabled(keyStatus == .missing || isDeletingKey)
+                .disabled((keyStatus == .missing && !keyDeletionRetryAccounts.contains(settings.activeAPIKeyAccount)) || isDeletingKey || isSaving || isLoadingFrom1Password || isSavingOnePasswordReference)
                 .foregroundStyle(.red)
                 .controlSize(.small)
             }
@@ -349,6 +469,15 @@ struct AITab: View {
                     .font(.caption)
                     .foregroundStyle(feedback.color)
                     .accessibilityLabel(feedback.text(language: settings.appLanguage))
+            }
+
+            if keySaveSyncAccounts.contains(settings.activeAPIKeyAccount), keyStatus != .unverified {
+                Button(settings.appLanguage == .en ? "Retry key disk synchronization" : "重试密钥磁盘同步") {
+                    retryKeySaveDurability()
+                }
+                .disabled(isSaving || isDeletingKey || isLoadingFrom1Password || isSavingOnePasswordReference)
+                .buttonStyle(EditorialActionButtonStyle(compact: true))
+                .controlSize(.small)
             }
 
             if let result = testResult {
@@ -361,12 +490,21 @@ struct AITab: View {
         } footer: {
             Text(L10n.string("ai.apiKey.footer", settings.providerKeyRetrievalURL(forID: selectedProviderID)))
         }
+        .disabled(!settings.hasUsableProviderSelection)
 
         Section {
             VStack(alignment: .leading, spacing: 6) {
-                TextField(settings.providerOnePasswordHint(forID: selectedProviderID), text: $onePasswordRef)
+                TextField(settings.providerOnePasswordHint(forID: selectedProviderID), text: Binding(
+                    get: { onePasswordRef },
+                    set: {
+                        onePasswordRef = $0
+                        onePasswordReferenceEdited = true
+                        referenceInputContext = settings.aiKeyContext.inputContext
+                    }
+                ))
                     .textFieldStyle(.roundedBorder)
                     .font(.system(size: 12, design: .monospaced))
+                    .disabled(isSaving || isDeletingKey || isLoadingFrom1Password || isSavingOnePasswordReference)
                     .accessibilityLabel("ai.1password".localized)
                     .onChange(of: selectedProviderID) { _, _ in
                         Task { await loadScopedOnePasswordRef() }
@@ -381,7 +519,7 @@ struct AITab: View {
                             Text(isLoadingFrom1Password ? "ai.loading".localized : "ai.loadFrom1Password".localized)
                         }
                     }
-                    .disabled(onePasswordRef.isEmpty || isLoadingFrom1Password)
+                    .disabled(onePasswordRef.isEmpty || isLoadingFrom1Password || isSaving || isDeletingKey || isSavingOnePasswordReference)
                     .buttonStyle(EditorialActionButtonStyle(compact: true))
                     .controlSize(.small)
                 }
@@ -391,12 +529,31 @@ struct AITab: View {
                         .font(.caption)
                         .foregroundStyle(feedback.color)
                 }
+
+                if onePasswordFeedback == .referenceReadFailed {
+                    Button("ai.1p.retryReadReference".localized) {
+                        Task { await loadScopedOnePasswordRef() }
+                    }
+                    .buttonStyle(EditorialActionButtonStyle(compact: true))
+                    .controlSize(.small)
+                    .disabled(isSaving || isDeletingKey || isLoadingFrom1Password || isSavingOnePasswordReference)
+                }
+
+                if pendingOnePasswordReferences[settings.activeAPIKeyAccount] != nil {
+                    Button("ai.1p.retryUpdateReference".localized) {
+                        retryOnePasswordReference()
+                    }
+                    .buttonStyle(EditorialActionButtonStyle(compact: true))
+                    .controlSize(.small)
+                    .disabled(isSaving || isDeletingKey || isLoadingFrom1Password || isSavingOnePasswordReference)
+                }
             }
         } header: {
             Text("ai.1password".localized)
         } footer: {
             Text("ai.1password.footer".localized)
         }
+        .disabled(!settings.hasUsableProviderSelection)
 
         Section {
             Picker("ai.model".localized, selection: Binding(
@@ -782,40 +939,204 @@ struct AITab: View {
     }
 
     private func deleteCustomProvider(_ custom: CustomAIProviderConfig) {
-        settings.customAIProviders.removeAll { $0.id == custom.id }
+        guard !isDeletingCustomProvider, !isSaving, !isDeletingKey,
+              !isLoadingFrom1Password, !isSavingOnePasswordReference else { return }
         pendingCustomDeletion = nil
-        if settings.isUsingCustomProvider == false, settings.aiProvider == "custom:\(custom.id)" {
-            settings.aiProvider = AIProvider.deepseek.rawValue
-            selectedProviderID = AIProvider.deepseek.rawValue
-            settings.aiModel = settings.providerDefaultModel(forID: selectedProviderID)
-            settings.cachedAPIKey = nil
+        isDeletingCustomProvider = true
+        let account = "custom:\(custom.id)"
+        let mutation = settings.beginAICredentialMutation(account: account)
+        Task {
+            let store = EncryptedKeyStore()
+            let result: EncryptedKeyStore.MutationResult
+            switch await store.customProviderCredentialStateResult(account: account) {
+            case .legacy:
+                result = await store.deleteCustomProviderCredentialsResult(account: account, expectedState: nil)
+            case let .state(state):
+                result = await store.deleteCustomProviderCredentialsResult(account: account, expectedState: state)
+            case .failed:
+                result = .unverified
+            }
+            let decision = AICustomProviderDeletionPolicy.decision(for: result)
+            await MainActor.run {
+                _ = settings.finishAICredentialMutation(account: account, token: mutation)
+                isDeletingCustomProvider = false
+                if decision.clearCachedKey, settings.activeAPIKeyAccount == account {
+                    settings.cachedAPIKey = nil
+                }
+                guard decision.removeProvider else {
+                    if settings.aiProvider == account {
+                        if decision.clearCachedKey { keyStatus = .unverified }
+                        keyFeedback = decision.feedback
+                    }
+                    return
+                }
+                if let current = settings.customAIProviders.first(where: { $0.id == custom.id }), current != custom {
+                    if settings.aiProvider == account {
+                        keyStatus = .unverified
+                        keyFeedback = .customProviderDeleteUnverified
+                    }
+                    return
+                }
+                settings.customAIProviders.removeAll { $0.id == custom.id }
+                keyDeletionRetryAccounts.remove(account)
+                keySaveSyncAccounts.remove(account)
+                pendingOnePasswordReferences.removeValue(forKey: account)
+                if settings.aiProvider == account {
+                    settings.aiProvider = AIProvider.deepseek.rawValue
+                    setSelectedProviderID(AIProvider.deepseek.rawValue)
+                    settings.aiModel = settings.providerDefaultModel(forID: selectedProviderID)
+                    settings.cachedAPIKey = nil
+                    keyFeedback = decision.feedback
+                }
+            }
         }
     }
 
     private func saveAPIKey() {
+        guard let account = settings.usableAPIKeyAccount else { return }
+        guard keyInputContext == settings.aiKeyContext.inputContext else {
+            keyFeedback = .saveFailed
+            return
+        }
+        guard !onePasswordReferenceEdited || referenceInputContext == settings.aiKeyContext.inputContext else {
+            onePasswordFeedback = .referenceBindingRequired
+            return
+        }
         isSaving = true
         keyFeedback = nil
         let sanitized = SecurityPolicies.sanitizeUserInput(apiKeyInput)
-        let account = settings.activeAPIKeyAccount
         let providerID = settings.aiProvider
+        let mutation = settings.beginAICredentialMutation(account: account)
         let revision = settings.modelCatalogRevision
-        let reference = onePasswordRef
+        let endpointIdentity = settings.aiKeyContext.endpointIdentity
+        let reference = AIKeyReferencePolicy.manualKeySaveReference(
+            onePasswordRef, userEdited: onePasswordReferenceEdited
+        )
+        let capturedState = credentialStateSnapshot
         Task {
             let store = EncryptedKeyStore()
-            let success = await store.saveAPIKey(sanitized, account: account)
+            let generation: String?
+            let savedCustomState: EncryptedKeyStore.CustomProviderCredentialState?
+            let result: EncryptedKeyStore.MutationResult
+            let preparationFailed: Bool
+            do {
+                let saved = try await AICustomProviderCredentialAccess.save(
+                    sanitized, account: account, store: store, capturedState: capturedState,
+                    endpointIdentity: endpointIdentity
+                )
+                generation = saved.generation
+                savedCustomState = saved.state
+                result = saved.result
+                preparationFailed = false
+            } catch let error as AICustomProviderCredentialError {
+                generation = nil
+                savedCustomState = nil
+                result = error.result == .notCommitted ? .notCommitted : .unverified
+                preparationFailed = true
+            } catch {
+                generation = nil
+                savedCustomState = nil
+                result = .unverified
+                preparationFailed = true
+            }
+            let decision = AIKeySavePolicy.decision(for: result)
             await MainActor.run {
-                if success {
-                    guard settings.activateAPIKey(sanitized, providerID: providerID, revision: revision) else { isSaving = false; return }
-                    apiKeyInput = ""
-                    keyFeedback = .saved
-                    keyStatus = .saved
-                    UserDefaults.standard.set(true, forKey: "hasAIKey-\(account)")
-                    NotificationCenter.default.post(name: .apiKeyConfigured, object: nil)
-                    Task { await persistOnePasswordReference(reference, for: account) }
-                } else {
-                    keyFeedback = .saveFailed
+                let sameConfiguration = providerID == settings.aiProvider
+                    && account == settings.activeAPIKeyAccount
+                    && revision == settings.modelCatalogRevision
+                let mayActivate = settings.finishAICredentialMutation(account: account, token: mutation)
+                if decision.retrySyncAllowed { keySaveSyncAccounts.insert(account) }
+                else if result == .durable { keySaveSyncAccounts.remove(account) }
+                guard account == settings.activeAPIKeyAccount, providerID == settings.aiProvider else {
+                    isSaving = false
+                    return
                 }
+                guard mayActivate, sameConfiguration else {
+                    if result != .notCommitted {
+                        settings.cachedAPIKey = nil
+                        keyStatus = .unverified
+                        keyFeedback = .saveUnverified
+                    }
+                    isSaving = false
+                    return
+                }
+                if preparationFailed {
+                    settings.cachedAPIKey = nil
+                    keyStatus = .unverified
+                }
+                if decision.clearCachedKey { settings.cachedAPIKey = nil }
+                if decision.activateKey {
+                    guard settings.activateAPIKey(
+                        sanitized, providerID: providerID, revision: settings.modelCatalogRevision
+                    ) else {
+                        settings.cachedAPIKey = nil
+                        keyStatus = .unverified
+                        keyFeedback = .saveUnverified
+                        isSaving = false
+                        return
+                    }
+                    keyDeletionRetryAccounts.remove(account)
+                    TestIsolation.defaults.set(true, forKey: "hasAIKey-\(account)")
+                    NotificationCenter.default.post(name: .apiKeyConfigured, object: nil)
+                    if let reference {
+                        isSavingOnePasswordReference = true
+                        let referenceContext = settings.aiCredentialUIContext
+                        Task {
+                            await persistOnePasswordReference(
+                                reference, for: account, customProviderGeneration: generation,
+                                customProviderState: savedCustomState,
+                                started: referenceContext
+                            )
+                        }
+                    }
+                }
+                if decision.clearInput { apiKeyInput = "" }
+                if let status = decision.status { keyStatus = status }
+                keyFeedback = decision.feedback
                 isSaving = false
+            }
+        }
+    }
+
+    private func retryKeySaveDurability() {
+        guard let account = settings.usableAPIKeyAccount else { return }
+        let started = settings.aiKeyContext
+        isSaving = true
+        Task {
+            let store = EncryptedKeyStore()
+            let synced = await store.confirmWriteDurability()
+            let status: AIKeyStatus
+            if !synced {
+                status = .unverified
+            } else if account.hasPrefix("custom:"), let identity = started.endpointIdentity {
+                let result = await store.readBoundCustomKeyResult(account: account, endpointIdentity: identity)
+                status = AIKeyStatus.resolve(bound: result, hasFlag: false)
+            } else if account.hasPrefix("custom:") {
+                status = .unverified
+            } else {
+                switch await store.readAPIKeyResult(account: account) {
+                case .found: status = .saved
+                case .missing: status = .missing
+                case .failed: status = .unverified
+                }
+            }
+            await MainActor.run {
+                isSaving = false
+                if synced { keySaveSyncAccounts.remove(account) }
+                guard started == settings.aiKeyContext else { return }
+                guard synced else {
+                    keyFeedback = .saveDurabilityUnknown
+                    return
+                }
+                keyStatus = status
+                switch status {
+                case .saved:
+                    keyFeedback = .saved
+                case .missing, .flagWithoutSecret, .unbound, .endpointMismatch:
+                    keyFeedback = .saveFailed
+                case .unverified:
+                    keyFeedback = .saveUnverified
+                }
             }
         }
     }
@@ -823,53 +1144,270 @@ struct AITab: View {
     /// Removes the encrypted copy on this Mac. The 1Password item and the
     /// provider-side key are deliberately left untouched.
     private func deleteAPIKey() {
+        guard let account = settings.usableAPIKeyAccount else { return }
         isDeletingKey = true
         keyFeedback = nil
-        let account = settings.activeAPIKeyAccount
+        let mutation = settings.beginAICredentialMutation(account: account)
+        let capturedGeneration = credentialStateSnapshot?.generation
+        let capturedState = credentialStateSnapshot
         Task {
-            await EncryptedKeyStore().deleteAPIKey(account: account)
+            let store = EncryptedKeyStore()
+            let result: EncryptedKeyStore.MutationResult
+            let preparationFailed: Bool
+            do {
+                let generation = try await AICustomProviderCredentialAccess.generation(
+                    account: account, store: store, allowRecovery: false
+                )
+                if account.hasPrefix("custom:"), generation != capturedGeneration {
+                    result = .notCommitted
+                    preparationFailed = true
+                } else {
+                    result = await store.deleteAPIKeyResult(account: account, customProviderGeneration: generation)
+                    preparationFailed = false
+                }
+            } catch let error as AICustomProviderCredentialError {
+                result = error.result == .notCommitted ? .notCommitted : .unverified
+                preparationFailed = true
+            } catch {
+                result = .unverified
+                preparationFailed = true
+            }
+            _ = capturedState
+            let decision = AIKeyDeletionPolicy.decision(for: result)
             await MainActor.run {
-                settings.cachedAPIKey = nil
-                keyStatus = .missing
-                keyFeedback = .keyDeleted
+                let mayPresent = settings.finishAICredentialMutation(account: account, token: mutation)
                 isDeletingKey = false
-                NotificationCenter.default.post(name: .apiKeyConfigured, object: nil)
+                if decision.retryAllowed {
+                    keyDeletionRetryAccounts.insert(account)
+                } else {
+                    keyDeletionRetryAccounts.remove(account)
+                }
+                guard account == settings.activeAPIKeyAccount else { return }
+                guard mayPresent else {
+                    if result != .notCommitted {
+                        settings.cachedAPIKey = nil
+                        keyStatus = .unverified
+                        keyFeedback = .deleteUnverified
+                    }
+                    return
+                }
+                if preparationFailed {
+                    settings.cachedAPIKey = nil
+                    keyStatus = .unverified
+                }
+                if decision.clearCachedKey {
+                    settings.cachedAPIKey = nil
+                    NotificationCenter.default.post(name: .apiKeyConfigured, object: nil)
+                }
+                if let status = decision.status { keyStatus = status }
+                keyFeedback = decision.feedback
             }
         }
     }
 
+    @MainActor
     private func refreshKeyStatus() async {
-        let account = settings.activeAPIKeyAccount
-        let stored = await EncryptedKeyStore().readAPIKey(account: account)
-        let hasFlag = UserDefaults.standard.bool(forKey: "hasAIKey-\(account)")
-        await MainActor.run {
-            guard account == settings.activeAPIKeyAccount else { return }
-            keyStatus = AIKeyStatus.resolve(stored: stored, hasFlag: hasFlag)
+        guard let account = settings.usableAPIKeyAccount else {
+            keyStatus = .missing
+            return
+        }
+        let started = settings.aiCredentialUIContext
+        guard let status = await AIKeyAccess.readForPresentation(
+            isCurrent: { settings.isCurrentAICredentialUIContext(started) },
+            read: {
+                let store = EncryptedKeyStore()
+                let hasFlag = TestIsolation.defaults.bool(forKey: "hasAIKey-\(account)")
+                if account.hasPrefix("custom:") {
+                    guard let identity = started.keyContext.endpointIdentity else { return AIKeyStatus.unverified }
+                    let result = await store.readBoundCustomKeyResult(account: account, endpointIdentity: identity)
+                    return AIKeyStatus.resolve(bound: result, hasFlag: hasFlag)
+                }
+                let stored = await store.readAPIKey(account: account)
+                return AIKeyStatus.resolve(stored: stored, hasFlag: hasFlag)
+            }
+        ) else { return }
+        keyStatus = status
+        if account.hasPrefix("custom:") {
+            switch await EncryptedKeyStore().customProviderCredentialStateResult(account: account) {
+            case let .state(state): credentialStateSnapshot = state
+            case .legacy, .failed: credentialStateSnapshot = nil
+            }
+        } else {
+            credentialStateSnapshot = nil
         }
     }
 
+    @MainActor
     private func loadScopedOnePasswordRef() async {
-        let account = settings.activeAPIKeyAccount
-        let reference = await EncryptedKeyStore().readOnePasswordRef(account: account) ?? ""
-        await MainActor.run {
-            guard account == settings.activeAPIKeyAccount else { return }
-            onePasswordRef = reference
+        guard let account = settings.usableAPIKeyAccount else {
+            onePasswordRef = ""
+            onePasswordReferenceEdited = false
+            return
+        }
+        let started = settings.aiCredentialUIContext
+        let initialReference = onePasswordRef
+        let initialEditState = onePasswordReferenceEdited
+        guard !initialEditState else { return }
+        guard let loaded = await AIKeyAccess.readForPresentation(
+            isCurrent: { settings.isCurrentAICredentialUIContext(started) && !isSavingOnePasswordReference },
+            read: {
+                let store = EncryptedKeyStore()
+                if account.hasPrefix("custom:") {
+                    guard let identity = started.keyContext.endpointIdentity else {
+                        return AIKeyReferencePolicy.boundReadDecision(for: .failed)
+                    }
+                    let result = await store.readBoundCustomReferenceResult(account: account, endpointIdentity: identity)
+                    return AIKeyReferencePolicy.boundReadDecision(for: result)
+                }
+                return AIKeyReferencePolicy.readDecision(for: await store.readOnePasswordRefResult(account: account))
+            }
+        ) else { return }
+        guard onePasswordRef == initialReference,
+              onePasswordReferenceEdited == initialEditState else { return }
+        let pending = AIKeyReferencePolicy.pendingForEndpoint(
+            pendingOnePasswordReferences[account], endpointIdentity: started.keyContext.endpointIdentity
+        )
+        let decision: AIKeyReferencePolicy.ReadDecision
+        if let pending {
+            decision = AIKeyReferencePolicy.ReadDecision(
+                reference: pending.reference,
+                feedback: loaded.feedback == .referenceReadFailed ? .referenceReadFailed : pending.feedback
+            )
+        } else {
+            decision = loaded
+        }
+        onePasswordRef = decision.reference
+        // A pending value is shown for retry, not a fresh user edit: treating
+        // it as edited would let an import skip binding checks and re-apply a
+        // stale secret over another instance's newer reference.
+        onePasswordReferenceEdited = false
+        referenceInputContext = nil
+        onePasswordFeedback = decision.feedback
+    }
+
+    @MainActor
+    private func persistOnePasswordReference(
+        _ reference: String, for account: String, customProviderGeneration: String?,
+        customProviderState: EncryptedKeyStore.CustomProviderCredentialState?,
+        operationRevision: String? = nil,
+        started: AICredentialUIContext
+    ) async {
+        guard started.keyContext.account == account, settings.isCurrentAICredentialUIContext(started) else {
+            isSavingOnePasswordReference = false
+            return
+        }
+        let trimmed = reference.trimmingCharacters(in: .whitespacesAndNewlines)
+        let referenceRevision = operationRevision ?? UUID().uuidString
+        let store = EncryptedKeyStore()
+        let result: EncryptedKeyStore.MutationResult
+        if account.hasPrefix("custom:") {
+            if let identity = started.keyContext.endpointIdentity,
+               let state = customProviderState,
+               state.generation == customProviderGeneration {
+                result = await store.applyBoundCustomReferenceResult(
+                    trimmed, account: account, expectedState: state, endpointIdentity: identity,
+                    operationRevision: referenceRevision
+                )
+            } else {
+                result = .notCommitted
+            }
+        } else if trimmed.isEmpty {
+            result = await store.deleteOnePasswordRefResult(
+                account: account, customProviderGeneration: customProviderGeneration
+            )
+        } else {
+            result = await store.saveOnePasswordRefResult(
+                trimmed, account: account, customProviderGeneration: customProviderGeneration
+            )
+        }
+        let decision = AIKeyReferencePolicy.mutationDecision(for: result, deleting: trimmed.isEmpty)
+        // A successful reference write advances referenceRevision. Refresh the
+        // snapshot the next save/delete compares against, otherwise the next
+        // action fails once with a stale expected state.
+        if account.hasPrefix("custom:"), result != .notCommitted,
+           case let .state(freshState) = await store.customProviderCredentialStateResult(account: account) {
+            credentialStateSnapshot = freshState
+        }
+        isSavingOnePasswordReference = false
+        guard settings.isCurrentAICredentialUIContext(started) else { return }
+        let previous = pendingOnePasswordReferences[account]
+        if decision.retryAllowed, let feedback = decision.feedback {
+            pendingOnePasswordReferences[account] = .init(
+                reference: reference, feedback: feedback, customProviderGeneration: customProviderGeneration,
+                endpointIdentity: started.keyContext.endpointIdentity, customProviderState: customProviderState,
+                operationRevision: account.hasPrefix("custom:") ? referenceRevision : nil
+            )
+        } else {
+            pendingOnePasswordReferences.removeValue(forKey: account)
+        }
+        guard onePasswordRef.trimmingCharacters(in: .whitespacesAndNewlines) == trimmed else { return }
+        onePasswordReferenceEdited = decision.retryAllowed
+        if let feedback = decision.feedback {
+            onePasswordFeedback = feedback
+        } else if onePasswordFeedback == previous?.feedback || onePasswordFeedback == .referenceReadFailed {
             onePasswordFeedback = nil
         }
     }
 
-    private func persistOnePasswordReference(_ reference: String, for account: String) async {
-        let trimmed = reference.trimmingCharacters(in: .whitespacesAndNewlines)
-        let store = EncryptedKeyStore()
-        if trimmed.isEmpty {
-            await store.deleteOnePasswordRef(account: account)
-        } else {
-            await store.saveOnePasswordRef(trimmed, account: account)
+    private func retryOnePasswordReference() {
+        guard !isSaving, !isDeletingKey, !isLoadingFrom1Password, !isSavingOnePasswordReference else { return }
+        guard let account = settings.usableAPIKeyAccount else { return }
+        guard let pending = AIKeyReferencePolicy.pendingForEndpoint(
+            pendingOnePasswordReferences[account], endpointIdentity: settings.aiKeyContext.endpointIdentity
+        ) else { return }
+        guard !onePasswordReferenceEdited || referenceInputContext == settings.aiKeyContext.inputContext else {
+            onePasswordFeedback = .referenceBindingRequired
+            return
+        }
+        if account.hasPrefix("custom:"),
+           onePasswordRef.trimmingCharacters(in: .whitespacesAndNewlines)
+            != pending.reference.trimmingCharacters(in: .whitespacesAndNewlines) {
+            onePasswordFeedback = .referenceChangedDuringRetry
+            return
+        }
+        settings.noteAICredentialIntent()
+        let started = settings.aiCredentialUIContext
+        let reference = onePasswordRef
+        isSavingOnePasswordReference = true
+        Task {
+            await persistOnePasswordReference(
+                reference, for: account, customProviderGeneration: pending.customProviderGeneration,
+                customProviderState: pending.customProviderState, operationRevision: pending.operationRevision,
+                started: started
+            )
+        }
+    }
+
+    private func currentOnePasswordContext() -> AIOnePasswordCompletionPolicy.Context {
+        .init(
+            providerID: settings.aiProvider,
+            account: settings.activeAPIKeyAccount,
+            revision: settings.modelCatalogRevision
+        )
+    }
+
+    private func finishOnePasswordFailure(
+        _ feedback: AIKeyFeedback, started: AIOnePasswordCompletionPolicy.Context, mutation: UUID
+    ) async {
+        await MainActor.run {
+            let current = currentOnePasswordContext()
+            let mayPresent = settings.finishAICredentialMutation(account: started.account, token: mutation)
+            isLoadingFrom1Password = false
+            guard mayPresent, AIOnePasswordCompletionPolicy.mayPresent(
+                started: started, current: current
+            ) else { return }
+            onePasswordFeedback = feedback
         }
     }
 
     private func loadFrom1Password() {
-        guard !onePasswordRef.isEmpty else { return }
+        guard !onePasswordRef.isEmpty, !isLoadingFrom1Password, !isSaving,
+              !isDeletingKey, !isSavingOnePasswordReference else { return }
+        guard let account = settings.usableAPIKeyAccount else { return }
+        guard !onePasswordReferenceEdited || referenceInputContext == settings.aiKeyContext.inputContext else {
+            onePasswordFeedback = .referenceBindingRequired
+            return
+        }
         guard OnePasswordService.isValidReference(onePasswordRef) else {
             onePasswordFeedback = .invalidReference
             return
@@ -877,68 +1415,99 @@ struct AITab: View {
 
         isLoadingFrom1Password = true
         onePasswordFeedback = nil
-        let providerID = settings.aiProvider
-        let revision = settings.modelCatalogRevision
-        let account = settings.activeAPIKeyAccount
+        let mutation = settings.beginAICredentialMutation(account: account)
+        let started = currentOnePasswordContext()
+        let endpointIdentity = settings.aiKeyContext.endpointIdentity
         let reference = onePasswordRef
+        let referenceWasEdited = onePasswordReferenceEdited
 
         Task {
             do {
-                let key = try await OnePasswordService.readSecretAsync(reference: reference)
-                let store = EncryptedKeyStore()
-                let success = await store.saveAPIKey(key, account: account)
-                await MainActor.run {
-                    if success {
-                        guard settings.activateAPIKey(key, providerID: providerID, revision: revision) else { isLoadingFrom1Password = false; return }
+                let outcome = try await AIOnePasswordKeyImport.run(
+                    reference: reference, account: account, store: EncryptedKeyStore(),
+                    endpointIdentity: endpointIdentity, referenceWasEdited: referenceWasEdited
+                ) { reference in
+                    try await OnePasswordService.readSecretAsync(reference: reference)
+                }
+                let decision = outcome.saveDecision
+                let referenceContext = await MainActor.run { () -> AICredentialUIContext? in
+                    let current = currentOnePasswordContext()
+                    let mayActivate = settings.finishAICredentialMutation(account: account, token: mutation)
+                    isLoadingFrom1Password = false
+                    if decision.retrySyncAllowed { keySaveSyncAccounts.insert(account) }
+                    else if outcome.result == .durable { keySaveSyncAccounts.remove(account) }
+                    guard mayActivate, AIOnePasswordCompletionPolicy.mayPresent(started: started, current: current) else {
+                        if account == current.account, started.providerID == current.providerID,
+                           outcome.result != .notCommitted {
+                            settings.cachedAPIKey = nil
+                            keyStatus = .unverified
+                            keyFeedback = .saveUnverified
+                        }
+                        return nil
+                    }
+                    if decision.clearCachedKey { settings.cachedAPIKey = nil }
+                    if decision.activateKey {
+                        guard settings.activateAPIKey(
+                            outcome.key, providerID: started.providerID, revision: settings.modelCatalogRevision
+                        ) else { return nil }
                         // The secret stays in the encrypted store; never echo it
                         // back into a field the user could re-save or screenshot.
-                        keyStatus = .saved
-                        keyFeedback = .saved
+                        keyDeletionRetryAccounts.remove(account)
                         NotificationCenter.default.post(name: .apiKeyConfigured, object: nil)
                     }
-                    onePasswordFeedback = success ? .loaded : .loadedButNotSaved
-                    isLoadingFrom1Password = false
+                    if let status = decision.status { keyStatus = status }
+                    keyFeedback = decision.feedback
+                    onePasswordFeedback = outcome.feedback
+                    let persist = AIOnePasswordCompletionPolicy.mayPersistReference(
+                        result: outcome.result, started: started, current: current
+                    )
+                    guard persist else { return nil }
+                    isSavingOnePasswordReference = true
+                    return settings.aiCredentialUIContext
                 }
-                if success {
-                    await persistOnePasswordReference(reference, for: account)
+                if let referenceContext {
+                    await persistOnePasswordReference(
+                        reference, for: account, customProviderGeneration: outcome.customProviderGeneration,
+                        customProviderState: outcome.customProviderState,
+                        started: referenceContext
+                    )
                 }
+            } catch let error as AICustomProviderCredentialError {
+                if error.result != .notCommitted, account == settings.activeAPIKeyAccount {
+                    settings.cachedAPIKey = nil
+                    keyStatus = .unverified
+                }
+                let feedback: AIKeyFeedback = error.result == .notCommitted ? .saveFailed : .saveUnverified
+                await finishOnePasswordFailure(feedback, started: started, mutation: mutation)
             } catch OnePasswordError.notInstalled {
-                await MainActor.run {
-                    onePasswordFeedback = .notInstalled
-                    isLoadingFrom1Password = false
-                }
+                await finishOnePasswordFailure(.notInstalled, started: started, mutation: mutation)
             } catch OnePasswordError.timeout {
-                await MainActor.run {
-                    onePasswordFeedback = .timedOut
-                    isLoadingFrom1Password = false
-                }
+                await finishOnePasswordFailure(.timedOut, started: started, mutation: mutation)
             } catch OnePasswordError.readFailed {
-                await MainActor.run {
-                    onePasswordFeedback = .readFailed
-                    isLoadingFrom1Password = false
-                }
+                await finishOnePasswordFailure(.readFailed, started: started, mutation: mutation)
             } catch OnePasswordError.invalidReference {
-                await MainActor.run {
-                    onePasswordFeedback = .invalidReference
-                    isLoadingFrom1Password = false
-                }
+                await finishOnePasswordFailure(.invalidReference, started: started, mutation: mutation)
             } catch {
                 NSLog("[AITab] loadFrom1Password failed: %@", error.localizedDescription)
-                await MainActor.run {
-                    onePasswordFeedback = .unknown
-                    isLoadingFrom1Password = false
-                }
+                await finishOnePasswordFailure(.unknown, started: started, mutation: mutation)
             }
         }
     }
 
     private func testConnection() {
+        guard settings.usableAPIKeyAccount != nil else {
+            testResult = "ai.provider.unavailable".localized
+            return
+        }
+        guard apiKeyInput.isEmpty || keyInputContext == settings.aiKeyContext.inputContext else {
+            testResult = "ai.provider.unavailable".localized
+            return
+        }
         isTesting = true
         testResult = nil
         testSucceeded = false
-        let providerID = settings.aiProvider
-        let revision = settings.modelCatalogRevision
-        let key = SecurityPolicies.sanitizeUserInput(apiKeyInput.isEmpty ? (settings.cachedAPIKey ?? "") : apiKeyInput)
+        let expected = settings.aiKeyContext
+        let key = SecurityPolicies.sanitizeUserInput(apiKeyInput.isEmpty ? (settings.usableCachedAPIKey ?? "") : apiKeyInput)
 
         Task {
             defer { isTesting = false }
@@ -947,8 +1516,8 @@ struct AITab: View {
                     testResult = "ai.test.emptyKey".localized
                     return
                 }
-                let result = try await settings.checkModelConnection(apiKey: key)
-                guard providerID == settings.aiProvider, revision == settings.modelCatalogRevision else { return }
+                let result = try await settings.checkModelConnection(apiKey: key, expected: expected)
+                guard expected == settings.aiKeyContext else { return }
                 if result.source == .live {
                     testSucceeded = true
                     testResult = "ai.models.connectionSuccess".localized
@@ -957,8 +1526,11 @@ struct AITab: View {
                 }
             } catch is CancellationError {
                 return
+            } catch AISearchError.configurationChanged {
+                guard expected == settings.aiKeyContext else { return }
+                testResult = AISearchError.configurationChanged.message(settings.appLanguage)
             } catch {
-                guard providerID == settings.aiProvider, revision == settings.modelCatalogRevision else { return }
+                guard expected == settings.aiKeyContext else { return }
                 testResult = (error as? ProviderModelError ?? .network).message(language: settings.appLanguage)
             }
         }
@@ -996,6 +1568,8 @@ private struct CustomAIProviderEditor: View {
     @State private var outputPrice: String
     @State private var cacheReadPrice: String
     @State private var errorMessage: String?
+    @State private var isSaving = false
+    @State private var pendingConnectionChange: CustomAIProviderConfig?
 
     init(provider: CustomAIProviderConfig?, onSaved: @escaping (CustomAIProviderConfig?) -> Void) {
         self.provider = provider
@@ -1100,6 +1674,7 @@ private struct CustomAIProviderEditor: View {
                     onSaved(nil)
                 }
                 .buttonStyle(EditorialActionButtonStyle(compact: true))
+                .disabled(isSaving)
 
                 Spacer()
 
@@ -1107,12 +1682,29 @@ private struct CustomAIProviderEditor: View {
                     save()
                 }
                 .buttonStyle(EditorialActionButtonStyle(tone: .primary, compact: true))
-                .disabled(name.isEmpty || baseURL.isEmpty)
+                .disabled(name.isEmpty || baseURL.isEmpty || isSaving)
             }
         }
         .padding(20)
         .adaptiveColorScheme()
         .appThemeSurface()
+        .interactiveDismissDisabled(isSaving)
+        .confirmationDialog(
+            "ai.custom.credentialsResetTitle".localized,
+            isPresented: Binding(
+                get: { pendingConnectionChange != nil },
+                set: { if !$0 { pendingConnectionChange = nil } }
+            ),
+            presenting: pendingConnectionChange
+        ) { proposed in
+            Button("ai.custom.credentialsResetConfirm".localized, role: .destructive) {
+                pendingConnectionChange = nil
+                applyConnectionChange(proposed)
+            }
+            Button("ai.cancel".localized, role: .cancel) { pendingConnectionChange = nil }
+        } message: { _ in
+            Text("ai.custom.credentialsResetMessage".localized)
+        }
     }
 
     private func save() {
@@ -1144,11 +1736,74 @@ private struct CustomAIProviderEditor: View {
             cacheReadPricePerMTok: Self.priceValue(cacheReadPrice)
         )
 
-        if let existing = provider, let idx = settings.customAIProviders.firstIndex(where: { $0.id == existing.id }) {
+        if let existing = provider {
+            guard settings.customAIProviders.first(where: { $0.id == existing.id }) == existing else {
+                errorMessage = "ai.custom.configChanged".localized
+                return
+            }
+            if AICustomProviderConnectionPolicy.requiresCredentialReset(from: existing, to: config) {
+                pendingConnectionChange = config
+                return
+            }
+        }
+        commit(config)
+    }
+
+    private func commit(_ config: CustomAIProviderConfig) {
+        if let existing = provider {
+            guard let idx = settings.customAIProviders.firstIndex(where: { $0.id == existing.id }),
+                  settings.customAIProviders[idx] == existing else {
+                errorMessage = "ai.custom.configChanged".localized
+                return
+            }
             settings.customAIProviders[idx] = config
         } else {
+            guard !settings.customAIProviders.contains(where: { $0.id == config.id }) else {
+                errorMessage = "ai.custom.configChanged".localized
+                return
+            }
             settings.customAIProviders.append(config)
         }
         onSaved(config)
+    }
+
+    private func applyConnectionChange(_ config: CustomAIProviderConfig) {
+        guard !isSaving, let existing = provider,
+              settings.customAIProviders.first(where: { $0.id == existing.id }) == existing else {
+            errorMessage = "ai.custom.configChanged".localized
+            return
+        }
+        isSaving = true
+        errorMessage = nil
+        let account = "custom:\(existing.id)"
+        let mutation = settings.beginAICredentialMutation(account: account)
+        if settings.activeAPIKeyAccount == account { settings.cachedAPIKey = nil }
+        Task {
+            let store = EncryptedKeyStore()
+            let result: EncryptedKeyStore.MutationResult
+            switch await store.customProviderCredentialStateResult(account: account) {
+            case .legacy:
+                result = await store.resetCustomProviderCredentialsForConnectionChange(
+                    account: account, expectedState: nil
+                )
+            case let .state(state):
+                result = await store.resetCustomProviderCredentialsForConnectionChange(
+                    account: account, expectedState: state
+                )
+            case .failed:
+                result = .unverified
+            }
+            await MainActor.run {
+                defer {
+                    _ = settings.finishAICredentialMutation(account: account, token: mutation)
+                    isSaving = false
+                }
+                guard result == .durable else {
+                    errorMessage = "ai.custom.credentialsResetFailed".localized
+                    return
+                }
+                commit(config)
+            }
+        }
     }
 }

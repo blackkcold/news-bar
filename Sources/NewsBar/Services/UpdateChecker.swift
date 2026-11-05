@@ -28,6 +28,7 @@ final class UpdateChecker: ObservableObject {
 
     private static let checkInterval: TimeInterval = 86400
     private static let updateCacheDir: URL = {
+        if TestIsolation.isActive { return TestIsolation.directory("Updates") }
         let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!
         let bundleID = Bundle.main.bundleIdentifier ?? "com.newsbar"
         return caches.appendingPathComponent(bundleID).appendingPathComponent("Updates")
@@ -36,22 +37,24 @@ final class UpdateChecker: ObservableObject {
     @Published var state: UpdateState = .idle
 
     var devMode: Bool {
-        UserDefaults.standard.bool(forKey: "updateDevMode")
+        TestIsolation.defaults.bool(forKey: "updateDevMode")
     }
 
     private var cachedRelease: GitHubRelease?
 
     private var lastCheckDate: Date? {
-        get { UserDefaults.standard.object(forKey: "lastUpdateCheckDate") as? Date }
-        set { UserDefaults.standard.set(newValue, forKey: "lastUpdateCheckDate") }
+        get { TestIsolation.defaults.object(forKey: "lastUpdateCheckDate") as? Date }
+        set { TestIsolation.defaults.set(newValue, forKey: "lastUpdateCheckDate") }
     }
 
     private var skippedVersion: String? {
-        get { UserDefaults.standard.string(forKey: "updateSkippedVersion") }
-        set { UserDefaults.standard.set(newValue, forKey: "updateSkippedVersion") }
+        get { TestIsolation.defaults.string(forKey: "updateSkippedVersion") }
+        set { TestIsolation.defaults.set(newValue, forKey: "updateSkippedVersion") }
     }
 
     private var downloadTask: Task<Void, Never>?
+    private var downloadingVersion: String?
+    private var downloadJob: UUID?
 
     // MARK: - Auto Update Check (called by AppDelegate on launch)
 
@@ -110,79 +113,98 @@ final class UpdateChecker: ObservableObject {
     // MARK: - Download
 
     func downloadUpdate() {
-        guard case .updateAvailable = state else { return }
+        guard case .updateAvailable(let version) = state, downloadTask == nil else { return }
+        // Claim the state synchronously so a double click cannot start two
+        // downloads that race for the same file and state.
+        let job = UUID()
+        downloadJob = job
+        state = .downloading(0)
+        downloadingVersion = version
 
         downloadTask = Task {
+            defer {
+                if downloadJob == job {
+                    downloadTask = nil
+                    downloadJob = nil
+                    downloadingVersion = nil
+                }
+            }
+            if Task.isCancelled {
+                await restoreAvailableState(version: version)
+                return
+            }
             let release: GitHubRelease
             if let cached = cachedRelease {
                 release = cached
             } else {
                 guard let fetched = await fetchLatestRelease() else {
-                    await MainActor.run { state = .error("获取下载地址失败") }
+                    if downloadJob == job { await setError("update.error.fetchFailed") }
                     return
                 }
                 release = fetched
             }
-
-            guard let dmgAsset = release.assets.first(where: { $0.isDMG }),
-                  let dmgURL = URL(string: dmgAsset.browser_download_url) else {
-                await MainActor.run { state = .error("未找到 DMG 文件") }
+            if Task.isCancelled {
+                await restoreAvailableState(version: version)
                 return
             }
 
-            // Trust chain: automatic download requires an official GitHub
-            // source (API or github.com release page) AND a GitHub-owned
-            // download host. Proxy metadata never authorizes a download.
+            guard let dmgAsset = release.assets.first(where: { $0.isDMG }),
+                  let dmgURL = URL(string: dmgAsset.browser_download_url),
+                  dmgURL.scheme?.lowercased() == "https" else {
+                await setError("update.error.noAsset")
+                return
+            }
+
             guard Self.canAuthorizeAutoDownload(
                 provenance: release.provenance,
                 downloadHost: dmgURL.host
             ) else {
-                let message = release.provenance.isGitHubOfficial
-                    ? "下载地址非 GitHub 官方域名，已拒绝自动下载。请从 GitHub 官方页面下载。"
-                    : "更新信息来自第三方镜像，无法自动下载。请从 GitHub 官方页面下载。"
-                await MainActor.run { state = .error(message) }
+                await setError(release.provenance.isGitHubOfficial
+                    ? "update.error.untrustedHost"
+                    : "update.error.mirror")
                 return
             }
 
-            await MainActor.run { state = .downloading(0) }
-
             try? FileManager.default.createDirectory(at: Self.updateCacheDir, withIntermediateDirectories: true)
-
-            if let contents = try? FileManager.default.contentsOfDirectory(at: Self.updateCacheDir, includingPropertiesForKeys: nil) {
-                for file in contents where file.pathExtension == "dmg" {
-                    try? FileManager.default.removeItem(at: file)
-                }
-            }
-
-            let destinationURL = Self.updateCacheDir.appendingPathComponent(dmgAsset.name)
+            let destinationURL = Self.updateCacheDir.appendingPathComponent(
+                URL(fileURLWithPath: dmgAsset.name).lastPathComponent
+            )
 
             do {
-                let session = URLSession(configuration: .ephemeral)
-                let (tempURL, response) = try await session.download(from: dmgURL)
-                let httpResponse = response as? HTTPURLResponse
+                let configuration = URLSessionConfiguration.ephemeral
+                configuration.timeoutIntervalForRequest = 30
+                configuration.timeoutIntervalForResource = 900
+                let session = URLSession(configuration: configuration)
+                let (tempURL, response) = try await session.download(
+                    for: URLRequest(url: dmgURL),
+                    delegate: UpdateDownloadRedirectGuard()
+                )
+                defer { try? FileManager.default.removeItem(at: tempURL) }
+                if Task.isCancelled { return }
 
-                guard let code = httpResponse?.statusCode, (200...299).contains(code) else {
-                    await MainActor.run { state = .error("下载失败 (HTTP \(httpResponse?.statusCode ?? 0))") }
+                guard let httpResponse = response as? HTTPURLResponse,
+                      (200...299).contains(httpResponse.statusCode) else {
+                    await setError("update.error.downloadHTTP")
+                    return
+                }
+                guard validateDownloadSize(tempURL: tempURL, expectedSize: dmgAsset.size) else {
+                    await setError("update.error.size")
                     return
                 }
 
-                if !validateDownloadSize(tempURL: tempURL, expectedSize: dmgAsset.size) {
-                    try? FileManager.default.removeItem(at: tempURL)
-                    await MainActor.run { state = .error("文件校验失败，请重试") }
-                    return
+                let expectedSHA256: String?
+                if let digest = dmgAsset.sha256Digest {
+                    expectedSHA256 = digest
+                } else {
+                    expectedSHA256 = await fetchSHA256Sidecar(version: release.version)
                 }
-
-                let expectedSHA256 = dmgAsset.sha256Digest
-
                 guard let expectedSHA256 else {
-                    try? FileManager.default.removeItem(at: tempURL)
-                    await MainActor.run { state = .error("无法获取校验信息，请从 GitHub 官方页面下载") }
+                    await setError("update.error.noDigest")
                     return
                 }
-
-                if !validateSHA256(tempURL: tempURL, expected: expectedSHA256) {
-                    try? FileManager.default.removeItem(at: tempURL)
-                    await MainActor.run { state = .error("文件校验失败，请重试") }
+                try Task.checkCancellation()
+                guard validateSHA256(tempURL: tempURL, expected: expectedSHA256) else {
+                    await setError("update.error.checksum")
                     return
                 }
 
@@ -190,15 +212,46 @@ final class UpdateChecker: ObservableObject {
                     try FileManager.default.removeItem(at: destinationURL)
                 }
                 try FileManager.default.moveItem(at: tempURL, to: destinationURL)
-
                 cachedRelease = nil
-
-                await MainActor.run { state = .downloadComplete(destinationURL) }
+                if downloadJob == job {
+                    await MainActor.run { state = .downloadComplete(destinationURL) }
+                }
+            } catch is CancellationError {
+                await restoreAvailableState(version: version)
             } catch {
-                await MainActor.run { state = .error("下载失败，请重试") }
+                if Task.isCancelled {
+                    await restoreAvailableState(version: version)
+                } else if downloadJob == job {
+                    await setError("update.error.downloadFailed")
+                }
             }
+        }
+    }
 
-            downloadTask = nil
+    private func setError(_ key: String) async {
+        let message = L10n.string(key)
+        await MainActor.run { state = .error(message) }
+    }
+
+    private func restoreAvailableState(version: String) async {
+        await MainActor.run {
+            state = .updateAvailable(version)
+        }
+    }
+
+    private func fetchSHA256Sidecar(version: String) async -> String? {
+        guard let url = Self.releaseAssetURL(version: version, suffix: ".dmg.sha256") else { return nil }
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 15
+        do {
+            let session = URLSession(configuration: .ephemeral)
+            let (data, response) = try await session.data(for: request)
+            guard let http = response as? HTTPURLResponse,
+                  (200...299).contains(http.statusCode),
+                  let text = String(data: data, encoding: .utf8) else { return nil }
+            return Self.parseSHA256File(text)
+        } catch {
+            return nil
         }
     }
 
@@ -221,8 +274,9 @@ final class UpdateChecker: ObservableObject {
     }
 
     func cancelDownload() {
+        // Let the task's own defer clear the job identity and restore state;
+        // clearing it here would let a stale task overwrite a newer download.
         downloadTask?.cancel()
-        downloadTask = nil
     }
 
     // MARK: - Network Helpers
@@ -361,9 +415,16 @@ final class UpdateChecker: ObservableObject {
     }
 
     private func validateSHA256(tempURL: URL, expected: String) -> Bool {
-        guard let data = try? Data(contentsOf: tempURL) else { return false }
-        let digest = SHA256.hash(data: data)
-        let actual = digest.compactMap { String(format: "%02x", $0) }.joined()
+        guard let handle = try? FileHandle(forReadingFrom: tempURL) else { return false }
+        defer { try? handle.close() }
+        var hasher = SHA256()
+        while autoreleasepool(invoking: {
+            let chunk = try? handle.read(upToCount: 1 << 20)
+            guard let chunk, !chunk.isEmpty else { return false }
+            hasher.update(data: chunk)
+            return true
+        }) {}
+        let actual = hasher.finalize().compactMap { String(format: "%02x", $0) }.joined()
         return actual == expected.lowercased()
     }
 
@@ -423,5 +484,22 @@ final class UpdateChecker: ObservableObject {
     static func canAuthorizeAutoDownload(provenance: ReleaseProvenance, downloadHost: String?) -> Bool {
         guard provenance.isGitHubOfficial else { return false }
         return isGitHubOwnedHost(downloadHost)
+    }
+}
+
+/// Restricts every redirect during an update download to HTTPS and a
+/// GitHub-owned host. The initial asset URL was already authorized; this
+/// closes the gap while URLSession follows GitHub's storage redirects.
+private final class UpdateDownloadRedirectGuard: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+    func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        willPerformHTTPRedirection response: HTTPURLResponse,
+        newRequest request: URLRequest
+    ) async -> URLRequest? {
+        guard let url = request.url,
+              url.scheme?.lowercased() == "https",
+              UpdateChecker.isGitHubOwnedHost(url.host) else { return nil }
+        return request
     }
 }

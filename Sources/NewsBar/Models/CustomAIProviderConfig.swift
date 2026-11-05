@@ -15,6 +15,36 @@ struct ResolvedAIConnection: Sendable {
     var customPrice: ModelPrice? = nil
     /// Provider-declared headers (e.g. OpenCode Go's routing session).
     var additionalHeaders: [String: String] = [:]
+
+    /// Stable identity for the destination and wire authentication fields.
+    /// Exact URL matching is intentional: even a path or query change may send
+    /// a saved credential to a different upstream. Length-prefix the fields
+    /// so separators inside user-provided values cannot cause collisions.
+    var credentialEndpointIdentity: String {
+        var fields = [
+            "newsbar-credential-endpoint-v1", baseURL, responseFormat.rawValue,
+            authHeaderName, authHeaderPrefix,
+            apiVersion.map { "present:\($0)" } ?? "absent"
+        ]
+        for key in additionalHeaders.keys.sorted() {
+            fields.append(key)
+            fields.append(additionalHeaders[key] ?? "")
+        }
+        let encoded = fields.map { "\($0.utf8.count):\($0)" }.joined()
+        return "v1:" + ContentIdentity.digest(encoded)
+    }
+}
+
+enum AICustomProviderConnectionPolicy {
+    /// Even a path or authentication change requires explicit re-entry: the
+    /// same hostname can route different paths to different parties.
+    static func requiresCredentialReset(from old: CustomAIProviderConfig, to new: CustomAIProviderConfig) -> Bool {
+        // Compare the effective credential endpoint, not raw optional fields.
+        // A nil apiVersion and the provider's default resolve to the same
+        // endpoint and must not wipe a saved key.
+        old.resolvedConnection().credentialEndpointIdentity
+            != new.resolvedConnection().credentialEndpointIdentity
+    }
 }
 
 struct CustomAIProviderConfig: Identifiable, Hashable, Codable {

@@ -37,6 +37,7 @@ enum AIChatError: Error, Equatable, LocalizedError {
     case transport(String)
     case malformedResponse
     case emptyResponse
+    case quotaUnavailable
 
     var errorDescription: String? {
         switch self {
@@ -48,7 +49,63 @@ enum AIChatError: Error, Equatable, LocalizedError {
         case .transport(let detail): return "AI transport failed: \(detail)"
         case .malformedResponse: return "AI response could not be decoded"
         case .emptyResponse: return "AI returned an empty response"
+        case .quotaUnavailable: return "AI budget is unavailable"
         }
+    }
+}
+
+enum AIQuotaSettlement: Sendable {
+    case completed(usage: AIUsage?, price: ModelPrice?)
+    case unknown
+    case notDispatched
+}
+
+/// Accounting hook owned by the caller. Every actual HTTP dispatch reserves
+/// once; a fallback therefore reserves twice.
+struct AIChatQuota: Sendable {
+    var reserve: @Sendable (AIChatRequest, Int) -> AIQuotaStore.Reservation?
+    var settle: @Sendable (AIQuotaStore.Reservation, AIQuotaSettlement) -> Void
+
+    /// Production wiring: one reservation per HTTP dispatch, settled with the
+    /// provider's measured usage when available.
+    static func tracked(
+        origin: AIQuotaOrigin,
+        policy: AIQuotaPolicy,
+        price: ModelPrice?,
+        store: AIQuotaStore = .shared
+    ) -> AIChatQuota {
+        AIChatQuota(
+            reserve: { request, outputTokens in
+                guard store.snapshot().availability.isUsable else { return nil }
+                let system = request.messages.filter { $0.role == .system }
+                    .map(\.content).joined(separator: "\n")
+                let user = request.messages.filter { $0.role != .system }
+                    .map(\.content).joined(separator: "\n")
+                let reserved = price.map {
+                    AICostEstimator.reserveMicros(
+                        inputTokens: AICostEstimator.estimateInputTokens(system: system, user: user),
+                        maxOutputTokens: outputTokens,
+                        price: $0
+                    )
+                } ?? 0
+                return store.reserveTracked(
+                    origin, policy: policy, reservedCostMicros: reserved
+                )
+            },
+            settle: { reservation, outcome in
+                switch outcome {
+                case let .completed(usage, actualPrice):
+                    store.settle(reservation, usage: usage, price: actualPrice)
+                case .unknown:
+                    store.settle(reservation, usage: nil, price: nil)
+                case .notDispatched:
+                    store.settle(
+                        reservation, actualCostMicros: 0,
+                        inputTokens: 0, outputTokens: 0, priced: true
+                    )
+                }
+            }
+        )
     }
 }
 
@@ -101,6 +158,9 @@ struct HTTPAIChatClient: AIChatClienting {
     let timeout: TimeInterval
     let transport: Transport
     let streamTransport: StreamTransport
+    /// Accounting hook. When present, every actual HTTP dispatch reserves and
+    /// settles on its own, so a stream fallback charges both dispatches.
+    let quota: AIChatQuota?
 
     init(
         connection: ResolvedAIConnection,
@@ -109,6 +169,7 @@ struct HTTPAIChatClient: AIChatClienting {
         disableDeepSeekThinking: Bool = false,
         thinking: AIThinkingLevel? = nil,
         timeout: TimeInterval = 60,
+        quota: AIChatQuota? = nil,
         transport: @escaping Transport = { request in
             try await PrivateHTTP.data(
                 for: request,
@@ -126,6 +187,7 @@ struct HTTPAIChatClient: AIChatClienting {
         self.disableDeepSeekThinking = disableDeepSeekThinking
         self.thinking = thinking
         self.timeout = timeout
+        self.quota = quota
         self.transport = transport
         self.streamTransport = streamTransport
     }
@@ -135,15 +197,51 @@ struct HTTPAIChatClient: AIChatClienting {
     }
 
     func complete(_ request: AIChatRequest) async throws -> AIChatResponse {
-        let built = try build(request, stream: false)
-        let (data, response) = try await send(built.request)
-        try Self.validate(response)
-        switch connection.responseFormat {
-        case .openAI:
-            return try Self.parseOpenAI(data)
-        case .anthropic:
-            return try Self.parseAnthropic(data)
+        try await perform(request, stream: false)
+    }
+
+    /// One HTTP dispatch, one reservation. `build` runs before the reservation
+    /// so an invalid request never consumes budget.
+    private func perform(_ request: AIChatRequest, stream: Bool) async throws -> AIChatResponse {
+        let built = try build(request, stream: stream)
+        let reservation = try reserveDispatch(request, outputTokens: built.effectiveMaxTokens)
+        if Task.isCancelled {
+            settleDispatch(reservation, .notDispatched)
+            throw CancellationError()
         }
+        do {
+            let (data, response) = try await send(built.request)
+            try Self.validate(response)
+            let parsed: AIChatResponse
+            switch connection.responseFormat {
+            case .openAI: parsed = try Self.parseOpenAI(data)
+            case .anthropic: parsed = try Self.parseAnthropic(data)
+            }
+            settleDispatch(reservation, .completed(usage: parsed.usage, price: price))
+            return parsed
+        } catch {
+            // The request left the device: the provider may bill it even when
+            // it answered with an error, so the ceiling stays and is flagged.
+            settleDispatch(reservation, .unknown)
+            throw error
+        }
+    }
+
+    private func reserveDispatch(
+        _ request: AIChatRequest, outputTokens: Int
+    ) throws -> AIQuotaStore.Reservation? {
+        guard let quota else { return nil }
+        guard let reservation = quota.reserve(request, outputTokens) else {
+            throw AIChatError.quotaUnavailable
+        }
+        return reservation
+    }
+
+    private func settleDispatch(
+        _ reservation: AIQuotaStore.Reservation?, _ outcome: AIQuotaSettlement
+    ) {
+        guard let reservation, let quota else { return }
+        quota.settle(reservation, outcome)
     }
 
     // MARK: - Streaming
@@ -151,17 +249,31 @@ struct HTTPAIChatClient: AIChatClienting {
     func stream(_ request: AIChatRequest) -> AsyncThrowingStream<AIChatStreamEvent, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
+                let built: AIBuiltRequest
+                let reservation: AIQuotaStore.Reservation?
                 do {
-                    let built = try build(request, stream: true)
+                    built = try build(request, stream: true)
+                        reservation = try reserveDispatch(request, outputTokens: built.effectiveMaxTokens)
+                } catch {
+                    continuation.finish(throwing: error)
+                    return
+                }
+                if Task.isCancelled {
+                    settleDispatch(reservation, .notDispatched)
+                    continuation.finish(throwing: CancellationError())
+                    return
+                }
+                do {
                     let (chunks, response) = try await streamTransport(built.request)
                     do {
                         try Self.validate(response)
                     } catch let error as AIChatError {
-                        // A provider or proxy that refuses streaming must not
-                        // cost the user the answer. Nothing was generated yet,
-                        // so retrying without `stream` is free.
+                        // The first request already left the device, so its
+                        // cost is unknown. A fallback is a second, separately
+                        // reserved dispatch.
+                        settleDispatch(reservation, .unknown)
                         guard Self.allowsNonStreamingFallback(error) else { throw error }
-                        let whole = try await complete(request)
+                        let whole = try await perform(request, stream: false)
                         if let usage = whole.usage { continuation.yield(.usage(usage)) }
                         continuation.yield(.text(whole.text))
                         continuation.yield(.finished(truncated: whole.truncated))
@@ -170,29 +282,49 @@ struct HTTPAIChatClient: AIChatClienting {
                     }
 
                     var buffer = ""
+                    var usage: AIUsage?
+                    var truncated = false
                     for try await data in chunks {
                         guard let text = String(data: data, encoding: .utf8) else { continue }
                         buffer += text
                         for frame in SSEDecoder.drain(&buffer) {
                             for event in AIStreamParser.events(from: frame, format: connection.responseFormat) {
+                                if case .usage(let value) = event { usage = Self.mergedUsage(usage, value) }
+                                if case .finished(let value) = event { truncated = truncated || value }
                                 continuation.yield(event)
                             }
                         }
                     }
                     if let frame = SSEDecoder.frame(from: buffer) {
                         for event in AIStreamParser.events(from: frame, format: connection.responseFormat) {
+                            if case .usage(let value) = event { usage = Self.mergedUsage(usage, value) }
+                            if case .finished(let value) = event { truncated = truncated || value }
                             continuation.yield(event)
                         }
                     }
+                    settleDispatch(reservation, .completed(usage: usage, price: price))
                     continuation.finish()
                 } catch is CancellationError {
+                    settleDispatch(reservation, .unknown)
                     continuation.finish(throwing: CancellationError())
                 } catch {
+                    settleDispatch(reservation, .unknown)
                     continuation.finish(throwing: error)
                 }
             }
             continuation.onTermination = { _ in task.cancel() }
         }
+    }
+
+    private static func mergedUsage(_ current: AIUsage?, _ next: AIUsage) -> AIUsage {
+        guard let current else { return next }
+        return AIUsage(
+            inputTokens: max(current.inputTokens, next.inputTokens),
+            outputTokens: max(current.outputTokens, next.outputTokens),
+            cacheReadTokens: max(current.cacheReadTokens, next.cacheReadTokens),
+            cacheWriteTokens: max(current.cacheWriteTokens, next.cacheWriteTokens),
+            reportedCost: next.reportedCost ?? current.reportedCost
+        )
     }
 
     private static func allowsNonStreamingFallback(_ error: AIChatError) -> Bool {

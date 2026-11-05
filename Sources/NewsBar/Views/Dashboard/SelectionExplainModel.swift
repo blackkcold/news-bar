@@ -91,6 +91,15 @@ final class SelectionExplainModel {
                 }
             } catch is CancellationError {
                 return
+            } catch AISearchError.configurationChanged {
+                self.reveal.reset()
+                self.state = .failed(AISearchError.configurationChanged.message(settings.appLanguage))
+            } catch AISearchError.keyReadFailed {
+                self.reveal.reset()
+                self.state = .failed(AISearchError.keyReadFailed.message(settings.appLanguage))
+            } catch AISearchError.noKey {
+                self.reveal.reset()
+                self.state = .noKey
             } catch SelectionExplainService.Failure.quotaUnavailable {
                 self.state = .quota
             } catch SelectionExplainService.Failure.emptyResponse {
@@ -144,6 +153,15 @@ final class SelectionExplainModel {
                 }
             } catch is CancellationError {
                 return
+            } catch AISearchError.configurationChanged {
+                self.reveal.reset()
+                self.state = .failed(AISearchError.configurationChanged.message(settings.appLanguage))
+            } catch AISearchError.keyReadFailed {
+                self.reveal.reset()
+                self.state = .failed(AISearchError.keyReadFailed.message(settings.appLanguage))
+            } catch AISearchError.noKey {
+                self.reveal.reset()
+                self.state = .noKey
             } catch {
                 self.reveal.reset()
                 self.state = .failed(L10n.string("reader.selection.webFailed", language: settings.appLanguage))
@@ -180,7 +198,7 @@ final class SelectionExplainModel {
                 lookupNotice = .searchUnavailable
                 return (try await answer(for: text, settings: settings), nil)
             }
-            let plan = await classify(text, settings: settings)
+            let plan = try await classify(text, settings: settings)
             guard SelectionLookupPolicy.shouldLookUp(plan, in: text) else {
                 lookupNotice = .judgedOffline
                 return (try await answer(for: text, settings: settings), nil)
@@ -192,6 +210,10 @@ final class SelectionExplainModel {
                 return (result, result.isOffline ? nil : actualQuery)
             } catch is CancellationError {
                 throw CancellationError()
+            } catch AISearchError.configurationChanged {
+                throw AISearchError.configurationChanged
+            } catch AISearchError.keyReadFailed {
+                throw AISearchError.keyReadFailed
             } catch {
                 lookupNotice = .lookupFailed
                 return (try await answer(for: text, settings: settings), nil)
@@ -217,22 +239,30 @@ final class SelectionExplainModel {
     /// One small call, counted like any other. A parse failure means "look it
     /// up": a missing answer is worse than an extra search. `SelectionLookupPolicy`
     /// applies that rule, so a `nil` plan here is not a "no".
-    private func classify(_ text: String, settings: AppSettings) async -> SelectionPlan? {
+    private func classify(_ text: String, settings: AppSettings) async throws -> SelectionPlan? {
         if let planner {
             return await planner(text)
         }
-        let key = await Self.resolveAPIKey(settings: settings)
-        guard !key.isEmpty else { return nil }
-        guard let configuration = await settings.validatedAIConfiguration(apiKey: key) else { return nil }
+        let bound = try await Self.resolveAPIKey(settings: settings)
+        guard !bound.key.isEmpty || bound.context.providerID == AIProvider.ollamaCloud.rawValue else { return nil }
+        guard let configuration = await settings.validatedAIConfiguration(boundKey: bound) else {
+            guard settings.isCurrentAIKey(bound) else { throw AISearchError.configurationChanged }
+            return nil
+        }
         guard AIQuotaStore.shared.snapshot().availability.isUsable else { return nil }
-        guard AIQuotaStore.shared.reserve(.selection, policy: settings.aiQuotaPolicy) else { return nil }
 
         let client = HTTPAIChatClient(
             connection: configuration.connection,
             apiKey: configuration.apiKey,
             model: configuration.model,
             disableDeepSeekThinking: settings.aiDisableDeepSeekThinking,
-            timeout: 20
+            timeout: 20,
+            quota: .tracked(
+                origin: .selection,
+                policy: settings.aiQuotaPolicy,
+                price: configuration.connection.customPrice
+                    ?? AIPriceCatalog.price(for: configuration.connection.providerID, model: configuration.model)
+            )
         )
         let escaped = String(text.prefix(2_000))
             .replacingOccurrences(of: "&", with: "&amp;")
@@ -244,17 +274,16 @@ final class SelectionExplainModel {
         ], maxTokens: 300, temperature: 0)
         do {
             let response = try await client.complete(request)
-            AIQuotaStore.shared.settle(
-                reservedCostMicros: 0,
-                usage: response.usage,
-                price: client.price
-            )
+            // The client already settled this dispatch; settling again here
+            // doubled both measured cost and token counts.
             // A cut-off JSON is not a plan. Hand back nil so the policy sends
             // the passage to the web instead of trusting half an answer.
             guard !response.truncated else { return nil }
             return SelectionQueryPlanner.parse(response.text)
+        } catch let error as AIChatError {
+            if error == .quotaUnavailable { return nil }
+            return nil
         } catch {
-            AIQuotaStore.shared.settle(reservedCostMicros: 0, usage: nil, price: client.price)
             return nil
         }
     }
@@ -263,10 +292,10 @@ final class SelectionExplainModel {
         if let explainer {
             return try await explainer(text)
         }
-        let key = await Self.resolveAPIKey(settings: settings)
-        guard !key.isEmpty else {
-            state = .noKey
-            throw CancellationError()
+        let bound = try await Self.resolveAPIKey(settings: settings)
+        let key = bound.key
+        guard !key.isEmpty || bound.context.providerID == AIProvider.ollamaCloud.rawValue else {
+            throw AISearchError.noKey
         }
         let language = settings.appLanguage
         // The app-wide quota is the single authority. A selection explanation is
@@ -277,7 +306,8 @@ final class SelectionExplainModel {
             throw CancellationError()
         }
         let policy = settings.aiQuotaPolicy
-        guard let configuration = await settings.validatedAIConfiguration(apiKey: key) else {
+        guard let configuration = await settings.validatedAIConfiguration(boundKey: bound) else {
+            guard settings.isCurrentAIKey(bound) else { throw AISearchError.configurationChanged }
             if let error = settings.modelCatalogError {
                 state = .failed(error.message(language: language))
             } else {
@@ -286,6 +316,7 @@ final class SelectionExplainModel {
             throw CancellationError()
         }
         let identity = [
+            configuration.revision.uuidString,
             configuration.connection.baseURL,
             configuration.model,
             policy.mode.rawValue,
@@ -298,41 +329,19 @@ final class SelectionExplainModel {
         if let cachedService, cachedServiceIdentity == identity {
             service = cachedService
         } else {
+            let price = configuration.connection.customPrice
+                ?? AIPriceCatalog.price(for: configuration.connection.providerID, model: configuration.model)
             let client = HTTPAIChatClient(
                 connection: configuration.connection,
                 apiKey: configuration.apiKey,
                 model: configuration.model,
                 disableDeepSeekThinking: settings.aiDisableDeepSeekThinking,
-                timeout: 60
+                timeout: 60,
+                quota: .tracked(origin: .selection, policy: policy, price: price)
             )
-            // Reserve the call like any other: the input is the selection, the
-            // output is the answer budget. Without this a cost-capped account
-            // paid for every explanation and recorded none of them.
-            let price = client.price
-            let reserved = price.map {
-                AICostEstimator.reserveMicros(
-                    inputTokens: max(1, min(text.count, SelectionExplainService.maxSelectionCharacters)),
-                    maxOutputTokens: SelectionExplainService.maxTokens,
-                    price: $0
-                )
-            } ?? 0
             service = SelectionExplainService(
                 client: client,
-                modelName: configuration.model,
-                reserve: {
-                    AIQuotaStore.shared.reserve(
-                        .selection,
-                        policy: policy,
-                        reservedCostMicros: reserved
-                    )
-                },
-                settle: { response, price in
-                    AIQuotaStore.shared.settle(
-                        reservedCostMicros: reserved,
-                        usage: response.usage,
-                        price: price
-                    )
-                }
+                modelName: configuration.model
             )
             cachedService = service
             cachedServiceIdentity = identity
@@ -344,10 +353,10 @@ final class SelectionExplainModel {
         }
     }
 
-    private static func resolveAPIKey(settings: AppSettings) async -> String {
-        if let cached = settings.cachedAPIKey, !cached.isEmpty { return cached }
-        let key = await EncryptedKeyStore().readAPIKey(account: settings.activeAPIKeyAccount) ?? ""
-        if !key.isEmpty { settings.cachedAPIKey = key }
-        return key
+    private static func resolveAPIKey(settings: AppSettings) async throws -> ProviderBoundKey {
+        let expected = settings.aiKeyContext
+        let bound = try await settings.resolveBoundAPIKey(expected: expected)
+        guard settings.isCurrentAIKey(bound) else { throw AISearchError.configurationChanged }
+        return bound
     }
 }

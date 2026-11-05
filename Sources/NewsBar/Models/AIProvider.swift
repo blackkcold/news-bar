@@ -1,5 +1,24 @@
 import Foundation
 
+enum AIProviderAccountPolicy {
+    static func account(for providerID: String) -> String {
+        if providerID.hasPrefix("custom:") { return providerID }
+        return AIProvider(rawValue: providerID)?.apiKeyAccount() ?? "invalid-ai-provider:\(providerID)"
+    }
+
+    static func canUseConnection(providerID: String, customProviderExists: Bool) -> Bool {
+        if providerID.hasPrefix("custom:") {
+            return providerID.count > "custom:".count && customProviderExists
+        }
+        return AIProvider(rawValue: providerID) != nil
+    }
+
+    static func credentialAccount(for providerID: String, customProviderExists: Bool) -> String? {
+        guard canUseConnection(providerID: providerID, customProviderExists: customProviderExists) else { return nil }
+        return account(for: providerID)
+    }
+}
+
 enum AIProvider: String, CaseIterable, Codable {
     case deepseek
     case minimaxTokenPlan
@@ -105,6 +124,14 @@ enum AIProvider: String, CaseIterable, Codable {
 
     func apiKeyAccount() -> String { "ai-key-\(rawValue)" }
     func keyExistsFlag() -> String { "hasAIKey-\(rawValue)" }
+
+    static func loadedKeyFlagNames(providerID: String, account: String) -> [String] {
+        var flags = ["hasAIKey-\(account)"]
+        if let provider = AIProvider(rawValue: providerID), provider.apiKeyAccount() == account {
+            flags.append(provider.keyExistsFlag())
+        }
+        return flags
+    }
 
     // MARK: - UI Hints
 

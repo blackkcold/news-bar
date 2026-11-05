@@ -79,6 +79,8 @@ struct SettingsWindow: View {
         // so it also works when NavigationSplitView is hosted in an AppKit
         // NSWindow rather than a SwiftUI WindowGroup.
         .toolbar(removing: .sidebarToggle)
+        // Rebuild after a language change so every `.localized` label refreshes.
+        .id(settings.appLanguage)
     }
 
     /// The retro paper theme keeps its existing two-column shell: the paper

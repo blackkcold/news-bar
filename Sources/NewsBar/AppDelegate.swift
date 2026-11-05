@@ -367,48 +367,58 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
 
     private func currentProviderHasSavedKeyFlag() -> Bool {
+        guard settings.hasUsableProviderSelection else { return false }
         if settings.isUsingCustomProvider {
             let accountFlag = "hasAIKey-\(settings.activeAPIKeyAccount)"
-            return UserDefaults.standard.bool(forKey: accountFlag)
+            return TestIsolation.defaults.bool(forKey: accountFlag)
         }
         let provider = settings.currentProvider
         let providerFlag = provider.keyExistsFlag()
-        if UserDefaults.standard.bool(forKey: providerFlag) {
+        if TestIsolation.defaults.bool(forKey: providerFlag) {
             return true
         }
 
         let accountFlag = "hasAIKey-\(provider.apiKeyAccount())"
-        guard UserDefaults.standard.bool(forKey: accountFlag) else {
+        guard TestIsolation.defaults.bool(forKey: accountFlag) else {
             return false
         }
 
-        UserDefaults.standard.set(true, forKey: providerFlag)
+        TestIsolation.defaults.set(true, forKey: providerFlag)
         return true
     }
 
     private func refreshAPIKeyIfNeeded() {
-        let account = settings.activeAPIKeyAccount
-        let legacyRef = settings.onePasswordRef
-        guard currentProviderHasSavedKeyFlag() else { return }
-        Task { [weak self] in
+        Task { @MainActor [weak self] in
             guard let self else {
                 NSLog("[Keychain] AppDelegate deallocated before 1Password key save")
                 return
             }
+            let context = self.settings.aiKeyContext
+            let account = context.account
+            let legacyRef = context.providerID.hasPrefix("custom:") ? "" : self.settings.onePasswordRef
+            let intent = self.settings.aiCredentialIntentRevision
+            guard self.currentProviderHasSavedKeyFlag() else { return }
             let store = EncryptedKeyStore()
             // A reference is scoped to the provider it was saved for; the legacy
             // single value is only a migration fallback.
-            let ref = await store.readOnePasswordRef(account: account) ?? legacyRef
-            guard !ref.isEmpty,
+            guard let snapshot = await store.onePasswordRefreshSnapshot(account: account, endpointIdentity: context.endpointIdentity),
+                  let ref = snapshot.reference.value(orIfMissing: legacyRef), !ref.isEmpty,
                   await store.isKeyStale(account: account),
                   OnePasswordService.isInstalled() else { return }
             do {
-                let key = try await OnePasswordService.readSecretAsync(reference: ref)
-                if await store.saveAPIKey(key, account: account) {
-                    await MainActor.run {
-                        self.settings.cachedAPIKey = key
+                try await AIOnePasswordAutoRefresh.run(
+                    reference: ref,
+                    snapshot: snapshot,
+                    store: store,
+                    expectedIntent: intent,
+                    readSecret: { try await OnePasswordService.readSecretAsync(reference: $0) },
+                    currentAccount: { self.settings.activeAPIKeyAccount },
+                    currentIntent: { self.settings.aiCredentialIntentRevision },
+                    isContextCurrent: { self.settings.aiKeyContext == context },
+                    activate: {
+                        _ = self.settings.activateAPIKey($0, providerID: context.providerID, revision: context.revision)
                     }
-                }
+                )
             } catch {
                 // silent fail — will retry next launch
             }
@@ -417,45 +427,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
     /// 启动时异步加载 API Key，确保定时器触发时 key 可用
     private func loadAPIKeyFromFile() {
-        guard settings.aiSummaryEnabled, settings.cachedAPIKey == nil else { return }
-        guard currentProviderHasSavedKeyFlag() else { return }
-        let account = settings.activeAPIKeyAccount
-        let providerID = settings.aiProvider
-        let revision = settings.modelCatalogRevision
-        Task { [weak self] in
+        Task { @MainActor [weak self] in
             guard let self else { return }
+            guard self.settings.aiSummaryEnabled, self.settings.cachedAPIKey == nil,
+                  self.currentProviderHasSavedKeyFlag() else { return }
+            let context = self.settings.aiKeyContext
+            let account = context.account
             let store = EncryptedKeyStore()
-            if let key = await store.readAPIKey(account: account), !key.isEmpty {
-                await MainActor.run {
-                    _ = self.settings.activateAPIKey(key, providerID: providerID, revision: revision)
-                }
+            if case let .found(key) = await store.readProviderAPIKeyResult(account: account, endpointIdentity: context.endpointIdentity), !key.isEmpty {
+                _ = self.settings.activateAPIKey(key, providerID: context.providerID, revision: context.revision)
             }
         }
     }
 
     private func loadAPIKeyIfNeeded() {
-        guard settings.aiSummaryEnabled,
-              settings.cachedAPIKey == nil else { return }
-        guard currentProviderHasSavedKeyFlag() else {
-            Task { @MainActor in orchestrator?.aiSummaryState = .noKey }
-            return
-        }
-        let account = settings.activeAPIKeyAccount
-        let providerID = settings.aiProvider
-        let revision = settings.modelCatalogRevision
-
-        Task { @MainActor in orchestrator?.aiSummaryState = .idle }
-        Task { [weak self] in
+        Task { @MainActor [weak self] in
             guard let self else { return }
+            guard self.settings.aiSummaryEnabled, self.settings.cachedAPIKey == nil else { return }
+            guard self.currentProviderHasSavedKeyFlag() else {
+                let keyOptional = self.settings.aiProvider == AIProvider.ollamaCloud.rawValue
+                self.orchestrator?.aiSummaryState = keyOptional ? .idle : .noKey
+                return
+            }
+            let context = self.settings.aiKeyContext
+            let account = context.account
+            let providerID = context.providerID
+            self.orchestrator?.aiSummaryState = .idle
             let store = EncryptedKeyStore()
-            if let key = await store.readAPIKey(account: account), !key.isEmpty {
-                await MainActor.run {
-                    guard self.settings.activateAPIKey(key, providerID: providerID, revision: revision) else { return }
-                    UserDefaults.standard.set(true, forKey: self.settings.currentProvider.keyExistsFlag())
-                    UserDefaults.standard.set(true, forKey: "hasAIKey-\(self.settings.activeAPIKeyAccount)")
-                    Task {
-                        await self.orchestrator?.manualRefresh(settings: self.settings)
-                    }
+            if case let .found(key) = await store.readProviderAPIKeyResult(account: account, endpointIdentity: context.endpointIdentity), !key.isEmpty {
+                guard self.settings.activeAPIKeyAccount == account,
+                      self.settings.activateAPIKey(key, providerID: providerID, revision: context.revision) else { return }
+                for flag in AIProvider.loadedKeyFlagNames(providerID: providerID, account: account) {
+                    TestIsolation.defaults.set(true, forKey: flag)
+                }
+                Task {
+                    await self.orchestrator?.manualRefresh(settings: self.settings)
                 }
             }
         }
@@ -463,7 +469,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
     private func handleMissingAPIKey() {
         Task { @MainActor in orchestrator?.aiSummaryState = .noKey }
-        let defaults = UserDefaults.standard
+        let defaults = TestIsolation.defaults
         if defaults.bool(forKey: "hasShownAIKeySetupPrompt") { return }
 
         let alert = NSAlert()
@@ -605,6 +611,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 }
                 .environment(\.searchAuthRetryAction) { [weak self] provider in
                     await self?.orchestrator?.clearSearchAuthBlock(for: provider)
+                }
+                .environment(\.rssHealthAction) { [weak self] settings in
+                    self?.orchestrator?.rssHealthSnapshot(settings: settings) ?? []
                 }
                 .environment(\.researchHistoryClearAction) { [weak self] in
                     guard let orchestrator = self?.orchestrator else {
@@ -798,6 +807,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         window.contentViewController = NSHostingController(
             rootView: ResearchCenterView(model: model)
                 .environment(settings)
+                .id(settings.appLanguage)
         )
         window.isReleasedWhenClosed = false
 

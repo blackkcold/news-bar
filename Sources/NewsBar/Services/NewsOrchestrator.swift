@@ -9,6 +9,10 @@ enum AISummaryState: Equatable, Sendable {
     case done(String)
     case truncated(String)
     case error(String)
+
+    static func content(_ text: String, wasTruncated: Bool) -> AISummaryState {
+        wasTruncated ? .truncated(text) : .done(text)
+    }
 }
 
 enum SourceLoadState: Equatable, Sendable {
@@ -72,6 +76,8 @@ final class NewsOrchestrator {
     private let cacheManager = CacheManager()
     private let translationCacheStore = TranslationCacheStore()
     private let trendHistoryStore = TrendHistoryStore.shared
+    private let cacheWriteGeneration = CacheWriteGeneration()
+    private var cacheClearDepth = 0
     private let rateLimiter = RateLimiter()
     private let researchStore = ResearchStore.shared
     private let researchCacheStore = ResearchCacheStore.shared
@@ -87,8 +93,20 @@ final class NewsOrchestrator {
     private var researchClearGeneration = 0
     @ObservationIgnored private var researchObserver: NSObjectProtocol?
     private var legacyResearchImported = false
+    // A stable actor per language serializes saves and clears of the same file.
+    private let chineseSummaryCache = AISummaryCacheStore(language: .zh)
+    private let englishSummaryCache = AISummaryCacheStore(language: .en)
+    private func summaryCache(for language: AppLanguage) -> AISummaryCacheStore {
+        switch language {
+        case .zh: return chineseSummaryCache
+        case .en: return englishSummaryCache
+        }
+    }
     private var aiSummaryCacheStore: AISummaryCacheStore {
-        AISummaryCacheStore(language: L10n.currentLanguage)
+        summaryCache(for: L10n.currentLanguage)
+    }
+    private func isCurrentCacheWork(_ token: CacheWriteToken) -> Bool {
+        cacheClearDepth == 0 && token.isCurrent
     }
     private var isLoadingCachedState = false
     /// Source set whose disk cache has already been folded into memory. Kept so
@@ -190,8 +208,12 @@ final class NewsOrchestrator {
         elapsedSinceSummary: TimeInterval,
         shouldRecover: Bool,
         hasBurstWeibo: Bool = false,
-        elapsedSinceBurstSummary: TimeInterval = .infinity
+        elapsedSinceBurstSummary: TimeInterval = .infinity,
+        isRepeatedTruncation: Bool = false
     ) -> Bool {
+        // Do not repeatedly spend on exactly the same truncated result, even
+        // when no previous complete summary exists or a burst is present.
+        guard !isRepeatedTruncation else { return false }
         // A Weibo "爆" label triggers an immediate summary, unless a burst
         // summary was generated very recently (burstSummaryCooldown).
         if hasBurstWeibo {
@@ -208,28 +230,52 @@ final class NewsOrchestrator {
             || (hasNewContent && shouldRecover)
     }
 
+    internal static func canAttemptSummary(
+        consecutiveTruncations: Int, limit: Int, isManualRegeneration: Bool
+    ) -> Bool {
+        isManualRegeneration || consecutiveTruncations < limit
+    }
+
+    internal static func shouldRecoverSharedSummary(
+        hasNewContent: Bool, isRepeatedTruncation: Bool, state: AISummaryState
+    ) -> Bool {
+        guard !isRepeatedTruncation else { return false }
+        return hasNewContent || shouldRecoverAISummary(from: state)
+    }
+
     // MARK: - Public API
 
     func loadCached(settings: AppSettings) async {
+        guard cacheClearDepth == 0 else { return }
+        let token = cacheWriteGeneration.capture()
         let sourceIDs = Set(settings.activeSources.map(\.id))
         guard loadedCacheSourceIDs != sourceIDs else { return }
         guard !isLoadingCachedState else { return }
-        await loadCachedState(settings: settings, logTrigger: .popoverOpen)
-        await updateInterestCandidates(settings: settings)
+        await loadCachedState(settings: settings, logTrigger: .popoverOpen, token: token)
+        guard isCurrentCacheWork(token) else { return }
+        await updateInterestCandidates(settings: settings, token: token)
+        guard isCurrentCacheWork(token) else { return }
         loadedCacheSourceIDs = sourceIDs
     }
 
     func preloadCached(settings: AppSettings) async {
+        guard cacheClearDepth == 0 else { return }
+        let token = cacheWriteGeneration.capture()
         let sourceIDs = Set(settings.activeSources.map(\.id))
         guard loadedCacheSourceIDs != sourceIDs else { return }
         guard !isLoadingCachedState else { return }
-        await loadCachedState(settings: settings, logTrigger: nil)
-        await updateInterestCandidates(settings: settings)
+        await loadCachedState(settings: settings, logTrigger: nil, token: token)
+        guard isCurrentCacheWork(token) else { return }
+        await updateInterestCandidates(settings: settings, token: token)
+        guard isCurrentCacheWork(token) else { return }
         loadedCacheSourceIDs = sourceIDs
     }
 
-    private func loadCachedState(settings: AppSettings, logTrigger: RefreshLog.Trigger?) async {
+    private func loadCachedState(
+        settings: AppSettings, logTrigger: RefreshLog.Trigger?, token: CacheWriteToken
+    ) async {
         await InterestController.shared.prepare()
+        guard isCurrentCacheWork(token) else { return }
         guard !isLoadingCachedState else { return }
         isLoadingCachedState = true
         defer { isLoadingCachedState = false }
@@ -246,7 +292,9 @@ final class NewsOrchestrator {
 
         // 内存优先: 若已有数据则不覆盖 (避免 stale 缓存清空自动刷新填入的新数据)
         if hotItems.isEmpty {
-            if let cached = await cacheManager.load(for: .weibo) {
+            let cached = await cacheManager.load(for: .weibo)
+            guard isCurrentCacheWork(token) else { return }
+            if let cached {
                 hotItems = cached.items
                 let validatedAt = cached.lastValidatedAt ?? cached.timestamp
                 lastHotRefresh = max(lastHotRefresh ?? .distantPast, validatedAt)
@@ -269,7 +317,9 @@ final class NewsOrchestrator {
             sourceResults[NewsSource.weibo.displayName] = "skipped/\(hotItems.count)"
         }
         if videoItems.isEmpty {
-            if let cached = await cacheManager.load(for: .bilibili) {
+            let cached = await cacheManager.load(for: .bilibili)
+            guard isCurrentCacheWork(token) else { return }
+            if let cached {
                 videoItems = cached.items
                 let validatedAt = cached.lastValidatedAt ?? cached.timestamp
                 lastHotRefresh = max(lastHotRefresh ?? .distantPast, validatedAt)
@@ -294,7 +344,9 @@ final class NewsOrchestrator {
 
         for source in settings.activeSources where !source.isBuiltIn {
             if feeds[source.id, default: []].isEmpty {
-                if let entry = await cacheManager.load(for: source) {
+                let entry = await cacheManager.load(for: source)
+                guard isCurrentCacheWork(token) else { return }
+                if let entry {
                     lastSourceRefresh[source.id] = entry.lastValidatedAt ?? entry.timestamp
                     if entry.isExpired {
                         states[source.id] = .idle
@@ -329,7 +381,8 @@ final class NewsOrchestrator {
         if feeds != rssItemsMap { rssItemsMap = feeds }
         if states != sourceStates { sourceStates = states }
 
-        await restoreCachedSummaryIfPossible(settings: settings)
+        await restoreCachedSummaryIfPossible(settings: settings, token: token)
+        guard isCurrentCacheWork(token) else { return }
 
         if let logTrigger {
             await RefreshLog.shared.record(
@@ -409,6 +462,7 @@ final class NewsOrchestrator {
         refreshHot: Bool,
         rssSources: [NewsSource]
     ) async {
+        guard cacheClearDepth == 0 else { return }
         if isRefreshing {
             if isManual { pendingManualRefresh = true }
             let waiter = RefreshWaiter()
@@ -430,17 +484,19 @@ final class NewsOrchestrator {
             trigger: trigger,
             isManual: isManual,
             refreshHot: refreshHot,
-            rssSources: rssSources
+            rssSources: rssSources,
+            token: cacheWriteGeneration.capture()
         )
 
-        if pendingManualRefresh {
+        if pendingManualRefresh, cacheClearDepth == 0 {
             pendingManualRefresh = false
             await runRefreshCycle(
                 settings: settings,
                 trigger: .manual,
                 isManual: true,
                 refreshHot: true,
-                rssSources: settings.activeSources.filter { !$0.isBuiltIn }
+                rssSources: settings.activeSources.filter { !$0.isBuiltIn },
+                token: cacheWriteGeneration.capture()
             )
         }
 
@@ -455,12 +511,15 @@ final class NewsOrchestrator {
         trigger: RefreshLog.Trigger,
         isManual: Bool,
         refreshHot: Bool,
-        rssSources: [NewsSource]
+        rssSources: [NewsSource],
+        token: CacheWriteToken
     ) async {
-
+        guard isCurrentCacheWork(token) else { return }
         let aiBefore = logStateLabel(aiSummaryState)
         if isManual {
-            manualRefreshWarning = await rateLimiter.manualRefreshWarning()
+            let warning = await rateLimiter.manualRefreshWarning()
+            guard isCurrentCacheWork(token) else { return }
+            manualRefreshWarning = warning
         }
 
         settings.recordRefresh()
@@ -471,23 +530,25 @@ final class NewsOrchestrator {
         }
         markSources(sourcesToLoad, as: .loading)
 
-        let previousSummaryState = aiSummaryState
         var hotChanged = false
         var trendSummary = latestTrendSummary
         if refreshHot {
             await withTaskGroup(of: Bool.self) { group in
-                group.addTask { await self.fetchWeibo(useCacheFallback: !isManual) }
-                group.addTask { await self.fetchBilibili(useCacheFallback: !isManual) }
+                group.addTask { await self.fetchWeibo(useCacheFallback: !isManual, token: token) }
+                group.addTask { await self.fetchBilibili(useCacheFallback: !isManual, token: token) }
                 for await changed in group {
                     hotChanged = hotChanged || changed
                 }
             }
+            guard isCurrentCacheWork(token) else { return }
             lastHotRefresh = Date()
             if !weiboItems.isEmpty || !bilibiliItems.isEmpty {
                 trendSummary = await trendHistoryStore.record(
                     weibo: weiboItems,
-                    bilibili: bilibiliItems
+                    bilibili: bilibiliItems,
+                    token: token
                 )
+                guard isCurrentCacheWork(token) else { return }
                 latestTrendSummary = trendSummary
             }
         }
@@ -502,18 +563,21 @@ final class NewsOrchestrator {
                     lastSourceAttempt[source.id] = Date()
                 }
 
-                let outcomes = await withTaskGroup(of: RSSFetchOutcome.self, returning: [RSSFetchOutcome].self) { group in
+                let outcomes = await withTaskGroup(of: RSSFetchOutcome?.self, returning: [RSSFetchOutcome].self) { group in
                     for source in batch {
-                        group.addTask { await self.fetchRSS(source: source, useCacheFallback: !isManual, settings: settings) }
+                        group.addTask {
+                            await self.fetchRSS(source: source, useCacheFallback: !isManual, settings: settings, token: token)
+                        }
                     }
                     var collected: [RSSFetchOutcome] = []
                     collected.reserveCapacity(batch.count)
                     for await outcome in group {
-                        collected.append(outcome)
+                        if let outcome { collected.append(outcome) }
                     }
                     return collected
                 }
 
+                guard isCurrentCacheWork(token) else { return }
                 applyRSSBatch(outcomes)
                 rssChanged = rssChanged || outcomes.contains(where: \.changed)
                 batchProgress = BatchProgress(
@@ -527,22 +591,29 @@ final class NewsOrchestrator {
 
         if isManual {
             await rateLimiter.recordManualRefresh()
-            manualRefreshWarning = await rateLimiter.manualRefreshWarning()
+            guard isCurrentCacheWork(token) else { return }
+            let warning = await rateLimiter.manualRefreshWarning()
+            guard isCurrentCacheWork(token) else { return }
+            manualRefreshWarning = warning
         }
 
-        await updateInterestCandidates(settings: settings)
+        await updateInterestCandidates(settings: settings, token: token)
+        guard isCurrentCacheWork(token) else { return }
         await handleSharedAISummary(
             settings: settings,
-            previousState: previousSummaryState,
             isManualRefresh: isManual,
             hotChanged: hotChanged,
             rssChanged: rssChanged,
-            trendSummary: trendSummary
+            trendSummary: trendSummary,
+            token: token
         )
+        guard isCurrentCacheWork(token) else { return }
 
-        let automaticScheduled = await handleAutomaticResearch(settings: settings)
+        let automaticScheduled = await handleAutomaticResearch(settings: settings, token: token)
+        guard isCurrentCacheWork(token) else { return }
         if !automaticScheduled {
-            await handleKeywordTopics(settings: settings)
+            await handleKeywordTopics(settings: settings, token: token)
+            guard isCurrentCacheWork(token) else { return }
         }
 
         let allItems = allActiveItems(settings: settings)
@@ -552,6 +623,7 @@ final class NewsOrchestrator {
             if settings.hourlyPushEnabled,
                trigger == .startup || now.timeIntervalSince(lastHourlyPushAt ?? .distantPast) >= 60 * 60 {
                 await NotificationService.sendHourlyPush(items: notificationItems, count: settings.pushCount)
+                guard isCurrentCacheWork(token) else { return }
                 lastHourlyPushAt = now
             }
             if settings.dailyPushEnabled {
@@ -567,9 +639,10 @@ final class NewsOrchestrator {
         await recordRefreshLog(settings: settings, trigger: trigger, aiBefore: aiBefore)
     }
 
-    private func fetchWeibo(useCacheFallback: Bool) async -> Bool {
+    private func fetchWeibo(useCacheFallback: Bool, token: CacheWriteToken) async -> Bool {
         do {
             let feed = try await WeiboHotService.fetchFeed()
+            guard isCurrentCacheWork(token) else { return false }
             guard !feed.displayItems.isEmpty else {
                 sourceStates[NewsSource.weibo.id] = .failed("error.noContent".localized)
                 return false
@@ -580,6 +653,7 @@ final class NewsOrchestrator {
 
             let now = Date()
             let existing = await cacheManager.load(for: .weibo)
+            guard isCurrentCacheWork(token) else { return false }
             let contentHash = CacheEntry.contentIdentifier(for: feed.displayItems)
             let hasNew = existing?.contentHash != contentHash
             let entry = CacheEntry(
@@ -590,33 +664,41 @@ final class NewsOrchestrator {
                 eTag: existing?.eTag,
                 lastModified: existing?.lastModified
             )
-            await cacheManager.save(entry, for: .weibo)
+            await cacheManager.save(entry, for: .weibo, token: token)
+            guard isCurrentCacheWork(token) else { return false }
             weiboItems = feed.displayItems
             weiboDetectionItems = feed.detectionItems
             sourceStates[NewsSource.weibo.id] = .loaded
             return hasNew
         } catch {
+            guard isCurrentCacheWork(token) else { return false }
             NSLog("[NewsOrchestrator] 获取 \(NewsSource.weibo.displayName) 失败: \(error.localizedDescription)")
             sourceStates[NewsSource.weibo.id] = .failed(sourceErrorMessage(error))
-            if useCacheFallback, weiboItems.isEmpty,
-               let cached = await cacheManager.load(for: .weibo) {
-                weiboItems = cached.items
-                weiboDetectionItems = cached.items
+            if useCacheFallback, weiboItems.isEmpty {
+                let cached = await cacheManager.load(for: .weibo)
+                guard isCurrentCacheWork(token) else { return false }
+                if let cached {
+                    weiboItems = cached.items
+                    weiboDetectionItems = cached.items
+                }
             }
             return false
         }
     }
 
-    private func fetchBilibili(useCacheFallback: Bool) async -> Bool {
+    private func fetchBilibili(useCacheFallback: Bool, token: CacheWriteToken) async -> Bool {
         if let result = await fetchAndCache(
             for: .bilibili,
+            token: token,
             fetcher: { try await BilibiliHotService.fetch() }
         ) {
+            guard isCurrentCacheWork(token) else { return false }
             bilibiliItems = result.items
             return result.changed
-        } else if useCacheFallback, bilibiliItems.isEmpty,
-                  let cached = await cacheManager.load(for: .bilibili) {
-            bilibiliItems = cached.items
+        } else if isCurrentCacheWork(token), useCacheFallback, bilibiliItems.isEmpty {
+            let cached = await cacheManager.load(for: .bilibili)
+            guard isCurrentCacheWork(token) else { return false }
+            if let cached { bilibiliItems = cached.items }
         }
         return false
     }
@@ -631,8 +713,11 @@ final class NewsOrchestrator {
         let changed: Bool
     }
 
-    private func fetchRSS(source: NewsSource, useCacheFallback: Bool, settings: AppSettings) async -> RSSFetchOutcome {
+    private func fetchRSS(
+        source: NewsSource, useCacheFallback: Bool, settings: AppSettings, token: CacheWriteToken
+    ) async -> RSSFetchOutcome? {
         let existing = await cacheManager.load(for: source)
+        guard isCurrentCacheWork(token) else { return nil }
         let fetchedItems: [NewsItem]?
         let changed: Bool
         var outcomeItems: [NewsItem]?
@@ -645,13 +730,17 @@ final class NewsOrchestrator {
                 eTag: existing?.eTag,
                 lastModified: existing?.lastModified
             )
+            guard isCurrentCacheWork(token) else { return nil }
             switch result {
             case .notModified(let eTag, let lastModified):
-                guard let validated = await cacheManager.markValidated(
+                let validated = await cacheManager.markValidated(
                     for: source,
                     eTag: eTag,
-                    lastModified: lastModified
-                ) else {
+                    lastModified: lastModified,
+                    token: token
+                )
+                guard isCurrentCacheWork(token) else { return nil }
+                guard let validated else {
                     throw NewsBarError.requestFailed
                 }
                 outcomeItems = validated.items
@@ -663,7 +752,8 @@ final class NewsOrchestrator {
                 guard !items.isEmpty else {
                     throw NewsBarError.parseFailed
                 }
-                let translatedItems = await translateRSSItemsIfNeeded(items, settings: settings)
+                let translatedItems = await translateRSSItemsIfNeeded(items, settings: settings, token: token)
+                guard isCurrentCacheWork(token) else { return nil }
                 let now = Date()
                 let contentHash = CacheEntry.contentIdentifier(for: translatedItems)
                 changed = existing?.contentHash != contentHash
@@ -675,7 +765,8 @@ final class NewsOrchestrator {
                     eTag: eTag,
                     lastModified: lastModified
                 )
-                await cacheManager.save(entry, for: source)
+                await cacheManager.save(entry, for: source, token: token)
+                guard isCurrentCacheWork(token) else { return nil }
                 outcomeItems = translatedItems
                 fetchedItems = translatedItems
                 if changed {
@@ -688,6 +779,7 @@ final class NewsOrchestrator {
             rssFailureCounts[source.id] = 0
             lastSourceRefresh[source.id] = Date()
         } catch {
+            guard isCurrentCacheWork(token) else { return nil }
             NSLog("[NewsOrchestrator] 获取 \(source.displayName) 失败: \(error.localizedDescription)")
             outcomeState = .failed(sourceErrorMessage(error))
             rssFailureCounts[source.id, default: 0] += 1
@@ -744,19 +836,26 @@ final class NewsOrchestrator {
     /// Translate RSS titles when English UI + translation are enabled.
     /// Uses the file cache to avoid re-translating and hitting the free API rate limit.
     /// Falls back to the original title on any failure.
-    private func translateRSSItemsIfNeeded(_ items: [NewsItem], settings: AppSettings) async -> [NewsItem] {
+    private func translateRSSItemsIfNeeded(
+        _ items: [NewsItem], settings: AppSettings, token: CacheWriteToken
+    ) async -> [NewsItem] {
         guard settings.rssTitleTranslationEnabled, settings.appLanguage == .en else {
             return items
         }
         let targetLang = settings.appLanguage.bcp47
         var translated: [NewsItem] = []
         for item in items {
-            if let cached = await translationCacheStore.cachedTranslation(for: item.title, targetLang: targetLang) {
+            guard isCurrentCacheWork(token) else { return items }
+            let cached = await translationCacheStore.cachedTranslation(for: item.title, targetLang: targetLang)
+            guard isCurrentCacheWork(token) else { return items }
+            if let cached {
                 translated.append(item.withTranslatedTitle(cached))
             } else {
                 let result = await TranslationService.translate(item.title, from: "zh-CN", to: targetLang)
+                guard isCurrentCacheWork(token) else { return items }
                 if result != item.title {
-                    await translationCacheStore.saveTranslation(result, for: item.title, targetLang: targetLang)
+                    await translationCacheStore.saveTranslation(result, for: item.title, targetLang: targetLang, token: token)
+                    guard isCurrentCacheWork(token) else { return items }
                     translated.append(item.withTranslatedTitle(result))
                 } else {
                     translated.append(item)
@@ -773,10 +872,11 @@ final class NewsOrchestrator {
     /// only paid step and runs at most once per hour, before any record exists.
     /// When nothing is worth researching the hour is skipped instead of
     /// spending a run on a weak topic.
-    private func handleAutomaticResearch(settings: AppSettings) async -> Bool {
+    private func handleAutomaticResearch(settings: AppSettings, token: CacheWriteToken) async -> Bool {
         // `researchAutoEnabled` is the single master switch. `burstPushEnabled`
         // only decides whether the finished report also raises a notification.
         guard settings.researchAutoEnabled,
+              isCurrentCacheWork(token),
               !isClearingResearchHistory,
               !isResearchClearBlocked else { return false }
         let now = Date()
@@ -786,6 +886,7 @@ final class NewsOrchestrator {
         let state = InterestController.shared.state
         let personalizationEnabled = settings.researchUsePersonalization && state.learningEnabled
         let index = await researchStore.index()
+        guard isCurrentCacheWork(token) else { return false }
         let recentRecords = index.sorted { $0.lastSeenAt > $1.lastSeenAt }
         let knownKeys = Set(index.filter {
             now.timeIntervalSince($0.lastSeenAt) <= 7 * 86_400
@@ -867,28 +968,16 @@ final class NewsOrchestrator {
 
         if !uncached.isEmpty {
             if let client = await makeTriageClient(settings: settings) {
-                guard AIQuotaStore.shared.reserve(.triage, policy: settings.aiQuotaPolicy) else {
-                    triageCache = cache
-                    await recordAutomaticSkip(.skippedBudget, candidateCount: candidates.count,
-                                              reasonKey: "research.auto.skip.budget",
-                                              settings: settings, epoch: epoch, now: now)
-                    return false
-                }
+                let request = ResearchTriage.request(
+                    candidates: uncached,
+                    recent: recentRecords,
+                    language: settings.appLanguage,
+                    now: now
+                )
+                guard !Task.isCancelled else { return false }
                 _ = researchLedger.recordAICalls(1, origin: .burst)
                 do {
-                    let response = try await client.complete(
-                        ResearchTriage.request(
-                            candidates: uncached,
-                            recent: recentRecords,
-                            language: settings.appLanguage,
-                            now: now
-                        )
-                    )
-                    AIQuotaStore.shared.settle(
-                        reservedCostMicros: 0,
-                        usage: response.usage,
-                        price: client.price
-                    )
+                    let response = try await client.complete(request)
                     let parsed = ResearchTriage.parse(response.text)
                     decisions.append(contentsOf: parsed)
                     for decision in parsed {
@@ -903,6 +992,12 @@ final class NewsOrchestrator {
                             evaluatedAt: now
                         )
                     }
+                } catch AIChatError.quotaUnavailable {
+                    triageCache = cache
+                    await recordAutomaticSkip(.skippedBudget, candidateCount: candidates.count,
+                                              reasonKey: "research.auto.skip.budget",
+                                              settings: settings, epoch: epoch, now: now)
+                    return false
                 } catch {
                     NSLog("[Research] triage failed: %@", String(describing: error))
                 }
@@ -973,11 +1068,10 @@ final class NewsOrchestrator {
     }
 
     private func makeTriageClient(settings: AppSettings) async -> HTTPAIChatClient? {
-        let apiKey = await resolveAPIKey(settings: settings)
-        guard !apiKey.isEmpty else { return nil }
+        guard let bound = await resolveAPIKey(settings: settings, reportError: false) else { return nil }
         // Use the settings-level validator directly: the summary-facing helper
         // also mutates `aiSummaryState`, which a background check must not do.
-        guard let configuration = await settings.validatedAIConfiguration(apiKey: apiKey) else {
+        guard let configuration = await settings.validatedAIConfiguration(boundKey: bound) else {
             return nil
         }
         return HTTPAIChatClient(
@@ -985,7 +1079,13 @@ final class NewsOrchestrator {
             apiKey: configuration.apiKey,
             model: configuration.model,
             disableDeepSeekThinking: settings.aiDisableDeepSeekThinking,
-            timeout: 12
+            timeout: 12,
+            quota: .tracked(
+                origin: .triage,
+                policy: settings.aiQuotaPolicy,
+                price: configuration.connection.customPrice
+                    ?? AIPriceCatalog.price(for: configuration.connection.providerID, model: configuration.model)
+            )
         )
     }
 
@@ -1181,8 +1281,12 @@ final class NewsOrchestrator {
                 publishedAt: record.seed.publishedAt
             )
 
-        let apiKey = await resolveAPIKey(settings: settings)
-        guard let configuration = await validatedConfiguration(settings: settings, apiKey: apiKey) else {
+        guard let bound = await resolveAPIKey(settings: settings) else {
+            if case let .error(message) = aiSummaryState { return .failure(message) }
+            return .failure(L10n.string("research.error.noAIKey", language: settings.appLanguage))
+        }
+        guard let configuration = await validatedConfiguration(settings: settings, bound: bound) else {
+            if case let .error(message) = aiSummaryState { return .failure(message) }
             return .failure(L10n.string("research.error.noAIKey", language: settings.appLanguage))
         }
 
@@ -1267,9 +1371,9 @@ final class NewsOrchestrator {
     /// UserDefaults value kept as a migration fallback.
     private func resolveSearchKeys(settings: AppSettings) async -> [SearchProviderID: String] {
         var keys = await SearchKeyStore.loadAll()
-        if keys[.firecrawl]?.isEmpty ?? true, !settings.firecrawlAPIKey.isEmpty {
-            keys[.firecrawl] = settings.firecrawlAPIKey
-        }
+        let firecrawl = await SearchKeyStore.key(for: .firecrawl, fallback: settings.firecrawlAPIKey)
+        if firecrawl.isEmpty { keys.removeValue(forKey: .firecrawl) }
+        else { keys[.firecrawl] = firecrawl }
         return keys
     }
 
@@ -1284,8 +1388,9 @@ final class NewsOrchestrator {
     /// coordinator, pipeline and budget ledger as burst research; the old
     /// inline call and the shared 15-minute cooldown are gone, so a keyword
     /// match no longer blocks (or is blocked by) burst research.
-    private func handleKeywordTopics(settings: AppSettings) async {
+    private func handleKeywordTopics(settings: AppSettings, token: CacheWriteToken) async {
         guard settings.researchAutoEnabled,
+              isCurrentCacheWork(token),
               settings.keywordTrackingEnabled,
               !isClearingResearchHistory,
               !isResearchClearBlocked else { return }
@@ -1305,8 +1410,8 @@ final class NewsOrchestrator {
             matches.append((keyword, item))
         }
         guard !matches.isEmpty else { return }
-        let apiKey = await resolveAPIKey(settings: settings)
-        guard await validatedConfiguration(settings: settings, apiKey: apiKey) != nil else { return }
+        guard let bound = await resolveAPIKey(settings: settings),
+              await validatedConfiguration(settings: settings, bound: bound) != nil else { return }
 
         let prioritizedIDs = ResearchSelectionPolicy.select(items: matches.map(\.item), state: InterestController.shared.state, limit: 2).map { $0.item.id }
         matches.sort { (prioritizedIDs.firstIndex(of: $0.item.id) ?? Int.max) < (prioritizedIDs.firstIndex(of: $1.item.id) ?? Int.max) }
@@ -1397,28 +1502,27 @@ final class NewsOrchestrator {
 
     private func handleSharedAISummary(
         settings: AppSettings,
-        previousState: AISummaryState,
         isManualRefresh: Bool,
         hotChanged: Bool,
         rssChanged: Bool,
-        trendSummary: TrendChangeSummary
+        trendSummary: TrendChangeSummary,
+        token: CacheWriteToken
     ) async {
-        guard settings.aiSummaryEnabled else { return }
+        guard settings.aiSummaryEnabled, isCurrentCacheWork(token) else { return }
+        let summaryRevision = settings.aiSummaryRunRevision
+        let isCurrentRun = { self.isCurrentCacheWork(token) && settings.isCurrentAISummaryRun(summaryRevision) }
 
         let allItems = allActiveItems(settings: settings)
-        guard !allItems.isEmpty else {
-            aiSummaryState = previousState
-            return
-        }
-
-        let apiKey = await resolveAPIKey(settings: settings)
-        guard let configuration = await validatedConfiguration(settings: settings, apiKey: apiKey) else { return }
+        guard !allItems.isEmpty else { return }
 
         guard AISummaryService.tryAcquireGenerationLock(for: Self.sharedSummaryTarget) else {
-            aiSummaryState = .error("error.aiGenerating".localized)
             return
         }
         defer { AISummaryService.releaseGenerationLock(for: Self.sharedSummaryTarget) }
+
+        guard let bound = await resolveAPIKey(settings: settings, reportIf: isCurrentRun), isCurrentRun(),
+              let configuration = await validatedConfiguration(settings: settings, bound: bound, reportIf: isCurrentRun),
+              isCurrentRun() else { return }
 
         let newHash = summaryGenerationHash(items: allItems, settings: settings)
         let hasNewContent = newHash != sharedSummaryLastHash
@@ -1434,9 +1538,10 @@ final class NewsOrchestrator {
             rssChanged: rssChanged,
             trendIsSignificant: trendSummary.isSignificant,
             elapsedSinceSummary: elapsed,
-            shouldRecover: shouldRecoverAISummary(from: previousState),
+            shouldRecover: Self.shouldRecoverAISummary(from: aiSummaryState),
             hasBurstWeibo: hasBurstWeibo,
-            elapsedSinceBurstSummary: elapsedSinceBurst
+            elapsedSinceBurstSummary: elapsedSinceBurst,
+            isRepeatedTruncation: newHash == sharedSummaryLastTruncatedHash
         )
 
         if shouldGenerate {
@@ -1455,11 +1560,11 @@ final class NewsOrchestrator {
                 trendHistoryContext: trendSummary.context,
                 trendHistoryHash: trendSummary.historyHash,
                 burstTriggered: hasBurstWeibo,
-                summaryLanguage: settings.appLanguage
+                summaryLanguage: settings.appLanguage,
+                summaryRevision: summaryRevision,
+                cacheToken: token
             )
             settings.refreshAIUsageMirror()
-        } else {
-            aiSummaryState = previousState
         }
     }
 
@@ -1467,27 +1572,31 @@ final class NewsOrchestrator {
 
     /// Safe to call when either UI opens. It only generates if no current shared result exists.
     func generateSharedSummaryIfNeeded(settings: AppSettings) async {
-        guard settings.aiSummaryEnabled else { return }
+        guard settings.aiSummaryEnabled, cacheClearDepth == 0 else { return }
+        let token = cacheWriteGeneration.capture()
+        let summaryRevision = settings.aiSummaryRunRevision
+        let isCurrentRun = { self.isCurrentCacheWork(token) && settings.isCurrentAISummaryRun(summaryRevision) }
 
         let allItems = allActiveItems(settings: settings)
-        guard !allItems.isEmpty else {
-            aiSummaryState = .idle
-            return
-        }
-
-        let apiKey = await resolveAPIKey(settings: settings)
-        guard let configuration = await validatedConfiguration(settings: settings, apiKey: apiKey) else { return }
-
-        let newHash = summaryGenerationHash(items: allItems, settings: settings)
-        let shouldGenerate = (newHash != sharedSummaryLastHash && newHash != sharedSummaryLastTruncatedHash)
-            || shouldRecoverAISummary(from: aiSummaryState)
-
-        guard shouldGenerate else { return }
+        guard !allItems.isEmpty else { return }
 
         guard AISummaryService.tryAcquireGenerationLock(for: Self.sharedSummaryTarget) else {
             return
         }
         defer { AISummaryService.releaseGenerationLock(for: Self.sharedSummaryTarget) }
+
+        guard let bound = await resolveAPIKey(settings: settings, reportIf: isCurrentRun), isCurrentRun(),
+              let configuration = await validatedConfiguration(settings: settings, bound: bound, reportIf: isCurrentRun),
+              isCurrentRun() else { return }
+
+        let newHash = summaryGenerationHash(items: allItems, settings: settings)
+        let shouldGenerate = Self.shouldRecoverSharedSummary(
+            hasNewContent: newHash != sharedSummaryLastHash && newHash != sharedSummaryLastTruncatedHash,
+            isRepeatedTruncation: newHash == sharedSummaryLastTruncatedHash,
+            state: aiSummaryState
+        )
+
+        guard shouldGenerate else { return }
 
         AISummaryService.initBudget(
             target: Self.sharedSummaryTarget,
@@ -1502,7 +1611,9 @@ final class NewsOrchestrator {
             settings: settings,
             trendHistoryContext: latestTrendSummary.context,
             trendHistoryHash: latestTrendSummary.historyHash,
-            summaryLanguage: settings.appLanguage
+            summaryLanguage: settings.appLanguage,
+            summaryRevision: summaryRevision,
+            cacheToken: token
         )
         settings.refreshAIUsageMirror()
     }
@@ -1510,6 +1621,10 @@ final class NewsOrchestrator {
     // MARK: - Manual Regeneration (Popup context)
 
     func regenerateAISummary(settings: AppSettings) async {
+        guard settings.aiSummaryEnabled, cacheClearDepth == 0 else { return }
+        let token = cacheWriteGeneration.capture()
+        let summaryRevision = settings.aiSummaryRunRevision
+        let isCurrentRun = { self.isCurrentCacheWork(token) && settings.isCurrentAISummaryRun(summaryRevision) }
         let allItems = allActiveItems(settings: settings)
         guard !allItems.isEmpty else { return }
 
@@ -1525,16 +1640,17 @@ final class NewsOrchestrator {
         }
         defer { AISummaryService.releaseGenerationLock(for: Self.sharedSummaryTarget) }
 
-        let apiKey = await resolveAPIKey(settings: settings)
-        guard let configuration = await validatedConfiguration(settings: settings, apiKey: apiKey) else { return }
-        AISummaryService.recordManualRegeneration()
+        guard let bound = await resolveAPIKey(settings: settings, reportIf: isCurrentRun), isCurrentRun(),
+              let configuration = await validatedConfiguration(settings: settings, bound: bound, reportIf: isCurrentRun),
+              isCurrentRun() else { return }
         AISummaryService.initBudget(
             target: Self.sharedSummaryTarget,
             mode: .shared,
             policy: settings.aiQuotaPolicy
         )
+        let previousAttempts = AISummaryService.readGenerationAttempts(target: Self.sharedSummaryTarget, mode: .shared)
         let newHash = summaryGenerationHash(items: allItems, settings: settings)
-        _ = await generateSummary(
+        let attempts = await generateSummary(
             items: allItems,
             contentHash: newHash,
             maxWords: settings.aiDashboardMaxWords,
@@ -1542,8 +1658,12 @@ final class NewsOrchestrator {
             settings: settings,
             trendHistoryContext: latestTrendSummary.context,
             trendHistoryHash: latestTrendSummary.historyHash,
-            summaryLanguage: settings.appLanguage
+            summaryLanguage: settings.appLanguage,
+            summaryRevision: summaryRevision,
+            cacheToken: token,
+            isManualRegeneration: true
         )
+        if attempts > previousAttempts { AISummaryService.recordManualRegeneration() }
         settings.refreshAIUsageMirror()
     }
 
@@ -1556,10 +1676,12 @@ final class NewsOrchestrator {
 
     private func fetchAndCache(
         for source: NewsSource,
+        token: CacheWriteToken,
         fetcher: () async throws -> [NewsItem]
     ) async -> SourceFetchResult? {
         do {
             let items = try await fetcher()
+            guard isCurrentCacheWork(token) else { return nil }
             guard !items.isEmpty else {
                 sourceStates[source.id] = .failed("error.noContent".localized)
                 return nil
@@ -1567,6 +1689,7 @@ final class NewsOrchestrator {
 
             let now = Date()
             let existing = await cacheManager.load(for: source)
+            guard isCurrentCacheWork(token) else { return nil }
             let contentHash = CacheEntry.contentIdentifier(for: items)
             let hasNew = existing?.contentHash != contentHash
             let entry = CacheEntry(
@@ -1577,10 +1700,12 @@ final class NewsOrchestrator {
                 eTag: existing?.eTag,
                 lastModified: existing?.lastModified
             )
-            await cacheManager.save(entry, for: source)
+            await cacheManager.save(entry, for: source, token: token)
+            guard isCurrentCacheWork(token) else { return nil }
             sourceStates[source.id] = .loaded
             return SourceFetchResult(items: items, changed: hasNew)
         } catch {
+            guard isCurrentCacheWork(token) else { return nil }
             NSLog("[NewsOrchestrator] 获取 \(source.displayName) 失败: \(error.localizedDescription)")
             sourceStates[source.id] = .failed(sourceErrorMessage(error))
             return nil
@@ -1681,7 +1806,7 @@ final class NewsOrchestrator {
         return "error.loadFailed".localized
     }
 
-    private func shouldRecoverAISummary(from state: AISummaryState) -> Bool {
+    private static func shouldRecoverAISummary(from state: AISummaryState) -> Bool {
         switch state {
         case .idle, .noKey, .fetching, .error:
             return true
@@ -1690,35 +1815,60 @@ final class NewsOrchestrator {
         }
     }
 
-    /// Resolve the API key from cache or encrypted store. Returns empty string if unavailable.
-    private func resolveAPIKey(settings: AppSettings) async -> String {
-        if let cached = settings.cachedAPIKey, !cached.isEmpty {
-            return cached
+    /// Keep missing, unreadable and stale credentials distinct across every entry point.
+    private func resolveAPIKey(
+        settings: AppSettings, reportError: Bool = true, reportIf: () -> Bool = { true }
+    ) async -> ProviderBoundKey? {
+        do {
+            let bound = try await settings.resolveBoundAPIKey(expected: settings.aiKeyContext)
+            guard settings.isCurrentAIKey(bound) else { throw AISearchError.configurationChanged }
+            guard !bound.key.isEmpty || bound.context.providerID == AIProvider.ollamaCloud.rawValue else {
+                if reportError && reportIf() { aiSummaryState = .noKey }
+                return nil
+            }
+            return bound
+        } catch is CancellationError {
+            return nil
+        } catch let error as AISearchError {
+            if reportError && reportIf() { aiSummaryState = .error(error.message(settings.appLanguage)) }
+            return nil
+        } catch {
+            if reportError && reportIf() { aiSummaryState = .error(AISearchError.keyReadFailed.message(settings.appLanguage)) }
+            return nil
         }
-        let revision = settings.modelCatalogRevision
-        let store = EncryptedKeyStore()
-        if let fallback = await store.readAPIKey(account: settings.activeAPIKeyAccount),
-           !fallback.isEmpty {
-            guard revision == settings.modelCatalogRevision else { return "" }
-            settings.cachedAPIKey = fallback
-            return fallback
-        }
-        return ""
     }
 
-    private func validatedConfiguration(settings: AppSettings, apiKey: String) async -> ValidatedAIConfiguration? {
-        guard !apiKey.isEmpty else { aiSummaryState = .noKey; return nil }
-        guard let configuration = await settings.validatedAIConfiguration(apiKey: apiKey) else {
-            if let error = settings.modelCatalogError { aiSummaryState = .error(error.message(language: settings.appLanguage)) }
+    private func validatedConfiguration(
+        settings: AppSettings, bound: ProviderBoundKey, reportIf: () -> Bool = { true }
+    ) async -> ValidatedAIConfiguration? {
+        guard let configuration = await settings.validatedAIConfiguration(boundKey: bound) else {
+            guard reportIf() else { return nil }
+            if !settings.isCurrentAIKey(bound) {
+                aiSummaryState = .error(AISearchError.configurationChanged.message(settings.appLanguage))
+            } else if let error = settings.modelCatalogError {
+                aiSummaryState = .error(error.message(language: settings.appLanguage))
+            }
             return nil
         }
         return configuration
     }
 
-    private func restoreCachedSummaryIfPossible(settings: AppSettings) async {
-        guard settings.aiSummaryEnabled,
-              sharedSummaryLastHash == nil,
-              let cached = await aiSummaryCacheStore.load() else { return }
+    private func restoreCachedSummaryIfPossible(settings: AppSettings, token: CacheWriteToken) async {
+        let summaryRevision = settings.aiSummaryRunRevision
+        let isEligible = {
+            self.isCurrentCacheWork(token)
+                && settings.isCurrentAISummaryRun(summaryRevision) && self.aiSummaryState == .idle
+                && self.sharedSummaryLastHash == nil && self.sharedSummaryLastTruncatedHash == nil
+        }
+        guard let cached = await AISummaryCacheRestore.loadIfEligible(
+            isEligible: isEligible,
+            load: { await self.aiSummaryCacheStore.load() }
+        ) else { return }
+        // A generation can hold the lock while it resolves its model/key,
+        // before it has changed the visible state from .idle.
+        guard AISummaryService.tryAcquireGenerationLock(for: Self.sharedSummaryTarget) else { return }
+        defer { AISummaryService.releaseGenerationLock(for: Self.sharedSummaryTarget) }
+        guard isEligible() else { return }
         let currentItems = allActiveItems(settings: settings)
         guard !currentItems.isEmpty,
               summaryGenerationHash(items: currentItems, settings: settings) == cached.contentHash else { return }
@@ -1731,11 +1881,11 @@ final class NewsOrchestrator {
             itemCount: cached.items.count,
             trendIndices: trendIndices
         )
-        sharedSummaryLastHash = cached.contentHash
-        sharedSummaryLastTruncatedHash = nil
+        sharedSummaryLastHash = cached.completedContentHash
+        sharedSummaryLastTruncatedHash = cached.truncatedContentHash
         sharedSummaryConsecutiveTruncationCount = 0
         lastSummaryGeneratedAt = cached.generatedAt
-        aiSummaryState = .done(cached.summary)
+        aiSummaryState = cached.presentationState
     }
 
     @discardableResult
@@ -1748,7 +1898,10 @@ final class NewsOrchestrator {
         trendHistoryContext: String,
         trendHistoryHash: String,
         burstTriggered: Bool = false,
-        summaryLanguage: AppLanguage = .zh
+        summaryLanguage: AppLanguage = .zh,
+        summaryRevision: UUID,
+        cacheToken: CacheWriteToken,
+        isManualRegeneration: Bool = false
     ) async -> Int {
         let budgetMode: AISummaryBudgetMode = .shared
         let model = configuration.model
@@ -1756,8 +1909,13 @@ final class NewsOrchestrator {
         let connection = configuration.connection
         let interest = InterestController.shared
         let epoch = interest.state.consentEpoch
+        let isCurrentRun = {
+            self.isCurrentCacheWork(cacheToken)
+                && epoch == interest.state.consentEpoch && settings.isCurrentAISummaryRun(summaryRevision)
+                && settings.isCurrentAIConfiguration(configuration)
+        }
         defer {
-            if epoch != interest.state.consentEpoch || !settings.isCurrentAIConfiguration(configuration),
+            if !isCurrentRun(),
                aiSummaryState == .summarizing || aiSummaryState == .fetching { aiSummaryState = .idle }
         }
         let state = interest.state
@@ -1770,20 +1928,24 @@ final class NewsOrchestrator {
         let selected = await Task.detached(priority: .userInitiated) {
             SummarySelectionPolicy.select(items: inputItems, state: state, now: now)
         }.value
-        guard epoch == interest.state.consentEpoch, settings.isCurrentAIConfiguration(configuration) else { return 0 }
+        guard isCurrentRun() else { return 0 }
         let manifest = SummaryManifest(items: selected, profileVersion: state.learningEnabled ? state.profileVersion : 0,
                                        model: model, provider: ContentIdentity.digest(connection.baseURL), language: summaryLanguage, maxWords: maxWords,
                                        asOf: now, coverageStart: max(now.addingTimeInterval(-24 * 3600), state.archiveStartedAt ?? now), trendHistoryHash: trendHistoryHash)
         let items = manifest.items
         let frozenThinking = settings.aiDisableDeepSeekThinking
         guard !items.isEmpty else { aiSummaryState = .idle; return 0 }
-        guard !apiKey.isEmpty else {
+        guard !apiKey.isEmpty || configuration.providerID == AIProvider.ollamaCloud.rawValue else {
             aiSummaryState = .noKey
             return AISummaryService.readGenerationAttempts(target: Self.sharedSummaryTarget, mode: budgetMode)
         }
 
         // 连续截断保护：超过阈值时停止自动重试
-        guard sharedSummaryConsecutiveTruncationCount < maxConsecutiveTruncations else {
+        guard Self.canAttemptSummary(
+            consecutiveTruncations: sharedSummaryConsecutiveTruncationCount,
+            limit: maxConsecutiveTruncations,
+            isManualRegeneration: isManualRegeneration
+        ) else {
             aiSummaryState = .error(L10n.string("error.aiTruncated", maxConsecutiveTruncations))
             return AISummaryService.readGenerationAttempts(target: Self.sharedSummaryTarget, mode: budgetMode)
         }
@@ -1802,9 +1964,14 @@ final class NewsOrchestrator {
                 trendHistoryContext: trendHistoryContext,
                 summaryLanguage: summaryLanguage,
                 disableDeepSeekThinking: frozenThinking,
-                requestAllowed: { await MainActor.run { InterestController.shared.state.consentEpoch == epoch && settings.isCurrentAIConfiguration(configuration) } }
+                requestAllowed: { await MainActor.run {
+                    self.isCurrentCacheWork(cacheToken)
+                        && InterestController.shared.state.consentEpoch == epoch
+                        && settings.isCurrentAISummaryRun(summaryRevision)
+                        && settings.isCurrentAIConfiguration(configuration)
+                } }
             )
-            guard epoch == interest.state.consentEpoch, settings.isCurrentAIConfiguration(configuration) else {
+            guard isCurrentRun() else {
                 return AISummaryService.readGenerationAttempts(target: Self.sharedSummaryTarget, mode: budgetMode)
             }
 
@@ -1833,7 +2000,12 @@ final class NewsOrchestrator {
                         trendHistoryContext: trendHistoryContext,
                         summaryLanguage: summaryLanguage,
                         disableDeepSeekThinking: frozenThinking,
-                        requestAllowed: { await MainActor.run { InterestController.shared.state.consentEpoch == epoch && settings.isCurrentAIConfiguration(configuration) } }
+                        requestAllowed: { await MainActor.run {
+                            self.isCurrentCacheWork(cacheToken)
+                                && InterestController.shared.state.consentEpoch == epoch
+                                && settings.isCurrentAISummaryRun(summaryRevision)
+                                && settings.isCurrentAIConfiguration(configuration)
+                        } }
                     )
                 } else {
                     finalResult = firstResult
@@ -1843,7 +2015,7 @@ final class NewsOrchestrator {
             }
 
             let requestCount = AISummaryService.readGenerationAttempts(target: Self.sharedSummaryTarget, mode: budgetMode)
-            guard epoch == interest.state.consentEpoch, settings.isCurrentAIConfiguration(configuration) else { return requestCount }
+            guard isCurrentRun() else { return requestCount }
             let finalParsed = AISummaryParser.parseDualSummary(
                 finalResult.summary,
                 itemCount: items.count,
@@ -1862,24 +2034,28 @@ final class NewsOrchestrator {
             aiSummaryItems = items
             aiSummaryManifest = manifest
             aiParsedSummary = finalParsed
-            // A `length`-truncated response that still yields both sections with
-            // real content is treated as complete: the truncation only clipped
-            // trailing prose, not the substance users see.
+            // A truncated result with both sections may be cached to avoid
+            // repeated requests, but it must still be presented as incomplete.
             if finalResult.isTruncated, !Self.hasBothSections(finalParsed) {
                 sharedSummaryLastTruncatedHash = contentHash
                 sharedSummaryConsecutiveTruncationCount += 1
                 aiSummaryState = .truncated(finalResult.summary)
             } else {
-                sharedSummaryLastHash = contentHash
-                sharedSummaryLastTruncatedHash = nil
-                sharedSummaryConsecutiveTruncationCount = 0
+                if finalResult.isTruncated {
+                    sharedSummaryLastTruncatedHash = contentHash
+                    sharedSummaryConsecutiveTruncationCount += 1
+                } else {
+                    sharedSummaryLastHash = contentHash
+                    sharedSummaryLastTruncatedHash = nil
+                    sharedSummaryConsecutiveTruncationCount = 0
+                }
                 let generatedAt = Date()
                 lastSummaryGeneratedAt = generatedAt
                 if burstTriggered {
                     lastBurstSummaryAt = generatedAt
                 }
-                aiSummaryState = .done(finalResult.summary)
-                await AISummaryCacheStore(language: summaryLanguage).save(
+                aiSummaryState = .content(finalResult.summary, wasTruncated: finalResult.isTruncated)
+                await summaryCache(for: summaryLanguage).save(
                     AISummaryCacheEntry(
                         summary: finalResult.summary,
                         items: items,
@@ -1888,14 +2064,20 @@ final class NewsOrchestrator {
                         generatedAt: generatedAt,
                         trendItemCount: manifest.trendIndices.count,
                         language: summaryLanguage,
-                        manifest: manifest
-                    )
+                        manifest: manifest,
+                        wasTruncated: finalResult.isTruncated
+                    ),
+                    token: cacheToken
                 )
             }
             return requestCount
+        } catch is CancellationError {
+            if isCurrentRun() { aiSummaryState = .idle }
         } catch NewsBarError.apiKeyInvalid {
+            guard isCurrentRun() else { return AISummaryService.readGenerationAttempts(target: Self.sharedSummaryTarget, mode: budgetMode) }
             aiSummaryState = .error("error.aiKeyInvalid".localized)
         } catch NewsBarError.rateLimited {
+            guard isCurrentRun() else { return AISummaryService.readGenerationAttempts(target: Self.sharedSummaryTarget, mode: budgetMode) }
             let snapshot = AIQuotaStore.shared.snapshot()
             let mode = AISummaryService.readGenerationLimitMode(
                 target: Self.sharedSummaryTarget,
@@ -1915,6 +2097,7 @@ final class NewsOrchestrator {
                 aiSummaryState = .error(L10n.string("error.aiCapReached", snapshot.count, cap))
             }
         } catch let error as NewsBarError {
+            guard isCurrentRun() else { return AISummaryService.readGenerationAttempts(target: Self.sharedSummaryTarget, mode: budgetMode) }
             switch error {
             case .parseFailedWithDetail(let detail):
                 NSLog("[NewsOrchestrator] AI summary retry exhausted: %@", detail)
@@ -1926,12 +2109,15 @@ final class NewsOrchestrator {
                 aiSummaryState = .error("error.aiFailed".localized)
             }
         } catch let error as URLError {
+            guard isCurrentRun() else { return AISummaryService.readGenerationAttempts(target: Self.sharedSummaryTarget, mode: budgetMode) }
             NSLog("[NewsOrchestrator] AI summary URLError: %@", error.localizedDescription)
             aiSummaryState = .error(error.code == .timedOut ? "error.aiTimeout".localized : "error.aiNoNetwork".localized)
         } catch let error as DecodingError {
+            guard isCurrentRun() else { return AISummaryService.readGenerationAttempts(target: Self.sharedSummaryTarget, mode: budgetMode) }
             NSLog("[NewsOrchestrator] AI summary DecodingError: %@", error.localizedDescription)
             aiSummaryState = .error("error.aiBadFormat".localized)
         } catch {
+            guard isCurrentRun() else { return AISummaryService.readGenerationAttempts(target: Self.sharedSummaryTarget, mode: budgetMode) }
             NSLog("[NewsOrchestrator] AI summary failed: %@", error.localizedDescription)
             aiSummaryState = .error("error.aiFailed".localized)
         }
@@ -1956,12 +2142,16 @@ final class NewsOrchestrator {
                                            language: settings.appLanguage, maxWords: settings.aiDashboardMaxWords)
     }
 
-    private func updateInterestCandidates(settings: AppSettings) async {
+    private func updateInterestCandidates(settings: AppSettings, token: CacheWriteToken) async {
         let interest = InterestController.shared
+        await interest.prepare()
+        guard isCurrentCacheWork(token), interest.isReady else { return }
         let activeIDs = Set(settings.activeSources.map(\.id))
         let current = allActiveItems(settings: settings).filter { activeIDs.contains($0.source.id) }
         await interest.ingest(current)
+        guard isCurrentCacheWork(token) else { return }
         await restoreResearchStateIfNeeded()
+        guard isCurrentCacheWork(token) else { return }
         let archive = interest.state.contents.values.filter {
             activeIDs.contains($0.item.source.id) && Date().timeIntervalSince($0.lastSeen) <= 24 * 3600
         }.map(\.item)
@@ -2137,14 +2327,18 @@ final class NewsOrchestrator {
     }
 
     func clearPersonalizedArtifacts() async {
+        cacheClearDepth += 1
+        defer { cacheClearDepth -= 1 }
+        cacheWriteGeneration.invalidate()
         NotificationService.clearPersonalizedNotifications()
-        for language in AppLanguage.allCases { await AISummaryCacheStore(language: language).clear() }
+        for language in AppLanguage.allCases { await summaryCache(for: language).clear() }
         aiSummaryState = .idle
         aiSummaryItems = []
         aiParsedSummary = nil
         aiSummaryManifest = nil
         sharedSummaryLastHash = nil
         sharedSummaryLastTruncatedHash = nil
+        sharedSummaryConsecutiveTruncationCount = 0
         notifiedBurstTopics = []
         notifiedKeywordPairs = []
         legacyBurstArtifacts = [:]
@@ -2158,13 +2352,22 @@ final class NewsOrchestrator {
         researchSummary = .zero
         researchHighlights = []
         legacyResearchImported = true
+        batchProgress = .zero
+        manualRefreshWarning = nil
+        // A clear that lands mid-refresh must not leave sources stuck on
+        // "loading" after the cycle is refused.
+        for (id, state) in sourceStates where state == .loading {
+            sourceStates[id] = .idle
+        }
         _ = await clearResearchHistory()
     }
 
     func clearCache() async {
-        await cacheManager.clear()
-        await aiSummaryCacheStore.clear()
-        await trendHistoryStore.clear()
+        cacheClearDepth += 1
+        cacheWriteGeneration.invalidate()
+        defer { cacheClearDepth -= 1 }
+        // Invalidate and empty the observable state before any actor hop. A
+        // refresh that started earlier must not publish back into this state.
         weiboItems = []
         weiboDetectionItems = []
         bilibiliItems = []
@@ -2179,10 +2382,14 @@ final class NewsOrchestrator {
         lastSummaryGeneratedAt = nil
         lastHotRefresh = nil
         lastSourceRefresh = [:]
+        lastSourceAttempt = [:]
         rssUnchangedRefreshCounts = [:]
         rssLastChangedAt = [:]
         rssFailureCounts = [:]
         loadedCacheSourceIDs = []
+        pendingManualRefresh = false
+        batchProgress = .zero
+        manualRefreshWarning = nil
         lastHourlyPushAt = nil
         latestTrendSummary = .none
         notifiedBurstTopics = []
@@ -2195,6 +2402,10 @@ final class NewsOrchestrator {
         lastAutomaticDecision = nil
         triageCache = [:]
         aiSummaryManifest = nil
+        await cacheManager.clear()
+        await translationCacheStore.clear()
+        for language in AppLanguage.allCases { await summaryCache(for: language).clear() }
+        await trendHistoryStore.clear()
     }
 
     func refreshRSSSource(url: String, name: String, settings: AppSettings) async {
@@ -2203,13 +2414,46 @@ final class NewsOrchestrator {
     }
 
     func refreshRSSSource(_ source: NewsSource, settings: AppSettings) async {
-        guard !source.isBuiltIn else { return }
+        guard !source.isBuiltIn, cacheClearDepth == 0 else { return }
         guard sourceStates[source.id] != .loading else { return }
+        let token = cacheWriteGeneration.capture()
 
         markSources([source], as: .loading)
-        let outcome = await fetchRSS(source: source, useCacheFallback: false, settings: settings)
+        let outcome = await fetchRSS(source: source, useCacheFallback: false, settings: settings, token: token)
+        guard isCurrentCacheWork(token), let outcome else { return }
         applyRSSBatch([outcome])
-        await updateInterestCandidates(settings: settings)
+        await updateInterestCandidates(settings: settings, token: token)
+    }
+
+    /// Health rows for the settings surface. Derived from the same source
+    /// state the feed renders, so the two can never disagree.
+    func rssHealthSnapshot(settings: AppSettings) -> [RSSSourceHealth] {
+        settings.activeSources.filter { !$0.isBuiltIn }.map { source in
+            let state = sourceStates[source.id]
+            let status: RSSSourceHealth.Status
+            let detail: String?
+            switch state {
+            case .loaded:
+                status = .loaded
+                detail = nil
+            case .loading:
+                status = .loading
+                detail = nil
+            case .failed(let message):
+                status = .failed
+                detail = message
+            case .idle, .none:
+                status = .idle
+                detail = nil
+            }
+            return RSSSourceHealth(
+                id: source.id,
+                name: source.displayName,
+                status: status,
+                detail: detail,
+                lastAttempt: lastSourceAttempt[source.id] ?? lastSourceRefresh[source.id]
+            )
+        }
     }
 }
 

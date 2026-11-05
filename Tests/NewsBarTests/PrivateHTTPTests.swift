@@ -86,6 +86,21 @@ final class PrivateHTTPTests: XCTestCase {
         XCTAssertEqual(data.count, 512)
         XCTAssertEqual(response.statusCode, 200)
     }
+
+    func testNotModifiedDoesNotTreatResourceLengthAsResponseBody() async throws {
+        PrivateHTTPStubProtocol.statusCode = 304
+        PrivateHTTPStubProtocol.bodySize = 0
+        PrivateHTTPStubProtocol.declaredLength = "1048576"
+
+        let (data, response) = try await PrivateHTTP.data(
+            for: URLRequest(url: URL(string: "https://example.com/")!),
+            maxBytes: 1024,
+            session: session
+        )
+
+        XCTAssertTrue(data.isEmpty)
+        XCTAssertEqual(response.statusCode, 304)
+    }
 }
 
 final class PrivateHTTPStubProtocol: URLProtocol, @unchecked Sendable {

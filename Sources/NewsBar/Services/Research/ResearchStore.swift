@@ -2,7 +2,8 @@ import Foundation
 
 enum ResearchPaths {
     static var applicationSupportRoot: URL {
-        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        if TestIsolation.isActive { return TestIsolation.directory("Research") }
+        return FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("com.newsbar.app", isDirectory: true)
     }
 
@@ -11,7 +12,8 @@ enum ResearchPaths {
     }
 
     static var researchCacheDirectory: URL {
-        FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+        if TestIsolation.isActive { return TestIsolation.directory("ResearchCache") }
+        return FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("com.newsbar.app/ResearchCache", isDirectory: true)
     }
 

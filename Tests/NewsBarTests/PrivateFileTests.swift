@@ -66,6 +66,22 @@ final class PrivateFileTests: XCTestCase {
         XCTAssertTrue(leftovers.isEmpty)
     }
 
+    func testDirectorySyncFailureReportsThatReplacementWasAlreadyCommitted() throws {
+        let directory = try researchTestDirectory()
+        defer {
+            PrivateFileFaults.reset()
+            try? FileManager.default.removeItem(at: directory)
+        }
+        let url = directory.appendingPathComponent("payload.json")
+        try PrivateFile.write(Data("original".utf8), to: url)
+
+        PrivateFileFaults.failAfterRename = true
+        XCTAssertThrowsError(try PrivateFile.write(Data("replacement".utf8), to: url)) { error in
+            XCTAssertTrue(error is PrivateFilePostCommitError, "A sync failure after rename must not look like a failure before rename")
+        }
+        XCTAssertEqual(try Data(contentsOf: url), Data("replacement".utf8))
+    }
+
     func testStoreWritesIndexMetaAndRecordsOwnerOnly() async throws {
         let directory = try researchTestDirectory()
         let store = ResearchStore(directoryURL: directory)

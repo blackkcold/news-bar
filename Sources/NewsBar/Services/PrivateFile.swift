@@ -6,6 +6,8 @@ import Foundation
 enum PrivateFileFaults {
     private static let lock = NSLock()
     private static var _failBeforeRename = false
+    private static var _failAfterRename = false
+    private static var _failVerificationAfterWrite = false
 
     static var failBeforeRename: Bool {
         get {
@@ -20,8 +22,36 @@ enum PrivateFileFaults {
         }
     }
 
+    static var failAfterRename: Bool {
+        get {
+            lock.lock()
+            defer { lock.unlock() }
+            return _failAfterRename
+        }
+        set {
+            lock.lock()
+            _failAfterRename = newValue
+            lock.unlock()
+        }
+    }
+
+    static var failVerificationAfterWrite: Bool {
+        get {
+            lock.lock()
+            defer { lock.unlock() }
+            return _failVerificationAfterWrite
+        }
+        set {
+            lock.lock()
+            _failVerificationAfterWrite = newValue
+            lock.unlock()
+        }
+    }
+
     static func reset() {
         failBeforeRename = false
+        failAfterRename = false
+        failVerificationAfterWrite = false
     }
 }
 #endif
@@ -33,6 +63,10 @@ enum PrivateFileError: Error, Equatable {
     case syncFailed(Int32)
     case renameFailed(Int32)
     case invalidPath
+}
+
+struct PrivateFilePostCommitError: Error {
+    let underlyingError: Error
 }
 
 /// Atomic, owner-only writes for files that hold personal data or secrets.
@@ -100,7 +134,13 @@ enum PrivateFile {
             }
             try rename(temporaryURL, to: url)
             if durable {
-                try syncDirectory(directory)
+                do {
+                    try syncDirectory(directory)
+                } catch {
+                    // The replacement is already visible; it is the crash
+                    // durability of the directory entry that is unknown.
+                    throw PrivateFilePostCommitError(underlyingError: error)
+                }
             }
         } catch {
             if descriptor >= 0 {
@@ -169,6 +209,12 @@ enum PrivateFile {
 
     // MARK: - POSIX
 
+    /// Reconfirm directory-entry durability when a previous atomic replacement
+    /// was visible but its directory sync did not complete.
+    static func syncContainingDirectory(of url: URL) throws {
+        try syncDirectory(url.deletingLastPathComponent())
+    }
+
     private static func openExclusive(_ url: URL) throws -> Int32 {
         try url.withUnsafeFileSystemRepresentation { path in
             guard let path else { throw PrivateFileError.invalidPath }
@@ -226,6 +272,11 @@ enum PrivateFile {
     }
 
     private static func syncDirectory(_ directory: URL) throws {
+        #if DEBUG
+        if PrivateFileFaults.failAfterRename {
+            throw PrivateFileError.syncFailed(EIO)
+        }
+        #endif
         let descriptor = try directory.withUnsafeFileSystemRepresentation { path -> Int32 in
             guard let path else { throw PrivateFileError.invalidPath }
             let value = Darwin.open(path, O_RDONLY | O_DIRECTORY | O_CLOEXEC)

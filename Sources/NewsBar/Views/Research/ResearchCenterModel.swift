@@ -537,6 +537,26 @@ final class ResearchCenterModel {
         return presented
     }
 
+    /// Previous reports for the same topic. Only same-topic records with a
+    /// stored report are returned, so a failed or unrelated run can never be
+    /// presented as a version of this one.
+    func changeHistory(for record: ResearchRecord, limit: Int = 5) async -> [ResearchChange] {
+        guard record.report != nil else { return [] }
+        let index = await store.index()
+        let candidates = index
+            .filter { $0.topicKey == record.topicKey && $0.id != record.id && $0.hasReport }
+            .sorted { $0.updatedAt > $1.updatedAt }
+            .prefix(max(limit + 1, limit))
+        var previous: [ResearchRecord] = []
+        for entry in candidates {
+            guard previous.count < limit else { break }
+            if let previousRecord = await store.record(id: entry.id) {
+                previous.append(previousRecord)
+            }
+        }
+        return ResearchChangeTracker.changes(current: record, previous: previous, limit: limit)
+    }
+
     func presentedStatus(for id: String) -> ResearchStatus? {
         retryOverlay[id]?.status
     }

@@ -82,7 +82,9 @@ enum HTTPClient {
         config: Config,
         additionalHeaders: [String: String] = [:],
         allowsNotModified: Bool = false,
-        restrictToPublicDestinations: Bool = false
+        restrictToPublicDestinations: Bool = false,
+        destinationPolicy: RSSDestinationPolicy = .live,
+        session: URLSession? = nil
     ) async throws -> (Data, HTTPURLResponse) {
         var request = URLRequest(url: url)
         request.setValue(config.userAgent, forHTTPHeaderField: "User-Agent")
@@ -97,7 +99,7 @@ enum HTTPClient {
         let data: Data
         let httpResponse: HTTPURLResponse
         if restrictToPublicDestinations {
-            guard SecurityPolicies.validatePublicHTTPURL(url.absoluteString).url != nil else {
+            guard try await destinationPolicy.allows(url) else {
                 throw NewsBarError.requestFailed
             }
             do {
@@ -105,9 +107,13 @@ enum HTTPClient {
                     for: request,
                     maxBytes: config.maxBodySize,
                     timeout: config.timeout,
-                    redirectPolicy: .followValidatedPublic,
-                    session: URLSession.shared
+                    redirectPolicy: .followValidatedPublic(destinationPolicy),
+                    session: session
                 )
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch let error as URLError {
+                throw error
             } catch {
                 throw NewsBarError.requestFailed
             }

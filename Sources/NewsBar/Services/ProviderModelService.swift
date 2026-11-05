@@ -20,8 +20,10 @@ actor ProviderModelService {
     private let maximumAge: TimeInterval = 24 * 3600
 
     init(fileURL: URL? = nil, transport: @escaping Transport = { request in try await ProviderModelHTTPTransport.data(request) }) {
-        self.fileURL = fileURL ?? FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("com.newsbar.app/provider-models-v1.json")
+        self.fileURL = fileURL ?? (TestIsolation.isActive
+            ? TestIsolation.directory("ProviderModels").appendingPathComponent("provider-models-v1.json")
+            : FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+                .appendingPathComponent("com.newsbar.app/provider-models-v1.json"))
         self.transport = transport
     }
 

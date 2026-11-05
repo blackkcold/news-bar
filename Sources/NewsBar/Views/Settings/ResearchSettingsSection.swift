@@ -9,6 +9,9 @@ struct ResearchSettingsSection: View {
 
     @State private var keyInputs: [SearchProviderID: String] = [:]
     @State private var configured: [SearchProviderID: Bool] = [:]
+    @State private var unverifiedKeyStatuses: Set<SearchProviderID> = []
+    @State private var pendingKeyDeleteRetries: Set<SearchProviderID> = []
+    @State private var pendingKeySaveSyncs: Set<SearchProviderID> = []
     @State private var keyMessage: String?
     @State private var keyMessageIsError = false
     @State private var isSavingKey = false
@@ -136,6 +139,9 @@ struct ResearchSettingsSection: View {
             status: statuses.first { $0.provider == provider },
             isEnabled: settings.enabledSearchProviders.contains(provider),
             isConfigured: configured[provider] == true,
+            isKeyUnverified: unverifiedKeyStatuses.contains(provider),
+            canRetryKeyRemoval: pendingKeyDeleteRetries.contains(provider),
+            canRetryKeySync: pendingKeySaveSyncs.contains(provider),
             isSaving: isSavingKey,
             keyInput: keyBinding(provider),
             onToggle: { enabled in
@@ -143,6 +149,7 @@ struct ResearchSettingsSection: View {
             },
             onSave: { Task { await saveKey(provider) } },
             onClear: { Task { await clearKey(provider) } },
+            onRetryKeySync: { Task { await retryKeySync(provider) } },
             onRetryAuth: {
                 Task {
                     await searchAuthRetryAction?(provider)
@@ -192,45 +199,83 @@ struct ResearchSettingsSection: View {
         guard !key.isEmpty else { return }
 
         isSavingKey = true
-        let saved = await SearchKeyStore.save(key, for: provider)
+        let result = await SearchKeyStore.saveResult(key, for: provider)
         isSavingKey = false
-
-        if saved {
-            keyInputs[provider] = ""
-            configured[provider] = true
+        let decision = SearchKeySavePolicy.decision(for: result)
+        if decision.clearInput { keyInputs[provider] = "" }
+        if let value = decision.configured { configured[provider] = value }
+        if let unverified = decision.unverified {
+            if unverified { unverifiedKeyStatuses.insert(provider) }
+            else { unverifiedKeyStatuses.remove(provider) }
+        }
+        if decision.retrySyncAllowed { pendingKeySaveSyncs.insert(provider) }
+        else if result == .durable { pendingKeySaveSyncs.remove(provider) }
+        if decision.configured == true {
+            pendingKeyDeleteRetries.remove(provider)
             // A new key ends an auth block but deliberately keeps any quota
             // cooldown and never resets the ledger.
             await searchAuthRetryAction?(provider)
             await refreshStatuses()
-            keyMessage = L10n.string(
-                "research.settings.keySaveSuccess",
-                language: settings.appLanguage,
-                provider.displayName
-            )
-            keyMessageIsError = false
-        } else {
-            keyMessage = L10n.string(
-                "research.settings.keySaveFailed",
-                language: settings.appLanguage,
-                provider.displayName
-            )
-            keyMessageIsError = true
         }
+        keyMessage = L10n.string(decision.messageKey, language: settings.appLanguage, provider.displayName)
+        keyMessageIsError = decision.isError
     }
 
     private func clearKey(_ provider: SearchProviderID) async {
         isSavingKey = true
-        await SearchKeyStore.delete(for: provider)
+        let result = await SearchKeyStore.deleteResult(for: provider)
         isSavingKey = false
-        configured[provider] = false
-        await searchAuthRetryAction?(provider)
-        await refreshStatuses()
+        let decision = SearchKeyDeletionPolicy.decision(for: result)
+        if let value = decision.configured { configured[provider] = value }
+        if let unverified = decision.unverified {
+            if unverified { unverifiedKeyStatuses.insert(provider) }
+            else { unverifiedKeyStatuses.remove(provider) }
+        }
+        if decision.retryAllowed { pendingKeyDeleteRetries.insert(provider) }
+        else { pendingKeyDeleteRetries.remove(provider) }
+        if decision.configured == false {
+            pendingKeySaveSyncs.remove(provider)
+            await searchAuthRetryAction?(provider)
+            await refreshStatuses()
+        }
         keyMessage = L10n.string(
-            "research.settings.keyCleared",
+            decision.messageKey,
             language: settings.appLanguage,
             provider.displayName
         )
-        keyMessageIsError = false
+        keyMessageIsError = decision.isError
+    }
+
+    private func retryKeySync(_ provider: SearchProviderID) async {
+        isSavingKey = true
+        let store = EncryptedKeyStore()
+        let synced = await store.confirmWriteDurability()
+        let actual = synced ? await store.readAPIKeyResult(account: SearchKeyStore.account(for: provider)) : .failed
+        isSavingKey = false
+        guard synced else {
+            keyMessage = L10n.string("research.settings.keySaveDurabilityUnknown", language: settings.appLanguage, provider.displayName)
+            keyMessageIsError = true
+            return
+        }
+        pendingKeySaveSyncs.remove(provider)
+        switch actual {
+        case .found:
+            configured[provider] = true
+            unverifiedKeyStatuses.remove(provider)
+            await searchAuthRetryAction?(provider)
+            await refreshStatuses()
+            keyMessage = L10n.string("research.settings.keySaveSuccess", language: settings.appLanguage, provider.displayName)
+            keyMessageIsError = false
+        case .missing:
+            configured[provider] = false
+            unverifiedKeyStatuses.remove(provider)
+            keyMessage = L10n.string("research.settings.keySaveFailed", language: settings.appLanguage, provider.displayName)
+            keyMessageIsError = true
+        case .failed:
+            unverifiedKeyStatuses.insert(provider)
+            keyMessage = L10n.string("research.settings.keySaveUnverified", language: settings.appLanguage, provider.displayName)
+            keyMessageIsError = true
+        }
     }
 
     private func refreshKeyStatus() async {
@@ -250,6 +295,12 @@ struct ResearchSettingsSection: View {
             keyMessageIsError = false
         case .failed:
             keyMessage = "research.settings.keyMigrationFailed".localized
+            keyMessageIsError = true
+        case .durabilityUnknown:
+            keyMessage = "research.settings.keyMigrationDurabilityUnknown".localized
+            keyMessageIsError = true
+        case .unverified:
+            keyMessage = "research.settings.keyMigrationUnverified".localized
             keyMessageIsError = true
         case .notNeeded:
             break

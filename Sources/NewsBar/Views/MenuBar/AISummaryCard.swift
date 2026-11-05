@@ -62,14 +62,11 @@ struct AISummaryCard: View {
             revealTask?.cancel()
             revealTask = nil
         }
-        .task(id: isRegenerating) {
-            // Keep the manual-regeneration cooldown ticking every second so the
-            // button un-disables promptly instead of getting stuck.
-            while regenerationCooldownRemaining > 0 || AISummaryService.regenerationCooldownRemaining() > 0 {
-                regenerationCooldownRemaining = AISummaryService.regenerationCooldownRemaining()
-                try? await Task.sleep(nanoseconds: 1_000_000_000)
-            }
-            regenerationCooldownRemaining = 0
+        .task(id: AISummaryService.manualRegenerationCooldown.lastRegeneration) {
+            await AISummaryCooldownTicker.run(
+                remaining: { AISummaryService.regenerationCooldownRemaining() },
+                update: { regenerationCooldownRemaining = $0 }
+            )
         }
     }
 

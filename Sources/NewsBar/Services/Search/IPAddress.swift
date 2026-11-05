@@ -105,7 +105,8 @@ enum IPAddress {
 
         // Only global unicast 2000::/3. This allowlist alone excludes ::/8
         // (`::`, `::1`, `::ffff:0:0/96`), 64:ff9b::/96, fc00::/7, fe80::/10,
-        // fec0::/10 and ff00::/8.
+        // fec0::/10 and ff00::/8. NAT64 translation requires positive network
+        // evidence before it can be relaxed safely.
         guard bytes[0] & 0xE0 == 0x20 else { return false }
 
         if bytes[0] == 0x20, bytes[1] == 0x01, bytes[2] == 0x0d, bytes[3] == 0xb8 {

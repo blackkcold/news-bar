@@ -7,11 +7,11 @@ final class AppThemeTests: XCTestCase {
 
     override func setUp() {
         super.setUp()
-        UserDefaults.standard.removeObject(forKey: themeKey)
+        TestIsolation.defaults.removeObject(forKey: themeKey)
     }
 
     override func tearDown() {
-        UserDefaults.standard.removeObject(forKey: themeKey)
+        TestIsolation.defaults.removeObject(forKey: themeKey)
         super.tearDown()
     }
 

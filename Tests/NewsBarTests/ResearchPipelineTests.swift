@@ -5,9 +5,11 @@ private final class ScriptedAIClient: AIChatClienting, @unchecked Sendable {
     private let lock = NSLock()
     private var script: [Result<AIChatResponse, AIChatError>]
     private var recorded: [AIChatRequest] = []
+    let price: ModelPrice?
 
-    init(responses: [Result<AIChatResponse, AIChatError>]) {
+    init(responses: [Result<AIChatResponse, AIChatError>], price: ModelPrice? = nil) {
         self.script = responses
+        self.price = price
     }
 
     func complete(_ request: AIChatRequest) async throws -> AIChatResponse {
@@ -27,6 +29,19 @@ private final class ScriptedAIClient: AIChatClienting, @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return recorded.count
+    }
+}
+
+private struct ResettingQuotaAIClient: AIChatClienting {
+    let quota: AIQuotaStore
+    let price: ModelPrice?
+
+    func complete(_ request: AIChatRequest) async throws -> AIChatResponse {
+        guard quota.resetToday(),
+              quota.reserveTracked(.summary, policy: .unlimited, reservedCostMicros: 500) != nil else {
+            throw AIChatError.malformedResponse
+        }
+        throw AIChatError.timeout
     }
 }
 
@@ -144,9 +159,10 @@ final class ResearchPipelineTests: XCTestCase {
 
     private func makePipeline(
         directory: URL,
-        ai: ScriptedAIClient,
+        ai: any AIChatClienting,
         hits: [SearchHit],
         searchError: SearchProviderError? = nil,
+        quota: AIQuotaStore? = nil,
         scrape: @escaping PageReader.Scrape
     ) -> (ResearchPipeline, PipelineSearchProvider) {
         let clock = ResearchTestClock(Date(timeIntervalSince1970: 1_800_000_000))
@@ -169,7 +185,7 @@ final class ResearchPipelineTests: XCTestCase {
             searchRouter: router,
             pageReader: reader,
             ledger: ledger,
-            quota: AIQuotaStore(fileURL: directory.appendingPathComponent("quota.json")),
+            quota: quota ?? AIQuotaStore(fileURL: directory.appendingPathComponent("quota.json")),
             now: { clock.now }
         )
         return (pipeline, provider)
@@ -287,6 +303,56 @@ final class ResearchPipelineTests: XCTestCase {
         XCTAssertEqual(ai.callCount, 1)
         XCTAssertEqual(provider.callCount, 1)
         XCTAssertFalse(BurstResearchParser.hasUsableContent(execution.research))
+    }
+
+    func testFailedResearchDispatchKeepsItsReservationAndMarksCostUnknown() async throws {
+        let directory = try researchTestDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let price = ModelPrice(
+            provider: "fictional", modelPrefix: "fixture", inputPerMTok: 1, outputPerMTok: 2,
+            cacheReadPerMTok: nil, cacheWritePerMTok: nil, currency: "CNY", updatedAt: "fixture"
+        )
+        let ai = ScriptedAIClient(responses: [.failure(.timeout)], price: price)
+        let (pipeline, _) = makePipeline(
+            directory: directory,
+            ai: ai,
+            hits: [],
+            searchError: .quotaExhausted,
+            scrape: { _, _ in throw NewsBarError.requestFailed }
+        )
+        _ = await pipeline.run(
+            configuration: configuration(record: researchTestRecord(title: "Fictional event", status: .queued)),
+            progress: { _ in }
+        )
+
+        let snapshot = pipeline.quota.snapshot()
+        XCTAssertEqual(ai.callCount, 1)
+        XCTAssertEqual(snapshot.count, 1)
+        XCTAssertGreaterThan(snapshot.costMicros, 0)
+        XCTAssertEqual(snapshot.unpricedCalls, 1)
+    }
+
+    func testLateResearchFailureCannotSettleAgainstResetBudget() async throws {
+        let directory = try researchTestDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let quota = AIQuotaStore(fileURL: directory.appendingPathComponent("quota.json"))
+        let price = ModelPrice(
+            provider: "fictional", modelPrefix: "fixture", inputPerMTok: 1, outputPerMTok: 2,
+            cacheReadPerMTok: nil, cacheWritePerMTok: nil, currency: "CNY", updatedAt: "fixture"
+        )
+        let (pipeline, _) = makePipeline(
+            directory: directory, ai: ResettingQuotaAIClient(quota: quota, price: price),
+            hits: [], searchError: .quotaExhausted, quota: quota,
+            scrape: { _, _ in throw NewsBarError.requestFailed }
+        )
+        _ = await pipeline.run(
+            configuration: configuration(record: researchTestRecord(title: "Fictional event", status: .queued)),
+            progress: { _ in }
+        )
+        let snapshot = quota.snapshot()
+        XCTAssertEqual(snapshot.count, 1)
+        XCTAssertEqual(snapshot.costMicros, 500)
+        XCTAssertEqual(snapshot.unpricedCalls, 0)
     }
 
     func testZeroEvidenceKeepsSourceDossierAsBackgroundBrief() async throws {

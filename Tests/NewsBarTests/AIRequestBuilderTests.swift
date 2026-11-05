@@ -138,6 +138,22 @@ final class AIRequestBuilderTests: XCTestCase {
 
     // MARK: - Ollama
 
+    func testKeylessOllamaRequestDoesNotSendAnAuthorizationHeader() throws {
+        var connection = AIProvider.ollamaCloud.resolvedConnection()
+        connection.additionalHeaders["Authorization"] = "fictional-should-not-be-sent"
+        let built = try AIRequestBuilder.build(
+            connection: connection,
+            apiKey: "",
+            model: "fictional-model",
+            messages: [AIChatMessage(role: .user, content: "fixture")],
+            maxTokens: 100,
+            temperature: 0,
+            thinking: .providerDefault,
+            timeout: 30
+        )
+        XCTAssertNil(built.request.value(forHTTPHeaderField: "Authorization"))
+    }
+
     func testOllamaCompatibilityEndpointDoesNotSendThink() throws {
         let built = try build(connection(style: .ollamaThink), thinking: .off)
         XCTAssertNil(try body(built)["think"])
@@ -279,7 +295,7 @@ final class AIRequestBuilderTests: XCTestCase {
     // MARK: - Manual model escape hatch
 
     func testManualModelIdIsUsableWithoutACatalogButBlankIsNot() {
-        let defaults = UserDefaults.standard
+        let defaults = TestIsolation.defaults
         let oldProvider = defaults.string(forKey: "aiProvider")
         let oldModel = defaults.string(forKey: "aiModel")
         let oldManual = defaults.object(forKey: "aiModelManuallyEntered")

@@ -55,6 +55,8 @@ enum AISearchError: Error, Equatable, LocalizedError {
     case noPageText
     case noModel
     case noKey
+    case keyReadFailed
+    case configurationChanged
     case quotaUnavailable
     case searchFailed(String)
     case noSourcesReadable
@@ -66,6 +68,8 @@ enum AISearchError: Error, Equatable, LocalizedError {
         case .noPageText: return "The current page has no readable text"
         case .noModel: return "No AI model configured"
         case .noKey: return "No API key configured"
+        case .keyReadFailed: return "The saved API key could not be read"
+        case .configurationChanged: return "AI configuration changed during the request"
         case .quotaUnavailable: return "Daily AI quota reached"
         case .searchFailed(let detail): return "Search failed: \(detail)"
         case .noSourcesReadable: return "No source could be read"
@@ -84,6 +88,10 @@ enum AISearchError: Error, Equatable, LocalizedError {
             return english ? "Choose an AI model for search in Settings → AI." : "请先在设置 → AI 中为搜索选择模型。"
         case .noKey:
             return english ? "Add an API key in Settings → AI first." : "请先在设置 → AI 中配置 API Key。"
+        case .keyReadFailed:
+            return english ? "The saved API key could not be read. Check encrypted storage and try again." : "无法读取已保存的 API Key，请检查加密存储后重试。"
+        case .configurationChanged:
+            return english ? "AI settings changed. Please try again." : "AI 设置已更改，请重试。"
         case .quotaUnavailable:
             return english ? "Today's AI limit is reached. It resets tomorrow." : "今日 AI 用量已用完，明天重置。"
         case .searchFailed:

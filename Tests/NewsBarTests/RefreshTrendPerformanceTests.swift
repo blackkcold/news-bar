@@ -1,4 +1,5 @@
 import Foundation
+import Observation
 import XCTest
 @testable import NewsBar
 
@@ -165,11 +166,194 @@ final class TrendHistoryStoreTests: XCTestCase {
     }
 }
 
+private actor SummaryCacheReadGate {
+    private var entered = false
+    private var released = false
+    private var enteredWaiter: CheckedContinuation<Void, Never>?
+    private var releaseWaiter: CheckedContinuation<Void, Never>?
+
+    func pause() async {
+        entered = true
+        enteredWaiter?.resume()
+        enteredWaiter = nil
+        guard !released else { return }
+        await withCheckedContinuation { releaseWaiter = $0 }
+    }
+
+    func waitUntilEntered() async {
+        guard !entered else { return }
+        await withCheckedContinuation { enteredWaiter = $0 }
+    }
+
+    func release() {
+        released = true
+        releaseWaiter?.resume()
+        releaseWaiter = nil
+    }
+}
+
 final class AISummaryPersistenceAndTriggerTests: XCTestCase {
     private func temporaryURL(_ name: String) -> URL {
         FileManager.default.temporaryDirectory
             .appendingPathComponent("NewsBarTests-\(UUID().uuidString)")
             .appendingPathComponent(name)
+    }
+
+    func testDisabledBriefingDoesNotScheduleAutomaticGenerationOrAllowRetry() {
+        XCTAssertFalse(AISummaryPresentationPolicy.needsAutomaticGeneration(state: .idle, enabled: false))
+        XCTAssertFalse(AISummaryPresentationPolicy.needsAutomaticGeneration(state: .error("fictional"), enabled: false))
+        XCTAssertFalse(AISummaryPresentationPolicy.canRegenerate(enabled: false, isRefreshing: false, isCoolingDown: false))
+    }
+
+    func testReenabledBriefingSchedulesRecoveryButDoesNotAutomaticallyRepeatTruncation() {
+        XCTAssertTrue(AISummaryPresentationPolicy.needsAutomaticGeneration(state: .idle, enabled: true))
+        XCTAssertTrue(AISummaryPresentationPolicy.needsAutomaticGeneration(state: .error("fictional"), enabled: true))
+        XCTAssertFalse(AISummaryPresentationPolicy.needsAutomaticGeneration(state: .truncated("fictional"), enabled: true))
+    }
+
+    func testBriefingRetryRespectsActiveGenerationAndCooldown() {
+        XCTAssertTrue(AISummaryPresentationPolicy.canRegenerate(enabled: true, isRefreshing: false, isCoolingDown: false))
+        XCTAssertFalse(AISummaryPresentationPolicy.canRegenerate(enabled: true, isRefreshing: true, isCoolingDown: false))
+        XCTAssertFalse(AISummaryPresentationPolicy.canRegenerate(enabled: true, isRefreshing: false, isCoolingDown: true))
+    }
+
+    @MainActor
+    func testLateCooldownRecordNotifiesBothBriefingViews() async {
+        let cooldown = AISummaryRegenerationCooldown()
+        let now = Date(timeIntervalSince1970: 1_000)
+        let menuUpdated = expectation(description: "Menu bar observes the recorded cooldown")
+        let dashboardUpdated = expectation(description: "Dashboard observes the recorded cooldown")
+
+        withObservationTracking {
+            _ = cooldown.lastRegeneration
+        } onChange: {
+            menuUpdated.fulfill()
+        }
+        withObservationTracking {
+            _ = cooldown.lastRegeneration
+        } onChange: {
+            dashboardUpdated.fulfill()
+        }
+        XCTAssertEqual(cooldown.remaining(at: now), 0)
+
+        // A result can be visible before its cache write and cooldown record finish.
+        cooldown.record(at: now)
+        await fulfillment(of: [menuUpdated, dashboardUpdated], timeout: 1)
+        XCTAssertEqual(cooldown.remaining(at: now), 60)
+        XCTAssertEqual(cooldown.remaining(at: now.addingTimeInterval(30)), 30)
+        XCTAssertEqual(cooldown.remaining(at: now.addingTimeInterval(60)), 0)
+    }
+
+    @MainActor
+    func testCancelledCooldownTickerStopsWithoutResettingTheDisplay() async {
+        var reads = 0
+        var displayed: [TimeInterval] = []
+        let ticker = Task { @MainActor in
+            await AISummaryCooldownTicker.run(
+                remaining: {
+                    reads += 1
+                    return reads < 4 ? 60 : 0
+                },
+                update: { displayed.append($0) },
+                sleep: {
+                    withUnsafeCurrentTask { $0?.cancel() }
+                    throw CancellationError()
+                }
+            )
+        }
+        await ticker.value
+        XCTAssertEqual(reads, 1)
+        XCTAssertEqual(displayed, [60])
+    }
+
+    @MainActor
+    func testCooldownTickerPublishesExpiry() async {
+        var readings: [TimeInterval] = [10, 1, 0]
+        var displayed: [TimeInterval] = []
+        var sleeps = 0
+        await AISummaryCooldownTicker.run(
+            remaining: { readings.removeFirst() },
+            update: { displayed.append($0) },
+            sleep: { sleeps += 1 }
+        )
+        XCTAssertEqual(displayed, [10, 1, 0])
+        XCTAssertEqual(sleeps, 2)
+    }
+
+    func testDisablingAndReenablingInvalidatesAnEarlierSummaryRun() {
+        var revision = AISummaryEnablementRevision()
+        let started = revision.value
+        XCTAssertTrue(revision.isCurrent(started, enabled: true))
+        revision.noteChange(from: true, to: false)
+        XCTAssertFalse(revision.isCurrent(started, enabled: false))
+        revision.noteChange(from: false, to: true)
+        XCTAssertFalse(revision.isCurrent(started, enabled: true))
+        XCTAssertTrue(revision.isCurrent(revision.value, enabled: true))
+    }
+
+    func testAssigningTheSameSummarySwitchValueDoesNotInvalidateTheRun() {
+        var revision = AISummaryEnablementRevision()
+        let started = revision.value
+        revision.noteChange(from: true, to: true)
+        XCTAssertTrue(revision.isCurrent(started, enabled: true))
+    }
+
+    @MainActor
+    func testCacheReadDoesNotRestoreAfterNewSummaryStarts() async {
+        let gate = SummaryCacheReadGate()
+        let entry = AISummaryCacheEntry(
+            summary: "fictional old summary", items: [], contentHash: "old",
+            trendHistoryHash: "history", generatedAt: Date(timeIntervalSince1970: 0), trendItemCount: 0
+        )
+        var state: AISummaryState = .idle
+        let loading = Task { @MainActor in
+            await AISummaryCacheRestore.loadIfEligible(
+                isEligible: { state == .idle },
+                load: {
+                    await gate.pause()
+                    return entry
+                }
+            )
+        }
+        await gate.waitUntilEntered()
+        state = .summarizing
+        await gate.release()
+        let restored = await loading.value
+        XCTAssertNil(restored)
+    }
+
+    @MainActor
+    func testCacheReadDoesNotRestoreAfterBriefingIsDisabled() async {
+        let gate = SummaryCacheReadGate()
+        let entry = AISummaryCacheEntry(
+            summary: "fictional old summary", items: [], contentHash: "old",
+            trendHistoryHash: "history", generatedAt: Date(timeIntervalSince1970: 0), trendItemCount: 0
+        )
+        var enabled = true
+        let loading = Task { @MainActor in
+            await AISummaryCacheRestore.loadIfEligible(
+                isEligible: { enabled },
+                load: {
+                    await gate.pause()
+                    return entry
+                }
+            )
+        }
+        await gate.waitUntilEntered()
+        enabled = false
+        await gate.release()
+        let restored = await loading.value
+        XCTAssertNil(restored)
+    }
+
+    @MainActor
+    func testCacheReadReturnsEntryWhenEligibilityDoesNotChange() async {
+        let entry = AISummaryCacheEntry(
+            summary: "fictional summary", items: [], contentHash: "current",
+            trendHistoryHash: "history", generatedAt: Date(timeIntervalSince1970: 0), trendItemCount: 0
+        )
+        let restored = await AISummaryCacheRestore.loadIfEligible(isEligible: { true }, load: { entry })
+        XCTAssertEqual(restored?.contentHash, "current")
     }
 
     func testSummaryCacheRoundTripPreservesCitationSnapshot() async {
@@ -303,5 +487,75 @@ final class AISummaryPersistenceAndTriggerTests: XCTestCase {
             elapsedSinceSummary: 24 * 60 * 60,
             shouldRecover: false
         ))
+    }
+
+    @MainActor
+    func testAutomaticRefreshDoesNotRepeatTheSameTruncatedContent() {
+        for isBurst in [false, true] {
+            XCTAssertFalse(NewsOrchestrator.shouldGenerateSummary(
+                hasCachedSummary: false,
+                hasNewContent: false,
+                isManualRefresh: false,
+                hotChanged: true,
+                rssChanged: false,
+                trendIsSignificant: true,
+                elapsedSinceSummary: .infinity,
+                shouldRecover: false,
+                hasBurstWeibo: isBurst,
+                elapsedSinceBurstSummary: .infinity,
+                isRepeatedTruncation: true
+            ))
+        }
+    }
+
+    @MainActor
+    func testSummaryRecoveryDoesNotRepeatTheSameTruncatedContent() {
+        for state: AISummaryState in [.idle, .error("fictional"), .truncated("fictional")] {
+            XCTAssertFalse(NewsOrchestrator.shouldRecoverSharedSummary(
+                hasNewContent: false, isRepeatedTruncation: true, state: state
+            ))
+        }
+        XCTAssertTrue(NewsOrchestrator.shouldRecoverSharedSummary(
+            hasNewContent: true, isRepeatedTruncation: false, state: .idle
+        ))
+        XCTAssertTrue(NewsOrchestrator.shouldRecoverSharedSummary(
+            hasNewContent: false, isRepeatedTruncation: false, state: .error("fictional")
+        ))
+    }
+
+    @MainActor
+    func testTruncationLimitAllowsExplicitManualRecoveryOnly() {
+        XCTAssertTrue(NewsOrchestrator.canAttemptSummary(
+            consecutiveTruncations: 2, limit: 3, isManualRegeneration: false
+        ))
+        XCTAssertFalse(NewsOrchestrator.canAttemptSummary(
+            consecutiveTruncations: 3, limit: 3, isManualRegeneration: false
+        ))
+        XCTAssertTrue(NewsOrchestrator.canAttemptSummary(
+            consecutiveTruncations: 3, limit: 3, isManualRegeneration: true
+        ))
+    }
+
+    func testTruncationFlagSurvivesCacheRoundTripAndLegacyEntriesRemainComplete() throws {
+        let entry = AISummaryCacheEntry(
+            summary: "fictional partial summary", items: [], contentHash: "fixture",
+            trendHistoryHash: "history", generatedAt: Date(timeIntervalSince1970: 0),
+            trendItemCount: 0, wasTruncated: true
+        )
+        let encoded = try JSONEncoder().encode(entry)
+        let decoded = try JSONDecoder().decode(AISummaryCacheEntry.self, from: encoded)
+        XCTAssertTrue(decoded.wasTruncated)
+        XCTAssertEqual(decoded.presentationState, .truncated("fictional partial summary"))
+        XCTAssertNil(decoded.completedContentHash)
+        XCTAssertEqual(decoded.truncatedContentHash, "fixture")
+
+        var legacy = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        legacy.removeValue(forKey: "wasTruncated")
+        let legacyData = try JSONSerialization.data(withJSONObject: legacy)
+        let oldEntry = try JSONDecoder().decode(AISummaryCacheEntry.self, from: legacyData)
+        XCTAssertFalse(oldEntry.wasTruncated)
+        XCTAssertEqual(oldEntry.presentationState, .done("fictional partial summary"))
+        XCTAssertEqual(oldEntry.completedContentHash, "fixture")
+        XCTAssertNil(oldEntry.truncatedContentHash)
     }
 }

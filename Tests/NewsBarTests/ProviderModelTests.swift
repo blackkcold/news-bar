@@ -242,7 +242,7 @@ final class ProviderModelTests: XCTestCase {
         settings.aiProvider = "ollamaCloud"
         settings.cachedAPIKey = "saved-key"
         let attempts = AISummaryService.readGenerationAttempts(target: .popup, mode: .shared)
-        let result = try await settings.checkModelConnection(apiKey: "unsaved-key")
+        let result = try await settings.checkModelConnection(apiKey: "unsaved-key", expected: settings.aiKeyContext)
         XCTAssertEqual(result.source, .live)
         XCTAssertEqual(settings.cachedAPIKey, "saved-key")
         XCTAssertTrue(settings.currentAIModels.isEmpty)
@@ -259,10 +259,61 @@ final class ProviderModelTests: XCTestCase {
         let provider = settings.aiProvider, model = settings.aiModel
         defer { settings.aiProvider = provider; settings.aiModel = model }
         settings.aiProvider = "ollamaCloud"
-        _ = try await settings.checkModelConnection(apiKey: "unit-key")
-        let result = try await settings.checkModelConnection(apiKey: "unit-key")
+        _ = try await settings.checkModelConnection(apiKey: "unit-key", expected: settings.aiKeyContext)
+        let result = try await settings.checkModelConnection(apiKey: "unit-key", expected: settings.aiKeyContext)
         XCTAssertEqual(result.source, .stale)
         XCTAssertEqual(result.refreshError, .server(503))
+    }
+
+    @MainActor
+    func testConnectionCheckDoesNotDispatchOldKeyAfterProviderChange() async throws {
+        let fixture = ModelCatalogFixture([(200, #"{"models":[{"name":"fixture-model","capabilities":["completion"]}]}"#)])
+        let settings = AppSettings(modelService: ProviderModelService(fileURL: temporaryCache(), transport: { try await fixture.send($0) }))
+        let originalProvider = settings.aiProvider
+        let originalModel = settings.aiModel
+        defer { settings.aiProvider = originalProvider; settings.aiModel = originalModel }
+        settings.aiProvider = AIProvider.deepseek.rawValue
+        let oldContext = settings.aiKeyContext
+        settings.aiProvider = AIProvider.ollamaCloud.rawValue
+
+        do {
+            _ = try await settings.checkModelConnection(apiKey: "fictional-old-key", expected: oldContext)
+            XCTFail("A key captured for an earlier provider must not be dispatched")
+        } catch let error as AISearchError {
+            XCTAssertEqual(error, .configurationChanged)
+        }
+        let requestsBeforeCurrentCheck = await fixture.requests
+        XCTAssertTrue(requestsBeforeCurrentCheck.isEmpty)
+
+        let current = try await settings.checkModelConnection(apiKey: "fictional-current-key", expected: settings.aiKeyContext)
+        XCTAssertEqual(current.source, .live)
+        let requests = await fixture.requests
+        XCTAssertEqual(requests.count, 1)
+        XCTAssertEqual(requests.first?.url?.host, "ollama.com")
+        XCTAssertEqual(requests.first?.value(forHTTPHeaderField: "Authorization"), "Bearer fictional-current-key")
+    }
+
+    @MainActor
+    func testConnectionCheckDoesNotDispatchDuringCredentialMutation() async throws {
+        let fixture = ModelCatalogFixture([(200, #"{"models":[{"name":"fixture-model","capabilities":["completion"]}]}"#)])
+        let settings = AppSettings(modelService: ProviderModelService(fileURL: temporaryCache(), transport: { try await fixture.send($0) }))
+        let originalProvider = settings.aiProvider
+        let originalModel = settings.aiModel
+        defer { settings.aiProvider = originalProvider; settings.aiModel = originalModel }
+        settings.aiProvider = AIProvider.ollamaCloud.rawValue
+        let account = settings.activeAPIKeyAccount
+        let mutation = settings.beginAICredentialMutation(account: account)
+        defer { _ = settings.finishAICredentialMutation(account: account, token: mutation) }
+        let pendingContext = settings.aiKeyContext
+
+        do {
+            _ = try await settings.checkModelConnection(apiKey: "fictional-key", expected: pendingContext)
+            XCTFail("A pending credential mutation must block a connection test")
+        } catch let error as AISearchError {
+            XCTAssertEqual(error, .configurationChanged)
+        }
+        let requests = await fixture.requests
+        XCTAssertTrue(requests.isEmpty)
     }
 
     func testCatalogOlderThan24HoursCannotAuthorizeGeneration() async throws {
@@ -304,7 +355,8 @@ final class ProviderModelTests: XCTestCase {
         settings.aiProvider = "ollamaCloud"
         settings.aiModel = "retired"
         settings.cachedAPIKey = "unit-key"
-        let configuration = await settings.validatedAIConfiguration(apiKey: "unit-key")
+        let bound = ProviderBoundKey(key: "unit-key", context: settings.aiKeyContext)
+        let configuration = await settings.validatedAIConfiguration(boundKey: bound)
         let frozen = try XCTUnwrap(configuration)
         XCTAssertEqual(frozen.model, "deepseek-current")
         XCTAssertTrue(settings.isCurrentAIConfiguration(frozen))
@@ -314,7 +366,7 @@ final class ProviderModelTests: XCTestCase {
     }
 
     @MainActor
-    func testSummaryRecoveryValidatesCatalogBeforeHashOrGenerationLock() async {
+    func testSummaryRecoveryDoesNotValidateOrDispatchWhileGenerationLockIsHeld() async {
         let fixture = ModelCatalogFixture([(200, #"{"models":[{"name":"deepseek-current","capabilities":["completion"]}]}"#)])
         let settings = AppSettings(modelService: ProviderModelService(fileURL: temporaryCache(), transport: { try await fixture.send($0) }))
         let provider = settings.aiProvider, model = settings.aiModel, enabled = settings.aiSummaryEnabled
@@ -328,9 +380,11 @@ final class ProviderModelTests: XCTestCase {
         XCTAssertTrue(AISummaryService.tryAcquireGenerationLock(for: .dashboard))
         defer { AISummaryService.releaseGenerationLock(for: .dashboard) }
         await orchestrator.generateSharedSummaryIfNeeded(settings: settings)
-        XCTAssertEqual(settings.aiModel, "deepseek-current")
-        XCTAssertTrue(settings.canUseCurrentAIModel)
+        XCTAssertEqual(settings.aiModel, "retired")
+        XCTAssertFalse(settings.canUseCurrentAIModel)
         XCTAssertNil(orchestrator.sharedSummaryLastHash)
+        let requests = await fixture.requests
+        XCTAssertTrue(requests.isEmpty)
     }
 
     @MainActor
@@ -341,7 +395,9 @@ final class ProviderModelTests: XCTestCase {
         defer { settings.customAIProviders = custom; settings.aiProvider = provider; settings.aiModel = model }
         settings.customAIProviders = [CustomAIProviderConfig(id: "catalog-test", name: "Test", baseURL: "https://provider.example/v1/chat/completions", models: [])]
         settings.aiProvider = "custom:catalog-test"
-        settings.cachedAPIKey = "unit-key"
+        XCTAssertTrue(settings.activateAPIKey(
+            "unit-key", providerID: settings.aiProvider, revision: settings.modelCatalogRevision
+        ))
         let success = await settings.refreshModelCatalog()
         XCTAssertTrue(success)
         let revision = settings.modelCatalogRevision

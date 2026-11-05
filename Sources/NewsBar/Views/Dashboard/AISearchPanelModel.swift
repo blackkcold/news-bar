@@ -62,9 +62,9 @@ final class AISearchPanelModel {
         _ onStage: @Sendable (AISearchStage) async -> Void
     ) async throws -> AnswerDocument
 
-    init(runner: Runner? = nil) {
+    init(runner: Runner? = nil, privacyAcknowledged: Bool? = nil) {
         self.runner = runner
-        self.hasAcknowledgedPrivacy = UserDefaults.standard.bool(forKey: Self.privacyKey)
+        self.hasAcknowledgedPrivacy = privacyAcknowledged ?? TestIsolation.defaults.bool(forKey: Self.privacyKey)
     }
 
     static let privacyKey = "aiSearchPrivacyAcknowledged"
@@ -86,7 +86,7 @@ final class AISearchPanelModel {
 
     func acknowledgePrivacy() {
         hasAcknowledgedPrivacy = true
-        UserDefaults.standard.set(true, forKey: Self.privacyKey)
+        TestIsolation.defaults.set(true, forKey: Self.privacyKey)
     }
 
     // MARK: - Actions
@@ -187,6 +187,7 @@ final class AISearchPanelModel {
     private func handle(_ error: Error, language: AppLanguage) {
         if error is CancellationError { return }
         if let searchError = error as? AISearchError {
+            if searchError == .configurationChanged { reveal.reset() }
             state = .failed(searchError.message(language))
         } else {
             state = .failed(AISearchError.modelFailed(error.localizedDescription).message(language))

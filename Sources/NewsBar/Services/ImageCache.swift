@@ -25,8 +25,10 @@ actor ImageCache {
         config.timeoutIntervalForResource = 10
         // Keep decoded thumbnails in memory and raw responses on disk. The
         // memory-only cache made every scroll back to a card re-download.
-        let cacheDirectory = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("com.newsbar.app/ImageCache", isDirectory: true)
+        let cacheDirectory = TestIsolation.isActive
+            ? TestIsolation.directory("ImageCache")
+            : FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+                .appendingPathComponent("com.newsbar.app/ImageCache", isDirectory: true)
         try? FileManager.default.createDirectory(
             at: cacheDirectory,
             withIntermediateDirectories: true,

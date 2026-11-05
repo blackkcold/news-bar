@@ -95,6 +95,8 @@ final class NewsReaderModel: NSObject, WKNavigationDelegate, WKUIDelegate, WKScr
     private var didRecordHistory = false
     private var observingCookieStore: WKHTTPCookieStore?
     private var cookieCaptureTask: Task<Void, Never>?
+    private var cookieSessionEpoch: ReaderCookieCaptureEpoch?
+    private var cookieSiteSessionEpochs: [String: ReaderCookieCaptureEpoch] = [:]
     private var terminalState = ReadingTerminalState.unknown
     private var suspended = false
     private var observers: [(NotificationCenter, NSObjectProtocol)] = []
@@ -107,6 +109,10 @@ final class NewsReaderModel: NSObject, WKNavigationDelegate, WKUIDelegate, WKScr
     private var proxySession: ReaderProxySession?
     private var networkRevision: UUID
     private let destinationResolver: @Sendable (URL) async -> ReaderNavigationPolicy.DestinationResolution
+    private let browserDataControllerOverride: BrowserDataController?
+    private var browserDataController: BrowserDataController {
+        browserDataControllerOverride ?? .shared
+    }
     /// The failure came from a Fake-IP destination that automatic mode did not
     /// accept. Only that case may offer the browser escape hatch; real private
     /// destinations keep the previous no-external-open behavior.
@@ -128,12 +134,14 @@ final class NewsReaderModel: NSObject, WKNavigationDelegate, WKUIDelegate, WKScr
         proxyController: ReaderProxyController,
         destinationResolver: @escaping @Sendable (URL) async -> ReaderNavigationPolicy.DestinationResolution = {
             await ReaderNavigationPolicy.resolveDestination($0)
-        }
+        },
+        browserDataController: BrowserDataController? = nil
     ) {
         self.request = request
         self.proxyController = proxyController
         self.networkRevision = proxyController.revision
         self.destinationResolver = destinationResolver
+        self.browserDataControllerOverride = browserDataController
         currentURL = request.url
         pageTitle = request.title
         super.init()
@@ -147,6 +155,9 @@ final class NewsReaderModel: NSObject, WKNavigationDelegate, WKUIDelegate, WKScr
         networkRevision = proxyController.revision
         do { proxySession = try proxyController.authorizedSession() }
         catch { fail(.proxyTrustRequired); return }
+        if sessionOptions.cookieMemoryEnabled, !request.privateSession, cookieSessionEpoch == nil {
+            cookieSessionEpoch = browserDataController.cookieCaptureEpoch
+        }
         recordHistoryIfNeeded()
         let configuration = WKWebViewConfiguration()
         configuration.websiteDataStore = .nonPersistent()
@@ -208,8 +219,8 @@ final class NewsReaderModel: NSObject, WKNavigationDelegate, WKUIDelegate, WKScr
         if sessionOptions.cookieMemoryEnabled, !request.privateSession {
             let hosts = ReaderCookieSiteScope.injectionHosts(for: request.url)
             if !hosts.isEmpty {
-                await BrowserDataController.shared.prepare()
-                let cookies = await BrowserDataController.shared.cookiesForInjection(hosts: hosts)
+                await browserDataController.prepare()
+                let cookies = await browserDataController.cookiesForInjection(hosts: hosts)
                 let cookieStore = web.configuration.websiteDataStore.httpCookieStore
                 await injectCookies(cookies, into: cookieStore)
                 guard !stopped else { return }
@@ -236,15 +247,18 @@ final class NewsReaderModel: NSObject, WKNavigationDelegate, WKUIDelegate, WKScr
         observingCookieStore?.remove(self)
         observingCookieStore = nil
         if sessionOptions.cookieMemoryEnabled, !request.privateSession,
+           let host = currentHost,
+           let site = ReaderCookieSiteScope.site(for: host),
+           let epoch = cookieSiteSessionEpochs[site] ?? cookieSessionEpoch,
            let cookieStore = webView?.configuration.websiteDataStore.httpCookieStore {
-            let host = currentHost
             let title = pageTitle
             let allowEmptyRemoval = isLogoutDestination
+            let controller = browserDataController
             Task {
                 let cookies = await cookieStore.allCookies()
-                guard let host else { return }
-                let count = await BrowserDataController.shared.capture(
-                    cookies: cookies, host: host, title: title, allowEmptyRemoval: allowEmptyRemoval
+                let count = await controller.capture(
+                    cookies: cookies, host: host, title: title,
+                    allowEmptyRemoval: allowEmptyRemoval, epoch: epoch
                 )
                 readerCookieLogger.debug("capture host=\(host, privacy: .public) cookies=\(cookies.count, privacy: .public) stored=\(count, privacy: .public) reason=stop")
             }
@@ -367,7 +381,8 @@ final class NewsReaderModel: NSObject, WKNavigationDelegate, WKUIDelegate, WKScr
         didRecordHistory = true
         let url = request.url
         let title = request.title
-        Task { await BrowserDataController.shared.recordOpen(url: url, title: title, host: host) }
+        let controller = browserDataController
+        Task { await controller.recordOpen(url: url, title: title, host: host) }
     }
 
     /// Captures the current page's first-party cookies. An explicit save still works
@@ -376,11 +391,18 @@ final class NewsReaderModel: NSObject, WKNavigationDelegate, WKUIDelegate, WKScr
     ///   destination may clear a saved site when the jar comes back empty.
     func captureCurrentSite(force: Bool = false, allowEmptyRemoval: Bool = false) async -> Int {
         guard force || sessionOptions.cookieMemoryEnabled, !request.privateSession,
-              let webView, let host = currentHost else { return 0 }
+              let webView, let host = currentHost,
+              let site = ReaderCookieSiteScope.site(for: host) else { return 0 }
+        let controller = browserDataController
+        guard let epoch = force ? controller.cookieCaptureEpoch : (cookieSiteSessionEpochs[site] ?? cookieSessionEpoch) else { return 0 }
         let cookies = await webView.configuration.websiteDataStore.httpCookieStore.allCookies()
-        let count = await BrowserDataController.shared.capture(
-            cookies: cookies, host: host, title: pageTitle, allowEmptyRemoval: allowEmptyRemoval
+        let count = await controller.capture(
+            cookies: cookies, host: host, title: pageTitle,
+            allowEmptyRemoval: allowEmptyRemoval, epoch: epoch
         )
+        if force, count > 0 {
+            cookieSiteSessionEpochs[site] = epoch
+        }
         readerCookieLogger.debug("capture host=\(host, privacy: .public) cookies=\(cookies.count, privacy: .public) stored=\(count, privacy: .public)")
         return count
     }
@@ -1391,9 +1413,11 @@ struct ReaderContentView: View {
 
     private func forgetSite() async {
         guard let host = model.currentHost else { return }
-        await browserData.removeSite(host)
+        let removed = await browserData.removeSite(host)
         lastFeedback = nil
-        feedbackMessage = english ? "Saved sign-in removed for this site" : "已移除此站的登录 Cookie"
+        feedbackMessage = removed
+            ? (english ? "Saved sign-in removed for this site" : "已移除此站的登录 Cookie")
+            : (english ? "Could not confirm removal. Check Browser settings." : "无法确认移除结果，请检查浏览器设置。")
     }
 
     private func failureContent(_ failure: ReaderFailure) -> some View {

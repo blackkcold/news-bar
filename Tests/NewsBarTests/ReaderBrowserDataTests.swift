@@ -2,11 +2,251 @@ import WebKit
 import XCTest
 @testable import NewsBar
 
+private enum CookiePersistenceTestError: Error {
+    case clearFailed
+}
+
 private actor MemoryCookiePersistence: ReaderCookiePersisting {
     private var data: Data?
+    private let failClear: Bool
+
+    init(failClear: Bool = false) {
+        self.failClear = failClear
+    }
+
     func load() async throws -> Data? { data }
     func save(_ data: Data) async throws { self.data = data }
+    func clear() async throws {
+        if failClear { throw CookiePersistenceTestError.clearFailed }
+        data = nil
+    }
+}
+
+private actor HeldClearCookiePersistence: ReaderCookiePersisting {
+    private var data: Data?
+    private var didDelete = false
+    private var deletedWaiter: CheckedContinuation<Void, Never>?
+    private var releaseWaiter: CheckedContinuation<Void, Never>?
+
+    func load() async throws -> Data? { data }
+    func save(_ data: Data) async throws { self.data = data }
+    func clear() async throws {
+        data = nil
+        didDelete = true
+        deletedWaiter?.resume()
+        deletedWaiter = nil
+        await withCheckedContinuation { releaseWaiter = $0 }
+    }
+
+    func waitUntilDeleted() async {
+        if didDelete { return }
+        await withCheckedContinuation { deletedWaiter = $0 }
+    }
+
+    func releaseClear() {
+        releaseWaiter?.resume()
+        releaseWaiter = nil
+    }
+}
+
+private actor FailingSaveCookiePersistence: ReaderCookiePersisting {
+    private var data: Data?
+    private var shouldFail = false
+
+    func load() async throws -> Data? { data }
+    func save(_ data: Data) async throws {
+        if shouldFail {
+            shouldFail = false
+            throw CookiePersistenceTestError.clearFailed
+        }
+        self.data = data
+    }
     func clear() async throws { data = nil }
+    func failNextSave() { shouldFail = true }
+}
+
+private actor CommittedButUnsyncedCookiePersistence: ReaderCookiePersisting, ReaderCookieDurabilityConfirming {
+    private var data: Data?
+    private var failNextSave = false
+    private var failNextClear = false
+    private var syncFails = false
+
+    func load() async throws -> Data? { data }
+    func save(_ data: Data) async throws {
+        self.data = data
+        if failNextSave {
+            failNextSave = false
+            syncFails = true
+            throw ReaderCookieVaultError.durabilityUnknown
+        }
+    }
+    func clear() async throws {
+        data = nil
+        if failNextClear {
+            failNextClear = false
+            syncFails = true
+            throw ReaderCookieVaultError.durabilityUnknown
+        }
+    }
+    func failAfterNextSave() { failNextSave = true }
+    func failAfterNextClear() { failNextClear = true }
+    func allowSynchronization() { syncFails = false }
+    func confirmDurability() async throws {
+        if syncFails { throw ReaderCookieVaultError.durabilityUnknown }
+    }
+}
+
+private actor UnverifiedCookiePersistence: ReaderCookiePersisting {
+    private var data: Data?
+    private var failNextClear = false
+    private var failNextSave = false
+    private var failLoads = false
+
+    init(data: Data? = nil) { self.data = data }
+
+    func load() async throws -> Data? {
+        if failLoads { throw ReaderCookieVaultError.corruptedStore }
+        return data
+    }
+    func save(_ data: Data) async throws {
+        self.data = data
+        if failNextSave {
+            failNextSave = false
+            failLoads = true
+            throw ReaderCookieVaultError.stateUnverified
+        }
+    }
+    func clear() async throws {
+        if failNextClear {
+            failNextClear = false
+            failLoads = true
+            throw ReaderCookieVaultError.stateUnverified
+        }
+        data = nil
+    }
+    func makeNextClearUnverified() { failNextClear = true }
+    func makeNextSaveUnverified() { failNextSave = true }
+    func allowReads() { failLoads = false }
+    func rawData() -> Data? { data }
+}
+
+private actor HeldUnverifiedSaveAndFailingClear: ReaderCookiePersisting {
+    private var data: Data?
+    private var holdNextSave = false
+    private var saveIsHeld = false
+    private var heldWaiter: CheckedContinuation<Void, Never>?
+    private var releaseWaiter: CheckedContinuation<Void, Never>?
+
+    func load() async throws -> Data? { data }
+    func save(_ data: Data) async throws {
+        self.data = data
+        if holdNextSave {
+            holdNextSave = false
+            saveIsHeld = true
+            heldWaiter?.resume()
+            heldWaiter = nil
+            await withCheckedContinuation { releaseWaiter = $0 }
+            throw ReaderCookieVaultError.stateUnverified
+        }
+    }
+    func clear() async throws { throw CookiePersistenceTestError.clearFailed }
+    func holdFollowingSave() { holdNextSave = true }
+    func waitUntilSaveIsHeld() async {
+        if saveIsHeld { return }
+        await withCheckedContinuation { heldWaiter = $0 }
+    }
+    func releaseSave() {
+        releaseWaiter?.resume()
+        releaseWaiter = nil
+    }
+}
+
+private actor PausableCookiePersistence: ReaderCookiePersisting {
+    private var data: Data?
+    private var shouldPause = false
+    private var didPause = false
+    private var pausedWaiter: CheckedContinuation<Void, Never>?
+    private var releaseWaiter: CheckedContinuation<Void, Never>?
+
+    func load() async throws -> Data? { data }
+    func save(_ data: Data) async throws {
+        if shouldPause {
+            shouldPause = false
+            didPause = true
+            pausedWaiter?.resume()
+            pausedWaiter = nil
+            await withCheckedContinuation { releaseWaiter = $0 }
+        }
+        self.data = data
+    }
+    func clear() async throws { data = nil }
+    func pauseNextSave() { shouldPause = true; didPause = false }
+    func waitUntilPaused() async {
+        if didPause { return }
+        await withCheckedContinuation { pausedWaiter = $0 }
+    }
+    func releaseSave() {
+        releaseWaiter?.resume()
+        releaseWaiter = nil
+    }
+}
+
+private actor HeldSaveCookiePersistence: ReaderCookiePersisting {
+    private var data: Data?
+    private var didStartSave = false
+    private var startedWaiter: CheckedContinuation<Void, Never>?
+    private var releaseWaiter: CheckedContinuation<Void, Never>?
+
+    func load() async throws -> Data? { data }
+    func save(_ data: Data) async throws {
+        didStartSave = true
+        startedWaiter?.resume()
+        startedWaiter = nil
+        await withCheckedContinuation { releaseWaiter = $0 }
+        self.data = data
+    }
+    func clear() async throws { data = nil }
+
+    func waitUntilSaveStarts() async {
+        if didStartSave { return }
+        await withCheckedContinuation { startedWaiter = $0 }
+    }
+
+    func releaseSave() {
+        releaseWaiter?.resume()
+        releaseWaiter = nil
+    }
+}
+
+private actor HeldLoadCookiePersistence: ReaderCookiePersisting {
+    private var data: Data?
+    private var didStartLoad = false
+    private var startedWaiter: CheckedContinuation<Void, Never>?
+    private var releaseWaiter: CheckedContinuation<Void, Never>?
+
+    init(data: Data) { self.data = data }
+
+    func load() async throws -> Data? {
+        let original = data
+        didStartLoad = true
+        startedWaiter?.resume()
+        startedWaiter = nil
+        await withCheckedContinuation { releaseWaiter = $0 }
+        return original
+    }
+    func save(_ data: Data) async throws { self.data = data }
+    func clear() async throws { data = nil }
+    func currentData() -> Data? { data }
+
+    func waitUntilLoadStarts() async {
+        if didStartLoad { return }
+        await withCheckedContinuation { startedWaiter = $0 }
+    }
+
+    func releaseLoad() {
+        releaseWaiter?.resume()
+        releaseWaiter = nil
+    }
 }
 
 private actor MemoryHistoryPersistence: ReaderHistoryPersisting {
@@ -16,8 +256,131 @@ private actor MemoryHistoryPersistence: ReaderHistoryPersisting {
     func clear() async throws { data = nil }
 }
 
+final class EncryptedReaderCookiePersistenceTests: XCTestCase {
+    func testClearReportsEncryptedStoreWriteFailure() async throws {
+        let directory = try researchTestDirectory()
+        defer {
+            PrivateFileFaults.reset()
+            try? FileManager.default.removeItem(at: directory)
+        }
+        let account = EncryptedReaderCookiePersistence.account
+        let payload = EncryptedKeyStore.EncryptedPayload(
+            version: EncryptedKeyStore.currentVersion,
+            entries: [EncryptedKeyStore.Entry(account: account, nonce: Data([1]), ciphertext: Data([2]))]
+        )
+        try PrivateFile.write(
+            JSONEncoder().encode(payload),
+            to: directory.appendingPathComponent("apikeys.enc"),
+            durable: false
+        )
+        let store = EncryptedKeyStore(directory: directory)
+        let persistence = EncryptedReaderCookiePersistence(store: store)
+        PrivateFileFaults.failBeforeRename = true
+
+        do {
+            try await persistence.clear()
+            XCTFail("Clear must report an encrypted-store write failure")
+        } catch ReaderCookieVaultError.clearFailed {
+            // Expected: deleting the encrypted cookie entry did not succeed.
+        } catch {
+            XCTFail("Unexpected clear error: \(error)")
+        }
+
+        let retained = await store.checkAPIKeyExistence(account: account)
+        XCTAssertTrue(retained)
+    }
+
+    func testClearReportsCommittedButUnsyncedStateUsingIsolatedStore() async throws {
+        let directory = try researchTestDirectory()
+        let suiteName = "NewsBarCookiePersistenceTests-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer {
+            PrivateFileFaults.reset()
+            defaults.removePersistentDomain(forName: suiteName)
+            try? FileManager.default.removeItem(at: directory)
+        }
+        let store = EncryptedKeyStore(directory: directory, metadataDefaults: defaults)
+        let persistence = EncryptedReaderCookiePersistence(store: store)
+        try await persistence.save(Data("fictional cookie payload".utf8))
+
+        PrivateFileFaults.failAfterRename = true
+        do {
+            try await persistence.clear()
+            XCTFail("The directory sync did not complete")
+        } catch ReaderCookieVaultError.durabilityUnknown {
+            // The encrypted entry is already absent, but crash durability is unknown.
+        } catch {
+            XCTFail("Unexpected clear error: \(error)")
+        }
+        PrivateFileFaults.reset()
+
+        let remaining = try await persistence.load()
+        XCTAssertNil(remaining)
+        XCTAssertNil(defaults.object(forKey: "hasAIKey-\(EncryptedReaderCookiePersistence.account)"))
+    }
+
+    @MainActor
+    func testUnverifiedEncryptedClearCanReconcileWithoutRevivingCookies() async throws {
+        let directory = try researchTestDirectory()
+        let suiteName = "NewsBarCookieRecoveryTests-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer {
+            PrivateFileFaults.reset()
+            defaults.removePersistentDomain(forName: suiteName)
+            try? FileManager.default.removeItem(at: directory)
+        }
+        let store = EncryptedKeyStore(directory: directory, metadataDefaults: defaults)
+        let persistence = EncryptedReaderCookiePersistence(store: store)
+        let controller = BrowserDataController(
+            vault: ReaderCookieVault(persistence: persistence),
+            historyStore: ReaderHistoryStore(persistence: MemoryHistoryPersistence())
+        )
+        let testCookie = try XCTUnwrap(HTTPCookie(properties: [
+            .name: "sid", .value: "fictional", .domain: "example.test", .path: "/"
+        ]))
+        await controller.prepare()
+        let oldEpoch = controller.cookieCaptureEpoch
+        let saved = await controller.capture(cookies: [testCookie], host: "example.test", title: nil, epoch: oldEpoch)
+        XCTAssertEqual(saved, 1)
+
+        PrivateFileFaults.failVerificationAfterWrite = true
+        await controller.clearCookies()
+        PrivateFileFaults.reset()
+        XCTAssertTrue(controller.cookieRecoveryPending)
+        XCTAssertTrue(controller.sites.isEmpty)
+        XCTAssertNotNil(controller.storageError)
+        let late = await controller.capture(cookies: [testCookie], host: "example.test", title: nil, epoch: oldEpoch)
+        XCTAssertEqual(late, 0)
+
+        await controller.retryCookieRecovery()
+        XCTAssertFalse(controller.cookieRecoveryPending)
+        XCTAssertTrue(controller.sites.isEmpty)
+        XCTAssertTrue(controller.cookieDurabilityPending)
+        await controller.retryCookieDurability()
+        XCTAssertFalse(controller.cookieDurabilityPending)
+        XCTAssertNil(controller.storageError)
+        let persisted = try await persistence.load()
+        XCTAssertNil(persisted)
+    }
+}
+
 final class ReaderCookieVaultTests: XCTestCase {
     private let now = Date(timeIntervalSince1970: 1_800_000_000)
+
+    private func waitForClearToStart(_ vault: ReaderCookieVault, after generation: UUID) async {
+        let started = expectation(description: "clear invalidates the capture generation")
+        let observer = Task {
+            while !Task.isCancelled {
+                if await vault.captureGeneration != generation {
+                    started.fulfill()
+                    return
+                }
+                await Task.yield()
+            }
+        }
+        await fulfillment(of: [started], timeout: 3)
+        observer.cancel()
+    }
 
     private func cookie(
         _ name: String,
@@ -235,6 +598,666 @@ final class ReaderCookieVaultTests: XCTestCase {
         try await vault.clear()
         let afterClear = await vault.siteSummaries(now: now)
         XCTAssertTrue(afterClear.isEmpty)
+    }
+
+    func testClearFailureKeepsSavedCookiesAvailable() async throws {
+        let persistence = MemoryCookiePersistence(failClear: true)
+        let vault = ReaderCookieVault(persistence: persistence)
+        await vault.prepare(now: now)
+        _ = try await vault.upsert(
+            cookies: [cookie("sid")],
+            host: "example.com",
+            allowEmptyRemoval: false,
+            now: now
+        )
+        let saved = try await persistence.load()
+        XCTAssertNotNil(saved)
+
+        do {
+            try await vault.clear()
+            XCTFail("Clear must report persistence failure")
+        } catch CookiePersistenceTestError.clearFailed {
+            // Expected: the stored and in-memory cookies must both survive.
+        }
+
+        let sites = await vault.siteSummaries(now: now)
+        XCTAssertEqual(sites.first?.cookies.map(\.name), ["sid"])
+        let stillSaved = try await persistence.load()
+        XCTAssertEqual(stillSaved, saved)
+    }
+
+    func testCaptureDuringClearDoesNotRestoreCookiesOnReload() async throws {
+        let persistence = HeldClearCookiePersistence()
+        let vault = ReaderCookieVault(persistence: persistence)
+        await vault.prepare(now: now)
+        _ = try await vault.upsert(
+            cookies: [cookie("sid", value: "before")],
+            host: "example.com",
+            allowEmptyRemoval: false,
+            now: now
+        )
+
+        let clear = Task { try await vault.clear() }
+        await persistence.waitUntilDeleted()
+        let captured = try await vault.upsert(
+            cookies: [cookie("sid", value: "late")],
+            host: "example.com",
+            allowEmptyRemoval: false,
+            now: now
+        )
+        await persistence.releaseClear()
+        try await clear.value
+
+        XCTAssertEqual(captured, 0)
+        let stored = try await persistence.load()
+        XCTAssertNil(stored)
+        let reloaded = ReaderCookieVault(persistence: persistence)
+        await reloaded.prepare(now: now)
+        let sites = await reloaded.siteSummaries(now: now)
+        XCTAssertTrue(sites.isEmpty)
+    }
+
+    func testClearWaitsForAlreadyStartedSaveBeforeDeleting() async throws {
+        let persistence = HeldSaveCookiePersistence()
+        let vault = ReaderCookieVault(persistence: persistence)
+        await vault.prepare(now: now)
+        let generation = await vault.captureGeneration
+        let capturedToken = await vault.writeToken(for: "example.com")
+        let token = try XCTUnwrap(capturedToken)
+        let pending = Task {
+            try await vault.upsert(
+                cookies: [self.cookie("sid")], host: "example.com",
+                allowEmptyRemoval: false, now: self.now
+            )
+        }
+        await persistence.waitUntilSaveStarts()
+        let clear = Task { try await vault.clear() }
+        await waitForClearToStart(vault, after: generation)
+        await persistence.releaseSave()
+
+        _ = try await pending.value
+        try await clear.value
+        let stored = try await persistence.load()
+        XCTAssertNil(stored)
+        let sites = await vault.siteSummaries(now: now)
+        XCTAssertTrue(sites.isEmpty)
+        let stale = try await vault.upsert(
+            cookies: [cookie("sid")], host: "example.com", allowEmptyRemoval: false,
+            now: now, writeToken: token
+        )
+        XCTAssertEqual(stale, 0)
+    }
+
+    func testClearWaitsForPendingLoadAndDiscardsOldSnapshot() async throws {
+        let initial = MemoryCookiePersistence()
+        let seed = ReaderCookieVault(persistence: initial)
+        await seed.prepare(now: now)
+        _ = try await seed.upsert(
+            cookies: [cookie("sid")], host: "example.com", allowEmptyRemoval: false, now: now
+        )
+        let seedData = try await initial.load()
+        let persistence = HeldLoadCookiePersistence(data: try XCTUnwrap(seedData))
+        let vault = ReaderCookieVault(persistence: persistence)
+        let generation = await vault.captureGeneration
+        let prepare = Task { await vault.prepare(now: self.now) }
+        await persistence.waitUntilLoadStarts()
+        let clear = Task { try await vault.clear() }
+        await waitForClearToStart(vault, after: generation)
+        await persistence.releaseLoad()
+
+        await prepare.value
+        try await clear.value
+        let sites = await vault.siteSummaries(now: now)
+        let stored = await persistence.currentData()
+        XCTAssertTrue(sites.isEmpty)
+        XCTAssertNil(stored)
+    }
+
+    @MainActor
+    func testControllerReportsClearFailureAndKeepsSiteAfterRefresh() async {
+        let persistence = MemoryCookiePersistence(failClear: true)
+        let vault = ReaderCookieVault(persistence: persistence)
+        let history = ReaderHistoryStore(persistence: MemoryHistoryPersistence())
+        let controller = BrowserDataController(vault: vault, historyStore: history)
+        await controller.prepare()
+        let count = await controller.capture(
+            cookies: [cookie("sid")],
+            host: "example.com",
+            title: nil
+        )
+        XCTAssertEqual(count, 1)
+
+        await controller.clearCookies()
+        XCTAssertNotNil(controller.storageError)
+        await controller.refresh()
+
+        XCTAssertEqual(controller.sites.first?.cookies.map(\.name), ["sid"])
+    }
+
+    @MainActor
+    func testClearRejectsOldSessionCaptureButAllowsNewExplicitCapture() async throws {
+        let persistence = MemoryCookiePersistence()
+        let vault = ReaderCookieVault(persistence: persistence)
+        let history = ReaderHistoryStore(persistence: MemoryHistoryPersistence())
+        let controller = BrowserDataController(vault: vault, historyStore: history)
+        await controller.prepare()
+        let oldEpoch = controller.cookieCaptureEpoch
+        let initial = await controller.capture(
+            cookies: [cookie("sid", value: "before")],
+            host: "example.com", title: nil, epoch: oldEpoch
+        )
+        XCTAssertEqual(initial, 1)
+
+        await controller.clearCookies()
+        let late = await controller.capture(
+            cookies: [cookie("sid", value: "late")],
+            host: "example.com", title: nil, epoch: oldEpoch
+        )
+        XCTAssertEqual(late, 0)
+        XCTAssertTrue(controller.sites.isEmpty)
+        let cleared = try await persistence.load()
+        XCTAssertNil(cleared)
+
+        let newEpoch = controller.cookieCaptureEpoch
+        XCTAssertNotEqual(newEpoch, oldEpoch)
+        let explicit = await controller.capture(
+            cookies: [cookie("sid", value: "new")],
+            host: "example.com", title: nil, epoch: newEpoch
+        )
+        XCTAssertEqual(explicit, 1)
+        XCTAssertEqual(controller.sites.first?.cookies.first?.value, "new")
+    }
+
+    @MainActor
+    func testFailedClearKeepsSessionCaptureValid() async {
+        let persistence = MemoryCookiePersistence(failClear: true)
+        let vault = ReaderCookieVault(persistence: persistence)
+        let history = ReaderHistoryStore(persistence: MemoryHistoryPersistence())
+        let controller = BrowserDataController(vault: vault, historyStore: history)
+        await controller.prepare()
+        let epoch = controller.cookieCaptureEpoch
+
+        await controller.clearCookies()
+        XCTAssertNotNil(controller.storageError)
+        XCTAssertEqual(controller.cookieCaptureEpoch, epoch)
+        let captured = await controller.capture(
+            cookies: [cookie("sid")], host: "example.com", title: nil, epoch: epoch
+        )
+        XCTAssertEqual(captured, 1)
+    }
+
+    @MainActor
+    func testUnsyncedCommittedClearDoesNotRestoreCookiesFromOldSession() async throws {
+        let persistence = CommittedButUnsyncedCookiePersistence()
+        let controller = BrowserDataController(
+            vault: ReaderCookieVault(persistence: persistence),
+            historyStore: ReaderHistoryStore(persistence: MemoryHistoryPersistence())
+        )
+        await controller.prepare()
+        let epoch = controller.cookieCaptureEpoch
+        let captured = await controller.capture(
+            cookies: [cookie("sid")], host: "example.com", title: nil, epoch: epoch
+        )
+        XCTAssertEqual(captured, 1)
+        await persistence.failAfterNextClear()
+
+        await controller.clearCookies()
+
+        XCTAssertNotNil(controller.storageError, "Durability uncertainty must be visible")
+        XCTAssertTrue(controller.sites.isEmpty, "The in-memory view must reflect the visible deletion")
+        let late = await controller.capture(
+            cookies: [cookie("sid", value: "late")], host: "example.com", title: nil, epoch: epoch
+        )
+        XCTAssertEqual(late, 0)
+        let stored = try await persistence.load()
+        XCTAssertNil(stored)
+    }
+
+    @MainActor
+    func testUnsyncedCommittedSiteRemovalDoesNotRestoreForgottenCookies() async throws {
+        let persistence = CommittedButUnsyncedCookiePersistence()
+        let vault = ReaderCookieVault(persistence: persistence)
+        let controller = BrowserDataController(
+            vault: vault,
+            historyStore: ReaderHistoryStore(persistence: MemoryHistoryPersistence())
+        )
+        await controller.prepare()
+        let epoch = controller.cookieCaptureEpoch
+        _ = await controller.capture(cookies: [cookie("sid")], host: "example.com", title: nil, epoch: epoch)
+        await persistence.failAfterNextSave()
+
+        let removed = await controller.removeSite("example.com")
+
+        XCTAssertFalse(removed, "The operation must not claim durable success")
+        XCTAssertNotNil(controller.storageError)
+        XCTAssertTrue(controller.sites.isEmpty)
+        let late = await controller.capture(
+            cookies: [cookie("sid", value: "late")], host: "example.com", title: nil, epoch: epoch
+        )
+        XCTAssertEqual(late, 0)
+        let reloaded = ReaderCookieVault(persistence: persistence)
+        await reloaded.prepare(now: now)
+        let sites = await reloaded.siteSummaries(now: now)
+        XCTAssertTrue(sites.isEmpty)
+    }
+
+    @MainActor
+    func testRetryUnsyncedSiteRemovalPreservesOtherSites() async {
+        let persistence = CommittedButUnsyncedCookiePersistence()
+        let controller = BrowserDataController(
+            vault: ReaderCookieVault(persistence: persistence),
+            historyStore: ReaderHistoryStore(persistence: MemoryHistoryPersistence())
+        )
+        await controller.prepare()
+        let epoch = controller.cookieCaptureEpoch
+        _ = await controller.capture(cookies: [cookie("sid")], host: "example.com", title: nil, epoch: epoch)
+        _ = await controller.capture(
+            cookies: [cookie("sid", domain: "another.test")], host: "another.test", title: nil, epoch: epoch
+        )
+        await persistence.failAfterNextSave()
+        _ = await controller.removeSite("example.com")
+        XCTAssertTrue(controller.cookieDurabilityPending)
+
+        await controller.retryCookieDurability()
+        XCTAssertTrue(controller.cookieDurabilityPending)
+        XCTAssertNotNil(controller.storageError)
+        XCTAssertNotNil(controller.site(for: "another.test"))
+
+        await persistence.allowSynchronization()
+        await controller.retryCookieDurability()
+        XCTAssertFalse(controller.cookieDurabilityPending)
+        XCTAssertNil(controller.storageError)
+        XCTAssertNil(controller.site(for: "example.com"))
+        XCTAssertNotNil(controller.site(for: "another.test"))
+        let late = await controller.capture(cookies: [cookie("sid")], host: "example.com", title: nil, epoch: epoch)
+        XCTAssertEqual(late, 0)
+    }
+
+    @MainActor
+    func testUnverifiedClearBlocksWritesUntilStoredStateIsReconciled() async throws {
+        let persistence = UnverifiedCookiePersistence()
+        let controller = BrowserDataController(
+            vault: ReaderCookieVault(persistence: persistence),
+            historyStore: ReaderHistoryStore(persistence: MemoryHistoryPersistence())
+        )
+        await controller.prepare()
+        let oldEpoch = controller.cookieCaptureEpoch
+        _ = await controller.capture(cookies: [cookie("sid")], host: "example.com", title: nil, epoch: oldEpoch)
+        await persistence.makeNextClearUnverified()
+
+        await controller.clearCookies()
+
+        XCTAssertTrue(controller.cookieRecoveryPending)
+        XCTAssertNotNil(controller.storageError)
+        XCTAssertTrue(controller.sites.isEmpty)
+        let automatic = await controller.capture(
+            cookies: [cookie("sid", value: "late")], host: "example.com", title: nil, epoch: oldEpoch
+        )
+        let explicit = await controller.capture(
+            cookies: [cookie("sid", value: "new")], host: "example.com", title: nil,
+            epoch: controller.cookieCaptureEpoch
+        )
+        XCTAssertEqual(automatic, 0)
+        XCTAssertEqual(explicit, 0)
+        let hidden = await controller.cookiesForInjection(host: "example.com")
+        XCTAssertTrue(hidden.isEmpty)
+        let retained = await persistence.rawData()
+        XCTAssertNotNil(retained)
+
+        await controller.retryCookieRecovery()
+        XCTAssertTrue(controller.cookieRecoveryPending)
+        await persistence.allowReads()
+        await controller.retryCookieRecovery()
+        XCTAssertFalse(controller.cookieRecoveryPending)
+        XCTAssertEqual(controller.site(for: "example.com")?.cookies.first?.value, "v")
+        let oldAfterRecovery = await controller.capture(
+            cookies: [cookie("sid", value: "late")], host: "example.com", title: nil, epoch: oldEpoch
+        )
+        XCTAssertEqual(oldAfterRecovery, 0)
+    }
+
+    func testUnverifiedVaultReportsRecoveryRequiredToDirectMutators() async throws {
+        let persistence = UnverifiedCookiePersistence()
+        let vault = ReaderCookieVault(persistence: persistence)
+        await vault.prepare(now: now)
+        _ = try await vault.upsert(cookies: [cookie("sid")], host: "example.com", allowEmptyRemoval: false, now: now)
+        await persistence.makeNextClearUnverified()
+        do {
+            try await vault.clear()
+            XCTFail("Clear should report unverified state")
+        } catch ReaderCookieVaultError.stateUnverified {
+            // Expected; the actual stored state is not yet known.
+        }
+
+        do {
+            _ = try await vault.upsert(cookies: [cookie("sid")], host: "example.com", allowEmptyRemoval: false, now: now)
+            XCTFail("A paused vault must report that recovery is required")
+        } catch ReaderCookieVaultError.stateUnverified {
+            // Expected.
+        }
+        do {
+            try await vault.removeSites(forSite: "example.com")
+            XCTFail("Removing a site must not appear successful while storage is unverified")
+        } catch ReaderCookieVaultError.stateUnverified {
+            // Expected.
+        }
+    }
+
+    @MainActor
+    func testUnverifiedSiteRemovalReconcilesTheWholeStoreWithoutRestoringOldSessions() async {
+        let persistence = UnverifiedCookiePersistence()
+        let controller = BrowserDataController(
+            vault: ReaderCookieVault(persistence: persistence),
+            historyStore: ReaderHistoryStore(persistence: MemoryHistoryPersistence())
+        )
+        await controller.prepare()
+        let epoch = controller.cookieCaptureEpoch
+        _ = await controller.capture(cookies: [cookie("sid")], host: "example.com", title: nil, epoch: epoch)
+        _ = await controller.capture(
+            cookies: [cookie("sid", domain: "another.test")], host: "another.test", title: nil, epoch: epoch
+        )
+        await persistence.makeNextSaveUnverified()
+
+        let removed = await controller.removeSite("example.com")
+        XCTAssertFalse(removed)
+        XCTAssertTrue(controller.cookieRecoveryPending)
+        XCTAssertTrue(controller.sites.isEmpty)
+        let late = await controller.capture(cookies: [cookie("sid")], host: "example.com", title: nil, epoch: epoch)
+        XCTAssertEqual(late, 0)
+
+        await persistence.allowReads()
+        await controller.retryCookieRecovery()
+        XCTAssertFalse(controller.cookieRecoveryPending)
+        XCTAssertNil(controller.site(for: "example.com"))
+        XCTAssertNotNil(controller.site(for: "another.test"))
+        let oldSession = await controller.capture(
+            cookies: [cookie("sid", domain: "another.test")], host: "another.test", title: nil, epoch: epoch
+        )
+        XCTAssertEqual(oldSession, 0)
+    }
+
+    @MainActor
+    func testUnverifiedMigrationDuringPrepareOffersRecovery() async throws {
+        let seedPersistence = MemoryCookiePersistence()
+        let seed = ReaderCookieVault(persistence: seedPersistence)
+        await seed.prepare(now: now)
+        _ = try await seed.upsert(cookies: [cookie("sid")], host: "example.com", allowEmptyRemoval: false, now: now)
+        let seedData = try await seedPersistence.load()
+        let raw = try XCTUnwrap(seedData)
+        var oldSnapshot = try XCTUnwrap(JSONSerialization.jsonObject(with: raw) as? [String: Any])
+        oldSnapshot["version"] = 1
+        let legacyData = try JSONSerialization.data(withJSONObject: oldSnapshot)
+        let persistence = UnverifiedCookiePersistence(data: legacyData)
+        await persistence.makeNextSaveUnverified()
+        let controller = BrowserDataController(
+            vault: ReaderCookieVault(persistence: persistence),
+            historyStore: ReaderHistoryStore(persistence: MemoryHistoryPersistence())
+        )
+
+        await controller.prepare()
+
+        XCTAssertTrue(controller.cookieRecoveryPending)
+        XCTAssertNotNil(controller.storageError)
+        XCTAssertTrue(controller.sites.isEmpty)
+        await persistence.allowReads()
+        await controller.retryCookieRecovery()
+        XCTAssertFalse(controller.cookieRecoveryPending)
+        XCTAssertNotNil(controller.site(for: "example.com"))
+    }
+
+    @MainActor
+    func testFailedClearAfterUnverifiedInFlightSaveStillOffersRecovery() async {
+        let persistence = HeldUnverifiedSaveAndFailingClear()
+        let vault = ReaderCookieVault(persistence: persistence)
+        let controller = BrowserDataController(
+            vault: vault,
+            historyStore: ReaderHistoryStore(persistence: MemoryHistoryPersistence())
+        )
+        await controller.prepare()
+        let epoch = controller.cookieCaptureEpoch
+        _ = await controller.capture(cookies: [cookie("sid")], host: "example.com", title: nil, epoch: epoch)
+        await persistence.holdFollowingSave()
+        let pendingSave = Task {
+            await controller.capture(
+                cookies: [self.cookie("sid", value: "updated")], host: "example.com", title: nil, epoch: epoch
+            )
+        }
+        await persistence.waitUntilSaveIsHeld()
+        let generation = await vault.captureGeneration
+        let clear = Task { await controller.clearCookies() }
+        await waitForClearToStart(vault, after: generation)
+        await persistence.releaseSave()
+
+        _ = await pendingSave.value
+        await clear.value
+        XCTAssertTrue(controller.cookieRecoveryPending)
+        XCTAssertTrue(controller.sites.isEmpty)
+        XCTAssertNotNil(controller.storageError)
+        let captured = await controller.capture(
+            cookies: [cookie("sid", value: "late")], host: "example.com", title: nil,
+            epoch: controller.cookieCaptureEpoch
+        )
+        XCTAssertEqual(captured, 0)
+
+        await controller.retryCookieRecovery()
+        XCTAssertFalse(controller.cookieRecoveryPending)
+        XCTAssertEqual(controller.site(for: "example.com")?.cookies.first?.value, "updated")
+    }
+
+    @MainActor
+    func testForgettingSiteRejectsItsOldSessionWithoutBlockingOtherSites() async {
+        let controller = BrowserDataController(
+            vault: ReaderCookieVault(persistence: MemoryCookiePersistence()),
+            historyStore: ReaderHistoryStore(persistence: MemoryHistoryPersistence())
+        )
+        await controller.prepare()
+        let epoch = controller.cookieCaptureEpoch
+        _ = await controller.capture(
+            cookies: [cookie("sid", domain: "example.test")], host: "example.test", title: nil, epoch: epoch
+        )
+        _ = await controller.capture(
+            cookies: [cookie("sid", domain: "another.test")], host: "another.test", title: nil, epoch: epoch
+        )
+
+        await controller.removeSite("example.test")
+        let forgotten = await controller.capture(
+            cookies: [cookie("sid", value: "late", domain: "example.test")],
+            host: "example.test", title: nil, epoch: epoch
+        )
+        let unaffected = await controller.capture(
+            cookies: [cookie("sid", value: "updated", domain: "another.test")],
+            host: "another.test", title: nil, epoch: epoch
+        )
+        XCTAssertEqual(forgotten, 0)
+        XCTAssertEqual(unaffected, 1)
+        XCTAssertNil(controller.site(for: "example.test"))
+        XCTAssertEqual(controller.site(for: "another.test")?.cookies.first?.value, "updated")
+
+        let explicit = await controller.capture(
+            cookies: [cookie("sid", value: "new", domain: "example.test")],
+            host: "example.test", title: nil, epoch: controller.cookieCaptureEpoch
+        )
+        XCTAssertEqual(explicit, 1)
+    }
+
+    @MainActor
+    func testForgettingParentAlsoRejectsOldSubdomainSession() async {
+        let controller = BrowserDataController(
+            vault: ReaderCookieVault(persistence: MemoryCookiePersistence()),
+            historyStore: ReaderHistoryStore(persistence: MemoryHistoryPersistence())
+        )
+        await controller.prepare()
+        let epoch = controller.cookieCaptureEpoch
+        _ = await controller.capture(
+            cookies: [cookie("sid", domain: "news.example.test")],
+            host: "news.example.test", title: nil, epoch: epoch
+        )
+
+        let removed = await controller.removeSite("example.test")
+        XCTAssertTrue(removed)
+        let late = await controller.capture(
+            cookies: [cookie("sid", value: "late", domain: "news.example.test")],
+            host: "news.example.test", title: nil, epoch: epoch
+        )
+        XCTAssertEqual(late, 0)
+        XCTAssertTrue(controller.sites.isEmpty)
+        let unrelated = await controller.capture(
+            cookies: [cookie("sid", domain: "another.test")],
+            host: "another.test", title: nil, epoch: epoch
+        )
+        XCTAssertEqual(unrelated, 1)
+    }
+
+    @MainActor
+    func testForgettingAliasRejectsOldSessionFromSiblingHost() async {
+        let controller = BrowserDataController(
+            vault: ReaderCookieVault(persistence: MemoryCookiePersistence()),
+            historyStore: ReaderHistoryStore(persistence: MemoryHistoryPersistence())
+        )
+        await controller.prepare()
+        let epoch = controller.cookieCaptureEpoch
+        _ = await controller.capture(
+            cookies: [cookie("SUB", domain: ".weibo.com")], host: "t.cn", title: nil, epoch: epoch
+        )
+
+        let removed = await controller.removeSite("s.weibo.com")
+        XCTAssertTrue(removed)
+        let late = await controller.capture(
+            cookies: [cookie("SUB", domain: ".weibo.com")], host: "weibo.cn", title: nil, epoch: epoch
+        )
+        XCTAssertEqual(late, 0)
+        XCTAssertTrue(controller.sites.isEmpty)
+    }
+
+    @MainActor
+    func testCaptureStartedWhileForgettingSiteCannotRestoreIt() async {
+        let persistence = PausableCookiePersistence()
+        let controller = BrowserDataController(
+            vault: ReaderCookieVault(persistence: persistence),
+            historyStore: ReaderHistoryStore(persistence: MemoryHistoryPersistence())
+        )
+        await controller.prepare()
+        let epoch = controller.cookieCaptureEpoch
+        _ = await controller.capture(cookies: [cookie("sid")], host: "example.com", title: nil, epoch: epoch)
+        await persistence.pauseNextSave()
+        let removal = Task { await controller.removeSite("example.com") }
+        await persistence.waitUntilPaused()
+        let captureStarted = expectation(description: "late capture is scheduled")
+        let late = Task {
+            captureStarted.fulfill()
+            return await controller.capture(
+                cookies: [self.cookie("sid", value: "late")],
+                host: "example.com", title: nil, epoch: epoch
+            )
+        }
+        await fulfillment(of: [captureStarted], timeout: 3)
+        await persistence.releaseSave()
+
+        let removed = await removal.value
+        let captured = await late.value
+        XCTAssertTrue(removed)
+        XCTAssertEqual(captured, 0)
+        XCTAssertTrue(controller.sites.isEmpty)
+    }
+
+    func testSiteRemovalInvalidatesPendingSubdomainWriteToken() async throws {
+        let vault = ReaderCookieVault(persistence: MemoryCookiePersistence())
+        await vault.prepare(now: now)
+        let initialToken = await vault.writeToken(for: "news.example.test")
+        let token = try XCTUnwrap(initialToken)
+        let unrelatedToken = await vault.writeToken(for: "another.test")
+        let otherToken = try XCTUnwrap(unrelatedToken)
+
+        try await vault.removeSites(forSite: "example.test")
+        let late = try await vault.upsert(
+            cookies: [cookie("sid", domain: "news.example.test")],
+            host: "news.example.test", allowEmptyRemoval: false, now: now, writeToken: token
+        )
+
+        XCTAssertEqual(late, 0)
+        let sites = await vault.siteSummaries(now: now)
+        XCTAssertTrue(sites.isEmpty)
+        let unrelated = try await vault.upsert(
+            cookies: [cookie("sid", domain: "another.test")],
+            host: "another.test", allowEmptyRemoval: false, now: now, writeToken: otherToken
+        )
+        XCTAssertEqual(unrelated, 1)
+    }
+
+    @MainActor
+    func testFailedSiteRemovalKeepsSavedCookiesAndOldSessionValid() async throws {
+        let persistence = FailingSaveCookiePersistence()
+        let controller = BrowserDataController(
+            vault: ReaderCookieVault(persistence: persistence),
+            historyStore: ReaderHistoryStore(persistence: MemoryHistoryPersistence())
+        )
+        await controller.prepare()
+        let epoch = controller.cookieCaptureEpoch
+        _ = await controller.capture(cookies: [cookie("sid")], host: "example.com", title: nil, epoch: epoch)
+        let before = try await persistence.load()
+        await persistence.failNextSave()
+
+        let removed = await controller.removeSite("example.com")
+        XCTAssertFalse(removed)
+        XCTAssertNotNil(controller.storageError)
+        await controller.refresh()
+        XCTAssertEqual(controller.site(for: "example.com")?.cookies.map(\.name), ["sid"])
+        let after = try await persistence.load()
+        XCTAssertEqual(after, before)
+        let retainedSession = await controller.capture(
+            cookies: [cookie("sid", value: "updated")], host: "example.com", title: nil, epoch: epoch
+        )
+        XCTAssertEqual(retainedSession, 1)
+    }
+
+    @MainActor
+    func testOpenReaderDoesNotRestoreClearedCookiesUntilExplicitSave() async throws {
+        let persistence = MemoryCookiePersistence()
+        let controller = BrowserDataController(
+            vault: ReaderCookieVault(persistence: persistence),
+            historyStore: ReaderHistoryStore(persistence: MemoryHistoryPersistence())
+        )
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: "reader-cookie-test-\(UUID())"))
+        let proxy = ReaderProxyController(
+            defaults: defaults,
+            credentials: ReaderProxyCredentialStore(read: { _ in nil }, save: { _, _ in false }),
+            monitor: nil
+        )
+        // The reader rejects HTTP before navigation, so this uses WebKit's
+        // ephemeral cookie store without making a network request.
+        let request = NewsReaderRequest(
+            url: "http://example.test/", title: "Offline test", item: nil,
+            surface: "test", contextID: nil, consentEpoch: UUID(), privateSession: false
+        )
+        let model = NewsReaderModel(request: request, proxyController: proxy, browserDataController: controller)
+        defer { model.stop() }
+        await model.start(options: .init(cookieMemoryEnabled: true, historyEnabled: false))
+        XCTAssertEqual(model.failure, .unsupportedURL)
+        let web = try XCTUnwrap(model.webView)
+        let cookieStore = web.configuration.websiteDataStore.httpCookieStore
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            cookieStore.setCookie(cookie("sid", domain: "example.test")) { continuation.resume() }
+        }
+        let first = await model.captureCurrentSite()
+        XCTAssertEqual(first, 1)
+
+        await controller.clearCookies()
+        let automatic = await model.captureCurrentSite()
+        XCTAssertEqual(automatic, 0)
+        XCTAssertTrue(controller.sites.isEmpty)
+        let afterClear = try await persistence.load()
+        XCTAssertNil(afterClear)
+
+        let explicit = await model.captureCurrentSite(force: true)
+        XCTAssertEqual(explicit, 1)
+        XCTAssertEqual(controller.sites.first?.cookies.map(\.name), ["sid"])
+
+        await controller.removeSite("example.test")
+        let afterForgetting = await model.captureCurrentSite()
+        XCTAssertEqual(afterForgetting, 0)
+        XCTAssertTrue(controller.sites.isEmpty)
+        let explicitAgain = await model.captureCurrentSite(force: true)
+        XCTAssertEqual(explicitAgain, 1)
     }
 
     func testUnchangedCookiesDoNotRewriteTheVault() async throws {

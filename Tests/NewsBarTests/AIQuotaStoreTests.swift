@@ -111,6 +111,86 @@ final class AIQuotaStoreTests: XCTestCase {
         XCTAssertEqual(store.snapshot(at: day2).count, 1)
     }
 
+    func testPreviousDaySettlementCannotReduceNewDayReservation() throws {
+        let (store, _) = try makeStore()
+        let old = try XCTUnwrap(store.reserveTracked(
+            .summary, policy: .unlimited, reservedCostMicros: 900, at: day1
+        ))
+        let current = try XCTUnwrap(store.reserveTracked(
+            .research, policy: .unlimited, reservedCostMicros: 600, at: day2
+        ))
+
+        XCTAssertFalse(store.settle(
+            old, actualCostMicros: 0, inputTokens: 0, outputTokens: 0, priced: true, at: day2
+        ))
+        XCTAssertEqual(store.snapshot(at: day2).costMicros, 600)
+        XCTAssertTrue(store.settle(
+            current, actualCostMicros: 150, inputTokens: 12, outputTokens: 3, priced: true, at: day2
+        ))
+        XCTAssertEqual(store.snapshot(at: day2).costMicros, 150)
+        XCTAssertEqual(store.snapshot(at: day2).inputTokens, 12)
+    }
+
+    func testResetInvalidatesOnlyEarlierReservations() throws {
+        let (store, _) = try makeStore()
+        let old = try XCTUnwrap(store.reserveTracked(
+            .summary, policy: .unlimited, reservedCostMicros: 900, at: day1
+        ))
+        XCTAssertTrue(store.resetToday(at: day1))
+        let current = try XCTUnwrap(store.reserveTracked(
+            .research, policy: .unlimited, reservedCostMicros: 600, at: day1
+        ))
+
+        XCTAssertFalse(store.settle(
+            old, actualCostMicros: 0, inputTokens: 0, outputTokens: 0, priced: true, at: day1
+        ))
+        XCTAssertEqual(store.snapshot(at: day1).costMicros, 600)
+        XCTAssertTrue(store.settle(
+            current, actualCostMicros: 100, inputTokens: 10, outputTokens: 5, priced: true, at: day1
+        ))
+        XCTAssertEqual(store.snapshot(at: day1).costMicros, 100)
+        XCTAssertEqual(store.snapshot(at: day1).count, 1)
+    }
+
+    func testReservationCanBeSettledOnlyOnce() throws {
+        let (store, _) = try makeStore()
+        let reservation = try XCTUnwrap(store.reserveTracked(
+            .summary, policy: .unlimited, reservedCostMicros: 500, at: day1
+        ))
+        XCTAssertTrue(store.settle(
+            reservation, actualCostMicros: 100, inputTokens: 10, outputTokens: 5, priced: true, at: day1
+        ))
+        XCTAssertFalse(store.settle(
+            reservation, actualCostMicros: 0, inputTokens: 10, outputTokens: 5, priced: true, at: day1
+        ))
+        let snapshot = store.snapshot(at: day1)
+        XCTAssertEqual(snapshot.costMicros, 100)
+        XCTAssertEqual(snapshot.inputTokens, 10)
+        XCTAssertEqual(snapshot.outputTokens, 5)
+    }
+
+    func testReservationFromAnotherStoreCannotBeSettled() throws {
+        let (first, _) = try makeStore()
+        let (second, _) = try makeStore()
+        let firstReservation = try XCTUnwrap(first.reserveTracked(
+            .summary, policy: .unlimited, reservedCostMicros: 500, at: day1
+        ))
+        _ = try XCTUnwrap(second.reserveTracked(
+            .research, policy: .unlimited, reservedCostMicros: 700, at: day1
+        ))
+        XCTAssertFalse(second.settle(
+            firstReservation, actualCostMicros: 0, inputTokens: 0, outputTokens: 0, priced: true, at: day1
+        ))
+        XCTAssertEqual(second.snapshot(at: day1).costMicros, 700)
+    }
+
+    func testClockMovingBackwardDoesNotCreateANewBudget() throws {
+        let (store, _) = try makeStore()
+        _ = try XCTUnwrap(store.reserveTracked(.summary, policy: .unlimited, at: day2))
+        XCTAssertNil(store.reserveTracked(.research, policy: .unlimited, at: day1))
+        XCTAssertEqual(store.snapshot(at: day2).count, 1)
+    }
+
     // MARK: - Failure handling
 
     func testCorruptFileFailsClosedAndResetRecovers() throws {

@@ -10,6 +10,9 @@ actor RefreshLog {
     private var entries: [Entry] = []
 
     private let logFileURL: URL? = {
+        if TestIsolation.isActive {
+            return TestIsolation.directory("Logs").appendingPathComponent("refresh.log")
+        }
         guard let caches = FileManager.default.urls(
             for: .cachesDirectory, in: .userDomainMask
         ).first else { return nil }

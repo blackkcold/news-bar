@@ -9,11 +9,15 @@ struct SearchProviderCard: View {
     let status: SearchProviderStatus?
     let isEnabled: Bool
     let isConfigured: Bool
+    let isKeyUnverified: Bool
+    let canRetryKeyRemoval: Bool
+    let canRetryKeySync: Bool
     let isSaving: Bool
     @Binding var keyInput: String
     let onToggle: (Bool) -> Void
     let onSave: () -> Void
     let onClear: () -> Void
+    let onRetryKeySync: () -> Void
     let onRetryAuth: (() -> Void)?
 
     var body: some View {
@@ -70,7 +74,7 @@ struct SearchProviderCard: View {
                     .foregroundStyle(.secondary)
             }
 
-            if isEnabled {
+            if showsKeyControls {
                 keyControls
             }
 
@@ -90,6 +94,14 @@ struct SearchProviderCard: View {
         .padding(10)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Color.secondary.opacity(0.07), in: RoundedRectangle(cornerRadius: 10))
+    }
+
+    var showsKeyControls: Bool {
+        isEnabled || showsKeyRemoval || canRetryKeySync
+    }
+
+    var showsKeyRemoval: Bool {
+        isConfigured || isKeyUnverified || canRetryKeyRemoval
     }
 
     private var keyControls: some View {
@@ -124,7 +136,7 @@ struct SearchProviderCard: View {
                         || keyInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                 )
 
-                if isConfigured {
+                if showsKeyRemoval {
                     Button {
                         onClear()
                     } label: {
@@ -132,13 +144,17 @@ struct SearchProviderCard: View {
                     }
                     .buttonStyle(.plain)
                     .foregroundStyle(.secondary)
+                    .accessibilityLabel("research.settings.keyClear".localized)
                     .help("research.settings.keyClear".localized)
                     .disabled(isSaving)
                 }
             }
 
             HStack(spacing: 4) {
-                if isConfigured {
+                if isKeyUnverified {
+                    Label("research.settings.keyStatusUnverified".localized, systemImage: "exclamationmark.circle")
+                        .foregroundStyle(.orange)
+                } else if isConfigured {
                     Label("research.settings.keySaved".localized, systemImage: "checkmark.seal.fill")
                         .foregroundStyle(.green)
                 } else {
@@ -148,6 +164,13 @@ struct SearchProviderCard: View {
                 Spacer(minLength: 0)
             }
             .font(.caption2)
+
+            if canRetryKeySync && !isKeyUnverified {
+                Button("research.settings.retryKeySync".localized) { onRetryKeySync() }
+                    .buttonStyle(EditorialActionButtonStyle(compact: true))
+                    .controlSize(.small)
+                    .disabled(isSaving)
+            }
         }
     }
 

@@ -6,43 +6,91 @@ protocol ReaderCookiePersisting: Sendable {
     func clear() async throws
 }
 
+protocol ReaderCookieDurabilityConfirming: Sendable {
+    func confirmDurability() async throws
+}
+
+struct ReaderCookieWriteToken: Equatable, Sendable {
+    let clear: UUID
+    let sites: [String: UUID]
+}
+
 enum ReaderCookieVaultError: LocalizedError {
     case encodingFailed
     case persistenceFailed
+    case clearFailed
     case corruptedStore
+    case durabilityUnknown
+    case stateUnverified
 
     var errorDescription: String? {
         switch self {
         case .encodingFailed: return "Cookie 数据编码失败"
         case .persistenceFailed: return "Cookie 加密写入失败"
+        case .clearFailed: return L10n.string("settings.browser.cookieClearFailed")
         case .corruptedStore: return "已保存的 Cookie 数据无法读取"
+        case .durabilityUnknown: return L10n.string("settings.browser.cookieDurabilityUnknown")
+        case .stateUnverified: return L10n.string("settings.browser.cookieStateUnverified")
         }
     }
 }
 
 /// Persists the vault through the existing machine-bound AES-GCM store.
 /// The payload is a JSON string inside the encrypted `apikeys.enc` container.
-struct EncryptedReaderCookiePersistence: ReaderCookiePersisting {
+struct EncryptedReaderCookiePersistence: ReaderCookiePersisting, ReaderCookieDurabilityConfirming {
     static let account = "reader-cookie-vault"
 
-    private let store = EncryptedKeyStore()
+    private let store: EncryptedKeyStore
+
+    init(store: EncryptedKeyStore = EncryptedKeyStore()) {
+        self.store = store
+    }
 
     func load() async throws -> Data? {
-        guard let value = await store.readAPIKey(account: Self.account) else { return nil }
-        return value.data(using: .utf8)
+        switch await store.readAPIKeyResult(account: Self.account) {
+        case let .found(value):
+            guard let data = value.data(using: .utf8) else { throw ReaderCookieVaultError.corruptedStore }
+            return data
+        case .missing:
+            return nil
+        case .failed:
+            throw ReaderCookieVaultError.corruptedStore
+        }
     }
 
     func save(_ data: Data) async throws {
         guard let value = String(data: data, encoding: .utf8), !value.isEmpty else {
             throw ReaderCookieVaultError.encodingFailed
         }
-        guard await store.saveAPIKey(value, account: Self.account) else {
+        switch await store.saveAPIKeyResult(value, account: Self.account) {
+        case .durable:
+            return
+        case .committedDurabilityUnknown:
+            throw ReaderCookieVaultError.durabilityUnknown
+        case .unverified:
+            throw ReaderCookieVaultError.stateUnverified
+        case .notCommitted:
             throw ReaderCookieVaultError.persistenceFailed
         }
     }
 
     func clear() async throws {
-        await store.deleteAPIKey(account: Self.account)
+        switch await store.deleteAPIKeyResult(account: Self.account) {
+        case .durable:
+            return
+        case .committedDurabilityUnknown:
+            throw ReaderCookieVaultError.durabilityUnknown
+        case .unverified:
+            throw ReaderCookieVaultError.stateUnverified
+        case .notCommitted:
+            throw ReaderCookieVaultError.clearFailed
+        }
+    }
+
+    func confirmDurability() async throws {
+        guard await store.confirmWriteDurability() else {
+            throw ReaderCookieVaultError.durabilityUnknown
+        }
     }
 }
 
@@ -86,6 +134,12 @@ actor ReaderCookieVault {
     private let persistence: ReaderCookiePersisting
     private var snapshot = ReaderCookieSnapshot()
     private var isLoaded = false
+    private var operationActive = false
+    private var operationWaiters: [CheckedContinuation<Void, Never>] = []
+    private var clearsInProgress = 0
+    private(set) var requiresReconciliation = false
+    private(set) var captureGeneration = UUID()
+    private var siteCaptureGenerations: [String: UUID] = [:]
     private(set) var loadError: String?
 
     init(persistence: ReaderCookiePersisting = EncryptedReaderCookiePersistence()) {
@@ -93,6 +147,79 @@ actor ReaderCookieVault {
     }
 
     func prepare(now: Date = Date()) async {
+        await beginOperation()
+        defer { endOperation() }
+        await prepareWhileLocked(now: now)
+    }
+
+    func confirmDurability() async throws {
+        await beginOperation()
+        defer { endOperation() }
+        guard !requiresReconciliation else { throw ReaderCookieVaultError.stateUnverified }
+        guard let confirming = persistence as? any ReaderCookieDurabilityConfirming else {
+            throw ReaderCookieVaultError.durabilityUnknown
+        }
+        try await confirming.confirmDurability()
+    }
+
+    func reconcileUnverifiedState() async throws {
+        await beginOperation()
+        defer { endOperation() }
+        guard requiresReconciliation else { return }
+        let data = try await persistence.load()
+        let recovered: ReaderCookieSnapshot
+        if let data, !data.isEmpty {
+            do {
+                recovered = try Self.decode(data)
+            } catch {
+                throw ReaderCookieVaultError.corruptedStore
+            }
+        } else {
+            recovered = ReaderCookieSnapshot()
+        }
+        snapshot = recovered
+        isLoaded = true
+        requiresReconciliation = false
+        loadError = nil
+    }
+
+    private func markStateUnverified() {
+        captureGeneration = UUID()
+        requiresReconciliation = true
+        snapshot = ReaderCookieSnapshot()
+        isLoaded = true
+        loadError = ReaderCookieVaultError.stateUnverified.localizedDescription
+    }
+
+    private func beginOperation() async {
+        if !operationActive {
+            operationActive = true
+            return
+        }
+        await withCheckedContinuation { operationWaiters.append($0) }
+    }
+
+    private func endOperation() {
+        if operationWaiters.isEmpty {
+            operationActive = false
+        } else {
+            operationWaiters.removeFirst().resume()
+        }
+    }
+
+    private func writeToken(forSite site: String) -> ReaderCookieWriteToken {
+        let scopes = siteCaptureGenerations.filter {
+            ReaderCookieHost.belongsToSite(domain: site, site: $0.key)
+        }
+        return ReaderCookieWriteToken(clear: captureGeneration, sites: scopes)
+    }
+
+    func writeToken(for host: String) -> ReaderCookieWriteToken? {
+        guard let site = ReaderCookieSiteScope.site(for: host) else { return nil }
+        return writeToken(forSite: site)
+    }
+
+    private func prepareWhileLocked(now: Date) async {
         guard !isLoaded else { return }
         isLoaded = true
         do {
@@ -161,11 +288,21 @@ actor ReaderCookieVault {
         host rawHost: String,
         title: String? = nil,
         allowEmptyRemoval: Bool,
-        now: Date = Date()
+        now: Date = Date(),
+        writeToken expectedToken: ReaderCookieWriteToken? = nil
     ) async throws -> Int {
-        await prepare(now: now)
-        guard let host = ReaderCookieHost.normalize(rawHost) else { return 0 }
-        let site = ReaderCookieSiteScope.site(for: host) ?? host
+        guard let host = ReaderCookieHost.normalize(rawHost),
+              let site = ReaderCookieSiteScope.site(for: host) else { return 0 }
+        let token = expectedToken ?? writeToken(forSite: site)
+        guard !requiresReconciliation else { throw ReaderCookieVaultError.stateUnverified }
+        guard clearsInProgress == 0 else { return 0 }
+        await beginOperation()
+        defer { endOperation() }
+        guard !requiresReconciliation else { throw ReaderCookieVaultError.stateUnverified }
+        guard clearsInProgress == 0, token == writeToken(forSite: site) else { return 0 }
+        await prepareWhileLocked(now: now)
+        guard !requiresReconciliation else { throw ReaderCookieVaultError.stateUnverified }
+        guard clearsInProgress == 0, token == writeToken(forSite: site) else { return 0 }
         let isAliasSite = ReaderCookieSiteScope.isAliasSite(site)
 
         var seen = Set<String>()
@@ -285,28 +422,83 @@ actor ReaderCookieVault {
     }
 
     func removeSite(_ rawHost: String) async throws {
-        guard let host = ReaderCookieHost.normalize(rawHost) else { return }
+        guard let host = ReaderCookieHost.normalize(rawHost),
+              let site = ReaderCookieSiteScope.site(for: host), clearsInProgress == 0 else { return }
+        guard !requiresReconciliation else { throw ReaderCookieVaultError.stateUnverified }
+        let generation = captureGeneration
+        let siteGeneration = UUID()
+        siteCaptureGenerations[site] = siteGeneration
+        await beginOperation()
+        defer { endOperation() }
+        guard !requiresReconciliation else { throw ReaderCookieVaultError.stateUnverified }
+        guard clearsInProgress == 0, generation == captureGeneration,
+              siteCaptureGenerations[site] == siteGeneration else { return }
+        let previous = snapshot
         let before = snapshot.sites.count
         snapshot.sites.removeAll { $0.host == host }
         guard snapshot.sites.count != before else { return }
-        try await persist()
+        do {
+            try await persist()
+        } catch ReaderCookieVaultError.durabilityUnknown {
+            throw ReaderCookieVaultError.durabilityUnknown
+        } catch ReaderCookieVaultError.stateUnverified {
+            throw ReaderCookieVaultError.stateUnverified
+        } catch {
+            snapshot = previous
+            throw error
+        }
     }
 
     /// Removes every entry that belongs to the same alias site.
     func removeSites(forSite rawHost: String) async throws {
         guard let host = ReaderCookieHost.normalize(rawHost),
-              let site = ReaderCookieSiteScope.site(for: host) else { return }
+              let site = ReaderCookieSiteScope.site(for: host), clearsInProgress == 0 else { return }
+        guard !requiresReconciliation else { throw ReaderCookieVaultError.stateUnverified }
+        let generation = captureGeneration
+        let siteGeneration = UUID()
+        siteCaptureGenerations[site] = siteGeneration
+        await beginOperation()
+        defer { endOperation() }
+        guard !requiresReconciliation else { throw ReaderCookieVaultError.stateUnverified }
+        guard clearsInProgress == 0, generation == captureGeneration,
+              siteCaptureGenerations[site] == siteGeneration else { return }
+        let previous = snapshot
         let before = snapshot.sites.count
         snapshot.sites.removeAll { ReaderCookieHost.belongsToSite(domain: $0.host, site: site) }
         guard snapshot.sites.count != before else { return }
-        try await persist()
+        do {
+            try await persist()
+        } catch ReaderCookieVaultError.durabilityUnknown {
+            throw ReaderCookieVaultError.durabilityUnknown
+        } catch ReaderCookieVaultError.stateUnverified {
+            throw ReaderCookieVaultError.stateUnverified
+        } catch {
+            snapshot = previous
+            throw error
+        }
     }
 
     func clear() async throws {
+        clearsInProgress += 1
+        captureGeneration = UUID()
+        defer { clearsInProgress -= 1 }
+        await beginOperation()
+        defer { endOperation() }
+        var durabilityUnknown = false
+        do {
+            try await persistence.clear()
+        } catch ReaderCookieVaultError.durabilityUnknown {
+            durabilityUnknown = true
+        } catch ReaderCookieVaultError.stateUnverified {
+            markStateUnverified()
+            throw ReaderCookieVaultError.stateUnverified
+        }
         snapshot = ReaderCookieSnapshot()
+        siteCaptureGenerations.removeAll()
         isLoaded = true
+        requiresReconciliation = false
         loadError = nil
-        try await persistence.clear()
+        if durabilityUnknown { throw ReaderCookieVaultError.durabilityUnknown }
     }
 
     // MARK: - Pruning
@@ -537,7 +729,12 @@ actor ReaderCookieVault {
             snapshot.sites.removeLast()
             data = try Self.encode(snapshot)
         }
-        try await persistence.save(data)
+        do {
+            try await persistence.save(data)
+        } catch ReaderCookieVaultError.stateUnverified {
+            markStateUnverified()
+            throw ReaderCookieVaultError.stateUnverified
+        }
     }
 
     private static func encode(_ snapshot: ReaderCookieSnapshot) throws -> Data {

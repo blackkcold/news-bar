@@ -145,10 +145,9 @@ final class AIStreamingTests: XCTestCase {
 
     // MARK: - Service wiring
 
-    func testServiceEmitsPartialsAndSettlesOnce() async throws {
+    func testServiceEmitsPartialsForAStreamedAnswer() async throws {
         let partials = Counter()
-        let settlements = Counter()
-        var service = self.service(settle: { _ in settlements.increment() })
+        var service = self.service()
         service.streamAnswer = { _, _, _ in
             AsyncThrowingStream { continuation in
                 continuation.yield(.text("@@ {\"kind\":\"event\",\"oneLine\":\"一句\"}\n## 概览\n"))
@@ -163,7 +162,6 @@ final class AIStreamingTests: XCTestCase {
         let answer = try await service.run(question: "q", scope: .web, page: nil)
         XCTAssertEqual(answer.blocks.count, 2)
         XCTAssertEqual(answer.oneLine, "一句")
-        XCTAssertEqual(settlements.count, 1)
         XCTAssertGreaterThanOrEqual(partials.count, 1)
     }
 
@@ -177,7 +175,7 @@ final class AIStreamingTests: XCTestCase {
         var count: Int { lock.lock(); defer { lock.unlock() }; return values.count }
     }
 
-    private func service(settle: @escaping @Sendable (AIChatResponse) async -> Void) -> AISearchService {
+    private func service() -> AISearchService {
         AISearchService(
             search: { _, _ in
                 [SearchHit(
@@ -199,8 +197,6 @@ final class AIStreamingTests: XCTestCase {
             answer: { _, _, _ in
                 AIChatResponse(text: "@@ {\"kind\":\"event\",\"oneLine\":\"ok\"}\n## 概览\nok[1]", truncated: false)
             },
-            reserve: { true },
-            settle: settle,
             now: { Date(timeIntervalSince1970: 1_800_000_000) },
             pageCount: 1,
             thinking: .medium,

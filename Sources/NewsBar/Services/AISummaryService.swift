@@ -1,5 +1,44 @@
 import Foundation
+import Observation
 import os
+
+/// Shared by both briefing views; recording after an asynchronous cache write
+/// must still invalidate their cooldown tasks.
+@MainActor
+@Observable
+final class AISummaryRegenerationCooldown {
+    private(set) var lastRegeneration = Date.distantPast
+    private let duration: TimeInterval = 60
+
+    func remaining(at now: Date = Date()) -> TimeInterval {
+        max(0, duration - now.timeIntervalSince(lastRegeneration))
+    }
+
+    func record(at now: Date = Date()) {
+        lastRegeneration = now
+    }
+}
+
+@MainActor
+enum AISummaryCooldownTicker {
+    static func run(
+        remaining: () -> TimeInterval,
+        update: (TimeInterval) -> Void,
+        sleep: () async throws -> Void = { try await Task.sleep(for: .seconds(1)) }
+    ) async {
+        while !Task.isCancelled {
+            let value = remaining()
+            guard !Task.isCancelled else { return }
+            update(value)
+            guard value > 0 else { return }
+            do {
+                try await sleep()
+            } catch {
+                return
+            }
+        }
+    }
+}
 
 enum AISummaryService {
 
@@ -10,15 +49,13 @@ enum AISummaryService {
         var usage: AIUsage? = nil
     }
 
-    /// Cooldown in seconds before manual regeneration is allowed again.
-    private static let regenerationCooldown: TimeInterval = 60
+    /// Main-actor observation lets both views respond even if the final state
+    /// was published before the manual request recorded its cooldown.
+    @MainActor static let manualRegenerationCooldown = AISummaryRegenerationCooldown()
 
     /// Per-target generation locks: true while a generation is in-flight for that target.
     private static let _popupIsGenerating = OSAllocatedUnfairLock<Bool>(initialState: false)
     private static let _dashboardIsGenerating = OSAllocatedUnfairLock<Bool>(initialState: false)
-
-    /// Timestamp of the last manual regeneration.
-    private static let _lastRegeneration = OSAllocatedUnfairLock<Date>(initialState: .distantPast)
 
     /// Per-generation budget state: the immutable limit captured at generation
     /// entry and the number of HTTP attempts dispatched so far. The persistent
@@ -85,8 +122,11 @@ enum AISummaryService {
     private static let durableDashboardBudget = persistentBudget(named: "dashboard")
 
     private static func persistentBudget(named name: String) -> PersistentRequestBudget {
-        PersistentRequestBudget(fileURL: FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("com.newsbar.app/AIRequestBudgets/\(name).json"))
+        PersistentRequestBudget(fileURL: (TestIsolation.isActive
+            ? TestIsolation.directory("Budgets")
+            : FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+                .appendingPathComponent("com.newsbar.app/AIRequestBudgets"))
+            .appendingPathComponent("\(name).json"))
     }
     /// Output-token budget for the first attempt. Scales with the requested
     /// length so a 360-word dual-category briefing is not cut off mid-sentence.
@@ -121,13 +161,15 @@ enum AISummaryService {
     /// Check whether the next attempt is within budget and reserve it in the
     /// shared quota ledger. Throws `NewsBarError.rateLimited` when the active
     /// limit is reached.
+    @discardableResult
     static func consumeAttemptBudget(
         target: SummaryTarget,
         mode: AISummaryBudgetMode,
-        reservedCostMicros: Int64 = 0
-    ) throws {
+        reservedCostMicros: Int64 = 0,
+        ledger: AIQuotaStore? = nil
+    ) throws -> AIQuotaStore.Reservation {
         let policy = budgetStateLock(for: target, mode: mode).withLock { $0.policy }
-        guard quotaStore.reserve(
+        guard let reservation = (ledger ?? quotaStore).reserveTracked(
             .summary,
             policy: policy,
             reservedCostMicros: reservedCostMicros
@@ -135,6 +177,7 @@ enum AISummaryService {
             throw NewsBarError.rateLimited
         }
         budgetStateLock(for: target, mode: mode).withLock { $0.attempts += 1 }
+        return reservation
     }
 
     /// Read the number of actual attempts dispatched in this generation.
@@ -168,17 +211,13 @@ enum AISummaryService {
 
     /// Check whether manual regeneration is cooled down.
     /// Returns the remaining seconds to wait, or 0 if allowed.
-    static func regenerationCooldownRemaining() -> TimeInterval {
-        _lastRegeneration.withLock { lastRegen in
-            let elapsed = Date().timeIntervalSince(lastRegen)
-            guard elapsed < regenerationCooldown else { return 0 }
-            return regenerationCooldown - elapsed
-        }
+    @MainActor static func regenerationCooldownRemaining() -> TimeInterval {
+        manualRegenerationCooldown.remaining()
     }
 
     /// Record a manual regeneration attempt.
-    static func recordManualRegeneration() {
-        _lastRegeneration.withLock { $0 = Date() }
+    @MainActor static func recordManualRegeneration() {
+        manualRegenerationCooldown.record()
     }
 
     // MARK: - Transient Error Retry
@@ -424,7 +463,7 @@ enum AISummaryService {
         )
     }
 
-    private static func makeRequest(
+    static func makeRequest(
         connection: ResolvedAIConnection,
         apiKey: String,
         model: String,
@@ -433,28 +472,12 @@ enum AISummaryService {
         maxTokens: Int,
         disableDeepSeekThinking: Bool,
         target: SummaryTarget,
-        budgetMode: AISummaryBudgetMode
+        budgetMode: AISummaryBudgetMode,
+        ledger: AIQuotaStore? = nil,
+        transport: @Sendable (URLRequest) async throws -> (Data, URLResponse) = {
+            try await URLSession.shared.data(for: $0)
+        }
     ) async throws -> SummaryResult {
-        let price = connection.customPrice
-            ?? AIPriceCatalog.price(for: connection.providerID, model: model)
-        let estimatedInput = AICostEstimator.estimateInputTokens(
-            system: systemPrompt,
-            user: userPrompt
-        )
-        let reserved = price.map {
-            AICostEstimator.reserveMicros(
-                inputTokens: estimatedInput,
-                maxOutputTokens: maxTokens,
-                price: $0
-            )
-        } ?? 0
-
-        try consumeAttemptBudget(
-            target: target,
-            mode: budgetMode,
-            reservedCostMicros: reserved
-        )
-
         let built: AIBuiltRequest
         do {
             built = try AIRequestBuilder.build(
@@ -478,14 +501,42 @@ enum AISummaryService {
             throw NewsBarError.invalidURL
         }
 
-        let (data, response) = try await URLSession.shared.data(for: built.request)
-        let result = try parseSummary(data: data, response: response, format: connection.responseFormat)
-        quotaStore.settle(
-            reservedCostMicros: reserved,
-            usage: result.usage,
-            price: price
+        let price = connection.customPrice
+            ?? AIPriceCatalog.price(for: connection.providerID, model: model)
+        let estimatedInput = AICostEstimator.estimateInputTokens(system: systemPrompt, user: userPrompt)
+        let reserved = price.map {
+            AICostEstimator.reserveMicros(
+                inputTokens: estimatedInput,
+                maxOutputTokens: built.effectiveMaxTokens,
+                price: $0
+            )
+        } ?? 0
+        try Task.checkCancellation()
+        let activeLedger = ledger ?? quotaStore
+        let reservation = try consumeAttemptBudget(
+            target: target, mode: budgetMode, reservedCostMicros: reserved, ledger: activeLedger
         )
-        return result
+        if Task.isCancelled {
+            activeLedger.settle(
+                reservation, actualCostMicros: 0, inputTokens: 0, outputTokens: 0, priced: true
+            )
+            budgetStateLock(for: target, mode: budgetMode).withLock {
+                $0.attempts = max(0, $0.attempts - 1)
+            }
+            throw CancellationError()
+        }
+
+        do {
+            let (data, response) = try await transport(built.request)
+            let result = try parseSummary(data: data, response: response, format: connection.responseFormat)
+            activeLedger.settle(reservation, usage: result.usage, price: price)
+            return result
+        } catch {
+            // A dispatched request may have been billed even when it fails or
+            // is cancelled. Keep its ceiling and disclose that the cost is unknown.
+            activeLedger.settle(reservation, usage: nil, price: price)
+            throw error
+        }
     }
 
     /// Parses both wire formats. The Anthropic branch keeps its OpenAI decode

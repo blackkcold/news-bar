@@ -10,7 +10,7 @@ struct UpdateBadge: View {
         HStack(spacing: 4) {
             switch checker.state {
             case .idle:
-                actionButton(label: isRetro ? "update.update".localized : (settings.updateDevMode ? "update.checkDev".localized : "update.check".localized), icon: "arrow.down.circle") {
+                actionButton(label: settings.updateDevMode ? "update.checkDev".localized : "update.check".localized, icon: "arrow.down.circle") {
                     manualCheck()
                 }
 
@@ -26,8 +26,8 @@ struct UpdateBadge: View {
                 }
                 dismissButton
 
-            case .downloading(let progress):
-                downloadingButton(progress: progress)
+            case .downloading:
+                downloadingButton()
 
             case .downloadComplete:
                 actionButton(label: "update.openInstaller".localized, icon: "checkmark.circle.fill") {
@@ -103,44 +103,45 @@ struct UpdateBadge: View {
         Button {
             checker.dismissUpdate()
         } label: {
-            Text("update.later".localized)
+            Text("update.skipVersion".localized)
                 .font(.system(size: 9))
                 .foregroundStyle(.tertiary)
                 .padding(.horizontal, 4)
                 .padding(.vertical, 3)
         }
         .buttonStyle(EditorialActionButtonStyle(compact: true))
+        .accessibilityHint("update.skipVersion.hint".localized)
     }
 
-    private func downloadingButton(progress: Double) -> some View {
-        Group {
-            if isRetro {
-                EditorialTag(
-                    text: L10n.string("update.downloadingPercent", Int((progress * 100).rounded())),
-                    fallbackTint: RetroEditorialTokens.brick
-                )
-            } else {
-                HStack(spacing: 3) {
-                    Image(systemName: "arrow.down.circle.fill")
-                        .font(.system(size: 9, weight: .medium))
-                    Text("update.downloading".localized)
-                        .font(.system(size: 10, weight: .medium))
-                }
-                .foregroundStyle(.blue)
-                .padding(.horizontal, 7)
-                .padding(.vertical, 3)
-                .background(
-                    GeometryReader { geo in
-                        ZStack(alignment: .leading) {
-                            Color.blue.opacity(0.1)
-                            Color.blue.opacity(0.3)
-                                .frame(width: max(0, geo.size.width * CGFloat(progress)))
-                                .animation(.linear(duration: 0.3), value: progress)
-                        }
+    private func downloadingButton() -> some View {
+        HStack(spacing: 4) {
+            Group {
+                if isRetro {
+                    EditorialTag(text: "update.downloading".localized, fallbackTint: RetroEditorialTokens.brick)
+                } else {
+                    HStack(spacing: 4) {
+                        ProgressView()
+                            .scaleEffect(0.55)
+                            .frame(width: 10, height: 10)
+                        Text("update.downloading".localized)
+                            .font(.system(size: 10, weight: .medium))
                     }
-                )
-                .clipShape(Capsule())
+                    .foregroundStyle(.blue)
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 3)
+                    .background(.blue.opacity(0.1))
+                    .clipShape(Capsule())
+                }
             }
+            Button {
+                checker.cancelDownload()
+            } label: {
+                Text("update.cancel".localized)
+                    .font(.system(size: 9))
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
+            .accessibilityLabel("update.cancel".localized)
         }
     }
 

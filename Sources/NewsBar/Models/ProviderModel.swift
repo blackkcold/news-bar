@@ -65,7 +65,7 @@ enum ProviderModelSelection {
 }
 
 enum ProviderModelError: Error, Equatable, Sendable {
-    case invalidEndpoint, unauthorized, unsupportedEndpoint, malformedResponse, responseTooLarge, incompletePagination, emptyCatalog, network, server(Int)
+    case invalidEndpoint, unauthorized, keyReadFailed, unsupportedEndpoint, malformedResponse, responseTooLarge, incompletePagination, emptyCatalog, network, server(Int)
     case cannotResolveHost(String)
     case tlsFailure(String)
     case timedOut
@@ -82,6 +82,7 @@ enum ProviderModelError: Error, Equatable, Sendable {
         switch self {
         case .invalidEndpoint: return english ? "A valid HTTPS provider endpoint is required." : "请配置有效的 HTTPS 提供商端点。"
         case .unauthorized: return english ? "The provider rejected this API key or account access. Cached models will not be used." : "提供商拒绝了当前 API Key 或账户权限，已停止使用缓存模型。"
+        case .keyReadFailed: return AISearchError.keyReadFailed.message(language)
         case .unsupportedEndpoint: return english ? "This provider did not expose a compatible model-list endpoint. No model IDs were guessed." : "提供商未提供兼容的模型列表接口，未猜测或填入旧型号。"
         case .emptyCatalog: return english ? "The provider returned no eligible text-generation models." : "提供商当前未返回可用的文本生成模型。"
         case .malformedResponse, .incompletePagination: return english ? "The model list was incomplete or unreadable. Try refreshing it." : "模型列表格式异常或分页不完整，请重新获取。"

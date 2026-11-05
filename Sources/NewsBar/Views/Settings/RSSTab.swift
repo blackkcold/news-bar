@@ -1,8 +1,11 @@
 import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct RSSTab: View {
     @Environment(AppSettings.self) private var settings
+    @Environment(\.rssHealthAction) private var rssHealthAction
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     @State private var newURL = ""
     @State private var newName = ""
@@ -24,6 +27,11 @@ struct RSSTab: View {
     @State private var draggedSubscribedRSSSourceID: String?
     @State private var dropTargetRSSSourceID: String?
     @State private var pendingRSSDeletion: RSSSourceConfig?
+    @State private var opmlPreview: [OPMLSubscription] = []
+    @State private var opmlSkippedCount = 0
+    @State private var opmlError: String?
+    @State private var showOPMLPreview = false
+    @State private var rssHealth: [RSSSourceHealth] = []
 
     private let reorderAnimation = Animation.spring(response: 0.26, dampingFraction: 0.88, blendDuration: 0.08)
     private let textCountCandidates = [5, 10]
@@ -164,7 +172,7 @@ struct RSSTab: View {
                     ForEach(Array(previewSubscribedRSSSources.enumerated()), id: \.element.id) { idx, rss in
                         subscribedRSSSourceRow(rss, index: idx)
                     }
-                    .animation(reorderAnimation, value: previewSubscribedRSSSources.map(\.id))
+                    .animation(reduceMotion ? nil : reorderAnimation, value: previewSubscribedRSSSources.map(\.id))
                 }
             } header: {
                 HStack {
@@ -218,9 +226,78 @@ struct RSSTab: View {
             } header: {
                 Text("rss.addSource".localized)
             }
+
+            Section {
+                if rssHealth.isEmpty {
+                    Text("rss.health.empty".localized)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(rssHealth) { row in
+                        HStack(spacing: 8) {
+                            Image(systemName: row.status.symbol)
+                                .foregroundStyle(row.status.tint)
+                                .font(.caption)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(row.name)
+                                    .font(.callout)
+                                if let detail = row.detail {
+                                    Text(detail)
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                        .lineLimit(1)
+                                }
+                            }
+                            Spacer()
+                            if let last = row.lastAttempt {
+                                Text(last, style: .relative)
+                                    .font(.caption2)
+                                    .foregroundStyle(.tertiary)
+                            }
+                        }
+                    }
+                }
+                Button {
+                    refreshHealth()
+                } label: {
+                    Label("rss.health.refresh".localized, systemImage: "arrow.clockwise")
+                }
+            } header: {
+                Text("rss.health".localized)
+            } footer: {
+                Text("rss.health.footer".localized)
+            }
+
+            Section {
+                HStack(spacing: 10) {
+                    Button {
+                        importOPML()
+                    } label: {
+                        Label("rss.opml.import".localized, systemImage: "square.and.arrow.down")
+                    }
+                    Button {
+                        exportOPML()
+                    } label: {
+                        Label("rss.opml.export".localized, systemImage: "square.and.arrow.up")
+                    }
+                }
+                if let opmlError {
+                    Text(opmlError)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            } header: {
+                Text("rss.opml".localized)
+            } footer: {
+                Text("rss.opml.footer".localized)
+            }
         }
         .formStyle(.grouped)
         .scrollContentBackground(.hidden)
+        .onAppear {
+            refreshHealth()
+        }
         .onDisappear {
             cancelRecommendationValidation(clearHandleOnly: true)
         }
@@ -241,6 +318,122 @@ struct RSSTab: View {
         } message: { rss in
             Text(L10n.string("rss.delete.message", rss.name))
         }
+        .sheet(isPresented: $showOPMLPreview) {
+            opmlPreviewSheet
+        }
+    }
+
+    private var opmlPreviewSheet: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(spacing: 8) {
+                Image(systemName: "list.bullet.rectangle.portrait")
+                    .foregroundStyle(.tint)
+                Text("rss.opml.previewTitle".localized)
+                    .font(.headline)
+            }
+            Text(L10n.string("rss.opml.previewSummary", opmlPreview.count, opmlSkippedCount))
+                .font(.callout)
+                .foregroundStyle(.secondary)
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 8) {
+                    ForEach(opmlPreview) { subscription in
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(subscription.title)
+                                .font(.callout.weight(.medium))
+                                .lineLimit(1)
+                            Text(subscription.url)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(10)
+                        .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 8))
+                    }
+                }
+            }
+            .frame(maxHeight: 300)
+            HStack {
+                Spacer()
+                Button("rss.opml.cancel".localized, role: .cancel) {
+                    showOPMLPreview = false
+                }
+                Button("rss.opml.confirm".localized) {
+                    applyOPMLPreview()
+                }
+                .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(20)
+        .frame(minWidth: 480, minHeight: 320)
+    }
+
+    private func refreshHealth() {
+        rssHealth = rssHealthAction?(settings) ?? []
+    }
+
+    private func importOPML() {
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.allowedContentTypes = [UTType(filenameExtension: "opml") ?? .xml, .xml]
+        guard panel.runModal() == .OK, let panelURL = panel.url else { return }
+        do {
+            let attributes = try FileManager.default.attributesOfItem(atPath: panelURL.path)
+            let size = attributes[.size] as? Int64 ?? 0
+            guard size <= Int64(OPMLService.maxBytes) else {
+                opmlError = "rss.opml.tooLarge".localized
+                return
+            }
+            let data = try Data(contentsOf: panelURL)
+            let subscriptions = try OPMLService.parse(data)
+            let existing = Set(settings.rssSources.map { SecurityPolicies.canonicalRSSURL($0.url) })
+            var seen = existing
+            let accepted = subscriptions.filter { subscription in
+                guard seen.insert(subscription.url).inserted else { return false }
+                if case .blocked = SecurityPolicies.validateRSSURL(subscription.url) { return false }
+                return true
+            }
+            opmlPreview = accepted
+            opmlSkippedCount = subscriptions.count - accepted.count
+            opmlError = accepted.isEmpty ? "rss.opml.none".localized : nil
+            showOPMLPreview = !accepted.isEmpty
+        } catch {
+            opmlError = "rss.opml.invalid".localized
+        }
+    }
+
+    private func applyOPMLPreview() {
+        guard !opmlPreview.isEmpty else { return }
+        var sources = settings.rssSources
+        var selected = settings.selectedRSSSourceIDs
+        for subscription in opmlPreview {
+            let source = RSSSourceConfig(
+                name: SecurityPolicies.sanitizeUserInput(subscription.title),
+                url: subscription.url,
+                displayMode: .text
+            )
+            sources.append(source)
+            selected.insert(source.id)
+        }
+        settings.rssSources = sources
+        settings.selectedRSSSourceIDs = selected
+        opmlPreview = []
+        opmlSkippedCount = 0
+        showOPMLPreview = false
+        opmlError = nil
+        refreshHealth()
+    }
+
+    private func exportOPML() {
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = "NewsBar Subscriptions.opml"
+        panel.allowedContentTypes = [UTType(filenameExtension: "opml") ?? .xml]
+        guard panel.runModal() == .OK, let destination = panel.url else { return }
+        let subscriptions = subscribedRSSSources.map {
+            OPMLSubscription(title: $0.name, url: $0.url)
+        }
+        try? OPMLService.export(subscriptions).write(to: destination, options: .atomic)
     }
 
     private var emptySourcesView: some View {
@@ -550,6 +743,7 @@ struct RSSTab: View {
         settings.rssSources.removeAll { $0.id == rss.id }
         settings.selectedRSSSourceIDs.remove(rss.id)
         pendingRSSDeletion = nil
+        refreshHealth()
     }
 
     private func dragHandle(for rss: RSSSourceConfig) -> some View {
@@ -592,11 +786,11 @@ struct RSSTab: View {
 
             draggedSubscribedRSSSourceID = currentDraggedID
 
-            withAnimation(reorderAnimation) {
+            withAnimation(reduceMotion ? nil : reorderAnimation) {
                 dropTargetRSSSourceID = targetID
             }
         } else if dropTargetRSSSourceID == targetID {
-            withAnimation(reorderAnimation) {
+            withAnimation(reduceMotion ? nil : reorderAnimation) {
                 dropTargetRSSSourceID = nil
             }
 
@@ -632,7 +826,7 @@ struct RSSTab: View {
         let source = reordered.remove(at: sourceIndex)
         let insertionIndex = targetIndex > sourceIndex ? targetIndex - 1 : targetIndex
         reordered.insert(source, at: insertionIndex)
-        withAnimation(reorderAnimation) {
+        withAnimation(reduceMotion ? nil : reorderAnimation) {
             applySubscribedOrder(reordered)
         }
         return true

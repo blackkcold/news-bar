@@ -54,6 +54,10 @@ enum RSSService {
                 responsePayload = retryResponse
             } catch let error as NewsBarError {
                 throw error
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch let error as URLError {
+                throw error
             } catch {
                 throw nonRSSResponseError(data: firstResponse.data, response: firstResponse.response)
             }
@@ -110,8 +114,9 @@ enum RSSService {
     }
 
     private static func isRSSOrAtom(data: Data) -> Bool {
-        let cleanData = SecurityPolicies.sanitizeXMLEntities(data)
-        let parser = XMLParser(data: cleanData)
+        // The caller has already run the byte-level sanitizers; running them
+        // again here copied and rescanned the whole document per refresh.
+        let parser = XMLParser(data: data)
         SecurityPolicies.configureXMLParser(parser)
         let delegate = RSSRootDetector()
         parser.delegate = delegate
@@ -152,22 +157,35 @@ enum RSSService {
             throw NewsBarError.parseFailed
         }
 
+        let feedURL = URL(string: sourceURL)
         return delegate.items.map { item in
             let rawLink = item.link.isEmpty ? sourceURL : item.link
-            let validatedLink = SecurityPolicies.validateURL(rawLink)?.absoluteString ?? rawLink
+            let absoluteLink = URL(string: rawLink, relativeTo: feedURL)?.absoluteURL
+            let validatedLink = absoluteLink.flatMap { SecurityPolicies.validateURL($0.absoluteString)?.absoluteString }
+                ?? rawLink
+            // `url` stays the feed's byte-preserved identity. A resolved
+            // absolute destination is exposed separately so old bookmarks and
+            // feedback keep matching after feeds start using relative links.
+            let readerURL: String? = validatedLink == rawLink ? nil : validatedLink
             let validatedImageURL: String? = {
                 guard let rawImageURL = item.imageURL else { return nil }
-                if case .valid = SecurityPolicies.validateRSSURL(rawImageURL) {
-                    return rawImageURL
+                let absolute = URL(string: rawImageURL, relativeTo: feedURL)?.absoluteURL.absoluteString
+                    ?? rawImageURL
+                if case .valid = SecurityPolicies.validateRSSURL(absolute) {
+                    return absolute
                 }
                 return nil
             }()
             return NewsItem(
                 title: SecurityPolicies.sanitizeHTMLContent(item.title),
-                url: validatedLink,
+                // Keep the feed's original link bytes as identity. Rewriting a
+                // relative link to an absolute one would change every bookmark,
+                // hide rule and interest key for that item.
+                url: rawLink,
                 source: .rss(name: sourceName, url: sourceURL),
                 imageURL: validatedImageURL,
-                publishedAt: parsePublicationDate(item.publicationDate)
+                publishedAt: parsePublicationDate(item.publicationDate),
+                readerURL: readerURL
             )
         }
     }
@@ -250,85 +268,89 @@ final class RSSParserDelegate: NSObject, XMLParserDelegate {
         var title: String = ""
         var link: String = ""
         var imageURL: String? = nil
+        var imagePriority = 0
         var publicationDate: String = ""
+        var descriptionText: String = ""
     }
 
     private(set) var items: [Item] = []
     private(set) var parseError: Error?
-    private var currentElement = ""
     private var currentItem: Item?
     private var isInItem = false
+    /// Parallel element/text stacks preserve spaces across entity and nested
+    /// element boundaries, so "A &amp; B" and "x <em>y</em> z" stay intact.
+    private var elementStack: [String] = []
+    private var textStack: [String] = []
+    private var itemDepth = 0
+
+    private static let descriptionElements: Set<String> = [
+        "description", "summary", "content", "content:encoded", "encoded"
+    ]
 
     func parser(_ parser: XMLParser, didStartElement elementName: String,
                 namespaceURI: String?, qualifiedName: String?,
                 attributes: [String: String] = [:]) {
-        currentElement = elementName
+        elementStack.append(elementName)
+        textStack.append("")
 
         if elementName == "item" || elementName == "entry" {
             isInItem = true
+            itemDepth += 1
             currentItem = Item()
         }
-
-        if elementName == "link", let href = attributes["href"] {
-            currentItem?.link = href
-        }
-
-        if elementName == "enclosure" {
-            if let url = attributes["url"],
-               let type = attributes["type"],
-               type.hasPrefix("image/") {
-                currentItem?.imageURL = url
-            }
-        }
-
-        let mediaNS = "http://search.yahoo.com/mrss/"
-        if namespaceURI == mediaNS,
-           (elementName == "content" || elementName == "thumbnail") {
-            if let url = attributes["url"], currentItem?.imageURL == nil {
-                currentItem?.imageURL = url
-            }
-        }
-    }
-
-    func parser(_ parser: XMLParser, foundCharacters string: String) {
         guard isInItem else { return }
-        let trimmed = string.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
 
-        switch currentElement {
-        case "title":
-            currentItem?.title += trimmed
-        case "pubDate", "published", "dc:date":
-            currentItem?.publicationDate += string
+        switch elementName {
         case "link":
-            if currentItem?.link.isEmpty ?? true {
-                currentItem?.link += trimmed
+            guard let href = attributes["href"] else { break }
+            let rel = (attributes["rel"] ?? "alternate").lowercased()
+            if rel == "alternate" || rel.isEmpty {
+                if currentItem?.link.isEmpty ?? true { currentItem?.link = href }
+            } else if rel == "enclosure" {
+                if let type = attributes["type"], type.lowercased().hasPrefix("image/") {
+                    setImage(href, priority: 4)
+                }
             }
+
+        case "enclosure":
+            if let url = attributes["url"] {
+                let type = (attributes["type"] ?? "").lowercased()
+                if type.isEmpty {
+                    let ext = URL(string: url)?.pathExtension.lowercased() ?? ""
+                    if ["jpg", "jpeg", "png", "gif", "webp", "avif", "heic"].contains(ext) {
+                        setImage(url, priority: 4)
+                    }
+                } else if type.hasPrefix("image/") {
+                    setImage(url, priority: 4)
+                }
+            }
+
+        case "media:thumbnail":
+            if let url = attributes["url"] { setImage(url, priority: 1) }
+
+        case "media:content":
+            let type = (attributes["type"] ?? attributes["medium"] ?? "").lowercased()
+            let medium = (attributes["medium"] ?? "").lowercased()
+            if medium == "image" || type.hasPrefix("image/") || (type.isEmpty && medium.isEmpty) {
+                if let url = attributes["url"] { setImage(url, priority: 2) }
+            }
+
+        case "itunes:image":
+            if let href = attributes["href"] { setImage(href, priority: 3) }
+
         default:
             break
         }
     }
 
-    func parser(_ parser: XMLParser, foundCDATA CDATABlock: Data) {
-        guard isInItem else { return }
-        guard let string = String(data: CDATABlock, encoding: .utf8) else { return }
-        let trimmed = string.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
+    func parser(_ parser: XMLParser, foundCharacters string: String) {
+        guard !textStack.isEmpty else { return }
+        textStack[textStack.count - 1] += string
+    }
 
-        switch currentElement {
-        case "title":
-            currentItem?.title += trimmed
-        case "link":
-            if currentItem?.link.isEmpty ?? true {
-                currentItem?.link += trimmed
-            }
-        default:
-            if currentItem?.imageURL == nil {
-                if let extractedURL = SecurityPolicies.extractFirstImageURL(from: trimmed) {
-                    currentItem?.imageURL = extractedURL
-                }
-            }
-        }
+    func parser(_ parser: XMLParser, foundCDATA CDATABlock: Data) {
+        guard !textStack.isEmpty, let string = String(data: CDATABlock, encoding: .utf8) else { return }
+        textStack[textStack.count - 1] += string
     }
 
     func parser(_ parser: XMLParser, parseErrorOccurred error: Error) {
@@ -338,12 +360,52 @@ final class RSSParserDelegate: NSObject, XMLParserDelegate {
 
     func parser(_ parser: XMLParser, didEndElement elementName: String,
                 namespaceURI: String?, qualifiedName: String?) {
-        if elementName == "item" || elementName == "entry", let item = currentItem {
-            if !item.title.isEmpty {
-                items.append(item)
+        let raw = textStack.popLast() ?? ""
+        if !elementStack.isEmpty { elementStack.removeLast() }
+        // Preserve nested text for the parent element.
+        if !textStack.isEmpty { textStack[textStack.count - 1] += raw }
+        guard isInItem else { return }
+
+        switch elementName {
+        case "title":
+            currentItem?.title += raw
+        case "pubDate", "published", "updated", "dc:date":
+            if currentItem?.publicationDate.isEmpty ?? true {
+                currentItem?.publicationDate = raw
+            }
+        case "link":
+            let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty, currentItem?.link.isEmpty ?? true {
+                currentItem?.link = trimmed
+            }
+        default:
+            if Self.descriptionElements.contains(elementName) {
+                currentItem?.descriptionText += raw
+                if currentItem?.imageURL == nil,
+                   let extracted = SecurityPolicies.extractFirstImageURL(from: raw) {
+                    setImage(extracted, priority: 5)
+                }
+            }
+        }
+
+        if elementName == "item" || elementName == "entry" {
+            if let item = currentItem,
+               !item.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                var finished = item
+                finished.title = finished.title.trimmingCharacters(in: .whitespacesAndNewlines)
+                items.append(finished)
             }
             isInItem = false
+            itemDepth = max(0, itemDepth - 1)
             currentItem = nil
+        }
+    }
+
+    private func setImage(_ url: String, priority: Int) {
+        guard let current = currentItem else { return }
+        if current.imageURL == nil || priority < current.imagePriority {
+            currentItem?.imageURL = url
+            currentItem?.imagePriority = priority
         }
     }
 }

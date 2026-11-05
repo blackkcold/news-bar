@@ -20,6 +20,17 @@ enum ResearchTriage {
     static let duplicateConfidence = 0.7
     static let worthConfidence = 0.5
 
+    static func reservedCost(for request: AIChatRequest, price: ModelPrice?) -> Int64 {
+        guard let price else { return 0 }
+        let system = request.messages.filter { $0.role == .system }.map(\.content).joined(separator: "\n")
+        let user = request.messages.filter { $0.role != .system }.map(\.content).joined(separator: "\n")
+        return AICostEstimator.reserveMicros(
+            inputTokens: AICostEstimator.estimateInputTokens(system: system, user: user),
+            maxOutputTokens: request.maxTokens,
+            price: price
+        )
+    }
+
     static func request(
         candidates: [ResearchCandidateItem],
         recent: [ResearchIndexEntry],
