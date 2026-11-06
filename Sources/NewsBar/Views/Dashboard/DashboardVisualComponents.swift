@@ -135,13 +135,10 @@ struct DashboardHotTrendCard: View {
     }
 
     private func toggleExpansion() {
-        if reduceMotion {
-            isExpanded.toggle()
-        } else {
-            withAnimation(.spring(response: 0.28, dampingFraction: 0.86)) {
-                isExpanded.toggle()
-            }
-        }
+        // The card can hold dozens of rows and sits above the browse
+        // waterfall. Animating its height would re-lay out the whole scroll
+        // content on every frame; an instant disclosure stays responsive.
+        isExpanded.toggle()
     }
 }
 
@@ -308,8 +305,6 @@ struct DashboardRSSSourceCard: View {
     /// Width of the source card itself, before its 14 pt content inset.
     let layoutWidth: CGFloat
 
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
     /// Only this card reads its own slice of the orchestrator, so a refresh of
     /// another source no longer rebuilds every card in the list.
     private var allItems: [NewsItem] {
@@ -436,13 +431,10 @@ struct DashboardRSSSourceCard: View {
     }
 
     private func toggleExpansion() {
-        if reduceMotion {
-            onToggleExpansion()
-        } else {
-            withAnimation(.spring(response: 0.28, dampingFraction: 0.86)) {
-                onToggleExpansion()
-            }
-        }
+        // Expanding inserts a masonry feed of up to forty cards. Animating
+        // that height re-lays out the feed on every frame; a single instant
+        // layout pass keeps the browse page responsive.
+        onToggleExpansion()
     }
 }
 

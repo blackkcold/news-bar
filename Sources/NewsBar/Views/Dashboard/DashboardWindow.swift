@@ -10,7 +10,6 @@ struct DashboardWindow: View {
     @State private var searchText = ""
     @State private var debouncedSearchText = ""
     @State private var sourceFilter: DashboardSourceFilter = .all
-    @State private var browseScroll = ScrollPosition()
     @State private var forYou = true
     @State private var listWidth: CGFloat = 400
     @State private var tabs = WorkspaceTabStore.shared
@@ -164,34 +163,48 @@ struct DashboardWindow: View {
             let isWideLayout = proxy.size.width >= layoutBreakpoint
             let contentWidth = max(0, proxy.size.width - 40)
 
-            ScrollView(.vertical, showsIndicators: true) {
-                VStack(alignment: .leading, spacing: 22) {
-                    DashboardMasthead(orchestrator: orchestrator)
+            ScrollViewReader { scrollProxy in
+                ScrollView(.vertical, showsIndicators: true) {
+                    VStack(spacing: 0) {
+                        // A stable top anchor lets the reader hand-off reset the
+                        // list without keeping a scroll-position binding in this
+                        // view, which would invalidate the whole dashboard on
+                        // every scroll tick.
+                        Color.clear
+                            .frame(height: 0)
+                            .id("browse-top")
 
-                    DashboardFilterBar(
-                        searchText: $searchText,
-                        sourceFilter: $sourceFilter,
-                        forYou: $forYou,
-                        orchestrator: orchestrator,
-                        debouncedQuery: normalizedSearchQuery
-                    )
+                        VStack(alignment: .leading, spacing: 22) {
+                            DashboardMasthead(orchestrator: orchestrator)
 
-                    contentLayout(
-                        isWideLayout: isWideLayout,
-                        isReaderCompact: isReaderCompact,
-                        availableWidth: contentWidth
-                    )
+                            DashboardFilterBar(
+                                searchText: $searchText,
+                                sourceFilter: $sourceFilter,
+                                forYou: $forYou,
+                                orchestrator: orchestrator,
+                                debouncedQuery: normalizedSearchQuery
+                            )
+
+                            contentLayout(
+                                isWideLayout: isWideLayout,
+                                isReaderCompact: isReaderCompact,
+                                availableWidth: contentWidth
+                            )
+                        }
+                        .padding(20)
+                        .frame(maxWidth: .infinity, alignment: .topLeading)
+                    }
                 }
-                .padding(20)
-                .frame(maxWidth: .infinity, alignment: .topLeading)
-            }
-            .scrollPosition($browseScroll)
-            .onChange(of: phase) { _, newPhase in
-                // The list narrows and gains the compact 02 block when the
-                // reader opens; a preserved offset would point past the
-                // reflowed content.
-                if newPhase == .presented {
-                    browseScroll.scrollTo(edge: .top)
+                .onChange(of: phase) { _, newPhase in
+                    // The list narrows and gains the compact 02 block when the
+                    // reader opens; a preserved offset would point past the
+                    // reflowed content. The content subtree is replaced in this
+                    // same update, so resolve the anchor after the new layout
+                    // has been committed.
+                    guard newPhase == .presented else { return }
+                    Task { @MainActor in
+                        scrollProxy.scrollTo("browse-top", anchor: .top)
+                    }
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -1134,9 +1147,11 @@ private struct DashboardCompactHotTrends: View {
 
                     Spacer(minLength: 8)
 
-                    Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
+                    Image(systemName: "chevron.down")
                         .font(.system(size: 9, weight: .semibold))
                         .foregroundStyle(.secondary)
+                        .rotationEffect(.degrees(isExpanded ? 180 : 0))
+                        .animation(reduceMotion ? nil : .easeOut(duration: 0.16), value: isExpanded)
                 }
                 .padding(.horizontal, 12)
                 .padding(.vertical, 9)
@@ -1174,20 +1189,14 @@ private struct DashboardCompactHotTrends: View {
     }
 
     private func toggle(_ source: NewsSource) {
-        let update = {
-            if expandedSourceIDs.contains(source.id) {
-                expandedSourceIDs.remove(source.id)
-            } else {
-                expandedSourceIDs.insert(source.id)
-            }
-        }
-
-        if reduceMotion {
-            update()
+        // This disclosure sits above the RSS waterfall. Animating its height
+        // re-lays out the entire scroll content on every frame, turning a
+        // five-row expansion into a multi-second freeze. Keep the disclosure
+        // instant; only the chevron above is animated.
+        if expandedSourceIDs.contains(source.id) {
+            expandedSourceIDs.remove(source.id)
         } else {
-            withAnimation(.spring(response: 0.28, dampingFraction: 0.86)) {
-                update()
-            }
+            expandedSourceIDs.insert(source.id)
         }
     }
 }
