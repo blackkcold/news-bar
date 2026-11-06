@@ -1119,14 +1119,14 @@ struct ReaderContentView: View {
             PageSummarySheet(input: input, onOpenSettings: onConfigureAI)
         }
         .alert(
-            english ? "No readable article text" : "没有可读正文",
+            english ? "No readable page text" : "没有可读页面正文",
             isPresented: $pageSummaryUnavailable
         ) {
             Button("OK", role: .cancel) {}
         } message: {
             Text(english
-                ? "Switch to reader mode or wait for the page to finish loading, then try again."
-                : "可以切换到阅读模式，或等页面加载完成后再试。")
+                ? "Wait for the page to finish loading, or switch to reader mode, then try again."
+                : "可以等页面加载完成，或切换到阅读模式后再试。")
         }
         .task(id: model.currentURL + "\n" + model.pageTitle + "\n\(model.loading)") { await refreshResearch() }
         .onAppear {
@@ -1340,17 +1340,23 @@ struct ReaderContentView: View {
             Button {
                 Task { await preparePageSummary() }
             } label: {
-                if isPreparingPageSummary {
-                    ProgressView().controlSize(.mini).frame(width: 28, height: 28)
-                } else {
-                    Image(systemName: "text.badge.star").frame(width: 28, height: 28)
+                HStack(spacing: 5) {
+                    if isPreparingPageSummary {
+                        ProgressView().controlSize(.mini)
+                    } else {
+                        Image(systemName: "text.badge.star")
+                    }
+                    if !compact {
+                        Text(english ? "Page overview" : "页面概览")
+                    }
                 }
+                .frame(minWidth: 28, minHeight: 28)
             }
             .disabled(isPreparingPageSummary || model.loading)
-            .accessibilityLabel(english ? "AI overview" : "AI 概览")
+            .accessibilityLabel(english ? "Page overview" : "页面概览")
             .help(english
-                ? "Summarize this article without asking a question"
-                : "概括当前文章，不需要输入问题")
+                ? "Summarize the page open in this reader without asking a question"
+                : "概括当前阅读器打开的页面，不需要输入问题")
             Button { showResearch.toggle() } label: {
                 Image(systemName: "sidebar.trailing")
                     .frame(width: 28, height: 28)

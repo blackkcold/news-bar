@@ -13,7 +13,6 @@ struct DashboardWindow: View {
     @State private var browseScroll = ScrollPosition()
     @State private var forYou = true
     @State private var listWidth: CGFloat = 400
-    @State private var pageSummaryInput: PageSummaryInput?
     @State private var tabs = WorkspaceTabStore.shared
 
     var onOpenSettings: () -> Void = {}
@@ -104,11 +103,6 @@ struct DashboardWindow: View {
                     Task { await orchestrator.manualRefresh(settings: settings) }
                 }
                 DashboardToolbarAction(
-                    title: settings.appLanguage == .en ? "AI overview" : "AI 概览",
-                    symbol: "text.badge.star",
-                    action: presentPageSummary
-                )
-                DashboardToolbarAction(
                     title: L10n.string("research.center.title", language: settings.appLanguage),
                     symbol: "sparkles",
                     action: { onOpenResearchCenter(nil) }
@@ -118,10 +112,6 @@ struct DashboardWindow: View {
         }
         .sheet(item: $router.digest) { request in
             NewsDigestSheet(request: request)
-                .environment(settings)
-        }
-        .sheet(item: $pageSummaryInput) { input in
-            PageSummarySheet(input: input, onOpenSettings: onOpenSettings)
                 .environment(settings)
         }
     }
@@ -172,6 +162,7 @@ struct DashboardWindow: View {
     private func browsePane(isReaderCompact: Bool, phase: ReaderPresentationPhase) -> some View {
         GeometryReader { proxy in
             let isWideLayout = proxy.size.width >= layoutBreakpoint
+            let contentWidth = max(0, proxy.size.width - 40)
 
             ScrollView(.vertical, showsIndicators: true) {
                 VStack(alignment: .leading, spacing: 22) {
@@ -185,7 +176,11 @@ struct DashboardWindow: View {
                         debouncedQuery: normalizedSearchQuery
                     )
 
-                    contentLayout(isWideLayout: isWideLayout, isReaderCompact: isReaderCompact)
+                    contentLayout(
+                        isWideLayout: isWideLayout,
+                        isReaderCompact: isReaderCompact,
+                        availableWidth: contentWidth
+                    )
                 }
                 .padding(20)
                 .frame(maxWidth: .infinity, alignment: .topLeading)
@@ -226,46 +221,15 @@ struct DashboardWindow: View {
         NotificationCenter.default.post(name: .interestSettingsRequested, object: nil)
     }
 
-    private func recommendationsView() -> some View {
+    private func recommendationsView(width: CGFloat) -> some View {
         RecommendationFeedView(
             matches: { sourceFilter.matches($0.source) && matchesSearch($0) },
+            width: width,
             hasFilter: hasAnyFilter,
             onOpenSettings: openInterestSettings,
             onResetFilters: { searchText = ""; sourceFilter = .all },
             onRefresh: { Task { await orchestrator.manualRefresh(settings: settings) } },
             onShowSources: { forYou = false }
-        )
-    }
-
-    /// The overview reads exactly the page the user is looking at: the ranked
-    /// feed in "For you", the filtered source list otherwise. It never asks the
-    /// fetcher for more items and never reads article bodies for a list.
-    private func presentPageSummary() {
-        let language = settings.appLanguage
-        let isPrivate = InterestController.shared.privateReading
-        let rows: [PageSummaryListRow]
-        let title: String
-
-        if forYou, let snapshot = InterestController.shared.recommendations {
-            rows = snapshot.items.enumerated()
-                .filter { sourceFilter.matches($0.element.item.source) && matchesSearch($0.element.item) }
-                .prefix(PageSummaryService.maxListRows)
-                .map { PageSummaryListRow(position: $0.offset, item: $0.element.item) }
-            title = language == .en ? "For you" : "为你推荐"
-        } else {
-            rows = orchestrator.allActiveItems(settings: settings)
-                .filter { sourceFilter.matches($0.source) && matchesSearch($0) }
-                .prefix(PageSummaryService.maxListRows)
-                .enumerated()
-                .map { PageSummaryListRow(position: $0.offset, item: $0.element) }
-            title = sourceFilter.displayName
-        }
-
-        pageSummaryInput = .list(
-            title: title,
-            rows: rows,
-            language: language,
-            isPrivate: isPrivate
         )
     }
 
@@ -281,17 +245,22 @@ struct DashboardWindow: View {
     }
 
     @ViewBuilder
-    private func contentLayout(isWideLayout: Bool, isReaderCompact: Bool) -> some View {
+    private func contentLayout(
+        isWideLayout: Bool,
+        isReaderCompact: Bool,
+        availableWidth: CGFloat
+    ) -> some View {
         let groups = browseGroups
         let hotGroups = groups.filter { $0.source.isBuiltIn }
         let rssGroups = groups.filter { !$0.source.isBuiltIn }
         let matchedHotGroups = hotGroups.filter { $0.matchCount > 0 }
         let hotMatchCount = hotGroups.reduce(0) { $0 + $1.matchCount }
+        let feedWidth = max(0, availableWidth - sidebarWidth - 20)
 
         if forYou {
             if isWideLayout && !isReaderCompact {
                 HStack(alignment: .top, spacing: 20) {
-                    recommendationsView()
+                    recommendationsView(width: feedWidth)
                         .frame(maxWidth: .infinity, alignment: .leading)
                     DashboardSidebarRegion(
                         orchestrator: orchestrator,
@@ -303,7 +272,7 @@ struct DashboardWindow: View {
                     .frame(width: sidebarWidth, alignment: .leading)
                 }
             } else {
-                recommendationsView()
+                recommendationsView(width: availableWidth)
             }
         } else if isReaderCompact {
             // The reader squeezes the list to 320–480pt. Keep 02 reachable

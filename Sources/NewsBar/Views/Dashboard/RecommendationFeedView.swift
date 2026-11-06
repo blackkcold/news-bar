@@ -134,6 +134,11 @@ private struct QualifiedImpression: ViewModifier {
 
 struct RecommendationFeedView: View {
     let matches: (NewsItem) -> Bool
+    /// The width the dashboard is actually giving this feed. When the reader
+    /// opens, the list pane is clamped to 320–480 pt; passing that width down
+    /// makes the masonry choose one column in the same layout pass instead of
+    /// waiting for a content-width measurement that can still be stale.
+    var width: CGFloat? = nil
     var hasFilter = false
     var onOpenSettings: () -> Void = {}
     var onResetFilters: () -> Void = {}
@@ -188,6 +193,11 @@ struct RecommendationFeedView: View {
             Text(english ? "Ranked on this Mac · original source order is unchanged" : "在本机排序 · 不改变来源原榜顺序")
                 .font(.caption2).foregroundStyle(.secondary)
         }
+        // Without a concrete width the feed's lazy columns size themselves to
+        // their content; a long title or a wide cover can then push a card past
+        // its column and over the neighbouring column. Fill the available width
+        // before measuring, and give every card the same fixed column width.
+        .frame(maxWidth: .infinity, alignment: .leading)
         .onGeometryChange(for: CGFloat.self) { proxy in
             proxy.size.width
         } action: { width in
@@ -220,15 +230,19 @@ struct RecommendationFeedView: View {
         return result
     }
 
+    private var layoutWidth: CGFloat {
+        max(1, width ?? feedWidth)
+    }
+
     private var effectiveColumnCount: Int {
-        voiceOverEnabled ? 1 : RecommendationMasonryLayout.columnCount(for: feedWidth)
+        voiceOverEnabled ? 1 : RecommendationMasonryLayout.columnCount(for: layoutWidth)
     }
 
     private func recommendationsMasonry(_ snapshot: RecommendationSnapshot) -> some View {
         let rows = filteredRows(snapshot, limit: visibleCount)
         let columnCount = effectiveColumnCount
         let columnWidth = RecommendationMasonryLayout.columnWidth(
-            for: feedWidth,
+            for: layoutWidth,
             columns: columnCount
         )
         let entries = rows.map { ranked in
@@ -257,6 +271,7 @@ struct RecommendationFeedView: View {
                             profileVersion: snapshot.profileVersion,
                             columnWidth: columnWidth
                         )
+                        .frame(width: columnWidth, alignment: .top)
                         .modifier(QualifiedImpression(
                             item: ranked.row.item,
                             sessionID: controller.feedSessionID,
