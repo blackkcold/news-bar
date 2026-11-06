@@ -13,7 +13,7 @@
   "release_branch": true,
   "auto_merge": false,
   "release_note_style": "structured-cn",
-  "summary": "阅读器侧窗宽度下限、网页自适应缩放与两页瀑布流列数统一",
-  "summary_en": "Reader panel width floor, auto-fit page zoom, and unified waterfall columns",
-  "validation": "swift test 1613 项（6 项跳过，0 失败；2 项计时断言单独运行通过）+ swift build + release build + 760/1180/1236/1440pt 布局与渲染验收"
+  "summary": "热搜卡展开不再驱动整页重排，浏览列表回顶改用无状态锚点",
+  "summary_en": "Instant hot-trend disclosure and stateless browse scroll reset",
+  "validation": "swift test 1613 项（6 项跳过，0 失败）+ swift build + release build + 手动展开/回顶验收"
 }
