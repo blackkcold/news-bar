@@ -13,6 +13,8 @@ struct DashboardWindow: View {
     @State private var browseScroll = ScrollPosition()
     @State private var forYou = true
     @State private var listWidth: CGFloat = 400
+    @State private var pageSummaryInput: PageSummaryInput?
+    @State private var tabs = WorkspaceTabStore.shared
 
     var onOpenSettings: () -> Void = {}
     var onConfigureAI: (() -> Void)? = nil
@@ -51,16 +53,33 @@ struct DashboardWindow: View {
 
     var body: some View {
         @Bindable var router = NewsNavigationRouter.shared
-        DashboardReaderPresentation(
-            selection: $router.selection,
-            listWidth: $listWidth,
-            isRetro: settings.appTheme == .retroEditorial,
-            reduceMotion: reduceMotion,
-            transitionOriginProvider: { ReaderTransitionCoordinator.shared.consume() }
-        ) { context in
-            browsePane(isReaderCompact: context.isReaderCompact, phase: context.phase)
-        } readerContent: { request, readerPresented in
-            readerPane(request, readerPresented: readerPresented)
+        VStack(spacing: 0) {
+            WorkspaceTabStrip(
+                tabs: tabs.tabs,
+                activeID: tabs.activeID,
+                onSelectBrowse: { router.selection = nil },
+                onSelect: { id in
+                    if let request = tabs.request(for: id) {
+                        router.selection = request
+                    }
+                },
+                onClose: { id in closeTab(id, router: router) }
+            )
+            DashboardReaderPresentation(
+                selection: $router.selection,
+                listWidth: $listWidth,
+                isRetro: settings.appTheme == .retroEditorial,
+                reduceMotion: reduceMotion,
+                transitionOriginProvider: { ReaderTransitionCoordinator.shared.consume() }
+            ) { context in
+                browsePane(isReaderCompact: context.isReaderCompact, phase: context.phase)
+            } readerContent: { _, readerPresented in
+                readerPanes(readerPresented: readerPresented)
+            }
+        }
+        .onAppear { syncTabs(with: router.selection) }
+        .onChange(of: router.selection?.id) { _, _ in
+            syncTabs(with: router.selection)
         }
         .task(id: searchText) {
             let trimmed = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -85,6 +104,11 @@ struct DashboardWindow: View {
                     Task { await orchestrator.manualRefresh(settings: settings) }
                 }
                 DashboardToolbarAction(
+                    title: settings.appLanguage == .en ? "AI overview" : "AI 概览",
+                    symbol: "text.badge.star",
+                    action: presentPageSummary
+                )
+                DashboardToolbarAction(
                     title: L10n.string("research.center.title", language: settings.appLanguage),
                     symbol: "sparkles",
                     action: { onOpenResearchCenter(nil) }
@@ -96,19 +120,53 @@ struct DashboardWindow: View {
             NewsDigestSheet(request: request)
                 .environment(settings)
         }
+        .sheet(item: $pageSummaryInput) { input in
+            PageSummarySheet(input: input, onOpenSettings: onOpenSettings)
+                .environment(settings)
+        }
     }
 
-    private func readerPane(_ request: NewsReaderRequest, readerPresented: Bool) -> some View {
-        NewsReaderView(
-            request: request,
-            activeNewsItems: orchestrator.allActiveItems(settings: settings),
-            readerPresented: readerPresented,
-            onOpenSettings: openInterestSettings,
-            onOpenResearch: { onOpenResearchCenter($0) },
-            onConfigureAI: onConfigureAI ?? {}
-        )
-            .id(request.id)
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+    @ViewBuilder
+    private func readerPanes(readerPresented: Bool) -> some View {
+        ZStack {
+            ForEach(tabs.tabs) { tab in
+                let active = tabs.activeID == tab.id
+                NewsReaderView(
+                    model: tabs.model(for: tab),
+                    activeNewsItems: orchestrator.allActiveItems(settings: settings),
+                    readerPresented: readerPresented,
+                    isActiveTab: active,
+                    onOpenSettings: openInterestSettings,
+                    onOpenResearch: { onOpenResearchCenter($0) },
+                    onConfigureAI: onConfigureAI ?? {}
+                )
+                .id(tab.id)
+                .opacity(active ? 1 : 0)
+                .allowsHitTesting(active)
+                .accessibilityHidden(!active)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private func syncTabs(with request: NewsReaderRequest?) {
+        guard let request else {
+            tabs.deactivate()
+            return
+        }
+        tabs.openOrActivate(request)
+    }
+
+    private func closeTab(_ id: UUID, router: NewsNavigationRouter) {
+        let wasActive = tabs.activeID == id
+        guard let next = tabs.close(id) else {
+            router.selection = nil
+            return
+        }
+        if wasActive {
+            router.selection = next.request
+        }
     }
 
     private func browsePane(isReaderCompact: Bool, phase: ReaderPresentationPhase) -> some View {
@@ -176,6 +234,38 @@ struct DashboardWindow: View {
             onResetFilters: { searchText = ""; sourceFilter = .all },
             onRefresh: { Task { await orchestrator.manualRefresh(settings: settings) } },
             onShowSources: { forYou = false }
+        )
+    }
+
+    /// The overview reads exactly the page the user is looking at: the ranked
+    /// feed in "For you", the filtered source list otherwise. It never asks the
+    /// fetcher for more items and never reads article bodies for a list.
+    private func presentPageSummary() {
+        let language = settings.appLanguage
+        let isPrivate = InterestController.shared.privateReading
+        let rows: [PageSummaryListRow]
+        let title: String
+
+        if forYou, let snapshot = InterestController.shared.recommendations {
+            rows = snapshot.items.enumerated()
+                .filter { sourceFilter.matches($0.element.item.source) && matchesSearch($0.element.item) }
+                .prefix(PageSummaryService.maxListRows)
+                .map { PageSummaryListRow(position: $0.offset, item: $0.element.item) }
+            title = language == .en ? "For you" : "为你推荐"
+        } else {
+            rows = orchestrator.allActiveItems(settings: settings)
+                .filter { sourceFilter.matches($0.source) && matchesSearch($0) }
+                .prefix(PageSummaryService.maxListRows)
+                .enumerated()
+                .map { PageSummaryListRow(position: $0.offset, item: $0.element) }
+            title = sourceFilter.displayName
+        }
+
+        pageSummaryInput = .list(
+            title: title,
+            rows: rows,
+            language: language,
+            isPrivate: isPrivate
         )
     }
 

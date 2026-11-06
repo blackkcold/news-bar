@@ -58,6 +58,12 @@ final class ImageCacheTests: XCTestCase {
         XCTAssertTrue(ImageCache.isAcceptableResponse(httpResponse: response, data: data))
     }
 
+    func testIsAcceptableResponse_HTTPErrorStatus_False() {
+        let response = makeResponse(contentType: "image/png", statusCode: 404)
+        let data = Data(repeating: 0x89, count: 512)
+        XCTAssertFalse(ImageCache.isAcceptableResponse(httpResponse: response, data: data))
+    }
+
     func testIsAcceptableResponse_ContentTypeWithCharset_True() {
         let response = makeResponse(contentType: "image/png; charset=utf-8")
         let data = Data(repeating: 0x89, count: 512)
@@ -86,13 +92,19 @@ final class ImageCacheTests: XCTestCase {
         XCTAssertNil(ImageCache.decodeThumbnail(from: Data([0x00, 0x01, 0x02])))
     }
 
+    func testNonHTTPSImageURLIsRejectedWithoutNetwork() async {
+        let url = URL(string: "http://example.com/image.png")!
+        let image = await ImageCache.shared.image(for: url)
+        XCTAssertNil(image)
+    }
+
     // MARK: - Helpers
 
-    private func makeResponse(contentType: String?) -> HTTPURLResponse {
+    private func makeResponse(contentType: String?, statusCode: Int = 200) -> HTTPURLResponse {
         let url = URL(string: "https://example.com/image.png")!
         return HTTPURLResponse(
             url: url,
-            statusCode: 200,
+            statusCode: statusCode,
             httpVersion: "HTTP/1.1",
             headerFields: contentType.map { ["Content-Type": $0] }
         )!

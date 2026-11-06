@@ -2332,6 +2332,7 @@ final class NewsOrchestrator {
         cacheWriteGeneration.invalidate()
         NotificationService.clearPersonalizedNotifications()
         for language in AppLanguage.allCases { await summaryCache(for: language).clear() }
+        await PageSummaryCacheStore.shared.clear()
         aiSummaryState = .idle
         aiSummaryItems = []
         aiParsedSummary = nil
@@ -2368,6 +2369,7 @@ final class NewsOrchestrator {
         defer { cacheClearDepth -= 1 }
         // Invalidate and empty the observable state before any actor hop. A
         // refresh that started earlier must not publish back into this state.
+        await PageSummaryCacheStore.shared.clear()
         weiboItems = []
         weiboDetectionItems = []
         bilibiliItems = []

@@ -92,11 +92,32 @@ struct QualifiedExposure {
     }
 }
 
-/// The reader currently on screen, so the app can flush its cookies before the
-/// process exits. Weak: a closed reader must disappear on its own.
+/// The readers currently alive, so the app can flush every tab's cookies
+/// before the process exits. Weak: a closed tab disappears on its own.
 @MainActor
 enum ReaderSessionRegistry {
-    static weak var active: NewsReaderModel?
+    private final class WeakBox {
+        weak var value: NewsReaderModel?
+        init(_ value: NewsReaderModel) { self.value = value }
+    }
+
+    private static var readers: [WeakBox] = []
+
+    static func register(_ reader: NewsReaderModel) {
+        readers.removeAll { $0.value == nil || $0.value === reader }
+        readers.append(WeakBox(reader))
+    }
+
+    static func unregister(_ reader: NewsReaderModel) {
+        readers.removeAll { $0.value == nil || $0.value === reader }
+    }
+
+    static var all: [NewsReaderModel] {
+        readers.compactMap(\.value)
+    }
+
+    /// Compatibility for callers that only need one representative reader.
+    static var active: NewsReaderModel? { all.last }
 }
 
 enum ReaderTerminationPolicy {

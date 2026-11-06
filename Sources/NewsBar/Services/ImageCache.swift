@@ -11,10 +11,10 @@ actor ImageCache {
     static let thumbnailMaxPixelSize: Int = 480
     static let failureTTL: TimeInterval = 5 * 60
 
-    private let cache = NSCache<NSURL, NSImage>()
+    private let cache = NSCache<NSString, NSImage>()
     private let session: URLSession
-    private var inFlight: [NSURL: Task<NSImage?, Never>] = [:]
-    private var failedUntil: [NSURL: Date] = [:]
+    private var inFlight: [NSString: Task<NSImage?, Never>] = [:]
+    private var failedUntil: [NSString: Date] = [:]
 
     private init() {
         let config = URLSessionConfiguration.default
@@ -45,8 +45,13 @@ actor ImageCache {
         cache.totalCostLimit = Self.maxCacheBytes
     }
 
-    func image(for url: URL) async -> NSImage? {
-        let key = url as NSURL
+    /// `maxPixelSize` is part of the cache identity: a narrow list card and a
+    /// wide reader banner must not hand each other a blurry or oversized
+    /// decode. Callers that do not care keep the historical 480 px default.
+    func image(for url: URL, maxPixelSize: Int = thumbnailMaxPixelSize) async -> NSImage? {
+        guard url.scheme?.lowercased() == "https" else { return nil }
+        let pixelSize = min(2_048, max(64, maxPixelSize))
+        let key = Self.cacheKey(for: url, maxPixelSize: pixelSize)
         if let cached = cache.object(forKey: key) {
             return cached
         }
@@ -66,7 +71,7 @@ actor ImageCache {
                 let (data, response) = try await session.data(from: url)
                 guard let httpResponse = response as? HTTPURLResponse else { return nil }
                 guard Self.isAcceptableResponse(httpResponse: httpResponse, data: data) else { return nil }
-                return await Self.decodeThumbnailAsync(from: data)
+                return await Self.decodeThumbnailAsync(from: data, maxPixelSize: pixelSize)
             } catch {
                 return nil
             }
@@ -90,6 +95,7 @@ actor ImageCache {
 
     /// Pure validation seam — no I/O, safe for unit testing.
     static func isAcceptableResponse(httpResponse: HTTPURLResponse, data: Data) -> Bool {
+        guard (200..<300).contains(httpResponse.statusCode) else { return false }
         guard data.count <= maxPayloadBytes else { return false }
         guard data.count > 0 else { return false }
         let contentType = (httpResponse.value(forHTTPHeaderField: "Content-Type") ?? "").lowercased()
@@ -131,6 +137,10 @@ actor ImageCache {
             decodeThumbnail(from: data, maxPixelSize: maxPixelSize)
         }
         return await decoded.value
+    }
+
+    private static func cacheKey(for url: URL, maxPixelSize: Int) -> NSString {
+        "\(url.absoluteString)|px-\(maxPixelSize)" as NSString
     }
 
     private func imageCost(_ image: NSImage) -> Int {

@@ -58,9 +58,14 @@ enum SettingsPane: String, CaseIterable, Identifiable {
 struct SettingsWindow: View {
     @Environment(AppSettings.self) private var settings
     @State private var pane: SettingsPane
+    /// Owned by `AppDelegate` in the app and handed to the AppKit toolbar item,
+    /// so the button and the columns always agree. The default instance keeps
+    /// previews and the rendering tests self-contained.
+    private let sidebarState: SettingsSidebarState
 
-    init(initialPane: SettingsPane = .general) {
+    init(initialPane: SettingsPane = .general, sidebarState: SettingsSidebarState = SettingsSidebarState()) {
         _pane = State(initialValue: initialPane)
+        self.sidebarState = sidebarState
     }
 
     var body: some View {
@@ -74,11 +79,12 @@ struct SettingsWindow: View {
         .frame(minWidth: 780, minHeight: 580)
         .adaptiveColorScheme(forcing: isRetro ? .light : nil)
         .appThemeSurface()
-        // Settings has a fixed pane list; a collapsible sidebar would leave
-        // the window without navigation. Apply the removal at the window root
-        // so it also works when NavigationSplitView is hosted in an AppKit
-        // NSWindow rather than a SwiftUI WindowGroup.
-        .toolbar(removing: .sidebarToggle)
+        // The retro skin has no split view, so the toolbar item has nothing to
+        // toggle there. Disable it instead of leaving a dead control.
+        .onChange(of: isRetro, initial: true) { _, retro in
+            sidebarState.isCollapsible = !retro
+            sidebarState.onChange?()
+        }
         // Rebuild after a language change so every `.localized` label refreshes.
         .id(settings.appLanguage)
     }
@@ -100,9 +106,18 @@ struct SettingsWindow: View {
     /// The modern theme lets NavigationSplitView provide the floating sidebar,
     /// its material and its selection behavior.
     private var splitShell: some View {
-        NavigationSplitView {
+        NavigationSplitView(columnVisibility: Binding(
+            get: { sidebarState.visibility },
+            set: { sidebarState.visibility = $0 }
+        )) {
             sidebar
                 .navigationSplitViewColumnWidth(min: 180, ideal: 194, max: 230)
+                // Load-bearing: the removal must sit on the sidebar content, not
+                // on the window root. With the default item suppressed SwiftUI
+                // leaves the window toolbar to AppKit, which is what keeps the
+                // button at one fixed spot; at root scope it still installs the
+                // item and hops it between the sidebar and detail toolbars.
+                .toolbar(removing: .sidebarToggle)
         } detail: {
             detail
         }

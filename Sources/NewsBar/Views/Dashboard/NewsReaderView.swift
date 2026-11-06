@@ -99,6 +99,10 @@ final class NewsReaderModel: NSObject, WKNavigationDelegate, WKUIDelegate, WKScr
     private var cookieSiteSessionEpochs: [String: ReaderCookieCaptureEpoch] = [:]
     private var terminalState = ReadingTerminalState.unknown
     private var suspended = false
+    /// Only the selected workspace tab may accrue reading time or emit an
+    /// "opened" event. Background tabs keep their WebView and page state; they
+    /// simply stop the evidence clock.
+    private(set) var isTabActive = true
     private var observers: [(NotificationCenter, NSObjectProtocol)] = []
     private var urlObserver: NSKeyValueObservation?
     private var progressObserver: NSKeyValueObservation?
@@ -149,7 +153,7 @@ final class NewsReaderModel: NSObject, WKNavigationDelegate, WKUIDelegate, WKScr
 
     func start(options: SessionOptions? = nil) async {
         guard webView == nil, !stopped else { return }
-        ReaderSessionRegistry.active = self
+        ReaderSessionRegistry.register(self)
         if let options { sessionOptions = options }
         blockedByFakeIPPolicy = false
         networkRevision = proxyController.revision
@@ -233,10 +237,54 @@ final class NewsReaderModel: NSObject, WKNavigationDelegate, WKUIDelegate, WKScr
         }
         guard !stopped, networkContextIsCurrent else { return }
         installLifecycleObservers()
+        if isTabActive { startTimerIfNeeded() }
+        loadInitial()
+    }
+
+    func setTabActive(_ active: Bool) {
+        guard isTabActive != active else { return }
+        isTabActive = active
+        if active {
+            lastTick = ProcessInfo.processInfo.systemUptime
+            startTimerIfNeeded()
+            recordOpenIfNeeded()
+            tick()
+            if sessionOptions.cookieMemoryEnabled, !request.privateSession {
+                Task { _ = await self.captureCurrentSite() }
+            }
+        } else {
+            timer?.invalidate()
+            timer = nil
+        }
+    }
+
+    private func startTimerIfNeeded() {
+        guard timer == nil, !stopped, isTabActive else { return }
+        lastTick = ProcessInfo.processInfo.systemUptime
         timer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in self?.tick() }
         }
-        loadInitial()
+    }
+
+    private func recordOpenIfNeeded() {
+        guard isTabActive,
+              openAttribution.shouldRecordLoaded(
+                  attributed: attributed,
+                  privateSession: request.privateSession
+              ),
+              let item = request.item else { return }
+        InterestController.shared.record(
+            item,
+            kind: .opened,
+            epoch: request.consentEpoch,
+            sessionID: request.id,
+            surface: request.surface,
+            contextID: request.contextID,
+            position: request.position,
+            readerSessionID: request.id,
+            policyVersion: request.policyVersion,
+            profileVersion: request.profileVersion
+        )
     }
 
     func stop(terminal: ReadingTerminalState? = nil) {
@@ -288,7 +336,7 @@ final class NewsReaderModel: NSObject, WKNavigationDelegate, WKUIDelegate, WKScr
         isReaderModeExtracting = false
         webView?.navigationDelegate = nil
         webView?.uiDelegate = nil
-        if ReaderSessionRegistry.active === self { ReaderSessionRegistry.active = nil }
+        ReaderSessionRegistry.unregister(self)
         webView = nil // ephemeral cookies/data are released with the session
     }
 
@@ -427,7 +475,7 @@ final class NewsReaderModel: NSObject, WKNavigationDelegate, WKUIDelegate, WKScr
     }
 
     private func scheduleCookieCapture() {
-        guard !stopped, sessionOptions.cookieMemoryEnabled, !request.privateSession else { return }
+        guard !stopped, isTabActive, sessionOptions.cookieMemoryEnabled, !request.privateSession else { return }
         cookieCaptureTask?.cancel()
         cookieCaptureTask = Task { @MainActor [weak self] in
             try? await Task.sleep(for: .milliseconds(600))
@@ -498,7 +546,7 @@ final class NewsReaderModel: NSObject, WKNavigationDelegate, WKUIDelegate, WKScr
         let now = ProcessInfo.processInfo.systemUptime
         let elapsed = now - lastTick
         lastTick = now
-        guard !stopped, attributed, let webView, let item = request.item,
+        guard !stopped, final || isTabActive, attributed, let webView, let item = request.item,
               !request.privateSession, !InterestController.shared.privateReading else { return }
         let window = webView.window
         let visible = window?.isVisible == true && window?.occlusionState.contains(.visible) == true && !webView.isHiddenOrHasHiddenAncestor
@@ -683,7 +731,7 @@ final class NewsReaderModel: NSObject, WKNavigationDelegate, WKUIDelegate, WKScr
         attributed = documentAttribution.evaluate(finalURL: currentURL, itemURL: request.url)
         canGoBack = webView.canGoBack
         canGoForward = webView.canGoForward
-        if sessionOptions.cookieMemoryEnabled, !request.privateSession {
+        if isTabActive, sessionOptions.cookieMemoryEnabled, !request.privateSession {
             let allowEmptyRemoval = ReaderNavigationPolicy.isLogoutDestination(
                 webView.url?.absoluteString ?? currentURL
             )
@@ -692,21 +740,8 @@ final class NewsReaderModel: NSObject, WKNavigationDelegate, WKUIDelegate, WKScr
         let path = webView.url?.path.lowercased() ?? ""
         if ["login", "signin", "account", "passport", "captcha", "challenge"].contains(where: path.contains) { attributed = false }
         // Only a successfully loaded, attributed document counts as an open.
-        if openAttribution.shouldRecordLoaded(attributed: attributed, privateSession: request.privateSession),
-           let item = request.item {
-            InterestController.shared.record(
-                item,
-                kind: .opened,
-                epoch: request.consentEpoch,
-                sessionID: request.id,
-                surface: request.surface,
-                contextID: request.contextID,
-                position: request.position,
-                readerSessionID: request.id,
-                policyVersion: request.policyVersion,
-                profileVersion: request.profileVersion
-            )
-        }
+        // A tab that finished in the background records it on activation.
+        if isTabActive { recordOpenIfNeeded() }
         guard attributed, InterestController.shared.canLearn, !request.privateSession else { return }
         // Explicit site adapters only. Unknown sites receive weak native-time evidence.
         let host = webView.url?.host?.lowercased() ?? ""
@@ -846,25 +881,28 @@ private struct ReaderWebSurface: NSViewRepresentable {
 }
 
 struct NewsReaderView: View {
-    @State private var model: NewsReaderModel
+    let model: NewsReaderModel
     @Environment(AppSettings.self) private var settings
     var activeNewsItems: [NewsItem] = []
     var readerPresented = true
+    var isActiveTab = true
     var onOpenSettings: () -> Void = {}
     var onOpenResearch: (String) -> Void = { _ in }
     var onConfigureAI: () -> Void = {}
 
     init(
-        request: NewsReaderRequest,
+        model: NewsReaderModel,
         activeNewsItems: [NewsItem] = [],
         readerPresented: Bool = true,
+        isActiveTab: Bool = true,
         onOpenSettings: @escaping () -> Void = {},
         onOpenResearch: @escaping (String) -> Void = { _ in },
         onConfigureAI: @escaping () -> Void = {}
     ) {
-        _model = State(initialValue: NewsReaderModel(request: request))
+        self.model = model
         self.activeNewsItems = activeNewsItems
         self.readerPresented = readerPresented
+        self.isActiveTab = isActiveTab
         self.onOpenSettings = onOpenSettings
         self.onOpenResearch = onOpenResearch
         self.onConfigureAI = onConfigureAI
@@ -875,6 +913,7 @@ struct NewsReaderView: View {
             model: model,
             activeNewsItems: activeNewsItems,
             readerPresented: readerPresented,
+            isActiveTab: isActiveTab,
             onClose: { ReaderTransitionCoordinator.shared.requestClose() },
             onOpenSettings: onOpenSettings,
             onOpenResearch: onOpenResearch,
@@ -886,7 +925,6 @@ struct NewsReaderView: View {
                     historyEnabled: settings.readerHistoryEnabled
                 ))
             }
-            .onDisappear { model.stop() }
             .onReceive(NotificationCenter.default.publisher(for: .interestDataCleared)) { _ in
                 model.stop()
                 ReaderTransitionCoordinator.shared.requestClose()
@@ -900,6 +938,7 @@ struct ReaderContentView: View {
     @Bindable var model: NewsReaderModel
     var activeNewsItems: [NewsItem] = []
     var readerPresented = true
+    var isActiveTab = true
     var onClose: () -> Void
     var onOpenSettings: () -> Void = {}
     var onOpenResearch: (String) -> Void = { _ in }
@@ -909,6 +948,9 @@ struct ReaderContentView: View {
     @State private var askExternal = false
     @State private var showPrivacy = false
     @State private var showResearch = false
+    @State private var pageSummaryInput: PageSummaryInput?
+    @State private var isPreparingPageSummary = false
+    @State private var pageSummaryUnavailable = false
     @State private var research = ReaderResearchPanelModel()
     @State private var explainModel = SelectionExplainModel()
     @State private var searchModel = AISearchPanelModel()
@@ -1072,6 +1114,20 @@ struct ReaderContentView: View {
             footer
         }
         .readerSurface(cornerRadius: 12)
+        .disabled(!isActiveTab)
+        .sheet(item: $pageSummaryInput) { input in
+            PageSummarySheet(input: input, onOpenSettings: onConfigureAI)
+        }
+        .alert(
+            english ? "No readable article text" : "没有可读正文",
+            isPresented: $pageSummaryUnavailable
+        ) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(english
+                ? "Switch to reader mode or wait for the page to finish loading, then try again."
+                : "可以切换到阅读模式，或等页面加载完成后再试。")
+        }
         .task(id: model.currentURL + "\n" + model.pageTitle + "\n\(model.loading)") { await refreshResearch() }
         .onAppear {
             searchModel.pageContextProvider = { [model] in
@@ -1281,6 +1337,20 @@ struct ReaderContentView: View {
             .help(model.isReaderModeActive
                 ? (english ? "Back to the web page" : "返回网页")
                 : (english ? "Re-layout this article as text" : "以原生排版阅读正文"))
+            Button {
+                Task { await preparePageSummary() }
+            } label: {
+                if isPreparingPageSummary {
+                    ProgressView().controlSize(.mini).frame(width: 28, height: 28)
+                } else {
+                    Image(systemName: "text.badge.star").frame(width: 28, height: 28)
+                }
+            }
+            .disabled(isPreparingPageSummary || model.loading)
+            .accessibilityLabel(english ? "AI overview" : "AI 概览")
+            .help(english
+                ? "Summarize this article without asking a question"
+                : "概括当前文章，不需要输入问题")
             Button { showResearch.toggle() } label: {
                 Image(systemName: "sidebar.trailing")
                     .frame(width: 28, height: 28)
@@ -1364,6 +1434,30 @@ struct ReaderContentView: View {
 
     private func refreshResearch() async {
         await research.refresh(item: model.request.item, requestURL: model.request.url, currentURL: model.currentURL, title: model.loading ? "" : model.pageTitle)
+    }
+
+    private func preparePageSummary() async {
+        guard !isPreparingPageSummary else { return }
+        isPreparingPageSummary = true
+        defer { isPreparingPageSummary = false }
+
+        let text: String?
+        if let document = model.readerModeDocument {
+            text = document.plainText
+        } else {
+            text = await model.currentPagePlainText()
+        }
+        guard let text, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            pageSummaryUnavailable = true
+            return
+        }
+        pageSummaryInput = .article(
+            title: model.pageTitle,
+            url: model.currentURL,
+            text: text,
+            language: settings.appLanguage,
+            isPrivate: model.request.privateSession || InterestController.shared.privateReading
+        )
     }
 
     private func verifyCurrentPage() {

@@ -199,7 +199,6 @@ struct DashboardReaderPresentation<BrowseContent: View, ReaderContent: View>: Vi
 
                 if let request = presentationState.displayedRequest {
                     readerContent(request, presentationState.readerVisible)
-                        .id(request.id)
                         .frame(width: readerFrame.width, height: readerFrame.height, alignment: .topLeading)
                         .offset(x: readerFrame.minX, y: readerFrame.minY)
                         .opacity(presentationState.readerVisible ? 1 : 0)

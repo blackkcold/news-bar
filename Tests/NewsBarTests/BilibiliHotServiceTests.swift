@@ -26,6 +26,30 @@ final class BilibiliHotServiceTests: XCTestCase {
         XCTAssertEqual(router.selection?.url, "https://b23.tv/example")
     }
 
+    func testProtocolRelativeCoverIsUpgradedToHTTPS() throws {
+        let data = Data("""
+        {"data":{"list":[{"title":"Video","short_link_v2":"https://b23.tv/example","bvid":"BV1xx411c7mD","pic":"//i0.hdslb.com/bfs/archive/cover.jpg"}]}}
+        """.utf8)
+        let item = try XCTUnwrap(BilibiliHotService.decode(data).first)
+
+        XCTAssertEqual(item.imageURL, "https://i0.hdslb.com/bfs/archive/cover.jpg")
+    }
+
+    func testHTTPCoverIsUpgradedAndUnsafeCoverIsDropped() throws {
+        let data = Data("""
+        {"data":{"list":[
+          {"title":"HTTP","short_link_v2":"https://b23.tv/a","pic":"http://i0.hdslb.com/cover.jpg"},
+          {"title":"Private","short_link_v2":"https://b23.tv/b","pic":"https://127.0.0.1/cover.jpg"},
+          {"title":"Credentials","short_link_v2":"https://b23.tv/c","pic":"https://user:pass@i0.hdslb.com/cover.jpg"}
+        ]}}
+        """.utf8)
+        let items = try BilibiliHotService.decode(data)
+
+        XCTAssertEqual(items[0].imageURL, "https://i0.hdslb.com/cover.jpg")
+        XCTAssertNil(items[1].imageURL)
+        XCTAssertNil(items[2].imageURL)
+    }
+
     func testPreviouslyCachedNewsItemWithoutReaderURLStillDecodes() throws {
         let item = NewsItem(title: "Video", url: "https://b23.tv/example", source: .bilibili)
         let encoded = try JSONEncoder().encode(item)

@@ -140,9 +140,10 @@ struct RecommendationFeedView: View {
     var onRefresh: () -> Void = {}
     var onShowSources: () -> Void = {}
     @Environment(AppSettings.self) private var settings
+    @Environment(\.accessibilityVoiceOverEnabled) private var voiceOverEnabled
     @State private var controller = InterestController.shared
-    @State private var expandedReason: String?
     @State private var visibleCount = 20
+    @State private var feedWidth: CGFloat = 720
     private var english: Bool { settings.appLanguage == .en }
 
     var body: some View {
@@ -166,150 +167,31 @@ struct RecommendationFeedView: View {
                 Label(english ? "Learning paused for this activity" : "当前活动不参与学习", systemImage: "hand.raised").font(.caption).foregroundStyle(.secondary)
             }
             if let snapshot = controller.recommendations {
-                LazyVStack(alignment: .leading, spacing: 12) {
-                    ForEach(Array(snapshot.items.enumerated().filter { matches($0.element.item) }.prefix(visibleCount)), id: \.element.id) { position, row in
-                        VStack(alignment: .leading, spacing: 9) {
-                            HeroOpenButton(
-                                item: row.item,
-                                surface: "recommendation",
-                                contextID: snapshot.id.uuidString,
-                                policyVersion: "ranking-v\(snapshot.policyVersion)",
-                                profileVersion: snapshot.profileVersion,
-                                position: position
-                            ) {
-                                VStack(alignment: .leading, spacing: 6) {
-                                    Text(row.item.displayTitle).font(.system(size: 15, weight: .semibold)).foregroundStyle(.primary).multilineTextAlignment(.leading)
-                                    Text(row.item.source.displayName).font(.caption).foregroundStyle(.secondary)
-                                }
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .contentShape(Rectangle())
-                            }
-                            .modifier(QualifiedImpression(
-                                item: row.item,
-                                sessionID: controller.feedSessionID,
-                                epoch: controller.state.consentEpoch,
-                                contextID: snapshot.id.uuidString,
-                                position: position,
-                                policyVersion: "ranking-v\(snapshot.policyVersion)",
-                                profileVersion: snapshot.profileVersion
-                            ))
-                            HStack(spacing: 10) {
-                                Button(reason(row)) { expandedReason = expandedReason == row.id ? nil : row.id }
-                                    .font(.caption).foregroundStyle(.secondary)
-                                Spacer(minLength: 0)
-                                Menu {
-                                    Button(english ? "Bookmark / remove" : "收藏／取消收藏") {
-                                        if let id = controller.toggleBookmark(row.item) {
-                                            ActionToastCenter.shared.show(english ? "Bookmarked" : "已收藏") {
-                                                controller.undo(id)
-                                            }
-                                        }
-                                    }
-                                    Button(english ? "More like this (session)" : "更多同类（本次会话）") {
-                                        if let id = controller.feedback(row.item, kind: .moreLikeThis) {
-                                            ActionToastCenter.shared.show(english ? "More like this" : "已记录：更多同类") {
-                                                controller.undo(id)
-                                            }
-                                        }
-                                    }
-                                    .disabled(!controller.canLearn)
-                                    .help(softFeedbackHelp)
-
-                                    Divider()
-
-                                    Menu(english ? "Less like this" : "少推荐") {
-                                        Button(english ? "This article" : "这条内容") {
-                                            if let id = controller.feedback(row.item, kind: .lessLikeContent) {
-                                                ActionToastCenter.shared.show(english ? "Fewer like this" : "已减少推荐：这条") {
-                                                    controller.undo(id)
-                                                }
-                                            }
-                                        }
-                                        if let topic = row.topic {
-                                            Button(english ? "This topic" : "这个主题") {
-                                                if let id = controller.feedback(row.item, kind: .reduceTopic, topic: topic) {
-                                                    ActionToastCenter.shared.show(english ? "Fewer like this topic" : "已减少推荐：这个主题") {
-                                                        controller.undo(id)
-                                                    }
-                                                }
-                                            }
-                                        }
-                                        Button(english ? "This source" : "这个来源") {
-                                            if let id = controller.feedback(row.item, kind: .lessLikeSource) {
-                                                ActionToastCenter.shared.show(english ? "Fewer like this source" : "已减少推荐：这个来源") {
-                                                    controller.undo(id)
-                                                }
-                                            }
-                                        }
-                                    }
-                                    .disabled(!controller.canLearn)
-                                    .help(softFeedbackHelp)
-
-                                    Menu(english ? "Hide" : "屏蔽") {
-                                        Button(english ? "This article" : "不再看这条") {
-                                            if let id = controller.feedback(row.item, kind: .notInterested) {
-                                                ActionToastCenter.shared.show(english ? "Hidden: this article" : "已屏蔽：这条") {
-                                                    controller.undo(id)
-                                                }
-                                            }
-                                        }
-                                        Button(english ? "This event" : "不再看这个事件") {
-                                            if let id = controller.feedback(row.item, kind: .hideEvent) {
-                                                ActionToastCenter.shared.show(english ? "Hidden: this event" : "已屏蔽：这个事件") {
-                                                    controller.undo(id)
-                                                }
-                                            }
-                                        }
-                                        Button(english ? "This source" : "屏蔽这个来源") {
-                                            if let id = controller.feedback(row.item, kind: .muteSource) {
-                                                ActionToastCenter.shared.show(english ? "Muted source" : "已屏蔽：这个来源") {
-                                                    controller.undo(id)
-                                                }
-                                            }
-                                        }
-                                    }
-                                } label: { Image(systemName: "ellipsis").frame(minWidth: 28, minHeight: 28) }
-                                .disabled(!controller.canManagePreferences)
-                                .accessibilityLabel(english ? "Reading preferences" : "阅读偏好操作")
-                                .help(controller.canManagePreferences ? (english ? "Reading preferences" : "阅读偏好") : (english ? "Local preference storage is unavailable" : "本地偏好存储暂不可用"))
-                            }
-                            .buttonStyle(.borderless)
-                            if expandedReason == row.id {
-                                Text(explanation(row)).font(.caption).foregroundStyle(.secondary)
-                            }
-                        }
-                        .padding(14)
-                        .newsCardSurface(cornerRadius: 14)
-                    }
+                recommendationsMasonry(snapshot)
+                let filteredCount = filteredRows(snapshot, limit: nil).count
+                if filteredCount > visibleCount {
+                    Button(english ? "Show more" : "加载更多") { visibleCount += 20 }
+                        .frame(maxWidth: .infinity)
+                } else if filteredCount > 0 {
+                    Text(english ? "You're all caught up for this batch" : "本批推荐已展示完")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                        .frame(maxWidth: .infinity)
+                        .padding(.top, 2)
                 }
-                if snapshot.items.filter({ matches($0.item) }).count > visibleCount {
-                    Button(english ? "Show more" : "加载更多") { visibleCount += 20 }.frame(maxWidth: .infinity)
-                }
-                if snapshot.items.filter({ matches($0.item) }).isEmpty {
-                    VStack(spacing: 12) {
-                        Image(systemName: hasFilter ? "line.3.horizontal.decrease.circle" : "newspaper").font(.largeTitle).foregroundStyle(.secondary)
-                        Text(hasFilter ? (english ? "No matching recommendations" : "暂无匹配推荐") : (english ? "No news collected yet" : "还没有采集到新闻"))
-                            .font(.headline)
-                        Text(hasFilter ? (english ? "Try clearing filters, or browse all items by source." : "可以清除筛选，或切换按源浏览查看全部内容。")
-                             : (english ? "Refresh to collect news, or add an RSS source in Settings." : "刷新以采集新闻，或到设置中添加 RSS 来源。"))
-                            .font(.callout).foregroundStyle(.secondary).multilineTextAlignment(.center)
-                        HStack(spacing: 12) {
-                            if hasFilter {
-                                Button(english ? "Clear filters" : "清除筛选", action: onResetFilters)
-                                Button(english ? "Browse by source" : "按源浏览", action: onShowSources)
-                            } else {
-                                Button(english ? "Refresh news" : "刷新新闻", action: onRefresh)
-                                Button(english ? "Open settings" : "打开设置", action: onOpenSettings)
-                            }
-                        }.buttonStyle(.bordered)
-                    }
-                    .frame(maxWidth: .infinity).padding(.vertical, 32)
+                if filteredCount == 0 {
+                    emptyState
                 }
             } else {
                 ProgressView().frame(maxWidth: .infinity).padding()
             }
             Text(english ? "Ranked on this Mac · original source order is unchanged" : "在本机排序 · 不改变来源原榜顺序")
                 .font(.caption2).foregroundStyle(.secondary)
+        }
+        .onGeometryChange(for: CGFloat.self) { proxy in
+            proxy.size.width
+        } action: { width in
+            if width > 0, abs(width - feedWidth) > 0.5 { feedWidth = width }
         }
         .background {
             ExposureWindowReader { window in
@@ -321,26 +203,105 @@ struct RecommendationFeedView: View {
         .onDisappear { ExposureEnvironment.shared.stop() }
     }
 
-    private var softFeedbackHelp: String {
-        controller.canLearn
-            ? (english ? "Uses this session's short-term interest only." : "仅影响本次会话的短期兴趣。")
-            : InterestFeedbackCopy.softFeedbackUnavailable(settings.appLanguage)
+    private struct RankedRecommendation {
+        let position: Int
+        let row: ScoredRecommendation
     }
 
-    private func reason(_ row: ScoredRecommendation) -> String {
-        switch row.reason {
-        case "interest": return english ? "Related to your interests" : "与你的阅读与关注主题相关"
-        case "publicHeat": return english ? "Public chart signal" : "公开榜单热度"
-        case "exploration": return english ? "Source rotation" : "来源补位"
-        default: return english ? "Recently discovered" : "近期采集内容"
+    private func filteredRows(
+        _ snapshot: RecommendationSnapshot,
+        limit: Int?
+    ) -> [RankedRecommendation] {
+        var result: [RankedRecommendation] = []
+        for (position, row) in snapshot.items.enumerated() where matches(row.item) {
+            result.append(RankedRecommendation(position: position, row: row))
+            if let limit, result.count >= limit { break }
         }
+        return result
     }
 
-    private func explanation(_ row: ScoredRecommendation) -> String {
-        let labels = english
-            ? ["interest": "Topic match", "source": "Source preference", "recency": "Recency", "novelty": "Novelty", "publicHeat": "Public heat"]
-            : ["interest": "主题相关", "source": "来源偏好", "recency": "时效", "novelty": "新颖性", "publicHeat": "公开热度"]
-        let values = row.components.sorted { $0.key < $1.key }.map { "\(labels[$0.key] ?? $0.key)：\(String(format: "%.2f", $0.value))" }.joined(separator: " · ")
-        return reason(row) + "\n" + values + (english ? "\nMissing features are unknown; scores are heuristics, not predicted reading probabilities." : "\n缺失特征按未知处理；分数是启发式排序，不是阅读概率。")
+    private var effectiveColumnCount: Int {
+        voiceOverEnabled ? 1 : RecommendationMasonryLayout.columnCount(for: feedWidth)
+    }
+
+    private func recommendationsMasonry(_ snapshot: RecommendationSnapshot) -> some View {
+        let rows = filteredRows(snapshot, limit: visibleCount)
+        let columnCount = effectiveColumnCount
+        let columnWidth = RecommendationMasonryLayout.columnWidth(
+            for: feedWidth,
+            columns: columnCount
+        )
+        let entries = rows.map { ranked in
+            RecommendationMasonryEntry(
+                id: ranked.row.item.id,
+                title: ranked.row.item.displayTitle,
+                hasImage: RecommendationCardMedia.validatedURL(for: ranked.row.item) != nil
+            )
+        }
+        let columns = RecommendationMasonryLayout.columns(
+            for: entries,
+            columnCount: columnCount,
+            columnWidth: columnWidth
+        )
+
+        return HStack(alignment: .top, spacing: RecommendationMasonryLayout.columnSpacing) {
+            ForEach(Array(columns.enumerated()), id: \.offset) { _, indexes in
+                LazyVStack(spacing: RecommendationMasonryLayout.cardSpacing) {
+                    ForEach(indexes, id: \.self) { index in
+                        let ranked = rows[index]
+                        RecommendationCardView(
+                            row: ranked.row,
+                            contextID: snapshot.id.uuidString,
+                            position: ranked.position,
+                            policyVersion: "ranking-v\(snapshot.policyVersion)",
+                            profileVersion: snapshot.profileVersion,
+                            columnWidth: columnWidth
+                        )
+                        .modifier(QualifiedImpression(
+                            item: ranked.row.item,
+                            sessionID: controller.feedSessionID,
+                            epoch: controller.state.consentEpoch,
+                            contextID: snapshot.id.uuidString,
+                            position: ranked.position,
+                            policyVersion: "ranking-v\(snapshot.policyVersion)",
+                            profileVersion: snapshot.profileVersion
+                        ))
+                    }
+                }
+                .frame(width: columnWidth, alignment: .top)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+    }
+
+    @ViewBuilder
+    private var emptyState: some View {
+        VStack(spacing: 12) {
+            Image(systemName: hasFilter ? "line.3.horizontal.decrease.circle" : "newspaper")
+                .font(.largeTitle)
+                .foregroundStyle(.secondary)
+            Text(hasFilter
+                ? (english ? "No matching recommendations" : "暂无匹配推荐")
+                : (english ? "No news collected yet" : "还没有采集到新闻"))
+                .font(.headline)
+            Text(hasFilter
+                ? (english ? "Try clearing filters, or browse all items by source." : "可以清除筛选，或切换按源浏览查看全部内容。")
+                : (english ? "Refresh to collect news, or add an RSS source in Settings." : "刷新以采集新闻，或到设置中添加 RSS 来源。"))
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+            HStack(spacing: 12) {
+                if hasFilter {
+                    Button(english ? "Clear filters" : "清除筛选", action: onResetFilters)
+                    Button(english ? "Browse by source" : "按源浏览", action: onShowSources)
+                } else {
+                    Button(english ? "Refresh news" : "刷新新闻", action: onRefresh)
+                    Button(english ? "Open settings" : "打开设置", action: onOpenSettings)
+                }
+            }
+            .buttonStyle(.bordered)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 32)
     }
 }

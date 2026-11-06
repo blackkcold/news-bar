@@ -860,7 +860,7 @@ private enum DashboardRemoteImagePhase {
     case failed
 }
 
-private enum DashboardPalette {
+enum DashboardPalette {
     private static let colors: [Color] = [.blue, .purple, .teal, .green, .orange, .pink, .indigo, .cyan]
 
     static func tint(for key: String) -> Color {
