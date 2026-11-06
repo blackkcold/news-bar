@@ -189,6 +189,45 @@ final class LocalInterestTests: XCTestCase {
     }
 
     @MainActor
+    func testLearningProjectionsIgnoreImpressionFlushButTrackConsent() async throws {
+        let path = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString).appendingPathComponent("db.sqlite")
+        let store = LocalInterestStore(fileURL: path)
+        let controller = InterestController(store: store)
+        await controller.prepare()
+        controller.setLearningEnabled(true)
+        let epoch = controller.consentEpoch
+
+        var invalidations = 0
+        withObservationTracking {
+            _ = controller.learningEnabled
+            _ = controller.learningPaused
+            _ = controller.consentEpoch
+        } onChange: {
+            invalidations += 1
+        }
+
+        let article = item()
+        let session = UUID()
+        controller.record(article, kind: .impression, epoch: epoch, sessionID: session)
+        await controller.flush()
+
+        // The impression exists in the document, but the consent boundary did
+        // not move. Feeding the document directly to the views made this flush
+        // invalidate the feed and every visible card every 1.5 s while scrolling.
+        XCTAssertEqual(controller.state.events.count, 1)
+        XCTAssertFalse(controller.state.events.isEmpty)
+        XCTAssertEqual(controller.learningEnabled, true)
+        XCTAssertEqual(controller.learningPaused, false)
+        XCTAssertEqual(controller.consentEpoch, epoch)
+        XCTAssertEqual(invalidations, 0)
+
+        controller.setPaused(true)
+        XCTAssertTrue(controller.learningPaused)
+        XCTAssertNotEqual(controller.consentEpoch, epoch)
+        XCTAssertGreaterThan(invalidations, 0)
+    }
+
+    @MainActor
     func testControllerSerializesClearAndRejectsLateRead() async throws {
         let path = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString).appendingPathComponent("db.sqlite")
         let store = LocalInterestStore(fileURL: path)

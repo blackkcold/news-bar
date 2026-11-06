@@ -115,10 +115,12 @@ final class ReaderPolicyTests: XCTestCase {
         XCTAssertNil(router.selection)
     }
     func testNavigationBlocksPrivateSchemesHostsAndUserInfo() {
-        for raw in ["http://example.com/a", "file:///etc/passwd", "javascript:alert(1)", "https://localhost/a", "https://127.0.0.1/", "https://10.0.0.2/", "https://[::1]/", "https://router.local/a", "https://user:secret@example.com/"] {
+        for raw in ["http://example.com/a", "file:///etc/passwd", "javascript:alert(1)", "https://localhost/a", "https://127.0.0.1/", "https://10.0.0.2/", "https://123.45.67.89/", "https://[::1]/", "https://router.local/a", "https://user:secret@example.com/"] {
             XCTAssertNil(ReaderNavigationPolicy.allowedURL(raw), raw)
         }
         XCTAssertNotNil(ReaderNavigationPolicy.allowedURL("https://example.com/article?q=1"))
+        XCTAssertNotNil(ReaderNavigationPolicy.allowedURL("https://365.com/"))
+        XCTAssertNotNil(ReaderNavigationPolicy.allowedURL("https://123example.com/"))
         XCTAssertFalse(ReaderNavigationPolicy.isPublicAddress("192.168.3.1"))
         XCTAssertFalse(ReaderNavigationPolicy.isPublicAddress("::ffff:127.0.0.1"))
         XCTAssertFalse(ReaderNavigationPolicy.isPublicAddress("169.254.169.254"))

@@ -3,6 +3,14 @@ import SwiftUI
 /// A dashboard row that records its own frame before opening the reader, so the
 /// reader can animate out of the exact card the user tapped.
 struct HeroOpenButton<Label: View>: View {
+    /// Reference storage for the hovered card's frame. Writing this must not
+    /// invalidate the view: while the pointer rests on a card, scrolling moves
+    /// that card every frame, and a `@State` write here re-evaluated the card
+    /// (and its reader chrome) on every scroll pass.
+    private final class MeasuredFrame {
+        var value: CGRect = .zero
+    }
+
     let item: NewsItem
     let surface: String
     var contextID: String? = nil
@@ -11,7 +19,7 @@ struct HeroOpenButton<Label: View>: View {
     var profileVersion: Int? = nil
     var position: Int? = nil
 
-    @State private var frame: CGRect = .zero
+    @State private var measuredFrame = MeasuredFrame()
     @State private var isHovering = false
     private let label: Label
 
@@ -35,6 +43,7 @@ struct HeroOpenButton<Label: View>: View {
 
     var body: some View {
         Button {
+            let frame = measuredFrame.value
             if isHovering, frame.width > 1, frame.height > 1 {
                 ReaderTransitionCoordinator.shared.register(frame: frame, title: item.displayTitle)
             }
@@ -59,7 +68,7 @@ struct HeroOpenButton<Label: View>: View {
                     .onGeometryChange(for: CGRect.self) { proxy in
                         proxy.frame(in: .named("dashboardRoot"))
                     } action: { newFrame in
-                        frame = newFrame
+                        measuredFrame.value = newFrame
                     }
             }
         }

@@ -57,7 +57,18 @@ private struct PendingInterestEvent: Sendable {
 @Observable
 final class InterestController {
     static let shared = InterestController()
-    private(set) var state = LocalInterestState()
+    private(set) var state = LocalInterestState() {
+        didSet { syncLearningProjections() }
+    }
+    /// Narrow projections of the learning consent boundary. The feed and every
+    /// card only need these three values, but reading `state` directly makes
+    /// them observe the whole document: an exposure flush mutates `events` and
+    /// `revision` every 1.5 s while scrolling, which invalidated the feed and
+    /// every visible card. Keep the document as the source of truth and publish
+    /// only semantic changes here.
+    private(set) var learningEnabled = false
+    private(set) var learningPaused = false
+    private(set) var consentEpoch = UUID()
     private(set) var isReady = false
     private(set) var storageError: String?
     /// True for the whole clear/recovery await. Consent changes, learning
@@ -88,7 +99,24 @@ final class InterestController {
     @ObservationIgnored private var contentEpoch = 0
     private var loading: Task<Void, Never>?
 
-    init(store: LocalInterestStore = LocalInterestStore()) { self.store = store }
+    init(store: LocalInterestStore = LocalInterestStore()) {
+        self.store = store
+        learningEnabled = state.learningEnabled
+        learningPaused = state.learningPaused
+        consentEpoch = state.consentEpoch
+    }
+
+    private func syncLearningProjections() {
+        if learningEnabled != state.learningEnabled {
+            learningEnabled = state.learningEnabled
+        }
+        if learningPaused != state.learningPaused {
+            learningPaused = state.learningPaused
+        }
+        if consentEpoch != state.consentEpoch {
+            consentEpoch = state.consentEpoch
+        }
+    }
 
     func prepare() async {
         if isReady { return }
@@ -113,7 +141,7 @@ final class InterestController {
 
     var canLearn: Bool {
         isReady && storageError == nil && !isResetting
-            && state.learningEnabled && !state.learningPaused && !privateReading
+            && learningEnabled && !learningPaused && !privateReading
     }
 
     var canManagePreferences: Bool { isReady && storageError == nil && !isResetting }
@@ -125,8 +153,8 @@ final class InterestController {
     var learningStatus: InterestLearningStatus {
         guard isReady, storageError == nil, !isResetting else { return .unavailable }
         if privateReading { return .privateReading }
-        if !state.learningEnabled { return .off }
-        return state.learningPaused ? .paused : .active
+        if !learningEnabled { return .off }
+        return learningPaused ? .paused : .active
     }
 
     func ingest(_ items: [NewsItem]) async {

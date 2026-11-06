@@ -178,7 +178,7 @@ struct RecommendationFeedView: View {
                 Text(controller.learningStatus.title(language: settings.appLanguage))
                     .font(.caption).foregroundStyle(.secondary)
             }
-            if !controller.state.learningEnabled {
+            if !controller.learningEnabled {
                 HStack(alignment: .top, spacing: 12) {
                     Text(english ? "Public ranking is available without recording your reading behavior." : "未开启阅读行为记录，仍可使用公共推荐。")
                         .font(.caption).foregroundStyle(.secondary)
@@ -187,7 +187,7 @@ struct RecommendationFeedView: View {
                         .buttonStyle(.borderless).font(.caption)
                 }
             }
-            if controller.state.learningPaused || controller.privateReading {
+            if controller.learningPaused || controller.privateReading {
                 Label(english ? "Learning paused for this activity" : "当前活动不参与学习", systemImage: "hand.raised").font(.caption).foregroundStyle(.secondary)
             }
             if let snapshot = snapshotOverride ?? controller.recommendations {
@@ -276,8 +276,11 @@ struct RecommendationFeedView: View {
         return HStack(alignment: .top, spacing: RecommendationMasonryLayout.columnSpacing) {
             ForEach(Array(columns.enumerated()), id: \.offset) { _, indexes in
                 LazyVStack(spacing: RecommendationMasonryLayout.cardSpacing) {
-                    ForEach(indexes, id: \.self) { index in
-                        let ranked = rows[index]
+                    // Key cards by the article, not by their slot in the column.
+                    // Filtering or a ranking refresh can put a different article
+                    // at the same index; an index identity would then reuse the
+                    // old card state (and its already-loaded cover) for a new row.
+                    ForEach(indexes.map { rows[$0] }, id: \.row.item.id) { ranked in
                         RecommendationCardView(
                             row: ranked.row,
                             contextID: snapshot.id.uuidString,
@@ -305,7 +308,7 @@ struct RecommendationFeedView: View {
                         .modifier(QualifiedImpression(
                             item: ranked.row.item,
                             sessionID: controller.feedSessionID,
-                            epoch: controller.state.consentEpoch,
+                            epoch: controller.consentEpoch,
                             contextID: snapshot.id.uuidString,
                             position: ranked.position,
                             policyVersion: "ranking-v\(snapshot.policyVersion)",
