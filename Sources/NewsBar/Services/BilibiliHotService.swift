@@ -21,6 +21,7 @@ enum BilibiliHotService {
                     let short_link_v2: String?
                     let short_link: String?
                     let bvid: String?
+                    let pic: String?
                 }
                 let list: [Video]
             }
@@ -41,8 +42,24 @@ enum BilibiliHotService {
                 url: validatedURL,
                 source: .bilibili,
                 rank: index + 1,
+                imageURL: validatedImageURL(video.pic),
                 readerURL: directURL
             )
         }
+    }
+
+    /// The popular endpoint returns protocol-relative or http cover URLs.
+    /// Upgrade the scheme, then apply the same HTTPS/public-host rules as every
+    /// other remote image; an unusable cover simply leaves the card text-only.
+    private static func validatedImageURL(_ raw: String?) -> String? {
+        guard let raw else { return nil }
+        var value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty else { return nil }
+        if value.hasPrefix("//") {
+            value = "https:" + value
+        } else if value.hasPrefix("http://") {
+            value = "https://" + value.dropFirst("http://".count)
+        }
+        return ReaderNavigationPolicy.allowedURL(value)?.absoluteString
     }
 }

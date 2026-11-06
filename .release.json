@@ -13,7 +13,7 @@
   "release_branch": true,
   "auto_merge": false,
   "release_note_style": "structured-cn",
-  "summary": "Liquid Glass 层级归位与设置页原生侧栏",
-  "summary_en": "Liquid Glass layer alignment and native Settings sidebar",
-  "validation": "swift test 1325 项（6 项跳过，0 失败）+ swift build -c release + scripts/build.sh + codesign verify 通过"
+  "summary": "多标签阅读、页面 AI 概览与推荐瀑布流",
+  "summary_en": "Multi-tab reading, page AI overviews, and a true recommendation masonry",
+  "validation": "swift test 1591 项（6 项跳过，0 失败）+ swift build -c release + scripts/build.sh + 本机安装验收"
 }

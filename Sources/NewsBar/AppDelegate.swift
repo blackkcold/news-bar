@@ -41,6 +41,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private var statusItem: NSStatusItem?
     private var popover: NSPopover?
     private var settingsWindow: NSWindow?
+    /// Shared with the settings window's AppKit toolbar item.
+    private var settingsSidebarState: SettingsSidebarState!
+    private var settingsToolbarController: SettingsToolbarController?
     private var dashboardWindow: NSWindow?
     private var researchCenterWindow: NSWindow?
     private var researchCenterModel: ResearchCenterModel?
@@ -69,6 +72,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         // 从 Keychain 迁移到加密文件存储（必须在任何读取之前）
         EncryptedKeyStore.migrateFromKeychainIfNeeded()
         settings = AppSettings()
+        settingsSidebarState = SettingsSidebarState()
         Task { await InterestController.shared.prepare() }
         Task { await ReaderRuleListCache.prewarm() }
         setupWorkspaceObservers()
@@ -238,6 +242,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             Task { @MainActor in
                 self.dashboardRefreshTask?.cancel()
                 self.dashboardRefreshTask = nil
+                WorkspaceTabStore.shared.terminateAll()
                 NewsNavigationRouter.shared.close()
                 NewsNavigationRouter.shared.dismissDigest()
                 InterestController.shared.endListSession()
@@ -269,6 +274,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 self?.researchCenterWindow?.contentViewController = nil
                 self?.researchCenterWindow = nil
                 self?.researchCenterModel = nil
+                WorkspaceTabStore.shared.terminateAll()
                 await self?.orchestrator?.clearPersonalizedArtifacts()
             }
         }
@@ -599,7 +605,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         window.title = "NewsBar Settings"
         window.center()
         window.contentView = NSHostingView(
-            rootView: SettingsWindow(initialPane: initialPane)
+            rootView: SettingsWindow(initialPane: initialPane, sidebarState: settingsSidebarState)
                 .environment(settings)
                 .environment(\.cacheClearAction) { [weak self] in
                     guard let self, let orchestrator = self.orchestrator else { return }
@@ -622,6 +628,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                     return await orchestrator.clearResearchHistory()
                 }
         )
+
+        // Install the toolbar after the hosting view exists: SwiftUI only hands
+        // the window toolbar back to AppKit once it has no toolbar content of
+        // its own, which is what the sidebar's `.toolbar(removing:)` arranges.
+        MainActor.assumeIsolated {
+            // Seed the theme before the toolbar is built so the retro skin
+            // never flashes a toggle it is about to remove.
+            settingsSidebarState.isCollapsible = settings.appTheme != .retroEditorial
+            let toolbarController = SettingsToolbarController(state: settingsSidebarState, settings: settings)
+            toolbarController.install(on: window)
+            settingsToolbarController = toolbarController
+        }
+
         window.isReleasedWhenClosed = false
 
         settingsWindow = window
@@ -712,7 +731,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     /// is guarded and a watchdog answers after two seconds regardless.
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         MainActor.assumeIsolated {
-            guard let active = ReaderSessionRegistry.active,
+            let readers = ReaderSessionRegistry.all.sorted {
+                !$0.isTabActive && $1.isTabActive
+            }
+            guard !readers.isEmpty,
                   ReaderTerminationPolicy.needsCookieFlush(
                       cookieMemoryEnabled: settings?.readerCookieMemoryEnabled ?? false,
                       hasActiveReader: true
@@ -724,7 +746,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                     try? await Task.sleep(for: .seconds(2))
                     replyToTerminationRequest()
                 }
-                await active.flushCookiesBeforeTermination()
+                for reader in readers {
+                    await reader.flushCookiesBeforeTermination()
+                }
                 watchdog.cancel()
                 replyToTerminationRequest()
             }
