@@ -416,7 +416,10 @@ final class DashboardReaderPresentationRenderingTests: XCTestCase {
             isRetro: false,
             origin: nil
         )
-        try await Task.sleep(for: .milliseconds(30))
+        let visibleDeadline = ContinuousClock.now.advanced(by: .seconds(1))
+        while !state.readerVisible, ContinuousClock.now < visibleDeadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
         XCTAssertTrue(state.readerVisible)
         XCTAssertTrue(state.isBrowseCompact)
 
@@ -428,7 +431,13 @@ final class DashboardReaderPresentationRenderingTests: XCTestCase {
             "The list must leave the reader column as soon as the reader starts leaving; otherwise it is still narrow after the reader has faded out."
         )
 
-        try await Task.sleep(for: .milliseconds(340))
+        // The dismissal settles after a 300 ms internal delay. Wait for the
+        // state, not the clock: CI scheduling can easily overshoot a fixed
+        // 340 ms sleep even when the production code is correct.
+        let idleDeadline = ContinuousClock.now.advanced(by: .seconds(2))
+        while state.phase != .idle, ContinuousClock.now < idleDeadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
         XCTAssertEqual(state.phase, .idle)
         XCTAssertFalse(state.isBrowseCompact)
     }

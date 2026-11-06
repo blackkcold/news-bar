@@ -13,7 +13,7 @@
   "release_branch": true,
   "auto_merge": false,
   "release_note_style": "structured-cn",
-  "summary": "多标签阅读、页面 AI 概览与推荐瀑布流",
-  "summary_en": "Multi-tab reading, page AI overviews, and a true recommendation masonry",
-  "validation": "swift test 1591 项（6 项跳过，0 失败）+ swift build -c release + scripts/build.sh + 本机安装验收"
+  "summary": "推荐瀑布流列宽修复与页面概览入口收敛",
+  "summary_en": "Masonry width fixes and page-overview entry cleanup",
+  "validation": "swift test 1592 项（6 项跳过，0 失败）+ swift build + scripts/build.sh + 1200/804/440pt 离屏渲染验收"
 }

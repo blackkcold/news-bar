@@ -49,6 +49,9 @@ struct PageSummaryInput: Identifiable, Sendable {
         language: AppLanguage,
         isPrivate: Bool
     ) -> PageSummaryInput {
+        // No UI entry since 2.16.1: the page overview is only for the reader's
+        // current page. Retained for cache compatibility and legacy tests; do
+        // not re-expose it on Dashboard without a title-disclosure review.
         PageSummaryInput(
             scope: .list,
             title: title,
