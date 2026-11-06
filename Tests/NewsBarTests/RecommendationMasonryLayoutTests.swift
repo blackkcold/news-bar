@@ -3,12 +3,19 @@ import XCTest
 @testable import NewsBar
 
 final class RecommendationMasonryLayoutTests: XCTestCase {
-    func testColumnCountUsesFeedWidthBreakpoints() {
+    func testColumnCountUsesTheSharedWaterfallBreakpoints() {
+        for width in stride(from: 200.0, through: 1_400.0, by: 7.0) {
+            XCTAssertEqual(
+                RecommendationMasonryLayout.columnCount(for: width),
+                WaterfallLayout.columnCount(for: width),
+                "width \(width)"
+            )
+        }
         XCTAssertEqual(RecommendationMasonryLayout.columnCount(for: 320), 1)
-        XCTAssertEqual(RecommendationMasonryLayout.columnCount(for: 559), 1)
-        XCTAssertEqual(RecommendationMasonryLayout.columnCount(for: 560), 2)
-        XCTAssertEqual(RecommendationMasonryLayout.columnCount(for: 959), 2)
-        XCTAssertEqual(RecommendationMasonryLayout.columnCount(for: 960), 3)
+        XCTAssertEqual(RecommendationMasonryLayout.columnCount(for: 555), 1)
+        XCTAssertEqual(RecommendationMasonryLayout.columnCount(for: 556), 2)
+        XCTAssertEqual(RecommendationMasonryLayout.columnCount(for: 839), 2)
+        XCTAssertEqual(RecommendationMasonryLayout.columnCount(for: 840), 3)
         XCTAssertEqual(RecommendationMasonryLayout.columnCount(for: 1_400), 3)
     }
 

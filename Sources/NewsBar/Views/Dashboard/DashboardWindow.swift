@@ -285,12 +285,20 @@ struct DashboardWindow: View {
                         searchQuery: normalizedSearchQuery
                     )
                 }
-                sourceBrowserRegion(groups: rssGroups, hotMatchCount: hotMatchCount)
+                sourceBrowserRegion(
+                    groups: rssGroups,
+                    hotMatchCount: hotMatchCount,
+                    slotWidth: availableWidth
+                )
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         } else if isWideLayout {
             HStack(alignment: .top, spacing: 20) {
-                sourceBrowserRegion(groups: rssGroups, hotMatchCount: hotMatchCount)
+                sourceBrowserRegion(
+                    groups: rssGroups,
+                    hotMatchCount: hotMatchCount,
+                    slotWidth: feedWidth
+                )
                     .frame(maxWidth: .infinity, alignment: .leading)
 
                 DashboardSidebarRegion(
@@ -311,13 +319,21 @@ struct DashboardWindow: View {
                     onConfigureAI: onConfigureAI ?? onOpenSettings,
                     onOpenResearch: onOpenResearchCenter
                 )
-                sourceBrowserRegion(groups: rssGroups, hotMatchCount: hotMatchCount)
+                sourceBrowserRegion(
+                    groups: rssGroups,
+                    hotMatchCount: hotMatchCount,
+                    slotWidth: availableWidth
+                )
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 
-    private func sourceBrowserRegion(groups: [DashboardBrowseGroup], hotMatchCount: Int) -> some View {
+    private func sourceBrowserRegion(
+        groups: [DashboardBrowseGroup],
+        hotMatchCount: Int,
+        slotWidth: CGFloat
+    ) -> some View {
         DashboardSourceBrowserRegion(
             orchestrator: orchestrator,
             sourceFilter: sourceFilter,
@@ -325,6 +341,7 @@ struct DashboardWindow: View {
             hotMatchCount: hotMatchCount,
             searchQuery: normalizedSearchQuery,
             hasAnyFilter: hasAnyFilter,
+            slotWidth: slotWidth,
             collapsedSourceIDs: collapsedRSSSourceIDs,
             onToggleExpansion: toggleRSSSourceExpansion,
             onRefresh: { source in
@@ -920,6 +937,9 @@ private struct DashboardSourceBrowserRegion: View {
     let hotMatchCount: Int
     let searchQuery: String?
     let hasAnyFilter: Bool
+    /// Content width of this region; the RSS source cards inset it by 14 pt
+    /// per side before laying out their cards.
+    let slotWidth: CGFloat
     let collapsedSourceIDs: Set<NewsSource.ID>
     let onToggleExpansion: (NewsSource) -> Void
     let onRefresh: (NewsSource) -> Void
@@ -957,7 +977,8 @@ private struct DashboardSourceBrowserRegion: View {
                             hasAnyFilter: hasAnyFilter,
                             isExpanded: !collapsedSourceIDs.contains(group.source.id),
                             onRefresh: { onRefresh(group.source) },
-                            onToggleExpansion: { onToggleExpansion(group.source) }
+                            onToggleExpansion: { onToggleExpansion(group.source) },
+                            layoutWidth: slotWidth
                         )
                     }
                 }

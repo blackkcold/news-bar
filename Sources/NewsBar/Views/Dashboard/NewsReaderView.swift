@@ -73,6 +73,16 @@ final class NewsReaderModel: NSObject, WKNavigationDelegate, WKUIDelegate, WKScr
     private(set) var isReaderModeActive = false
     private(set) var isReaderModeExtracting = false
     private(set) var readerModeNotice: String?
+    /// Effective page scale for the web view. `1` is the site's actual size.
+    private(set) var pageZoom: CGFloat = 1
+    private(set) var zoomMode: ReaderZoomMode = .fit
+    /// True when the page still overflows at the minimum readable scale, so the
+    /// reader must offer its native layout instead of pretending the page fits.
+    private(set) var isPageWidthConstrained = false
+    private(set) var widthFitNoticeDismissed = false
+    @ObservationIgnored private var readerViewportWidth: CGFloat = 0
+    @ObservationIgnored private var naturalContentWidth: CGFloat?
+    @ObservationIgnored private var zoomTask: Task<Void, Never>?
     private let readerModeExtractor = ReaderModeExtractor()
     var currentURL: String
     var canGoBack = false
@@ -217,6 +227,11 @@ final class NewsReaderModel: NSObject, WKNavigationDelegate, WKUIDelegate, WKScr
                     // Includes SPA history changes: never attribute another document to the original item.
                     self.attributed = false
                     self.loaded = false
+                    // A pushState navigation swaps the document without a
+                    // provisional navigation, so the previous page's zoom
+                    // would otherwise survive into the new route.
+                    self.resetPageWidthFit()
+                    self.scheduleWidthFit(forceMeasurement: true)
                 }
             }
         }
@@ -321,6 +336,8 @@ final class NewsReaderModel: NSObject, WKNavigationDelegate, WKUIDelegate, WKScr
         stopped = true
         timer?.invalidate()
         timer = nil
+        zoomTask?.cancel()
+        zoomTask = nil
         observers.forEach { $0.0.removeObserver($0.1) }
         observers = []
         urlObserver?.invalidate()
@@ -395,6 +412,212 @@ final class NewsReaderModel: NSObject, WKNavigationDelegate, WKUIDelegate, WKScr
     }
 
     func dismissReaderModeNotice() { readerModeNotice = nil }
+
+    // MARK: - Page width fit
+
+    private func resetPageWidthFit() {
+        zoomTask?.cancel()
+        zoomTask = nil
+        naturalContentWidth = nil
+        isPageWidthConstrained = false
+        widthFitNoticeDismissed = false
+        if let webView, abs(webView.pageZoom - 1) > 0.001 {
+            webView.pageZoom = 1
+        }
+        pageZoom = 1
+    }
+
+    /// The mode is persisted in `AppSettings`; the model only applies it.
+    func setZoomMode(_ mode: ReaderZoomMode) {
+        if zoomMode != mode {
+            zoomMode = mode
+            naturalContentWidth = nil
+            isPageWidthConstrained = false
+            widthFitNoticeDismissed = false
+            zoomTask?.cancel()
+            zoomTask = nil
+            applyZoom(ReaderZoomPolicy.scale(for: mode))
+        }
+        guard mode == .fit, webView != nil else { return }
+        scheduleWidthFit(forceMeasurement: naturalContentWidth == nil)
+    }
+
+    /// The SwiftUI reader pane reports its real width. The model never reads a
+    /// stale frame from the web view, which can lag a splitter commit.
+    func updateReaderViewportWidth(_ width: CGFloat) {
+        guard width.isFinite, width > 0 else { return }
+        guard abs(width - readerViewportWidth) > 0.5 else { return }
+        readerViewportWidth = width
+        guard zoomMode == .fit, webView != nil else { return }
+        scheduleWidthFit(forceMeasurement: naturalContentWidth == nil)
+    }
+
+    func dismissWidthFitNotice() {
+        widthFitNoticeDismissed = true
+    }
+
+    private func scheduleWidthFit(forceMeasurement: Bool) {
+        guard zoomMode == .fit, !stopped, webView != nil, readerViewportWidth > 0 else { return }
+        zoomTask?.cancel()
+        let needsMeasurement = forceMeasurement || naturalContentWidth == nil
+        zoomTask = Task { @MainActor [weak self] in
+            // Let first paint and late images settle before asking WebKit for
+            // a document width; otherwise a loading page looks misleadingly
+            // narrow and the first scale is wrong.
+            try? await Task.sleep(for: .milliseconds(needsMeasurement ? 260 : 90))
+            guard let self, !Task.isCancelled, self.zoomMode == .fit, !self.stopped,
+                  let webView = self.webView else { return }
+
+            if needsMeasurement {
+                if abs(webView.pageZoom - 1) > 0.001 {
+                    self.applyZoom(1)
+                    try? await Task.sleep(for: .milliseconds(120))
+                    guard !Task.isCancelled else { return }
+                }
+                guard let metrics = await self.measurePageMetrics(includeLayout: true) else { return }
+                self.naturalContentWidth = ReaderZoomPolicy.naturalContentWidth(
+                    layoutWidth: metrics.layout,
+                    viewportWidth: metrics.viewport
+                )
+            }
+            guard !Task.isCancelled else { return }
+            await self.applyFitAndVerify()
+        }
+    }
+
+    private func applyFitAndVerify() async {
+        guard let natural = naturalContentWidth,
+              natural > readerViewportWidth + ReaderZoomPolicy.overflowTolerance else {
+            applyZoom(1)
+            isPageWidthConstrained = false
+            return
+        }
+
+        applyZoom(ReaderZoomPolicy.fitScale(panelWidth: readerViewportWidth, contentWidth: natural))
+        // A fixed-width page can reflow wider once it is scaled. One or two
+        // bounded corrections settle it without the shrink → overflow → grow
+        // loop that a per-frame measurement would create.
+        try? await Task.sleep(for: .milliseconds(240))
+        guard !Task.isCancelled else { return }
+
+        for _ in 0..<2 {
+            guard let metrics = await measurePageMetrics() else { return }
+            guard !Task.isCancelled else { return }
+            guard metrics.content > metrics.viewport + ReaderZoomPolicy.overflowTolerance else {
+                isPageWidthConstrained = false
+                return
+            }
+            guard let next = ReaderZoomPolicy.correctiveScale(
+                current: pageZoom,
+                viewportWidth: metrics.viewport,
+                contentWidth: metrics.content
+            ) else {
+                isPageWidthConstrained = pageZoom <= ReaderZoomPolicy.minimumScale + 0.005
+                return
+            }
+            applyZoom(next)
+            try? await Task.sleep(for: .milliseconds(200))
+            guard !Task.isCancelled else { return }
+        }
+
+        if let metrics = await measurePageMetrics() {
+            guard !Task.isCancelled else { return }
+            isPageWidthConstrained = metrics.content > metrics.viewport + ReaderZoomPolicy.overflowTolerance
+                && pageZoom <= ReaderZoomPolicy.minimumScale + 0.005
+        }
+    }
+
+    private func applyZoom(_ scale: CGFloat) {
+        let clamped = ReaderZoomPolicy.clamp(scale)
+        guard let webView else {
+            pageZoom = clamped
+            return
+        }
+        if abs(webView.pageZoom - clamped) > 0.002 {
+            webView.pageZoom = clamped
+        }
+        pageZoom = clamped
+    }
+
+    private struct PageMetrics {
+        /// Widest non-replaced layout box on the page.
+        let layout: CGFloat
+        /// Full scrollable width, including images and other wide media.
+        let content: CGFloat
+        let viewport: CGFloat
+    }
+
+    private func measurePageMetrics(includeLayout: Bool = false) async -> PageMetrics? {
+        guard let webView else { return nil }
+        // `scrollWidth` alone would shrink an entire article just because one
+        // image or code block is wider than the panel. The full walk only runs
+        // while locking a document; overflow verification uses the cheap script.
+        let script: String
+        if includeLayout {
+            // Walk the layout boxes instead: replaced elements and horizontal
+            // scrollers keep their own overflow and must not decide the page
+            // scale.
+            script = """
+            (() => {
+              const doc = document.documentElement;
+              const body = document.body;
+              const viewport = window.innerWidth;
+              const replaced = /^(IMG|VIDEO|IFRAME|CANVAS|SVG|OBJECT|EMBED|PICTURE|SOURCE|TRACK|AUDIO)$/;
+              let layout = 0;
+              let visited = 0;
+              const visit = (element) => {
+                if (!element || visited >= 2000) return;
+                visited += 1;
+                if (replaced.test(element.tagName)) return;
+                const style = getComputedStyle(element);
+                if (style.display === 'none' || style.visibility === 'hidden') return;
+                if (style.position === 'fixed' || style.position === 'absolute') return;
+                if (style.overflowX === 'auto' || style.overflowX === 'scroll') return;
+                const width = element.getBoundingClientRect().width;
+                if (width > layout) layout = width;
+                const children = element.children;
+                for (let index = 0; index < children.length; index += 1) {
+                  visit(children[index]);
+                }
+              };
+              visit(body || doc);
+              const content = Math.max(
+                doc ? doc.scrollWidth : 0,
+                body ? body.scrollWidth : 0
+              );
+              if (layout <= 0) layout = content;
+              return JSON.stringify({ layout: layout, content: content, viewport: viewport });
+            })()
+            """
+        } else {
+            script = """
+            (() => {
+              const doc = document.documentElement;
+              const body = document.body;
+              const content = Math.max(
+                doc ? doc.scrollWidth : 0,
+                body ? body.scrollWidth : 0
+              );
+              return JSON.stringify({ content: content, viewport: window.innerWidth });
+            })()
+            """
+        }
+        do {
+            guard let raw = try await webView.evaluateJavaScript(script) as? String,
+                  let data = raw.data(using: .utf8),
+                  let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let content = object["content"] as? NSNumber,
+                  let viewport = object["viewport"] as? NSNumber else { return nil }
+            let contentWidth = CGFloat(content.doubleValue)
+            let viewportWidth = CGFloat(viewport.doubleValue)
+            guard contentWidth.isFinite, viewportWidth.isFinite,
+                  contentWidth > 0, viewportWidth > 0 else { return nil }
+            let layoutWidth = (object["layout"] as? NSNumber).map { CGFloat($0.doubleValue) } ?? contentWidth
+            return PageMetrics(layout: layoutWidth, content: contentWidth, viewport: viewportWidth)
+        } catch {
+            return nil
+        }
+    }
 
     /// Links inside the native layout reuse the reader's own web session and
     /// leave reader mode, so the destination is checked by the same navigation
@@ -713,6 +936,9 @@ final class NewsReaderModel: NSObject, WKNavigationDelegate, WKUIDelegate, WKScr
         readerModeDocument = nil
         isReaderModeActive = false
         readerModeNotice = nil
+        // A new document has its own natural width. Measuring with the old
+        // scale still applied would bake the previous page's zoom into it.
+        resetPageWidthFit()
     }
 
     func webView(_ webView: WKWebView, didReceiveServerRedirectForProvisionalNavigation navigation: WKNavigation!) {
@@ -731,6 +957,12 @@ final class NewsReaderModel: NSObject, WKNavigationDelegate, WKUIDelegate, WKScr
         attributed = documentAttribution.evaluate(finalURL: currentURL, itemURL: request.url)
         canGoBack = webView.canGoBack
         canGoForward = webView.canGoForward
+        if zoomMode == .fit {
+            naturalContentWidth = nil
+            scheduleWidthFit(forceMeasurement: true)
+        } else {
+            applyZoom(ReaderZoomPolicy.scale(for: zoomMode))
+        }
         if isTabActive, sessionOptions.cookieMemoryEnabled, !request.privateSession {
             let allowEmptyRemoval = ReaderNavigationPolicy.isLogoutDestination(
                 webView.url?.absoluteString ?? currentURL
@@ -880,6 +1112,48 @@ private struct ReaderWebSurface: NSViewRepresentable {
     func updateNSView(_ nsView: WKWebView, context: Context) {}
 }
 
+private struct ReaderZoomMenu: View {
+    let mode: ReaderZoomMode
+    let effectiveScale: CGFloat
+    let language: AppLanguage
+    let onChange: (ReaderZoomMode) -> Void
+
+    private var percent: Int { ReaderZoomPolicy.percent(effectiveScale) }
+
+    var body: some View {
+        Menu {
+            Picker(
+                L10n.string("reader.zoom.menu", language: language),
+                selection: Binding(
+                    get: { mode },
+                    set: { onChange($0) }
+                )
+            ) {
+                Text(L10n.string("reader.zoom.fit", language: language))
+                    .tag(ReaderZoomMode.fit)
+                Text(L10n.string("reader.zoom.actual", language: language))
+                    .tag(ReaderZoomMode.actual)
+                Text(L10n.string("reader.zoom.large", language: language))
+                    .tag(ReaderZoomMode.large)
+            }
+            .pickerStyle(.inline)
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: "textformat.size")
+                if percent != 100 {
+                    Text("\(percent)%")
+                        .font(.system(size: 10, weight: .medium, design: .rounded))
+                        .monospacedDigit()
+                }
+            }
+            .frame(minWidth: 28, minHeight: 28)
+        }
+        .menuIndicator(.hidden)
+        .accessibilityLabel(L10n.string("reader.zoom.accessibility", language: language, percent))
+        .help(L10n.string("reader.zoom.help", language: language))
+    }
+}
+
 struct NewsReaderView: View {
     let model: NewsReaderModel
     @Environment(AppSettings.self) private var settings
@@ -1020,6 +1294,17 @@ struct ReaderContentView: View {
                 if let message = model.readerModeNotice {
                     readerModeNoticeView(message)
                 }
+                if model.isPageWidthConstrained,
+                   !model.isReaderModeActive,
+                   !model.widthFitNoticeDismissed,
+                   !model.loading {
+                    VStack {
+                        Spacer(minLength: 0)
+                        widthFitNotice
+                            .padding(12)
+                    }
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+                }
                 if showResearch {
                     HStack(spacing: 0) {
                         Color.clear
@@ -1037,6 +1322,7 @@ struct ReaderContentView: View {
                 }
             }
             .animation(reduceMotion ? nil : DashboardMotion.micro, value: model.notice != nil)
+            .animation(reduceMotion ? nil : DashboardMotion.micro, value: model.isPageWidthConstrained)
             .overlay(alignment: .trailing) {
                 QuickSearchEdgeButton(
                     isPresented: $showQuickSearch,
@@ -1112,6 +1398,9 @@ struct ReaderContentView: View {
 
             Divider()
             footer
+        }
+        .onChange(of: settings.readerPageZoomMode, initial: true) { _, rawValue in
+            model.setZoomMode(ReaderZoomMode(rawValue: rawValue) ?? .fit)
         }
         .readerSurface(cornerRadius: 12)
         .disabled(!isActiveTab)
@@ -1212,8 +1501,15 @@ struct ReaderContentView: View {
                 onExit: { model.exitReaderMode() }
             )
         } else if let web = model.webView {
-            ReaderWebSurface(webView: web)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            GeometryReader { proxy in
+                ReaderWebSurface(webView: web)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .onAppear { model.updateReaderViewportWidth(proxy.size.width) }
+                    .onChange(of: proxy.size.width) { _, width in
+                        model.updateReaderViewportWidth(width)
+                    }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
             VStack(spacing: 12) {
                 ProgressView()
@@ -1238,6 +1534,49 @@ struct ReaderContentView: View {
         .padding(12)
         .background(.quaternary.opacity(0.4))
         .transition(.move(edge: .top).combined(with: .opacity))
+    }
+
+    private var widthFitNotice: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "arrow.down.right.and.arrow.up.left")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .accessibilityHidden(true)
+
+            Text(L10n.string(
+                "reader.zoom.constrained",
+                language: settings.appLanguage,
+                ReaderZoomPolicy.percent(model.pageZoom)
+            ))
+                .font(.caption)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Spacer(minLength: 4)
+
+            Button(L10n.string("reader.zoom.readerMode", language: settings.appLanguage)) {
+                Task { await model.toggleReaderMode() }
+            }
+            .buttonStyle(.borderless)
+            .font(.caption.weight(.medium))
+
+            Button {
+                model.dismissWidthFitNotice()
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 10, weight: .semibold))
+            }
+            .buttonStyle(.borderless)
+            .accessibilityLabel(L10n.string("reader.zoom.dismiss", language: settings.appLanguage))
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .strokeBorder(Color(nsColor: .separatorColor), lineWidth: 0.5)
+        }
+        .shadow(color: .black.opacity(0.12), radius: 10, y: 3)
+        .accessibilityElement(children: .contain)
     }
 
     private func noticeView(_ notice: ReaderFailure) -> some View {
@@ -1309,6 +1648,13 @@ struct ReaderContentView: View {
                 .keyboardShortcut("r", modifiers: .command)
                 .accessibilityLabel(english ? "Reload page" : "重新加载网页")
                 .help(english ? "Reload page (⌘R)" : "重新加载网页（⌘R）")
+            ReaderZoomMenu(
+                mode: model.zoomMode,
+                effectiveScale: model.pageZoom,
+                language: settings.appLanguage,
+                onChange: { mode in settings.readerPageZoomMode = mode.rawValue }
+            )
+            .disabled(model.isReaderModeActive)
             if settings.aiSearchEnabled {
                 Button {
                     toggleQuickSearch()

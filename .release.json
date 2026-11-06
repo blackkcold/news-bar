@@ -13,7 +13,7 @@
   "release_branch": true,
   "auto_merge": false,
   "release_note_style": "structured-cn",
-  "summary": "推荐流滚动稳定性、封面身份与阅读器图片解码修复",
-  "summary_en": "Recommendation scroll stability, cover identity, and reader image decode fixes",
-  "validation": "swift test 1593 项（6 项跳过，0 失败）+ swift build + release build + 1200/804/440pt 离屏渲染验收"
+  "summary": "阅读器侧窗宽度下限、网页自适应缩放与两页瀑布流列数统一",
+  "summary_en": "Reader panel width floor, auto-fit page zoom, and unified waterfall columns",
+  "validation": "swift test 1613 项（6 项跳过，0 失败；2 项计时断言单独运行通过）+ swift build + release build + 760/1180/1236/1440pt 布局与渲染验收"
 }

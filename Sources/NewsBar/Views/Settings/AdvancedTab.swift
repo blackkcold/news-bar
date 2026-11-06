@@ -52,6 +52,22 @@ struct AdvancedTab: View {
             ReaderProxySettingsSection()
 
             Section {
+                Picker("reader.zoom.menu".localized, selection: Binding(
+                    get: { ReaderZoomMode(rawValue: settings.readerPageZoomMode) ?? .fit },
+                    set: { settings.readerPageZoomMode = $0.rawValue }
+                )) {
+                    Text("reader.zoom.fit".localized).tag(ReaderZoomMode.fit)
+                    Text("reader.zoom.actual".localized).tag(ReaderZoomMode.actual)
+                    Text("reader.zoom.large".localized).tag(ReaderZoomMode.large)
+                }
+                .pickerStyle(.menu)
+            } header: {
+                Text("settings.reader.pages".localized)
+            } footer: {
+                Text("settings.reader.pages.footer".localized)
+            }
+
+            Section {
                 Button {
                     NotificationCenter.default.post(name: .fireTestNewsPush, object: nil)
                 } label: {

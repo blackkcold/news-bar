@@ -16,24 +16,23 @@ struct RecommendationMasonryEntry: Equatable, Sendable {
 /// currently shortest column. Assignment only depends on the ordered entries,
 /// the column count and the column width, so appending another page of
 /// recommendations never moves a card the reader has already seen.
+///
+/// Widths and breakpoints live in `WaterfallLayout` so the RSS feed on the
+/// browse page cannot drift back to a hard-coded column count.
 enum RecommendationMasonryLayout {
-    static let columnSpacing: CGFloat = 12
-    static let cardSpacing: CGFloat = 12
+    static let columnSpacing = WaterfallLayout.columnSpacing
+    static let cardSpacing = WaterfallLayout.cardSpacing
     static let cardHorizontalPadding: CGFloat = 14
     static let maxTitleLines = 4
 
     /// Breakpoints are measured on the recommendation area, not the window.
-    /// The reader can narrow the feed to 320–480 pt while the window stays wide.
+    /// The reader can narrow the feed to 280–440 pt while the window stays wide.
     static func columnCount(for width: CGFloat) -> Int {
-        if width >= 960 { return 3 }
-        if width >= 560 { return 2 }
-        return 1
+        WaterfallLayout.columnCount(for: width)
     }
 
     static func columnWidth(for width: CGFloat, columns: Int) -> CGFloat {
-        let count = max(1, columns)
-        let gaps = CGFloat(count - 1) * columnSpacing
-        return max(0, (width - gaps) / CGFloat(count))
+        WaterfallLayout.columnWidth(for: width, columns: columns)
     }
 
     /// Reserve the image box before the download finishes. A wide single column
@@ -48,17 +47,11 @@ enum RecommendationMasonryLayout {
     /// character count: CJK glyphs are roughly twice as wide as Latin ones at
     /// the same point size.
     static func estimatedTitleLines(_ title: String, columnWidth: CGFloat) -> Int {
-        let available = max(40, columnWidth - cardHorizontalPadding * 2)
-        let normalized = title
-            .replacingOccurrences(of: "\n", with: " ")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !normalized.isEmpty else { return 1 }
-        let width: CGFloat = normalized.reduce(0) { partial, character in
-            let scalar = character.unicodeScalars.first?.value ?? 0
-            return partial + (scalar > 0x2E80 ? 15 : 7.6)
-        }
-        let lines = Int(ceil(width / available))
-        return min(maxTitleLines, max(1, lines))
+        WaterfallLayout.estimatedTitleLines(
+            title,
+            availableWidth: max(40, columnWidth - cardHorizontalPadding * 2),
+            maxLines: maxTitleLines
+        )
     }
 
     static func estimatedHeight(
@@ -84,24 +77,15 @@ enum RecommendationMasonryLayout {
         columnCount: Int,
         columnWidth: CGFloat
     ) -> [[Int]] {
-        let count = max(1, columnCount)
-        guard count > 1 else { return [Array(entries.indices)] }
-
-        var columns = Array(repeating: [Int](), count: count)
-        var heights = Array(repeating: CGFloat.zero, count: count)
-
-        for (index, entry) in entries.enumerated() {
-            var target = 0
-            for candidate in 1..<count where heights[candidate] < heights[target] {
-                target = candidate
-            }
-            columns[target].append(index)
-            heights[target] += estimatedHeight(
-                title: entry.title,
-                hasImage: entry.hasImage,
-                columnWidth: columnWidth
-            ) + cardSpacing
-        }
-        return columns
+        WaterfallLayout.distribute(
+            entryHeights: entries.map {
+                estimatedHeight(
+                    title: $0.title,
+                    hasImage: $0.hasImage,
+                    columnWidth: columnWidth
+                )
+            },
+            columnCount: columnCount
+        )
     }
 }
