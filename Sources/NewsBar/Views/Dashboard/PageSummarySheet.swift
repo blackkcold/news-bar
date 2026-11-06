@@ -111,12 +111,12 @@ struct PageSummarySheet: View {
             let cap = PageSummaryService.maxArticleCharacters
             if characters > cap {
                 return english
-                    ? "Based on the current browser page · first \(cap) characters of \(characters)"
-                    : "基于当前浏览器页面正文 · 已截断到 \(cap) 字（原文 \(characters) 字）"
+                    ? "Based on the page open in this reader · first \(cap) characters of \(characters)"
+                    : "基于当前阅读器打开的页面正文 · 已截断到 \(cap) 字（原文 \(characters) 字）"
             }
             return english
-                ? "Based on the current browser page · up to \(cap) characters"
-                : "基于当前浏览器页面正文 · 最多 \(cap) 字"
+                ? "Based on the page open in this reader · up to \(cap) characters"
+                : "基于当前阅读器打开的页面正文 · 最多 \(cap) 字"
         }
         return english
             ? "Based on \(input.listRows.count) loaded headlines · titles only"
@@ -135,6 +135,13 @@ struct PageSummarySheet: View {
                 ? "The overview reads only the page open in this reader, up to \(PageSummaryService.maxArticleCharacters) characters. The text is sent to \(providerName) for this request; the app does not save the body. The provider's own privacy policy applies."
                 : "概览只读取当前阅读器打开的页面，最多 \(PageSummaryService.maxArticleCharacters) 字；本次请求会把正文发送给 \(providerName)。应用不会保存正文，提供商仍受其隐私政策约束。")
                 .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Text(english
+                ? "Outside private reading, the overview and citation metadata are cached locally for 7 days (max 50 entries). The page body is never saved."
+                : "非隐私阅读时，概览与引用元数据会在本地缓存 7 天、最多 50 条；不会保存页面正文。")
+                .font(.caption2)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 

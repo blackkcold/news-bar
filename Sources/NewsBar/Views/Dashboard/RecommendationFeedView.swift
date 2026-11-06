@@ -132,13 +132,33 @@ private struct QualifiedImpression: ViewModifier {
     }
 }
 
+struct RecommendationCardFrame: Equatable, Sendable {
+    let id: String
+    let frame: CGRect
+}
+
+struct RecommendationCardFramePreferenceKey: PreferenceKey {
+    static let defaultValue: [RecommendationCardFrame] = []
+
+    static func reduce(
+        value: inout [RecommendationCardFrame],
+        nextValue: () -> [RecommendationCardFrame]
+    ) {
+        value.append(contentsOf: nextValue())
+    }
+}
+
 struct RecommendationFeedView: View {
     let matches: (NewsItem) -> Bool
     /// The width the dashboard is actually giving this feed. When the reader
     /// opens, the list pane is clamped to 320–480 pt; passing that width down
     /// makes the masonry choose one column in the same layout pass instead of
     /// waiting for a content-width measurement that can still be stale.
-    var width: CGFloat? = nil
+    let width: CGFloat
+    /// Test seam: render a frozen batch without touching the local interest DB.
+    var snapshotOverride: RecommendationSnapshot? = nil
+    /// Test seam: report each card's frame in the masonry coordinate space.
+    var onCardFrames: (([RecommendationCardFrame]) -> Void)? = nil
     var hasFilter = false
     var onOpenSettings: () -> Void = {}
     var onResetFilters: () -> Void = {}
@@ -148,7 +168,6 @@ struct RecommendationFeedView: View {
     @Environment(\.accessibilityVoiceOverEnabled) private var voiceOverEnabled
     @State private var controller = InterestController.shared
     @State private var visibleCount = 20
-    @State private var feedWidth: CGFloat = 720
     private var english: Bool { settings.appLanguage == .en }
 
     var body: some View {
@@ -171,7 +190,7 @@ struct RecommendationFeedView: View {
             if controller.state.learningPaused || controller.privateReading {
                 Label(english ? "Learning paused for this activity" : "当前活动不参与学习", systemImage: "hand.raised").font(.caption).foregroundStyle(.secondary)
             }
-            if let snapshot = controller.recommendations {
+            if let snapshot = snapshotOverride ?? controller.recommendations {
                 recommendationsMasonry(snapshot)
                 let filteredCount = filteredRows(snapshot, limit: nil).count
                 if filteredCount > visibleCount {
@@ -195,14 +214,10 @@ struct RecommendationFeedView: View {
         }
         // Without a concrete width the feed's lazy columns size themselves to
         // their content; a long title or a wide cover can then push a card past
-        // its column and over the neighbouring column. Fill the available width
-        // before measuring, and give every card the same fixed column width.
+        // its column and over the neighbouring column. The parent now passes
+        // the real slot width, so this frame only anchors the feed and keeps
+        // the background/summary aligned with the masonry.
         .frame(maxWidth: .infinity, alignment: .leading)
-        .onGeometryChange(for: CGFloat.self) { proxy in
-            proxy.size.width
-        } action: { width in
-            if width > 0, abs(width - feedWidth) > 0.5 { feedWidth = width }
-        }
         .background {
             ExposureWindowReader { window in
                 ExposureEnvironment.shared.attach(window)
@@ -231,7 +246,7 @@ struct RecommendationFeedView: View {
     }
 
     private var layoutWidth: CGFloat {
-        max(1, width ?? feedWidth)
+        max(1, width)
     }
 
     private var effectiveColumnCount: Int {
@@ -272,6 +287,21 @@ struct RecommendationFeedView: View {
                             columnWidth: columnWidth
                         )
                         .frame(width: columnWidth, alignment: .top)
+                        .background {
+                            if onCardFrames != nil {
+                                GeometryReader { proxy in
+                                    Color.clear.preference(
+                                        key: RecommendationCardFramePreferenceKey.self,
+                                        value: [
+                                            RecommendationCardFrame(
+                                                id: ranked.row.item.id,
+                                                frame: proxy.frame(in: .named("recommendationMasonry"))
+                                            )
+                                        ]
+                                    )
+                                }
+                            }
+                        }
                         .modifier(QualifiedImpression(
                             item: ranked.row.item,
                             sessionID: controller.feedSessionID,
@@ -283,8 +313,12 @@ struct RecommendationFeedView: View {
                         ))
                     }
                 }
-                .frame(width: columnWidth, alignment: .top)
+                .frame(width: columnWidth, alignment: .topLeading)
             }
+        }
+        .coordinateSpace(name: "recommendationMasonry")
+        .onPreferenceChange(RecommendationCardFramePreferenceKey.self) { frames in
+            onCardFrames?(frames)
         }
         .frame(maxWidth: .infinity, alignment: .topLeading)
     }
