@@ -27,9 +27,20 @@ enum ReaderNavigationPolicy {
               c.user == nil, c.password == nil, let host = c.host?.lowercased(),
               host.contains("."), !host.hasSuffix("."), !host.contains(":"),
               !["localhost", "local", "internal", "lan", "home", "test", "invalid"].contains(where: { host == $0 || host.hasSuffix("." + $0) }),
-              host.range(of: "^[0-9.]+$", options: .regularExpression) == nil,
+              !isNumericHost(host),
               c.port == nil || c.port == 443 else { return nil }
         return c.url
+    }
+
+    /// ASCII digits and dots only: a numeric host is an IP literal, never a
+    /// registrable domain. Kept allocation- and regex-free because this runs
+    /// for every visible card's cover URL on each render pass.
+    private static func isNumericHost(_ host: String) -> Bool {
+        for byte in host.utf8 {
+            if byte == 46 { continue } // "."
+            guard byte >= 48, byte <= 57 else { return false }
+        }
+        return true
     }
 
     /// The destination a `window.open` request may navigate to in place.

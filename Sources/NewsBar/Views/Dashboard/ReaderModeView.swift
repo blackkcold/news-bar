@@ -439,7 +439,15 @@ private struct ReaderModeImageBlock: View {
                 cookies: cookies,
                 referer: documentURL
             )
-            guard let loaded = NSImage(data: data) else {
+            // Reader images are displayed at most 460 pt tall (920 px at 2x).
+            // Decoding the publisher's full-size bitmap here ran on the main
+            // actor and could retain tens of megabytes per image; downsample
+            // off-main instead. `maxWidth` is the column box the image fills.
+            let target = min(2_048, max(640, Int(maxWidth * 2)))
+            guard let loaded = await ImageCache.decodeThumbnailAsync(
+                from: data,
+                maxPixelSize: target
+            ) else {
                 failed = true
                 return
             }

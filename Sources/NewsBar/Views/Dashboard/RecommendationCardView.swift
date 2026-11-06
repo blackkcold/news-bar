@@ -36,6 +36,9 @@ struct RecommendationCardView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var controller = InterestController.shared
     @State private var imagePhase: RecommendationImagePhase = .idle
+    /// The URL currently represented by `imagePhase`. Without it a recycled
+    /// card that receives a new article keeps the previous cover forever.
+    @State private var loadedImageURL: String?
     @State private var expandedReason = false
     @State private var isHovering = false
 
@@ -371,10 +374,12 @@ struct RecommendationCardView: View {
 
     private func loadImage() async {
         guard let imageURL else {
+            loadedImageURL = nil
             imagePhase = .idle
             return
         }
-        if case .loaded = imagePhase { return }
+        let key = imageURL.absoluteString
+        if case .loaded = imagePhase, loadedImageURL == key { return }
         imagePhase = .loading
         let loaded = await ImageCache.shared.image(
             for: imageURL,
@@ -382,6 +387,7 @@ struct RecommendationCardView: View {
         )
         guard !Task.isCancelled else { return }
         if let loaded {
+            loadedImageURL = key
             if effectiveReduceMotion {
                 imagePhase = .loaded(loaded)
             } else {
@@ -390,6 +396,7 @@ struct RecommendationCardView: View {
                 }
             }
         } else {
+            loadedImageURL = nil
             imagePhase = .failed
         }
     }
