@@ -234,6 +234,11 @@ final class AppSettings {
     var readerModeTheme: String {
         didSet { TestIsolation.defaults.set(readerModeTheme, forKey: "readerModeTheme") }
     }
+    /// Reader web-page zoom: `fit` shrinks desktop pages to the panel width,
+    /// `actual` always shows 100%, `large` shows 125%.
+    var readerPageZoomMode: String {
+        didSet { TestIsolation.defaults.set(readerPageZoomMode, forKey: "readerPageZoomMode") }
+    }
     @ObservationIgnored var resolvedColorScheme: ColorScheme? {
         if appTheme == .retroEditorial { return .light }
         switch colorScheme {
@@ -635,6 +640,8 @@ final class AppSettings {
         self.readerModeWidth = (620...760).contains(storedWidth) ? storedWidth : 680
         let storedReaderTheme = defaults.stringIfPresent(forKey: "readerModeTheme") ?? "auto"
         self.readerModeTheme = ["auto", "paper", "dark"].contains(storedReaderTheme) ? storedReaderTheme : "auto"
+        let storedPageZoom = defaults.stringIfPresent(forKey: "readerPageZoomMode") ?? ReaderZoomMode.fit.rawValue
+        self.readerPageZoomMode = ReaderZoomMode(rawValue: storedPageZoom)?.rawValue ?? ReaderZoomMode.fit.rawValue
         self.aiSummaryEnabled = defaults.boolIfPresent(forKey: "aiSummaryEnabled") ?? false
         self.aiProvider = defaults.stringIfPresent(forKey: "aiProvider") ?? "deepseek"
 

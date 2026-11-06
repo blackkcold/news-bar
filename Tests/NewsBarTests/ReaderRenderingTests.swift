@@ -14,7 +14,8 @@ final class ReaderRenderingTests: XCTestCase {
         let variants: [(String, AppTheme, ColorScheme, CGFloat, AppLanguage)] = [
             ("reader-modern-light", .modern, .light, 960, .zh),
             ("reader-modern-dark", .modern, .dark, 960, .en),
-            ("reader-retro-narrow", .retroEditorial, .light, 560, .zh)
+            ("reader-retro-narrow", .retroEditorial, .light, 560, .zh),
+            ("reader-modern-min-split", .modern, .light, 760, .en)
         ]
         for (name, theme, colorScheme, width, language) in variants {
             settings.appTheme = theme

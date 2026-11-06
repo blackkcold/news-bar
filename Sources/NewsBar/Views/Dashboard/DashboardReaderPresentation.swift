@@ -13,6 +13,44 @@ struct DashboardReaderPresentationContext: Equatable {
     var readerAccessibilityHidden: Bool { !readerVisible }
 }
 
+/// The single source of truth for the dashboard's split geometry.
+///
+/// The reader hosts third-party desktop pages that cannot reflow below their
+/// designed width, so a split panel narrower than `minReaderWidth` only ever
+/// showed a clipped page. The list gives way above that floor; below the wide
+/// breakpoint the reader covers the window instead of pretending to split.
+enum DashboardReaderLayout {
+    static let minListWidth: CGFloat = 320
+    static let maxListWidth: CGFloat = 480
+    static let minReaderWidth: CGFloat = 760
+    static let dividerWidth: CGFloat = 9
+    static let wideBreakpoint: CGFloat = 1100
+
+    static func maximumListWidth(windowWidth: CGFloat) -> CGFloat {
+        guard windowWidth.isFinite else { return maxListWidth }
+        let widthThatKeepsReaderReadable = windowWidth - minReaderWidth - dividerWidth
+        return min(maxListWidth, max(minListWidth, widthThatKeepsReaderReadable))
+    }
+
+    static func listWidth(windowWidth: CGFloat, requested: CGFloat, isWide: Bool) -> CGFloat {
+        let requested = min(maxListWidth, max(minListWidth, requested))
+        guard isWide else { return requested }
+        return min(requested, maximumListWidth(windowWidth: windowWidth))
+    }
+
+    static func readerFrame(for size: CGSize, isWide: Bool, listWidth: CGFloat) -> CGRect {
+        guard isWide else { return CGRect(origin: .zero, size: size) }
+        // Enforce the reader floor here as well as at the drag handle: the hero
+        // target and any future entry point must not animate to a clipped pane.
+        let effectiveListWidth = min(
+            min(maxListWidth, max(minListWidth, listWidth)),
+            maximumListWidth(windowWidth: size.width)
+        )
+        let splitX = effectiveListWidth + dividerWidth
+        return CGRect(x: splitX, y: 0, width: max(0, size.width - splitX), height: size.height)
+    }
+}
+
 @MainActor
 @Observable
 final class DashboardReaderPresentationState {
@@ -127,9 +165,7 @@ final class DashboardReaderPresentationState {
     }
 
     static func readerFrame(for size: CGSize, isWide: Bool, listWidth: CGFloat) -> CGRect {
-        guard isWide else { return CGRect(origin: .zero, size: size) }
-        let splitX = min(480, max(320, listWidth)) + 9
-        return CGRect(x: splitX, y: 0, width: max(0, size.width - splitX), height: size.height)
+        DashboardReaderLayout.readerFrame(for: size, isWide: isWide, listWidth: listWidth)
     }
 }
 
@@ -167,9 +203,13 @@ struct DashboardReaderPresentation<BrowseContent: View, ReaderContent: View>: Vi
 
     var body: some View {
         GeometryReader { geometry in
-            let isWide = geometry.size.width >= 1100
+            let isWide = geometry.size.width >= DashboardReaderLayout.wideBreakpoint
             let isReaderCompact = presentationState.isBrowseCompact
-            let clampedListWidth = min(480, max(320, listWidth))
+            let clampedListWidth = DashboardReaderLayout.listWidth(
+                windowWidth: geometry.size.width,
+                requested: listWidth,
+                isWide: isWide
+            )
             let listWidthForPhase = isReaderCompact ? clampedListWidth : geometry.size.width
             let context = DashboardReaderPresentationContext(
                 phase: presentationState.phase,
@@ -208,8 +248,14 @@ struct DashboardReaderPresentation<BrowseContent: View, ReaderContent: View>: Vi
                 }
 
                 if isWide, presentationState.phase == .presented, presentationState.displayedRequest != nil {
-                    DashboardSplitter(width: $listWidth)
-                        .frame(width: 9, height: geometry.size.height)
+                    DashboardSplitter(
+                        width: $listWidth,
+                        visibleWidth: clampedListWidth,
+                        maximumWidth: DashboardReaderLayout.maximumListWidth(
+                            windowWidth: geometry.size.width
+                        )
+                    )
+                        .frame(width: DashboardReaderLayout.dividerWidth, height: geometry.size.height)
                         .offset(x: clampedListWidth)
                         .zIndex(3)
                 }
@@ -257,11 +303,15 @@ struct DashboardReaderPresentation<BrowseContent: View, ReaderContent: View>: Vi
 
 private struct DashboardSplitter: View {
     @Binding var width: CGFloat
+    /// The width currently in force. `width` may still hold the user's wider
+    /// request while the window is small; dragging must start from what is on
+    /// screen, not from the stored request.
+    let visibleWidth: CGFloat
+    let maximumWidth: CGFloat
     @State private var dragStart: CGFloat?
     @State private var proposedWidth: CGFloat?
 
-    private let minWidth: CGFloat = 320
-    private let maxWidth: CGFloat = 480
+    private let minWidth = DashboardReaderLayout.minListWidth
 
     var body: some View {
         ZStack(alignment: .topLeading) {
@@ -280,7 +330,7 @@ private struct DashboardSplitter: View {
                     .fill(Color.accentColor.opacity(0.7))
                     .frame(width: 1)
                     .frame(maxHeight: .infinity)
-                    .offset(x: proposedWidth - width)
+                    .offset(x: proposedWidth - visibleWidth)
                     .allowsHitTesting(false)
             }
         }
@@ -295,9 +345,9 @@ private struct DashboardSplitter: View {
         .gesture(
             DragGesture(minimumDistance: 1)
                 .onChanged { value in
-                    if dragStart == nil { dragStart = width }
-                    let start = dragStart ?? width
-                    proposedWidth = min(maxWidth, max(minWidth, start + value.translation.width))
+                    if dragStart == nil { dragStart = visibleWidth }
+                    let start = dragStart ?? visibleWidth
+                    proposedWidth = min(maximumWidth, max(minWidth, start + value.translation.width))
                 }
                 .onEnded { _ in
                     if let proposedWidth {
@@ -310,7 +360,7 @@ private struct DashboardSplitter: View {
         .onTapGesture(count: 2) {
             dragStart = nil
             proposedWidth = nil
-            width = 400
+            width = min(maximumWidth, max(minWidth, 400))
         }
         .accessibilityLabel("Resize news list")
     }

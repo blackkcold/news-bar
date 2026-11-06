@@ -162,10 +162,10 @@ final class DashboardReaderPresentationRenderingTests: XCTestCase {
     }
 
     func testReaderGeometryAtCompactAndSplitWidths() async throws {
-        let cases: [(windowSize: CGSize, readerSize: CGSize)] = [
-            (CGSize(width: 960, height: 720), CGSize(width: 960, height: 720)),
-            (CGSize(width: 1100, height: 720), CGSize(width: 691, height: 720)),
-            (CGSize(width: 1180, height: 860), CGSize(width: 771, height: 860)),
+        let cases: [(windowSize: CGSize, browseWidth: CGFloat, readerSize: CGSize)] = [
+            (CGSize(width: 960, height: 720), 400, CGSize(width: 960, height: 720)),
+            (CGSize(width: 1100, height: 720), 331, CGSize(width: 760, height: 720)),
+            (CGSize(width: 1180, height: 860), 400, CGSize(width: 771, height: 860)),
         ]
 
         for (index, testCase) in cases.enumerated() {
@@ -183,11 +183,62 @@ final class DashboardReaderPresentationRenderingTests: XCTestCase {
             try await Task.sleep(for: .milliseconds(420))
             host.layoutSubtreeIfNeeded()
 
-            XCTAssertEqual(model.browseSize.width, 400, accuracy: 1)
+            XCTAssertEqual(model.browseSize.width, testCase.browseWidth, accuracy: 1)
             XCTAssertEqual(model.readerSize.width, testCase.readerSize.width, accuracy: 1)
             XCTAssertEqual(model.readerSize.height, testCase.readerSize.height, accuracy: 1)
             window.contentView = nil
         }
+    }
+
+    func testListWidthLeavesTheReaderAtLeastTheMinimumPanelWidth() {
+        for windowWidth in [1_100.0, 1_100.5, 1_180.0, 1_249.0, 1_440.0] {
+            let listWidth = DashboardReaderLayout.listWidth(
+                windowWidth: windowWidth,
+                requested: 480,
+                isWide: true
+            )
+            let frame = DashboardReaderLayout.readerFrame(
+                for: CGSize(width: windowWidth, height: 800),
+                isWide: true,
+                listWidth: listWidth
+            )
+            XCTAssertGreaterThanOrEqual(
+                frame.width,
+                DashboardReaderLayout.minReaderWidth - 0.5,
+                "window \(windowWidth)"
+            )
+            XCTAssertLessThanOrEqual(listWidth, DashboardReaderLayout.maxListWidth)
+            XCTAssertGreaterThanOrEqual(listWidth, DashboardReaderLayout.minListWidth)
+        }
+
+        XCTAssertEqual(
+            DashboardReaderLayout.listWidth(windowWidth: 1_100, requested: 480, isWide: true),
+            331,
+            accuracy: 0.5
+        )
+        XCTAssertEqual(
+            DashboardReaderLayout.listWidth(windowWidth: 1_249, requested: 480, isWide: true),
+            480,
+            accuracy: 0.5
+        )
+        XCTAssertEqual(
+            DashboardReaderLayout.listWidth(windowWidth: 960, requested: 400, isWide: false),
+            400,
+            accuracy: 0.5,
+            "A compact reader covers the window; the hidden list keeps its own width"
+        )
+
+        let directFrame = DashboardReaderLayout.readerFrame(
+            for: CGSize(width: 1_100, height: 720),
+            isWide: true,
+            listWidth: 480
+        )
+        XCTAssertEqual(
+            directFrame.width,
+            DashboardReaderLayout.minReaderWidth,
+            accuracy: 0.5,
+            "The frame itself must enforce the reader floor, not only the drag handle"
+        )
     }
 
     func testPresentedReaderTracksWindowResize() async throws {
@@ -466,7 +517,15 @@ final class DashboardReaderPresentationRenderingTests: XCTestCase {
                 try await Task.sleep(for: .milliseconds(10))
                 host.layoutSubtreeIfNeeded()
             }
-            XCTAssertEqual(model.browseSize.width, 400, accuracy: 1)
+            XCTAssertEqual(
+                model.browseSize.width,
+                DashboardReaderLayout.listWidth(
+                    windowWidth: size.width,
+                    requested: 400,
+                    isWide: size.width >= 1_100
+                ),
+                accuracy: 1
+            )
 
             model.selection = nil
             let dismissalDeadline = ContinuousClock.now.advanced(by: .seconds(1))

@@ -305,6 +305,8 @@ struct DashboardRSSSourceCard: View {
     let isExpanded: Bool
     let onRefresh: () -> Void
     let onToggleExpansion: () -> Void
+    /// Width of the source card itself, before its 14 pt content inset.
+    let layoutWidth: CGFloat
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -359,6 +361,7 @@ struct DashboardRSSSourceCard: View {
                 if isExpanded {
                     DashboardAdaptiveRSSMasonryFeed(
                         items: items,
+                        layoutWidth: layoutWidth,
                         title: source.displayName,
                         state: state,
                         showsHeader: false,
@@ -445,8 +448,20 @@ struct DashboardRSSSourceCard: View {
 
 // MARK: - Dashboard RSS Masonry Feed
 
+struct RSSMasonryPlan {
+    let columnCount: Int
+    let columnWidth: CGFloat
+    let columns: [[Int]]
+}
+
 struct DashboardAdaptiveRSSMasonryFeed: View {
     let items: [NewsItem]
+    /// Width of the slot this feed sits in, including the 28 pt inset its
+    /// source card applies. The inset narrows the cards but never changes the
+    /// column count, so the RSS feed and the recommendation feed switch
+    /// columns at exactly the same dashboard width.
+    let layoutWidth: CGFloat
+    static let contentInset: CGFloat = 28
     var title: String = "RSS 订阅"
     var state: SourceLoadState = .idle
     var showsHeader: Bool = true
@@ -456,13 +471,62 @@ struct DashboardAdaptiveRSSMasonryFeed: View {
     var maxRenderedItems: Int? = nil
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.accessibilityVoiceOverEnabled) private var voiceOverEnabled
     @State private var cachedSourceSummaries: [(name: String, count: Int)] = []
     @State private var revealedLimit: Int?
 
-    private let columns = [
-        GridItem(.flexible(), spacing: 12),
-        GridItem(.flexible(), spacing: 12)
-    ]
+    /// Pure layout plan, also used by tests to lock the shared column rule.
+    static func plan(
+        for items: [NewsItem],
+        width: CGFloat,
+        prefersSingleColumn: Bool
+    ) -> RSSMasonryPlan {
+        let slotWidth = max(1, width.isFinite ? width : 1)
+        let count = prefersSingleColumn
+            ? 1
+            : WaterfallLayout.columnCount(for: slotWidth)
+        let cardWidth = max(1, slotWidth - contentInset)
+        let columnWidth = WaterfallLayout.columnWidth(for: cardWidth, columns: count)
+        let heights = items.map { estimatedHeight(for: $0, columnWidth: columnWidth) }
+        return RSSMasonryPlan(
+            columnCount: count,
+            columnWidth: columnWidth,
+            columns: WaterfallLayout.distribute(entryHeights: heights, columnCount: count)
+        )
+    }
+
+    /// Rough card height for column balancing. Exact heights are measured by
+    /// SwiftUI; this only has to rank cards against each other.
+    private static func estimatedHeight(for item: NewsItem, columnWidth: CGFloat) -> CGFloat {
+        let hasImage = item.imageURL.flatMap(URL.init(string:)) != nil
+        let lines = CGFloat(WaterfallLayout.estimatedTitleLines(
+            item.displayTitle,
+            availableWidth: max(40, columnWidth - 24),
+            maxLines: hasImage ? 3 : 4
+        ))
+        let textCard: CGFloat = 24 + 10 + 14 + 17 * lines
+        return hasImage ? textCard + 128 : textCard
+    }
+
+    private var masonry: some View {
+        let plan = Self.plan(
+            for: renderedItems,
+            width: layoutWidth,
+            prefersSingleColumn: voiceOverEnabled
+        )
+        return HStack(alignment: .top, spacing: WaterfallLayout.columnSpacing) {
+            ForEach(Array(plan.columns.enumerated()), id: \.offset) { _, indexes in
+                LazyVStack(spacing: WaterfallLayout.cardSpacing) {
+                    ForEach(indexes.map { renderedItems[$0] }) { item in
+                        DashboardRSSMasonryCard(item: item, reduceMotion: reduceMotion)
+                            .frame(width: plan.columnWidth, alignment: .top)
+                    }
+                }
+                .frame(width: plan.columnWidth, alignment: .topLeading)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
 
     private var sourceSummaries: [(name: String, count: Int)] {
         cachedSourceSummaries
@@ -524,11 +588,7 @@ struct DashboardAdaptiveRSSMasonryFeed: View {
                     banner(message: message, symbol: "exclamationmark.triangle.fill", tint: .orange)
                 }
 
-                LazyVGrid(columns: columns, spacing: 12) {
-                    ForEach(renderedItems) { item in
-                        DashboardRSSMasonryCard(item: item, reduceMotion: reduceMotion)
-                    }
-                }
+                masonry
 
                 if remainingItemCount > 0, let maxRenderedItems {
                     Button {
@@ -911,7 +971,10 @@ enum DashboardPalette {
             NewsItem(title: "一篇较长的标题用于测试两列自适应 masonry 布局是否稳定", url: "https://example.com/rss-4", source: .rss(name: "长文精选", url: "https://example.com/feed-4")),
             NewsItem(title: "保持懒加载与卡片高度平衡", url: "https://example.com/rss-5", source: .rss(name: "架构笔记", url: "https://example.com/feed-5")),
             NewsItem(title: "单列回退在窄宽度下依然应当保持可读性", url: "https://example.com/rss-6", source: .rss(name: "产品观察", url: "https://example.com/feed-6"))
-        ]
+        ],
+        // 760 preview width minus the preview's 32 pt padding, plus the 28 pt
+        // source-card inset the feed reserves internally.
+        layoutWidth: 756
     )
     .padding(16)
     .frame(width: 760)
@@ -927,7 +990,8 @@ enum DashboardPalette {
             NewsItem(title: "ThisIsAnExtremelyLongUnbrokenLatinTitleForWidthStressTestingWithoutAnySpacesOrHyphenation0123456789", url: "https://example.com/stress-latin", source: .rss(name: "Width Lab", url: "https://example.com/feed-width"), imageURL: "file:///nonexistent-preview-image-1.jpg"),
             NewsItem(title: "混合 URL 样式标题 https://news.example.com/path/to/article?foo=bar&baz=qux 以及更多尾部文本来继续压测", url: "https://example.com/stress-mixed", source: .rss(name: "URL 混排", url: "https://example.com/feed-mixed")),
             NewsItem(title: "卡片图文双路径都要覆盖：图像卡片路径与纯文本卡片路径在同一窄宽度中都应稳定", url: "https://example.com/stress-image", source: .rss(name: "图文回归", url: "https://example.com/feed-image"), imageURL: "file:///nonexistent-preview-image-2.jpg")
-        ]
+        ],
+        layoutWidth: 532
     )
     .padding(16)
     .frame(width: 536)
