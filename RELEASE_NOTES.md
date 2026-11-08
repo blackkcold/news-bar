@@ -1,5 +1,17 @@
 ## [Unreleased]
 
+## [v2.17.1] - 2026-11-08
+
+### 🛠 修复
+
+- **推荐瀑布流越界**：列宽从「硬宽度」改为「硬上限」，父级传入宽度大于实际槽位时列会收缩，卡片、封面与圆角不再画到相邻列或右侧栏；feed 同时用实测宽度与 hint 取 min，列数不再按偏大的宽度计算。
+- **卡片内容约束**：卡片、Hero 区、封面、meta 行补齐 `minWidth: 0`；标题、来源名、日期、热度标签、推荐理由补齐 `lineLimit(1)` / `truncationMode(.tail)`，超长无空格标题与超长来源名不会再撑宽卡片或被生硬切断。
+
+### ✅ 测试
+
+- 新增 `RecommendationCardOverflowRenderingTests`：真实 `NSHostingView` + 红底舞台，按像素扫描卡片与槽位外侧，覆盖 3 列 / 2 列 / 1 列与 4 组「hint 大于实际槽位」漂移用例；三档快照自动落到 `.build/recommendation-overflow-validation/`。
+- `swift test`：1750 项，6 项跳过，0 失败。
+
 ## [v2.17.0] - 2026-11-08
 
 ### ✨ 新增

@@ -13,7 +13,7 @@
   "release_branch": true,
   "auto_merge": false,
   "release_note_style": "structured-cn",
-  "summary": "新增微博关注监控与内容相关性过滤，支持三档强度、折叠区与可选 AI 校正",
-  "summary_en": "Weibo following monitor with on-device relevance filtering and optional AI correction",
-  "validation": "swift test 1747 项（6 项跳过，0 失败）+ 96 条语料闸门 + release build + 本机安装验收"
+  "summary": "修复推荐瀑布流卡片越界，统一卡片内容截断与列宽契约",
+  "summary_en": "Fix recommendation masonry overflow and unify the card width and truncation contract",
+  "validation": "swift test 1750 项（6 项跳过，0 失败）+ release build + 本机安装验收"
 }

@@ -325,13 +325,36 @@ final class ResearchCenterModelTests: XCTestCase {
         let unread = try XCTUnwrap(model.entries.first { $0.topic == "爆款未读" })
 
         await model.select(unread.id)
-        try? await Task.sleep(nanoseconds: 420_000_000)
+
+        // The model merges the read flag behind a short debounce. A fixed
+        // sleep was too tight on a loaded CI runner, so wait for the save to
+        // land first; the short settle window afterwards still catches a
+        // second, unmerged save.
+        let saved = await waitForSave(of: unread.id, in: store)
+        XCTAssertTrue(saved, "the debounced read save never landed")
 
         let stored = await store.record(id: unread.id)
         XCTAssertEqual(stored?.isRead, true)
         XCTAssertEqual(model.entries.first { $0.id == unread.id }?.isRead, true)
+        try? await Task.sleep(nanoseconds: 200_000_000)
         let saves = await store.saveCount(for: unread.id)
         XCTAssertEqual(saves, 1, "one merged save per open")
+    }
+
+    /// Polls instead of sleeping a fixed interval: the debounce competes with
+    /// the rest of the suite for the main actor, so 420 ms is not a guarantee
+    /// on CI. Returns true as soon as the first save lands.
+    private func waitForSave(
+        of id: String,
+        in store: ResearchFakeStore,
+        timeout: TimeInterval = 5
+    ) async -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if await store.saveCount(for: id) > 0 { return true }
+            try? await Task.sleep(nanoseconds: 50_000_000)
+        }
+        return await store.saveCount(for: id) > 0
     }
 
     func testOpeningActiveRecordDoesNotMarkRead() async throws {

@@ -71,7 +71,7 @@ struct RecommendationCardView: View {
                 position: position
             ) {
                 openableContent
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
             }
 
             Divider()
@@ -83,7 +83,15 @@ struct RecommendationCardView: View {
                 .padding(.top, 9)
                 .padding(.bottom, 12)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        // The column is the hard ceiling: its own frame is capped at
+        // `columnWidth` and shrinks when the feed gets less room than the
+        // dashboard hinted at. The card stays flexible so it can follow that
+        // shrink instead of being pinned to a width the slot does not have.
+        // The column is the hard ceiling: its own frame is capped at
+        // `columnWidth` and shrinks when the feed gets less room than the
+        // dashboard hinted at. The card stays flexible so it can follow that
+        // shrink instead of being pinned to a width the slot does not have.
+        .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
         .fixedSize(horizontal: false, vertical: true)
         .newsCardSurface(cornerRadius: 14, isHovering: isHovering)
         .onHover { hovering in
@@ -119,6 +127,8 @@ struct RecommendationCardView: View {
                     .foregroundStyle(.primary)
                     .multilineTextAlignment(.leading)
                     .lineLimit(RecommendationMasonryLayout.maxTitleLines)
+                    .truncationMode(.tail)
+                    .frame(maxWidth: .infinity, alignment: .leading)
 
                 metaRow
             }
@@ -135,7 +145,7 @@ struct RecommendationCardView: View {
                 Image(nsImage: image)
                     .resizable()
                     .aspectRatio(contentMode: .fill)
-                    .frame(maxWidth: .infinity)
+                    .frame(minWidth: 0, maxWidth: .infinity)
                     .frame(height: imageHeight)
                     .clipped()
                     .accessibilityHidden(true)
@@ -156,7 +166,7 @@ struct RecommendationCardView: View {
             sourceBadge
                 .padding(10)
         }
-        .frame(maxWidth: .infinity)
+        .frame(minWidth: 0, maxWidth: .infinity)
         .frame(height: imageHeight)
         .clipped()
     }
@@ -211,12 +221,15 @@ struct RecommendationCardView: View {
             Text(row.item.source.displayName)
                 .font(.caption)
                 .lineLimit(1)
+                .truncationMode(.tail)
                 .foregroundStyle(.secondary)
 
             if let publishedAt = row.item.publishedAt {
                 Text("·").foregroundStyle(.tertiary)
                 Text(publishedAt, format: .dateTime.month(.twoDigits).day(.twoDigits))
                     .font(.caption)
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
                     .foregroundStyle(.tertiary)
             }
 
@@ -225,18 +238,25 @@ struct RecommendationCardView: View {
             if let hotLabel = row.item.hotLabel, !hotLabel.isEmpty {
                 Text(hotLabel)
                     .font(.system(size: 10, weight: .bold))
+                    .lineLimit(1)
+                    .truncationMode(.tail)
                     .foregroundStyle(sourceTint)
                     .padding(.horizontal, 5)
                     .padding(.vertical, 1)
                     .background(sourceTint.opacity(0.12), in: Capsule())
             }
         }
+        .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
     }
 
     private var actionRow: some View {
         HStack(spacing: 10) {
-            Button(reason) {
+            Button {
                 expandedReason.toggle()
+            } label: {
+                Text(reason)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
             }
             .font(.caption)
             .foregroundStyle(.secondary)

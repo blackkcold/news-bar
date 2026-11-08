@@ -168,6 +168,12 @@ struct RecommendationFeedView: View {
     @Environment(\.accessibilityVoiceOverEnabled) private var voiceOverEnabled
     @State private var controller = InterestController.shared
     @State private var visibleCount = 20
+    /// Width the masonry actually received. The dashboard hands us a width it
+    /// computed from its own arithmetic; a scroll view scroller, safe-area
+    /// inset or a mid-transition pane can make the real slot a few points
+    /// narrower. Laying cards out for the wider hint pushes the last column
+    /// past the feed and paints it over the neighbouring pane.
+    @State private var measuredWidth: CGFloat = 0
     private var english: Bool { settings.appLanguage == .en }
 
     var body: some View {
@@ -246,7 +252,12 @@ struct RecommendationFeedView: View {
     }
 
     private var layoutWidth: CGFloat {
-        max(1, width)
+        let hinted = max(1, width)
+        guard measuredWidth.isFinite, measuredWidth > 1 else { return hinted }
+        // Keep the hint when the measurement is stale and smaller (the first
+        // pass after the reader opens), but never lay out wider than the room
+        // the feed really has.
+        return min(hinted, measuredWidth)
     }
 
     private var effectiveColumnCount: Int {
@@ -289,7 +300,7 @@ struct RecommendationFeedView: View {
                             profileVersion: snapshot.profileVersion,
                             columnWidth: columnWidth
                         )
-                        .frame(width: columnWidth, alignment: .top)
+                        .frame(maxWidth: .infinity, alignment: .top)
                         .background {
                             if onCardFrames != nil {
                                 GeometryReader { proxy in
@@ -316,7 +327,10 @@ struct RecommendationFeedView: View {
                         ))
                     }
                 }
-                .frame(width: columnWidth, alignment: .topLeading)
+                // A hard ceiling, not a hard width: the column follows the room
+                // the feed actually has and only caps at the computed column
+                // width. `width` is only a hint from the dashboard's arithmetic.
+                .frame(minWidth: 0, maxWidth: columnWidth, alignment: .topLeading)
             }
         }
         .coordinateSpace(name: "recommendationMasonry")
@@ -324,6 +338,14 @@ struct RecommendationFeedView: View {
             onCardFrames?(frames)
         }
         .frame(maxWidth: .infinity, alignment: .topLeading)
+        // Measure after the flexible frame: this reports the room the feed was
+        // actually given, not the width the columns asked for.
+        .onGeometryChange(for: CGFloat.self) { proxy in
+            proxy.size.width
+        } action: { newWidth in
+            guard newWidth > 1, abs(newWidth - measuredWidth) > 0.5 else { return }
+            measuredWidth = newWidth
+        }
     }
 
     @ViewBuilder
