@@ -193,6 +193,90 @@ final class AppSettings {
     var launchAtLogin: Bool {
         didSet { TestIsolation.defaults.set(launchAtLogin, forKey: "launchAtLogin") }
     }
+    // MARK: - Weibo monitor
+    // The account list itself lives in WeiboMonitor/monitor.json; these are
+    // only the global preferences. `launchAtLogin` is shared with the general
+    // tab so there is never a second, conflicting "start at login" switch.
+    var weiboMonitorEnabled: Bool {
+        didSet { TestIsolation.defaults.set(weiboMonitorEnabled, forKey: "weiboMonitorEnabled") }
+    }
+    var weiboMonitorNotifyEnabled: Bool {
+        didSet { TestIsolation.defaults.set(weiboMonitorNotifyEnabled, forKey: "weiboMonitorNotifyEnabled") }
+    }
+    var weiboMonitorP0Seconds: Int {
+        didSet { TestIsolation.defaults.set(weiboMonitorP0Seconds, forKey: "weiboMonitorP0Seconds") }
+    }
+    var weiboMonitorP1Seconds: Int {
+        didSet { TestIsolation.defaults.set(weiboMonitorP1Seconds, forKey: "weiboMonitorP1Seconds") }
+    }
+    var weiboMonitorP2Seconds: Int {
+        didSet { TestIsolation.defaults.set(weiboMonitorP2Seconds, forKey: "weiboMonitorP2Seconds") }
+    }
+    var weiboMonitorNightEnabled: Bool {
+        didSet { TestIsolation.defaults.set(weiboMonitorNightEnabled, forKey: "weiboMonitorNightEnabled") }
+    }
+    var weiboMonitorNightStartMinute: Int {
+        didSet { TestIsolation.defaults.set(weiboMonitorNightStartMinute, forKey: "weiboMonitorNightStartMinute") }
+    }
+    var weiboMonitorNightEndMinute: Int {
+        didSet { TestIsolation.defaults.set(weiboMonitorNightEndMinute, forKey: "weiboMonitorNightEndMinute") }
+    }
+    var weiboMonitorPerAccountHourlyCap: Int {
+        didSet { TestIsolation.defaults.set(weiboMonitorPerAccountHourlyCap, forKey: "weiboMonitorPerAccountHourlyCap") }
+    }
+    var weiboMonitorGlobalHourlyCap: Int {
+        didSet { TestIsolation.defaults.set(weiboMonitorGlobalHourlyCap, forKey: "weiboMonitorGlobalHourlyCap") }
+    }
+    var weiboMonitorKeywordNotifyEnabled: Bool {
+        didSet { TestIsolation.defaults.set(weiboMonitorKeywordNotifyEnabled, forKey: "weiboMonitorKeywordNotifyEnabled") }
+    }
+    var weiboMonitorKeywordList: [String] {
+        didSet { TestIsolation.defaults.set(weiboMonitorKeywordList, forKey: "weiboMonitorKeywordList") }
+    }
+    var weiboMonitorBackfillHours: Int {
+        didSet { TestIsolation.defaults.set(weiboMonitorBackfillHours, forKey: "weiboMonitorBackfillHours") }
+    }
+    /// Last time the one-shot "login expired" alert was delivered. Stored so a
+    /// relaunch does not repeat the same alert within 24 hours.
+    var weiboMonitorAuthAlertAt: Date? {
+        didSet { TestIsolation.defaults.set(weiboMonitorAuthAlertAt, forKey: "weiboMonitorAuthAlertAt") }
+    }
+    var weiboMonitorShowPopoverChip: Bool {
+        didSet { TestIsolation.defaults.set(weiboMonitorShowPopoverChip, forKey: "weiboMonitorShowPopoverChip") }
+    }
+    // MARK: - Relevance filtering
+
+    /// Collapse off-topic and commercial posts, and stop them from notifying.
+    /// On by default because "too much noise" is the problem the feature
+    /// exists to solve; the feed always keeps an expandable section.
+    var weiboMonitorRelevanceEnabled: Bool {
+        didSet { TestIsolation.defaults.set(weiboMonitorRelevanceEnabled, forKey: "weiboMonitorRelevanceEnabled") }
+    }
+    /// Stored as the enum's raw value so an unknown future value degrades to
+    /// balanced instead of corrupting the whole settings page.
+    var weiboMonitorRelevanceModeRaw: String {
+        didSet { TestIsolation.defaults.set(weiboMonitorRelevanceModeRaw, forKey: "weiboMonitorRelevanceMode") }
+    }
+    /// Opt-in cloud correction. Off by default: the post body leaves the
+    /// machine only after the user explicitly asks for it.
+    var weiboMonitorRelevanceAICorrection: Bool {
+        didSet { TestIsolation.defaults.set(weiboMonitorRelevanceAICorrection, forKey: "weiboMonitorRelevanceAICorrection") }
+    }
+    /// Prefer a local Ollama instance over the free cloud endpoint.
+    var weiboMonitorRelevancePreferLocal: Bool {
+        didSet { TestIsolation.defaults.set(weiboMonitorRelevancePreferLocal, forKey: "weiboMonitorRelevancePreferLocal") }
+    }
+    /// When the user last confirmed that enabling AI correction sends post
+    /// text off the machine.
+    var weiboMonitorRelevancePrivacyAckAt: Date? {
+        didSet { TestIsolation.defaults.set(weiboMonitorRelevancePrivacyAckAt, forKey: "weiboMonitorRelevancePrivacyAckAt") }
+    }
+
+    var weiboMonitorRelevanceMode: WeiboRelevanceMode {
+        get { WeiboRelevanceMode(rawValue: weiboMonitorRelevanceModeRaw) ?? .balanced }
+        set { weiboMonitorRelevanceModeRaw = newValue.rawValue }
+    }
+
     var colorScheme: String {
         didSet { TestIsolation.defaults.set(colorScheme, forKey: "colorScheme") }
     }
@@ -623,6 +707,61 @@ final class AppSettings {
 
         self.autoRefreshEnabled = defaults.boolIfPresent(forKey: "autoRefreshEnabled") ?? false
         self.launchAtLogin = defaults.boolIfPresent(forKey: "launchAtLogin") ?? false
+        self.weiboMonitorEnabled = defaults.boolIfPresent(forKey: "weiboMonitorEnabled") ?? false
+        self.weiboMonitorNotifyEnabled = defaults.boolIfPresent(forKey: "weiboMonitorNotifyEnabled") ?? true
+        self.weiboMonitorP0Seconds = Self.clampedInterval(
+            defaults.integerIfPresent(forKey: "weiboMonitorP0Seconds") ?? 120,
+            minimum: 90,
+            maximum: 900
+        )
+        self.weiboMonitorP1Seconds = Self.clampedInterval(
+            defaults.integerIfPresent(forKey: "weiboMonitorP1Seconds") ?? 300,
+            minimum: 180,
+            maximum: 1800
+        )
+        self.weiboMonitorP2Seconds = Self.clampedInterval(
+            defaults.integerIfPresent(forKey: "weiboMonitorP2Seconds") ?? 900,
+            minimum: 600,
+            maximum: 3600
+        )
+        self.weiboMonitorNightEnabled = defaults.boolIfPresent(forKey: "weiboMonitorNightEnabled") ?? true
+        self.weiboMonitorNightStartMinute = min(
+            1439,
+            max(0, defaults.integerIfPresent(forKey: "weiboMonitorNightStartMinute") ?? 30)
+        )
+        self.weiboMonitorNightEndMinute = min(
+            1439,
+            max(0, defaults.integerIfPresent(forKey: "weiboMonitorNightEndMinute") ?? 450)
+        )
+        self.weiboMonitorPerAccountHourlyCap = min(
+            50,
+            max(1, defaults.integerIfPresent(forKey: "weiboMonitorPerAccountHourlyCap") ?? 6)
+        )
+        self.weiboMonitorGlobalHourlyCap = min(
+            100,
+            max(1, defaults.integerIfPresent(forKey: "weiboMonitorGlobalHourlyCap") ?? 20)
+        )
+        self.weiboMonitorKeywordNotifyEnabled = defaults.boolIfPresent(forKey: "weiboMonitorKeywordNotifyEnabled") ?? true
+        self.weiboMonitorKeywordList = Self.normalizedKeywords(
+            defaults.stringArray(forKey: "weiboMonitorKeywordList") ?? []
+        )
+        self.weiboMonitorBackfillHours = min(
+            2,
+            max(0, defaults.integerIfPresent(forKey: "weiboMonitorBackfillHours") ?? 0)
+        )
+        self.weiboMonitorAuthAlertAt = defaults.object(forKey: "weiboMonitorAuthAlertAt") as? Date
+        self.weiboMonitorShowPopoverChip = defaults.boolIfPresent(forKey: "weiboMonitorShowPopoverChip") ?? true
+        self.weiboMonitorRelevanceEnabled = defaults.boolIfPresent(forKey: "weiboMonitorRelevanceEnabled") ?? true
+        let storedRelevanceMode = defaults.stringIfPresent(forKey: "weiboMonitorRelevanceMode") ?? ""
+        self.weiboMonitorRelevanceModeRaw =
+            WeiboRelevanceMode(rawValue: storedRelevanceMode)?.rawValue
+            ?? WeiboRelevanceMode.balanced.rawValue
+        self.weiboMonitorRelevanceAICorrection =
+            defaults.boolIfPresent(forKey: "weiboMonitorRelevanceAICorrection") ?? false
+        self.weiboMonitorRelevancePreferLocal =
+            defaults.boolIfPresent(forKey: "weiboMonitorRelevancePreferLocal") ?? false
+        self.weiboMonitorRelevancePrivacyAckAt =
+            defaults.object(forKey: "weiboMonitorRelevancePrivacyAckAt") as? Date
         self.colorScheme = defaults.stringIfPresent(forKey: "colorScheme") ?? "system"
         self.appTheme = AppTheme(rawValue: defaults.stringIfPresent(forKey: "appTheme") ?? "") ?? .modern
         let language = AppLanguage(rawValue: defaults.stringIfPresent(forKey: "appLanguage") ?? "") ?? .zh
@@ -1346,6 +1485,27 @@ final class AppSettings {
     /// entry tier; a value already in the new set is preserved.
     static func migratedAICap(_ raw: Int) -> Int {
         validAICaps.contains(raw) ? raw : 200
+    }
+
+    static func clampedInterval(_ raw: Int, minimum: Int, maximum: Int) -> Int {
+        min(maximum, max(minimum, raw))
+    }
+
+    /// Keywords are case-insensitively unique, trimmed, and bounded. The UI
+    /// uses the same helper before saving, so the stored list and the live list
+    /// never disagree.
+    static func normalizedKeywords(_ raw: [String]) -> [String] {
+        var seen = Set<String>()
+        var result: [String] = []
+        for value in raw {
+            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty, trimmed.count <= 40 else { continue }
+            let key = trimmed.lowercased()
+            guard seen.insert(key).inserted else { continue }
+            result.append(trimmed)
+            if result.count >= 30 { break }
+        }
+        return result
     }
     /// Whitelisted burst-research daily caps. Any value outside this set is rejected.
     static let validBurstCaps: Set<Int> = [10, 20, 50]

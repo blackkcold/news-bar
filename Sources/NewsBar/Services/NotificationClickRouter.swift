@@ -10,6 +10,9 @@ enum NotificationRoute: Equatable {
     case markResearchRead(recordID: String)
     case digest(NotificationDigest)
     case news(url: String, title: String)
+    case weibo(mid: String, uid: String, url: String?)
+    case muteWeibo(uid: String)
+    case markWeiboRead(mid: String, uid: String)
     case dashboard
 
     /// Short, log-safe name. The digest payload is deliberately not printed.
@@ -21,6 +24,9 @@ enum NotificationRoute: Equatable {
         case .markResearchRead: return "markResearchRead"
         case .digest(let digest): return "digest(\(digest.items.count))"
         case .news: return "news"
+        case .weibo: return "weibo"
+        case .muteWeibo: return "muteWeibo"
+        case .markWeiboRead: return "markWeiboRead"
         case .dashboard: return "dashboard"
         }
     }
@@ -33,6 +39,20 @@ enum NotificationClickRouter {
     ) -> NotificationRoute {
         if actionIdentifier == UNNotificationDismissActionIdentifier {
             return .dismiss
+        }
+
+        if let type = userInfo["type"] as? String, type == "weibo" {
+            let uid = userInfo["uid"] as? String ?? ""
+            let mid = userInfo["mid"] as? String ?? ""
+            if actionIdentifier == NotificationIdentifier.muteWeiboAction, !uid.isEmpty {
+                return .muteWeibo(uid: uid)
+            }
+            if actionIdentifier == NotificationIdentifier.markWeiboReadAction, !mid.isEmpty {
+                return .markWeiboRead(mid: mid, uid: uid)
+            }
+            let rawURL = userInfo["url"] as? String
+            let url = (rawURL?.isEmpty == false) ? rawURL : nil
+            return .weibo(mid: mid, uid: uid, url: url)
         }
 
         if let type = userInfo["type"] as? String, type == "research",

@@ -5,18 +5,22 @@ struct DashboardWindow: View {
     @Environment(AppSettings.self) private var settings
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let orchestrator: NewsOrchestrator
+    var weiboMonitor: WeiboMonitorViewModel? = nil
     @State private var actionToasts = ActionToastCenter.shared
     @State private var collapsedRSSSourceIDs: Set<NewsSource.ID> = []
     @State private var searchText = ""
     @State private var debouncedSearchText = ""
     @State private var sourceFilter: DashboardSourceFilter = .all
-    @State private var forYou = true
+    @State private var browseMode: DashboardBrowseMode = .forYou
+    @State private var followingFilter: WeiboFollowingFilter = .all
+    @State private var followingSearch = ""
     @State private var listWidth: CGFloat = 400
     @State private var tabs = WorkspaceTabStore.shared
 
     var onOpenSettings: () -> Void = {}
     var onConfigureAI: (() -> Void)? = nil
     var onOpenResearchCenter: (String?) -> Void = { _ in }
+    var onOpenWeiboMonitorSettings: (() -> Void)? = nil
 
     private let layoutBreakpoint: CGFloat = 960
     private let sidebarWidth: CGFloat = 336
@@ -79,6 +83,9 @@ struct DashboardWindow: View {
         .onChange(of: router.selection?.id) { _, _ in
             syncTabs(with: router.selection)
         }
+        .onReceive(NotificationCenter.default.publisher(for: .openWeiboFollowFeed)) { _ in
+            browseMode = .following
+        }
         .task(id: searchText) {
             let trimmed = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmed.isEmpty else {
@@ -98,8 +105,10 @@ struct DashboardWindow: View {
         .toolbar {
             ToolbarItem(placement: .principal) { toolbarTitle }
             ToolbarItemGroup(placement: .primaryAction) {
-                DashboardRefreshToolbarItem(orchestrator: orchestrator) {
-                    Task { await orchestrator.manualRefresh(settings: settings) }
+                if browseMode != .following {
+                    DashboardRefreshToolbarItem(orchestrator: orchestrator) {
+                        Task { await orchestrator.manualRefresh(settings: settings) }
+                    }
                 }
                 DashboardToolbarAction(
                     title: L10n.string("research.center.title", language: settings.appLanguage),
@@ -164,44 +173,71 @@ struct DashboardWindow: View {
             let contentWidth = max(0, proxy.size.width - 40)
 
             ScrollViewReader { scrollProxy in
-                ScrollView(.vertical, showsIndicators: true) {
-                    VStack(spacing: 0) {
-                        // A stable top anchor lets the reader hand-off reset the
-                        // list without keeping a scroll-position binding in this
-                        // view, which would invalidate the whole dashboard on
-                        // every scroll tick.
-                        Color.clear
-                            .frame(height: 0)
-                            .id("browse-top")
+                VStack(spacing: 0) {
+                    // The mode switch stays outside the ScrollView: after the
+                    // first screen there would otherwise be no way back to the
+                    // following feed without scrolling up.
+                    DashboardModePicker(
+                        mode: $browseMode,
+                        followingUnread: weiboMonitor?.snapshot.unreadCount ?? 0
+                    )
+                    .padding(.horizontal, 20)
+                    .padding(.top, 14)
+                    .padding(.bottom, 2)
 
-                        VStack(alignment: .leading, spacing: 22) {
-                            DashboardMasthead(orchestrator: orchestrator)
+                    ScrollView(.vertical, showsIndicators: true) {
+                        VStack(spacing: 0) {
+                            // A stable top anchor lets the reader hand-off reset the
+                            // list without keeping a scroll-position binding in this
+                            // view, which would invalidate the whole dashboard on
+                            // every scroll tick.
+                            Color.clear
+                                .frame(height: 0)
+                                .id("browse-top")
 
-                            DashboardFilterBar(
-                                searchText: $searchText,
-                                sourceFilter: $sourceFilter,
-                                forYou: $forYou,
-                                orchestrator: orchestrator,
-                                debouncedQuery: normalizedSearchQuery
-                            )
+                            VStack(alignment: .leading, spacing: 18) {
+                                if browseMode == .following {
+                                    WeiboFollowingFeedView(
+                                        monitor: weiboMonitor,
+                                        filter: $followingFilter,
+                                        searchText: $followingSearch,
+                                        onOpenSettings: onOpenWeiboMonitorSettings ?? onOpenSettings
+                                    )
+                                } else {
+                                    DashboardMasthead(orchestrator: orchestrator)
 
-                            contentLayout(
-                                isWideLayout: isWideLayout,
-                                isReaderCompact: isReaderCompact,
-                                availableWidth: contentWidth
-                            )
+                                    DashboardFilterBar(
+                                        searchText: $searchText,
+                                        sourceFilter: $sourceFilter,
+                                        forYou: browseMode == .forYou,
+                                        orchestrator: orchestrator,
+                                        debouncedQuery: normalizedSearchQuery
+                                    )
+
+                                    contentLayout(
+                                        isWideLayout: isWideLayout,
+                                        isReaderCompact: isReaderCompact,
+                                        availableWidth: contentWidth
+                                    )
+                                }
+                            }
+                            .padding(20)
+                            .frame(maxWidth: .infinity, alignment: .topLeading)
                         }
-                        .padding(20)
-                        .frame(maxWidth: .infinity, alignment: .topLeading)
+                    }
+                    .onChange(of: phase) { _, newPhase in
+                        // The list narrows and gains the compact 02 block when the
+                        // reader opens; a preserved offset would point past the
+                        // reflowed content. The content subtree is replaced in this
+                        // same update, so resolve the anchor after the new layout
+                        // has been committed.
+                        guard newPhase == .presented else { return }
+                        Task { @MainActor in
+                            scrollProxy.scrollTo("browse-top", anchor: .top)
+                        }
                     }
                 }
-                .onChange(of: phase) { _, newPhase in
-                    // The list narrows and gains the compact 02 block when the
-                    // reader opens; a preserved offset would point past the
-                    // reflowed content. The content subtree is replaced in this
-                    // same update, so resolve the anchor after the new layout
-                    // has been committed.
-                    guard newPhase == .presented else { return }
+                .onChange(of: browseMode) { _, _ in
                     Task { @MainActor in
                         scrollProxy.scrollTo("browse-top", anchor: .top)
                     }
@@ -242,7 +278,7 @@ struct DashboardWindow: View {
             onOpenSettings: openInterestSettings,
             onResetFilters: { searchText = ""; sourceFilter = .all },
             onRefresh: { Task { await orchestrator.manualRefresh(settings: settings) } },
-            onShowSources: { forYou = false }
+            onShowSources: { browseMode = .bySource }
         )
     }
 
@@ -270,7 +306,7 @@ struct DashboardWindow: View {
         let hotMatchCount = hotGroups.reduce(0) { $0 + $1.matchCount }
         let feedWidth = max(0, availableWidth - sidebarWidth - 20)
 
-        if forYou {
+        if browseMode == .forYou {
             if isWideLayout && !isReaderCompact {
                 HStack(alignment: .top, spacing: 20) {
                     recommendationsView(width: feedWidth)
@@ -555,11 +591,49 @@ private struct DashboardMasthead: View {
 
 // MARK: - Filter bar
 
+private struct DashboardModePicker: View {
+    @Environment(AppSettings.self) private var settings
+    @Binding var mode: DashboardBrowseMode
+    let followingUnread: Int
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Picker("", selection: $mode) {
+                ForEach(DashboardBrowseMode.allCases) { item in
+                    Text(L10n.string(item.titleKey, language: settings.appLanguage)).tag(item)
+                }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .frame(maxWidth: 420)
+            .accessibilityLabel(L10n.string("weibo.feed.mode", language: settings.appLanguage))
+
+            if followingUnread > 0 {
+                Text("\(followingUnread)")
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 5)
+                    .padding(.vertical, 1)
+                    .background(Capsule().fill(Color.red))
+                    .accessibilityLabel(
+                        L10n.string(
+                            "weibo.feed.unreadCount",
+                            language: settings.appLanguage,
+                            followingUnread
+                        )
+                    )
+            }
+
+            Spacer(minLength: 0)
+        }
+    }
+}
+
 private struct DashboardFilterBar: View {
     @Environment(AppSettings.self) private var settings
     @Binding var searchText: String
     @Binding var sourceFilter: DashboardSourceFilter
-    @Binding var forYou: Bool
+    let forYou: Bool
     let orchestrator: NewsOrchestrator
     let debouncedQuery: String?
 
@@ -573,11 +647,6 @@ private struct DashboardFilterBar: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Picker(settings.appLanguage == .en ? "Browse mode" : "浏览模式", selection: $forYou) {
-                Text(settings.appLanguage == .en ? "For you" : "为你推荐").tag(true)
-                Text(settings.appLanguage == .en ? "By source" : "按源浏览").tag(false)
-            }
-            .pickerStyle(.segmented)
             HStack(spacing: 10) {
                 Image(systemName: "magnifyingglass")
                     .font(.system(size: 13, weight: .semibold))

@@ -75,9 +75,35 @@ enum NotificationService {
             options: [.customDismissAction]
         )
 
-        // setNotificationCategories is replace-all; both categories must be
-        // registered together or the digest actions disappear.
-        UNUserNotificationCenter.current().setNotificationCategories([digestCategory, researchCategory])
+        let openWeibo = UNNotificationAction(
+            identifier: NotificationIdentifier.openWeiboAction,
+            title: L10n.string("weibo.notif.action.open"),
+            options: [.foreground]
+        )
+        let muteWeibo = UNNotificationAction(
+            identifier: NotificationIdentifier.muteWeiboAction,
+            title: L10n.string("weibo.notif.action.mute1h"),
+            options: []
+        )
+        let markWeiboRead = UNNotificationAction(
+            identifier: NotificationIdentifier.markWeiboReadAction,
+            title: L10n.string("weibo.notif.action.markRead"),
+            options: []
+        )
+        let weiboCategory = UNNotificationCategory(
+            identifier: NotificationIdentifier.weiboCategory,
+            actions: [openWeibo, muteWeibo, markWeiboRead],
+            intentIdentifiers: [],
+            options: [.customDismissAction]
+        )
+
+        // setNotificationCategories is replace-all; every category must be
+        // registered together or the earlier actions disappear.
+        UNUserNotificationCenter.current().setNotificationCategories([
+            digestCategory,
+            researchCategory,
+            weiboCategory,
+        ])
     }
 
     /// "微博热搜 2 · B站热搜 1", keeping first-seen order and capping at three
@@ -255,9 +281,67 @@ enum NotificationService {
         UNUserNotificationCenter.current().removeAllPendingNotificationRequests()
     }
 
+    // MARK: - Weibo monitor
+
+    static func sendWeiboAlert(_ alert: WeiboAlertNotification) async {
+        let content = UNMutableNotificationContent()
+        content.title = alert.title
+        content.subtitle = alert.subtitle
+        content.body = alert.body
+        content.sound = .default
+        content.threadIdentifier = alert.threadID
+        content.categoryIdentifier = NotificationIdentifier.weiboCategory
+        var userInfo: [String: Any] = [
+            "type": "weibo",
+            "mid": alert.mid,
+            "uid": alert.uid,
+        ]
+        if let url = alert.url, !url.isEmpty {
+            userInfo["url"] = url
+        }
+        content.userInfo = userInfo
+
+        let request = UNNotificationRequest(
+            identifier: alert.requestID,
+            content: content,
+            trigger: nil
+        )
+        try? await UNUserNotificationCenter.current().add(request)
+    }
+
+    /// One low-priority alert per login expiry. The user can sign in from the
+    /// reader; the monitor notices the new cookie and probes automatically.
+    static func sendWeiboAuthExpired(language: AppLanguage) async {
+        let content = UNMutableNotificationContent()
+        content.title = L10n.string("weibo.notif.authTitle", language: language)
+        content.body = L10n.string("weibo.notif.authBody", language: language)
+        content.sound = nil
+        content.threadIdentifier = "weibo.auth"
+        content.categoryIdentifier = NotificationIdentifier.weiboCategory
+        content.userInfo = ["type": "weibo", "mid": "", "uid": ""]
+
+        let request = UNNotificationRequest(
+            identifier: "weibo-auth-expired",
+            content: content,
+            trigger: nil
+        )
+        try? await UNUserNotificationCenter.current().add(request)
+    }
+
     static func clearPersonalizedNotifications() {
         let center = UNUserNotificationCenter.current()
         center.removeAllPendingNotificationRequests()
         center.removeAllDeliveredNotifications()
+    }
+}
+
+/// Production bridge between the pure monitor service and UserNotifications.
+struct WeiboNotificationAdapter: WeiboAlertNotifying {
+    func send(_ notification: WeiboAlertNotification, language: AppLanguage) async {
+        await NotificationService.sendWeiboAlert(notification)
+    }
+
+    func sendAuthExpired(language: AppLanguage) async {
+        await NotificationService.sendWeiboAuthExpired(language: language)
     }
 }

@@ -13,10 +13,17 @@ let package = Package(
             path: "Sources/NewsBar",
             resources: [.process("Resources")]
         ),
+        .executableTarget(
+            name: "WeiboLabelCLI",
+            path: "Sources/WeiboLabelCLI"
+        ),
         .testTarget(
             name: "NewsBarTests",
             dependencies: ["NewsBar"],
-            path: "Tests/NewsBarTests"
+            path: "Tests/NewsBarTests",
+            // Tests read these from #filePath; excluding them from the bundle
+            // keeps the build free of "unhandled resource" warnings.
+            exclude: ["Fixtures"]
         ),
     ]
 )

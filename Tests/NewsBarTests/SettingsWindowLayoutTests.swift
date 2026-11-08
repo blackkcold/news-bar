@@ -24,7 +24,7 @@ final class SettingsWindowLayoutTests: XCTestCase {
             XCTAssertNotEqual(L10n.string(page.titleKey, language: .en), page.titleKey)
         }
 
-        XCTAssertEqual(SettingsPane.allCases.count, 7)
+        XCTAssertEqual(SettingsPane.allCases.count, 8)
     }
 
     @MainActor

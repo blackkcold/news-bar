@@ -18,6 +18,7 @@ struct PopoverContent: View {
     var onOpenDashboard: () -> Void
     var onOpenResearchCenter: () -> Void = {}
     var onConfigureKey: (() -> Void)?
+    var weiboMonitor: WeiboMonitorViewModel? = nil
 
     @State private var expandedRSSSourceIDs: Set<String> = []
     @State private var rssLoadedCounts: [String: Int] = [:]
@@ -41,7 +42,9 @@ struct PopoverContent: View {
                 expandedRSSSourceIDs: $expandedRSSSourceIDs,
                 rssLoadedCounts: $rssLoadedCounts,
                 onConfigureKey: onConfigureKey,
-                onOpenResearchCenter: onOpenResearchCenter
+                onOpenResearchCenter: onOpenResearchCenter,
+                weiboMonitor: weiboMonitor,
+                onOpenDashboard: onOpenDashboard
             )
 
             if !expandedRSSSourceIDs.isEmpty {
@@ -186,6 +189,8 @@ private struct PopoverFeedList: View {
     @Binding var rssLoadedCounts: [String: Int]
     let onConfigureKey: (() -> Void)?
     let onOpenResearchCenter: () -> Void
+    let weiboMonitor: WeiboMonitorViewModel?
+    let onOpenDashboard: () -> Void
 
     var body: some View {
         ScrollView(.vertical, showsIndicators: false) {
@@ -202,6 +207,21 @@ private struct PopoverFeedList: View {
                     PopoverResearchChip(
                         summary: orchestrator.researchSummary,
                         onOpen: onOpenResearchCenter
+                    )
+                }
+
+                if settings.weiboMonitorShowPopoverChip,
+                   let weiboMonitor,
+                   weiboMonitor.snapshot.unreadCount > 0 {
+                    PopoverWeiboFollowChip(
+                        unreadCount: weiboMonitor.snapshot.unreadCount,
+                        onOpen: {
+                            onOpenDashboard()
+                            NotificationCenter.default.post(
+                                name: .openWeiboFollowFeed,
+                                object: nil
+                            )
+                        }
                     )
                 }
 

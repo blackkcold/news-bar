@@ -51,4 +51,7 @@ enum AIQuotaOrigin: String, Codable, Sendable, CaseIterable {
     case selection
     case aiSearch
     case pageSummary
+    /// Borderline Weibo relevance decisions. Free models show up as a zero
+    /// cost; the call count is still visible in the breakdown.
+    case weiboRelevance
 }
