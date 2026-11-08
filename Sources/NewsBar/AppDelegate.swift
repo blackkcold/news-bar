@@ -49,6 +49,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private var researchCenterModel: ResearchCenterModel?
 
     private var settings: AppSettings!
+    private var weiboMonitor: WeiboMonitorViewModel?
+    private var appearanceObservation: NSKeyValueObservation?
+    private var lastWeiboUnread = -1
     private var orchestrator: NewsOrchestrator?
     private var updateChecker: UpdateChecker?
     private var autoRefreshTimer: Timer?
@@ -73,6 +76,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         EncryptedKeyStore.migrateFromKeychainIfNeeded()
         settings = AppSettings()
         settingsSidebarState = SettingsSidebarState()
+        MainActor.assumeIsolated {
+            weiboMonitor = WeiboMonitorViewModel(settings: settings)
+        }
         Task { await InterestController.shared.prepare() }
         Task { await ReaderRuleListCache.prewarm() }
         setupWorkspaceObservers()
@@ -88,6 +94,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         Task { _ = await NotificationService.requestAuthorization() }
         NotificationService.registerCategories()
         UNUserNotificationCenter.current().delegate = self
+        Task { @MainActor [weak self] in
+            await self?.weiboMonitor?.start()
+            self?.updateWeiboBadge(force: true)
+        }
         // No launch-time rescheduling: pending requests survive quit now, and the
         // startup refresh installs the digest-bearing daily request. Installing a
         // plain template here could race that refresh and overwrite it.
@@ -109,20 +119,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 await self.orchestrator?.refreshIfNeeded(settings: self.settings, trigger: .startup)
             }
         }
-
-        autoRefreshTimer = Timer.scheduledTimer(withTimeInterval: Self.schedulerTickInterval, repeats: true) { [weak self] _ in
-            guard let self,
-                  self.settings.autoRefreshEnabled,
-                  !self.isSystemSleeping else { return }
-            let visibility = self.currentRefreshVisibility
-            Task {
-                await self.orchestrator?.refreshScheduled(
-                    settings: self.settings,
-                    visibility: visibility,
-                    trigger: .scheduled
-                )
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
+            guard let self else { return }
+            Task { @MainActor in
+                await self.weiboMonitor?.tick(now: Date())
             }
         }
+
+        let timer = Timer(timeInterval: Self.schedulerTickInterval, repeats: true) { [weak self] _ in
+            guard let self else { return }
+            Task { @MainActor in
+                await self.scheduledTick()
+            }
+        }
+        timer.tolerance = 5
+        RunLoop.main.add(timer, forMode: .common)
+        autoRefreshTimer = timer
+    }
+
+    /// The monitor must run even when the news auto-refresh switch is off. The
+    /// old timer returned early on `autoRefreshEnabled`, which would have made
+    /// the monitor silently dead for the default configuration.
+    @MainActor
+    private func scheduledTick() async {
+        guard !isSystemSleeping else { return }
+        await weiboMonitor?.tick(now: Date())
+        guard settings.autoRefreshEnabled else { return }
+        let visibility = currentRefreshVisibility
+        await orchestrator?.refreshScheduled(
+            settings: settings,
+            visibility: visibility,
+            trigger: .scheduled
+        )
     }
 
     private var currentRefreshVisibility: RefreshVisibility {
@@ -154,9 +182,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             ) { [weak self] _ in
                 guard let self else { return }
                 self.isSystemSleeping = false
-                guard self.settings.autoRefreshEnabled else { return }
-                let visibility = self.currentRefreshVisibility
-                Task {
+                Task { @MainActor in
+                    await self.weiboMonitor?.handleWake(now: Date())
+                    guard self.settings.autoRefreshEnabled else { return }
+                    let visibility = self.currentRefreshVisibility
                     await self.orchestrator?.refreshScheduled(
                         settings: self.settings,
                         visibility: visibility,
@@ -348,6 +377,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         ) { [weak self] _ in
             Task { @MainActor [weak self] in await self?.sendTestNewsPush() }
         }
+
+        NotificationCenter.default.addObserver(
+            forName: .weiboMonitorChanged,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.updateWeiboBadge()
+            }
+        }
     }
 
     /// Developer-tab hook: delivers a real aggregated push right now, so the
@@ -527,6 +566,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             button.action = #selector(togglePopover)
             button.target = self
         }
+        appearanceObservation = NSApp.observe(\.effectiveAppearance, options: [.new]) { [weak self] _, _ in
+            Task { @MainActor in self?.updateWeiboBadge(force: true) }
+        }
+    }
+
+    @MainActor
+    private func updateWeiboBadge(force: Bool = false) {
+        guard let monitor = weiboMonitor else { return }
+        let unread = monitor.snapshot.unreadCount
+        guard force || unread != lastWeiboUnread else { return }
+        lastWeiboUnread = unread
+        let button = statusItem?.button
+        button?.image = WeiboMenuBarBadge.image(unread: unread)
+        button?.setAccessibilityLabel("NewsBar")
+        button?.setAccessibilityValue(
+            unread > 0 ? L10n.string("weibo.feed.unreadCount", unread) : ""
+        )
     }
 
     @objc private func togglePopover() {
@@ -571,7 +627,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             onOpenResearchCenter: { [weak self] in
                 Task { @MainActor in self?.openResearchCenter() }
             },
-            onConfigureKey: { [weak self] in self?.openSettings(toAITab: true) }
+            onConfigureKey: { [weak self] in self?.openSettings(toAITab: true) },
+            weiboMonitor: weiboMonitor
         )
         .environment(settings)
 
@@ -582,19 +639,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         return popover
     }
 
-    func openSettings(toAITab: Bool = false) {
+    func openSettings(toAITab: Bool = false, toWeiboMonitor: Bool = false) {
         popover?.performClose(nil)
 
         if let existing = settingsWindow {
             existing.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
-            if toAITab {
+            if toWeiboMonitor {
+                NotificationCenter.default.post(name: .switchToWeiboMonitor, object: nil)
+            } else if toAITab {
                 NotificationCenter.default.post(name: .switchToAITab, object: nil)
             }
             return
         }
 
-        let initialPane: SettingsPane = toAITab ? .ai : .general
+        let initialPane: SettingsPane = toWeiboMonitor ? .weiboMonitor : (toAITab ? .ai : .general)
 
         let window = NSWindow(
             contentRect: NSRect(origin: .zero, size: Self.settingsSize),
@@ -605,7 +664,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         window.title = "NewsBar Settings"
         window.center()
         window.contentView = NSHostingView(
-            rootView: SettingsWindow(initialPane: initialPane, sidebarState: settingsSidebarState)
+            rootView: SettingsWindow(
+                initialPane: initialPane,
+                sidebarState: settingsSidebarState,
+                weiboMonitor: weiboMonitor
+            )
                 .environment(settings)
                 .environment(\.cacheClearAction) { [weak self] in
                     guard let self, let orchestrator = self.orchestrator else { return }
@@ -709,10 +772,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         window.contentViewController = NSHostingController(
             rootView: DashboardWindow(
                 orchestrator: orchestrator,
+                weiboMonitor: weiboMonitor,
                 onOpenSettings: { [weak self] in self?.openSettings() },
                 onConfigureAI: { [weak self] in self?.openSettings(toAITab: true) },
                 onOpenResearchCenter: { [weak self] recordID in
                     Task { @MainActor in self?.openResearchCenter(selecting: recordID) }
+                },
+                onOpenWeiboMonitorSettings: { [weak self] in
+                    self?.openSettings(toWeiboMonitor: true)
                 }
             )
             .environment(settings)
@@ -734,11 +801,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             let readers = ReaderSessionRegistry.all.sorted {
                 !$0.isTabActive && $1.isTabActive
             }
-            guard !readers.isEmpty,
-                  ReaderTerminationPolicy.needsCookieFlush(
-                      cookieMemoryEnabled: settings?.readerCookieMemoryEnabled ?? false,
-                      hasActiveReader: true
-                  ) else { return .terminateNow }
+            let needsReaderFlush = !readers.isEmpty
+                && ReaderTerminationPolicy.needsCookieFlush(
+                    cookieMemoryEnabled: settings?.readerCookieMemoryEnabled ?? false,
+                    hasActiveReader: true
+                )
+            let needsMonitorFlush = settings?.weiboMonitorEnabled == true
+                || !(weiboMonitor?.snapshot.users.isEmpty ?? true)
+            guard needsReaderFlush || needsMonitorFlush else { return .terminateNow }
 
             terminationReplyPending = true
             Task { @MainActor in
@@ -746,6 +816,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                     try? await Task.sleep(for: .seconds(2))
                     replyToTerminationRequest()
                 }
+                await self.weiboMonitor?.persistNow()
                 for reader in readers {
                     await reader.flushCookiesBeforeTermination()
                 }
@@ -768,6 +839,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         researchMaintenanceTask?.cancel()
         autoRefreshTimer?.invalidate()
         researchMaintenanceTimer?.invalidate()
+        weiboMonitor?.stop()
+        appearanceObservation?.invalidate()
+        appearanceObservation = nil
         let workspaceCenter = NSWorkspace.shared.notificationCenter
         workspaceObservers.forEach { workspaceCenter.removeObserver($0) }
         workspaceObservers.removeAll()
@@ -896,6 +970,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 let item = InterestController.shared.state.contents[ContentIdentity.id(for: url)]?.item
                 NewsNavigationRouter.shared.open(url: url, title: title, item: item, surface: "notification")
             }
+        case .weibo(let mid, let uid, let url):
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.openDashboard(refresh: false)
+                NotificationCenter.default.post(name: .openWeiboFollowFeed, object: nil)
+                if !mid.isEmpty {
+                    await self.weiboMonitor?.markRead(mid: mid, uid: uid)
+                }
+                let fallbackURL = mid.isEmpty ? nil : "https://m.weibo.cn/detail/\(mid)"
+                let destination = (url?.isEmpty == false) ? url : fallbackURL
+                if let destination {
+                    NewsNavigationRouter.shared.open(
+                        url: destination,
+                        title: "",
+                        item: nil,
+                        surface: "weiboNotification"
+                    )
+                }
+            }
+        case .muteWeibo(let uid):
+            Task { @MainActor [weak self] in
+                await self?.weiboMonitor?.mute(uid)
+            }
+        case .markWeiboRead(let mid, let uid):
+            Task { @MainActor [weak self] in
+                await self?.weiboMonitor?.markRead(mid: mid, uid: uid)
+            }
         case .dashboard:
             Task { @MainActor [weak self] in self?.presentLiveDigestIfPossible() }
         }
@@ -928,6 +1029,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         willPresent notification: UNNotification,
         withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
     ) {
+        if let type = notification.request.content.userInfo["type"] as? String,
+           type == "weibo",
+           WeiboFeedPresence.isVisible,
+           WeiboFeedPresence.isAppActive {
+            // The user is looking at the following feed; insert the post and
+            // skip the banner instead of covering the list they are reading.
+            completionHandler([])
+            return
+        }
         completionHandler([.banner, .sound])
+    }
+
+    func applicationDidBecomeActive(_ notification: Notification) {
+        WeiboFeedPresence.setAppActive(true)
+    }
+
+    func applicationWillResignActive(_ notification: Notification) {
+        WeiboFeedPresence.setAppActive(false)
     }
 }

@@ -13,7 +13,7 @@
   "release_branch": true,
   "auto_merge": false,
   "release_note_style": "structured-cn",
-  "summary": "热搜卡展开不再驱动整页重排，浏览列表回顶改用无状态锚点",
-  "summary_en": "Instant hot-trend disclosure and stateless browse scroll reset",
-  "validation": "swift test 1613 项（6 项跳过，0 失败）+ swift build + release build + 手动展开/回顶验收"
+  "summary": "新增微博关注监控与内容相关性过滤，支持三档强度、折叠区与可选 AI 校正",
+  "summary_en": "Weibo following monitor with on-device relevance filtering and optional AI correction",
+  "validation": "swift test 1747 项（6 项跳过，0 失败）+ 96 条语料闸门 + release build + 本机安装验收"
 }

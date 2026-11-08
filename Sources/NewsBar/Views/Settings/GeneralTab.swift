@@ -31,10 +31,7 @@ struct GeneralTab: View {
             }
 
             Section {
-                Toggle("general.launchAtLogin".localized, isOn: Binding(
-                    get: { settings.launchAtLogin },
-                    set: { settings.launchAtLogin = $0 }
-                ))
+                LaunchAtLoginRow()
             } header: {
                 Text("general.launch".localized)
             }

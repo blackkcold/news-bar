@@ -1,5 +1,23 @@
 import Foundation
 
+/// The dashboard's top-level browse mode. It used to be a single `Bool`
+/// (`forYou`); the following feed is a third destination, not a source filter.
+enum DashboardBrowseMode: String, CaseIterable, Identifiable {
+    case forYou
+    case bySource
+    case following
+
+    var id: String { rawValue }
+
+    var titleKey: String {
+        switch self {
+        case .forYou: return "weibo.feed.forYou"
+        case .bySource: return "weibo.feed.bySource"
+        case .following: return "weibo.feed.following"
+        }
+    }
+}
+
 /// Source filter used by the dashboard's "by source" browser.
 ///
 /// This used to be nested inside `DashboardWindow`. It lives at file scope so

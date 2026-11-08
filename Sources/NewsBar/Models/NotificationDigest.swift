@@ -7,6 +7,11 @@ enum NotificationIdentifier {
     static let openResearchAction = "newsbar.openResearch"
     static let markResearchReadAction = "newsbar.markResearchRead"
 
+    static let weiboCategory = "newsbar.weibo"
+    static let openWeiboAction = "newsbar.weibo.open"
+    static let muteWeiboAction = "newsbar.weibo.mute1h"
+    static let markWeiboReadAction = "newsbar.weibo.markRead"
+
     /// Stable request identifiers. A fixed identifier makes the system replace
     /// the previous request and delivered banner instead of piling one up per
     /// hour or per launch.

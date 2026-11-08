@@ -8,6 +8,7 @@ enum SettingsPane: String, CaseIterable, Identifiable {
     case reading
     case ai
     case notifications
+    case weiboMonitor
     case privacy
     case advanced
     case about
@@ -24,6 +25,7 @@ enum SettingsPane: String, CaseIterable, Identifiable {
         case .reading: return "settings.rss"
         case .ai: return "settings.ai"
         case .notifications: return "settings.reminder"
+        case .weiboMonitor: return "settings.weiboMonitor"
         case .privacy: return "settings.group.privacy"
         case .advanced: return "settings.group.advanced"
         case .about: return "settings.about"
@@ -36,6 +38,7 @@ enum SettingsPane: String, CaseIterable, Identifiable {
         case .reading: return "settings.rss.subtitle"
         case .ai: return "settings.ai.subtitle"
         case .notifications: return "settings.reminder.subtitle"
+        case .weiboMonitor: return "settings.weiboMonitor.subtitle"
         case .privacy: return "settings.privacy.subtitle"
         case .advanced: return "settings.advanced.subtitle"
         case .about: return "settings.about.subtitle"
@@ -48,6 +51,7 @@ enum SettingsPane: String, CaseIterable, Identifiable {
         case .reading: return "antenna.radiowaves.left.and.right"
         case .ai: return "sparkles"
         case .notifications: return "bell.fill"
+        case .weiboMonitor: return "binoculars"
         case .privacy: return "lock.shield"
         case .advanced: return "wrench.and.screwdriver"
         case .about: return "info.circle"
@@ -62,10 +66,16 @@ struct SettingsWindow: View {
     /// so the button and the columns always agree. The default instance keeps
     /// previews and the rendering tests self-contained.
     private let sidebarState: SettingsSidebarState
+    private let weiboMonitor: WeiboMonitorViewModel?
 
-    init(initialPane: SettingsPane = .general, sidebarState: SettingsSidebarState = SettingsSidebarState()) {
+    init(
+        initialPane: SettingsPane = .general,
+        sidebarState: SettingsSidebarState = SettingsSidebarState(),
+        weiboMonitor: WeiboMonitorViewModel? = nil
+    ) {
         _pane = State(initialValue: initialPane)
         self.sidebarState = sidebarState
+        self.weiboMonitor = weiboMonitor
     }
 
     var body: some View {
@@ -87,6 +97,9 @@ struct SettingsWindow: View {
         }
         // Rebuild after a language change so every `.localized` label refreshes.
         .id(settings.appLanguage)
+        .onReceive(NotificationCenter.default.publisher(for: .switchToWeiboMonitor)) { _ in
+            pane = .weiboMonitor
+        }
     }
 
     /// The retro paper theme keeps its existing two-column shell: the paper
@@ -214,6 +227,7 @@ struct SettingsWindow: View {
         case .reading: RSSTab()
         case .ai: AITab()
         case .notifications: ReminderTab()
+        case .weiboMonitor: WeiboMonitorTab(monitor: weiboMonitor)
         case .privacy: PrivacyTab()
         case .advanced: AdvancedTab()
         case .about: AboutTab()
