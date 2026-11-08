@@ -108,6 +108,8 @@ final class WeiboMonitorServiceTests: XCTestCase {
             store: store,
             feed: feed,
             notifier: notifier,
+            planner: WeiboPollPlanner(calendar: WeiboMonitorTestSupport.calendar),
+            alertPolicy: WeiboAlertPolicy(calendar: WeiboMonitorTestSupport.calendar),
             rng: WeiboRNG(seed: 42),
             sleeper: { _ in },
             autoFlushAlerts: false,
@@ -431,6 +433,8 @@ final class WeiboMonitorServiceTests: XCTestCase {
             store: nightStore,
             feed: FakeWeiboFeed(),
             notifier: NoopWeiboAlertNotifier(),
+            planner: WeiboPollPlanner(calendar: WeiboMonitorTestSupport.calendar),
+            alertPolicy: WeiboAlertPolicy(calendar: WeiboMonitorTestSupport.calendar),
             rng: WeiboRNG(seed: 1),
             sleeper: { _ in },
             autoFlushAlerts: false,
@@ -445,7 +449,7 @@ final class WeiboMonitorServiceTests: XCTestCase {
 
         let snapshot = await nightService.snapshot()
         let due = try XCTUnwrap(snapshot.users.first?.nextDueAt)
-        let components = Calendar.current.dateComponents([.hour, .minute], from: due)
+        let components = WeiboMonitorTestSupport.calendar.dateComponents([.hour, .minute], from: due)
         XCTAssertEqual(components.hour, 7)
         XCTAssertEqual(components.minute, 30)
     }
