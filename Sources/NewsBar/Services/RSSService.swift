@@ -158,7 +158,8 @@ enum RSSService {
         }
 
         let feedURL = URL(string: sourceURL)
-        return delegate.items.map { item in
+        var seenIDs = Set<String>()
+        return delegate.items.compactMap { item in
             let rawLink = item.link.isEmpty ? sourceURL : item.link
             let absoluteLink = URL(string: rawLink, relativeTo: feedURL)?.absoluteURL
             let validatedLink = absoluteLink.flatMap { SecurityPolicies.validateURL($0.absoluteString)?.absoluteString }
@@ -176,18 +177,51 @@ enum RSSService {
                 }
                 return nil
             }()
-            return NewsItem(
-                title: SecurityPolicies.sanitizeHTMLContent(item.title),
-                // Keep the feed's original link bytes as identity. Rewriting a
-                // relative link to an absolute one would change every bookmark,
-                // hide rule and interest key for that item.
+            let title = SecurityPolicies.sanitizeHTMLContent(item.title)
+            let identity: String?
+            if !item.guid.isEmpty {
+                identity = "guid\n\(item.guid)"
+            } else if !item.link.isEmpty {
+                let canonical = Self.canonicalItemURL(item.link, relativeTo: feedURL)
+                // Plain absolute links keep their historical identity so saved
+                // read/hide/feedback state survives this change. A tracked
+                // variant resolves to the same clean URL, and therefore the
+                // same identity as the plain item.
+                identity = canonical == item.link ? nil : canonical
+            } else {
+                // A feed without links or guids must not collapse every item
+                // onto the feed URL. Title and publication metadata are the
+                // only stable identity left.
+                identity = "item\n\(title)\n\(item.publicationDate)\n\(item.descriptionText)"
+            }
+            let newsItem = NewsItem(
+                title: title,
+                // Keep the feed's original link bytes for bookmarks and
+                // hide/interest rules. Identity is passed separately.
                 url: rawLink,
                 source: .rss(name: sourceName, url: sourceURL),
                 imageURL: validatedImageURL,
                 publishedAt: parsePublicationDate(item.publicationDate),
-                readerURL: readerURL
+                readerURL: readerURL,
+                identity: identity
             )
+            guard seenIDs.insert(newsItem.id).inserted else { return nil }
+            return newsItem
         }
+    }
+
+    /// Tracking parameters, fragments and a trailing slash must not create a
+    /// second copy of the same article across refreshes.
+    static func canonicalItemURL(_ raw: String, relativeTo base: URL?) -> String {
+        let absolute = URL(string: raw, relativeTo: base)?.absoluteURL.absoluteString ?? raw
+        var canonical = ContentIdentity.canonicalURL(absolute)
+        if var components = URLComponents(string: canonical),
+           components.path.count > 1,
+           components.path.hasSuffix("/") {
+            components.path.removeLast()
+            canonical = components.string ?? canonical
+        }
+        return canonical
     }
 
     static func parsePublicationDate(_ raw: String) -> Date? {
@@ -267,6 +301,7 @@ final class RSSParserDelegate: NSObject, XMLParserDelegate {
     struct Item {
         var title: String = ""
         var link: String = ""
+        var guid: String = ""
         var imageURL: String? = nil
         var imagePriority = 0
         var publicationDate: String = ""
@@ -372,6 +407,11 @@ final class RSSParserDelegate: NSObject, XMLParserDelegate {
         case "pubDate", "published", "updated", "dc:date":
             if currentItem?.publicationDate.isEmpty ?? true {
                 currentItem?.publicationDate = raw
+            }
+        case "guid", "id":
+            let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty, currentItem?.guid.isEmpty ?? true {
+                currentItem?.guid = trimmed
             }
         case "link":
             let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)

@@ -154,6 +154,30 @@ final class WeiboMonitorStoreTests: XCTestCase {
         )
     }
 
+    func testUnreadableMonitorIsArchivedBeforeTheRebuiltListIsWritten() async throws {
+        let now = WeiboMonitorTestSupport.date(2026, 11, 7, 12, 0)
+        let user = WeiboMonitorTestSupport.user(uid: "42", now: now)
+        try await store.save(users: [user], now: now)
+        try await store.savePosts(
+            uid: "42",
+            posts: [WeiboMonitorTestSupport.post(uid: "42", createdAt: now)],
+            now: now
+        )
+        let monitorURL = root.appendingPathComponent("monitor.json")
+        try FileManager.default.removeItem(at: monitorURL)
+        try FileManager.default.createDirectory(at: monitorURL, withIntermediateDirectories: true)
+
+        let loaded = await store.load(now: now)
+
+        XCTAssertTrue(loaded.issues.contains("monitor.unreadable"))
+        let files = try FileManager.default.contentsOfDirectory(atPath: root.path)
+        XCTAssertTrue(files.contains { $0.hasPrefix("monitor.json.unreadable-") })
+
+        try await store.save(users: loaded.users, now: now)
+        let isDirectory = (try monitorURL.resourceValues(forKeys: [.isDirectoryKey])).isDirectory
+        XCTAssertEqual(isDirectory, false)
+    }
+
     func testResetRemovesEverything() async throws {
         let now = WeiboMonitorTestSupport.date(2026, 11, 7, 12, 0)
         try await store.save(users: [WeiboMonitorTestSupport.user(now: now)], now: now)

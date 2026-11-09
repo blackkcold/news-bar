@@ -1004,9 +1004,19 @@ final class AISummaryServiceBudgetTests: XCTestCase {
 @MainActor
 final class TruncationHashTests: XCTestCase {
 
-    func testMaxConsecutiveTruncationsConstant() {
-        let orchestrator = NewsOrchestrator()
-        XCTAssertGreaterThan(orchestrator.maxConsecutiveTruncations, 0)
+    func testCanAttemptSummaryStopsAtLimitUnlessManual() {
+        XCTAssertTrue(NewsOrchestrator.canAttemptSummary(
+            consecutiveTruncations: 0, limit: 3, isManualRegeneration: false
+        ))
+        XCTAssertTrue(NewsOrchestrator.canAttemptSummary(
+            consecutiveTruncations: 2, limit: 3, isManualRegeneration: false
+        ))
+        XCTAssertFalse(NewsOrchestrator.canAttemptSummary(
+            consecutiveTruncations: 3, limit: 3, isManualRegeneration: false
+        ))
+        XCTAssertTrue(NewsOrchestrator.canAttemptSummary(
+            consecutiveTruncations: 3, limit: 3, isManualRegeneration: true
+        ))
     }
 
     func testClearCacheResetsTruncationHashes() async {
@@ -1022,45 +1032,47 @@ final class TruncationHashTests: XCTestCase {
         _ = settings
     }
 
-    func testTruncatedHashGuardsSharedRegeneration() {
-        let orchestrator = NewsOrchestrator()
-
-        orchestrator.sharedSummaryLastTruncatedHash = "hash-A"
-        let newHash = "hash-A"
-
-        let shouldSkip = newHash == orchestrator.sharedSummaryLastTruncatedHash
-        XCTAssertTrue(shouldSkip, "Same hash as truncated hash should skip regeneration")
+    func testRepeatedTruncatedHashIsNotRecovered() {
+        XCTAssertFalse(NewsOrchestrator.shouldRecoverSharedSummary(
+            hasNewContent: true,
+            isRepeatedTruncation: true,
+            state: .truncated("partial")
+        ))
+        XCTAssertTrue(NewsOrchestrator.shouldRecoverSharedSummary(
+            hasNewContent: true,
+            isRepeatedTruncation: false,
+            state: .truncated("partial")
+        ))
     }
 
-    func testNewHashTriggersGenerationWhenDifferentFromBothHashes() {
-        let orchestrator = NewsOrchestrator()
-
-        orchestrator.sharedSummaryLastHash = "hash-old-success"
-        orchestrator.sharedSummaryLastTruncatedHash = "hash-old-truncated"
-        let newHash = "hash-new"
-
-        let shouldGenerate = newHash != orchestrator.sharedSummaryLastHash
-            && newHash != orchestrator.sharedSummaryLastTruncatedHash
-        XCTAssertTrue(shouldGenerate, "New hash different from both should generate")
+    func testNewContentRecoversASharedSummary() {
+        XCTAssertTrue(NewsOrchestrator.shouldRecoverSharedSummary(
+            hasNewContent: true,
+            isRepeatedTruncation: false,
+            state: .done("old")
+        ))
     }
 
-    func testSuccessHashBlocksRegeneration() {
-        let orchestrator = NewsOrchestrator()
-
-        orchestrator.sharedSummaryLastHash = "hash-success"
-        orchestrator.sharedSummaryLastTruncatedHash = nil
-        let newHash = "hash-success"
-
-        let shouldSkip = newHash == orchestrator.sharedSummaryLastHash
-        XCTAssertTrue(shouldSkip, "Same hash as success hash should skip regeneration")
+    func testCachedSummaryWithoutNewContentDoesNotRegenerate() {
+        XCTAssertFalse(NewsOrchestrator.shouldGenerateSummary(
+            hasCachedSummary: true,
+            hasNewContent: false,
+            isManualRefresh: false,
+            hotChanged: false,
+            rssChanged: false,
+            trendIsSignificant: false,
+            elapsedSinceSummary: 60 * 60,
+            shouldRecover: false
+        ))
     }
 
-    func testSharedTruncationCounterUsesSingleContext() {
-        let orchestrator = NewsOrchestrator()
-
-        orchestrator.sharedSummaryConsecutiveTruncationCount = orchestrator.maxConsecutiveTruncations
-
-        XCTAssertEqual(orchestrator.sharedSummaryConsecutiveTruncationCount, orchestrator.maxConsecutiveTruncations)
+    func testTruncationLimitBlocksAutomaticAttempts() {
+        let limit = NewsOrchestrator().maxConsecutiveTruncations
+        XCTAssertFalse(NewsOrchestrator.canAttemptSummary(
+            consecutiveTruncations: limit,
+            limit: limit,
+            isManualRegeneration: false
+        ))
     }
 
     func testClearCacheResetsSharedConsecutiveTruncationCounter() async {

@@ -7,6 +7,9 @@ struct WeiboParsedPage: Sendable, Equatable {
     var sinceMid: String?
     var rawCount: Int
     var dateMissing: Bool
+    /// Mids whose date could not be parsed. The rest of the page is still
+    /// trustworthy and must not be suppressed with them.
+    var missingDateMids: Set<String> = []
 
     static let empty = WeiboParsedPage(
         posts: [],
@@ -49,6 +52,7 @@ enum WeiboFeedParser {
         var resolvedName = fallbackScreenName
         var resolvedAvatar: String?
         var dateMissing = false
+        var missingDateMids = Set<String>()
 
         for item in list {
             guard let mid = firstString(item, keys: ["idstr", "mid"]) ?? numberString(item["id"]) else {
@@ -85,6 +89,7 @@ enum WeiboFeedParser {
                 // fetch time and record the anomaly instead of guessing.
                 createdAt = fetchedAt
                 dateMissing = true
+                missingDateMids.insert(mid)
             }
 
             let post = WeiboPost(
@@ -112,7 +117,8 @@ enum WeiboFeedParser {
             avatarURL: resolvedAvatar,
             sinceMid: posts.first?.mid,
             rawCount: list.count,
-            dateMissing: dateMissing
+            dateMissing: dateMissing,
+            missingDateMids: missingDateMids
         )
     }
 
@@ -140,6 +146,7 @@ enum WeiboFeedParser {
         var resolvedName = fallbackScreenName
         var resolvedAvatar: String?
         var dateMissing = false
+        var missingDateMids = Set<String>()
 
         for item in mblogs {
             guard let mid = firstString(item, keys: ["idstr", "mid"]) ?? numberString(item["id"]) else {
@@ -172,6 +179,7 @@ enum WeiboFeedParser {
             } else {
                 createdAt = fetchedAt
                 dateMissing = true
+                missingDateMids.insert(mid)
             }
 
             posts.append(
@@ -201,7 +209,8 @@ enum WeiboFeedParser {
             avatarURL: resolvedAvatar,
             sinceMid: since ?? posts.first?.mid,
             rawCount: mblogs.count,
-            dateMissing: dateMissing
+            dateMissing: dateMissing,
+            missingDateMids: missingDateMids
         )
     }
 

@@ -329,13 +329,19 @@ final class RSSValidationServiceTests: XCTestCase {
             ("A", "https://example.com/feed1.xml"),
             ("B", "https://example.com/feed2.xml"),
         ]
-
-        for feed in feeds {
-            if Task.isCancelled {
-                XCTAssertTrue(true, "Cancellation detected before processing \(feed.name)")
-                break
-            }
+        let task = Task {
+            await RSSValidationService.validateFeedsSerially(feeds) { _, _, _ in }
         }
+        task.cancel()
+        let summary = await task.value
+
+        XCTAssertEqual(summary.outcomes.count, feeds.count)
+        XCTAssertTrue(
+            summary.outcomes.allSatisfy {
+                if case .cancelled = $0.outcome { return true }
+                return false
+            }
+        )
     }
 
     func testValidateFeedsSerially_BlockedFeeds_NoNetworkAccess() async {
@@ -450,6 +456,109 @@ final class RSSValidationServiceTests: XCTestCase {
     func testRSSServiceValidate_ExistsAndUnchanged() async {
         let result = try? await RSSService.validate("https://localhost/feed")
         XCTAssertEqual(result, false)
+    }
+
+    func testRSSIdentityUsesGuidAcrossDifferentLinks() throws {
+        func parse(_ link: String) throws -> String {
+            let xml = """
+            <rss><channel><title>T</title>
+            <item><title>A</title><guid>stable-1</guid><link>\(link)</link></item>
+            </channel></rss>
+            """
+            let items = try RSSService.parseRSSFeed(
+                data: Data(xml.utf8),
+                sourceName: "T",
+                sourceURL: "https://example.com/feed"
+            )
+            return try XCTUnwrap(items.first?.id)
+        }
+        XCTAssertEqual(
+            try parse("https://example.com/a?utm_source=x"),
+            try parse("https://example.com/a")
+        )
+    }
+
+    func testDuplicateGuidIsDeduplicated() throws {
+        let xml = """
+        <rss><channel><title>T</title>
+        <item><title>A</title><guid>stable-1</guid><link>https://example.com/a?utm_source=x</link></item>
+        <item><title>A copy</title><guid>stable-1</guid><link>https://example.com/a</link></item>
+        </channel></rss>
+        """
+        let items = try RSSService.parseRSSFeed(
+            data: Data(xml.utf8),
+            sourceName: "T",
+            sourceURL: "https://example.com/feed"
+        )
+        XCTAssertEqual(items.count, 1)
+    }
+
+    func testRSSIdentityCanonicalizesTrackingAndTrailingSlash() throws {
+        let xml = """
+        <rss><channel><title>T</title>
+        <item><title>A</title><link>https://example.com/a/?utm_source=x&amp;fbclid=y</link></item>
+        <item><title>A</title><link>https://example.com/a</link></item>
+        </channel></rss>
+        """
+        let items = try RSSService.parseRSSFeed(
+            data: Data(xml.utf8),
+            sourceName: "T",
+            sourceURL: "https://example.com/feed"
+        )
+        XCTAssertEqual(items.count, 1)
+    }
+
+    func testRSSIdentityKeepsLinklessItemsDistinct() throws {
+        let xml = """
+        <rss><channel><title>T</title>
+        <item><title>First</title><description>one</description></item>
+        <item><title>Second</title><description>two</description></item>
+        </channel></rss>
+        """
+        let items = try RSSService.parseRSSFeed(
+            data: Data(xml.utf8),
+            sourceName: "T",
+            sourceURL: "https://example.com/feed"
+        )
+        XCTAssertEqual(items.count, 2)
+        XCTAssertNotEqual(items[0].id, items[1].id)
+    }
+
+    func testRSSIdentityChangesWhenGuidChanges() throws {
+        func parse(_ guid: String) throws -> String {
+            let xml = """
+            <rss><channel><title>T</title>
+            <item><title>A</title><guid>\(guid)</guid><link>https://example.com/a</link></item>
+            </channel></rss>
+            """
+            let items = try RSSService.parseRSSFeed(
+                data: Data(xml.utf8),
+                sourceName: "T",
+                sourceURL: "https://example.com/feed"
+            )
+            return try XCTUnwrap(items.first?.id)
+        }
+        XCTAssertNotEqual(try parse("old"), try parse("new"))
+    }
+
+    func testAtomEntryIDIsUsedAsIdentity() throws {
+        func parse(_ link: String) throws -> String {
+            let xml = """
+            <feed><title>T</title>
+            <entry><title>A</title><id>atom-1</id><link href="\(link)"/></entry>
+            </feed>
+            """
+            let items = try RSSService.parseRSSFeed(
+                data: Data(xml.utf8),
+                sourceName: "T",
+                sourceURL: "https://example.com/feed"
+            )
+            return try XCTUnwrap(items.first?.id)
+        }
+        XCTAssertEqual(
+            try parse("https://example.com/a"),
+            try parse("https://example.com/other")
+        )
     }
 
     func testProductionRSSParser_ParsesValidFeed() throws {

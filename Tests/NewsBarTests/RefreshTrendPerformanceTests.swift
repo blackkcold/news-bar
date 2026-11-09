@@ -559,3 +559,37 @@ final class AISummaryPersistenceAndTriggerTests: XCTestCase {
         XCTAssertNil(oldEntry.truncatedContentHash)
     }
 }
+
+final class BurstSummaryIdentityTests: XCTestCase {
+    private func item(_ title: String, _ url: String) -> NewsItem {
+        NewsItem(
+            title: title,
+            url: url,
+            source: .weibo,
+            hotLabel: "爆"
+        )
+    }
+
+    func testBurstIdentityIsOrderIndependent() {
+        let first = [item("A", "https://example.com/a"), item("B", "https://example.com/b")]
+        let second = [item("B", "https://example.com/b"), item("A", "https://example.com/a")]
+        XCTAssertEqual(
+            NewsOrchestrator.burstIdentity(items: first),
+            NewsOrchestrator.burstIdentity(items: second)
+        )
+    }
+
+    func testBurstIdentityChangesWhenTheTopicChanges() {
+        let old = [item("A", "https://example.com/a")]
+        let new = [item("A", "https://example.com/a"), item("C", "https://example.com/c")]
+        XCTAssertNotEqual(
+            NewsOrchestrator.burstIdentity(items: old),
+            NewsOrchestrator.burstIdentity(items: new)
+        )
+    }
+
+    func testBurstIdentityIsNilWithoutABurstLabel() {
+        let items = [NewsItem(title: "A", url: "https://example.com/a", source: .weibo)]
+        XCTAssertNil(NewsOrchestrator.burstIdentity(items: items))
+    }
+}

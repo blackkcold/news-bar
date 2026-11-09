@@ -181,6 +181,12 @@ actor ReaderCookieVault {
         isLoaded = true
         requiresReconciliation = false
         loadError = nil
+        // Recovery is also the point where a previously skipped legacy
+        // migration can run; the failed read must not strand old defaults.
+        var changed = migrateIfNeeded()
+        if consolidateSites() { changed = true }
+        if prune(now: Date()) { changed = true }
+        if changed { try await persist() }
     }
 
     private func markStateUnverified() {
@@ -227,12 +233,20 @@ actor ReaderCookieVault {
                 do {
                     snapshot = try Self.decode(data)
                 } catch {
-                    snapshot = ReaderCookieSnapshot()
+                    // The blob decrypted but is not a valid snapshot. Treat it
+                    // like a read failure: the next capture must not overwrite
+                    // the only copy with an empty vault.
+                    markStateUnverified()
                     loadError = ReaderCookieVaultError.corruptedStore.localizedDescription
+                    return
                 }
             }
         } catch {
-            loadError = error.localizedDescription
+            // A failed read is not an empty vault. Block every write until the
+            // on-disk state is re-read successfully; otherwise the next capture
+            // would persist this empty in-memory snapshot over every site.
+            markStateUnverified()
+            return
         }
         var changed = migrateIfNeeded()
         if consolidateSites() { changed = true }

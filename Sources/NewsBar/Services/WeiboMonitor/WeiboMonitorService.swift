@@ -66,6 +66,8 @@ actor WeiboMonitorService {
     private var globalCooldownUntil: Date?
     private var lastTickAt: Date?
     private var storeError: String?
+    private var monitorWritesBlocked = false
+    private var persistentStoreWarningKey: String?
 
     init(
         store: WeiboMonitorStore = WeiboMonitorStore(),
@@ -116,8 +118,21 @@ actor WeiboMonitorService {
         users = loaded.users
         postsByUID = loaded.postsByUID
         unloadedUIDs = loaded.unloadedUIDs
+        monitorWritesBlocked = loaded.monitorWriteBlocked
         if !loaded.issues.isEmpty {
             storeError = loaded.issues.joined(separator: ", ")
+        }
+        if loaded.issues.contains("monitor.unreadable") {
+            // The original monitor.json was moved aside before this rebuilt
+            // list is written, or writes are paused because it could not be.
+            let warningKey = loaded.monitorWriteBlocked
+                ? "weibo.events.monitorWriteBlocked"
+                : "weibo.events.monitorUnreadable"
+            persistentStoreWarningKey = warningKey
+            addEvent(
+                .warning,
+                L10n.string(warningKey, language: config.language)
+            )
         }
 
         for index in users.indices {
@@ -375,7 +390,7 @@ actor WeiboMonitorService {
             return .failure
         }
         Self.logger.notice(
-            "fetch uid=\(uid, privacy: .public) tier=\(tier.rawValue, privacy: .public) latencyMs=\(Int(latency * 1000), privacy: .public) posts=\(firstPage.posts.count, privacy: .public)"
+            "fetch uid=\(uid, privacy: .private) tier=\(tier.rawValue, privacy: .public) latencyMs=\(Int(latency * 1000), privacy: .public) posts=\(firstPage.posts.count, privacy: .public)"
         )
 
         if firstPage.rawCount == 0 && !isBaseline {
@@ -433,6 +448,17 @@ actor WeiboMonitorService {
             if lhs.createdAt != rhs.createdAt { return lhs.createdAt < rhs.createdAt }
             return lhs.mid < rhs.mid
         }
+        var missingDateMids = firstPage.missingDateMids.union(pageTier.missingDateMids)
+        if missingDateMids.isEmpty, firstPage.dateMissing || pageTier.dateMissing {
+            // Older parsers only reported the page-level flag.
+            missingDateMids = Set(unique.map(\.mid))
+        }
+        let missingDateCount = unique.reduce(0) {
+            $0 + (missingDateMids.contains($1.mid) ? 1 : 0)
+        }
+        let missingDateRatio = unique.isEmpty
+            ? 0
+            : Double(missingDateCount) / Double(unique.count)
 
         users[index].screenName = pageTier.screenName ?? user.screenName
         users[index].avatarURL = pageTier.avatarURL ?? user.avatarURL
@@ -452,6 +478,12 @@ actor WeiboMonitorService {
                 now: now,
                 updatesStats: false
             )
+            // The decision may hit the network. The account can be removed or
+            // reordered while we wait, so never keep using the old index.
+            guard let refreshed = users.firstIndex(where: { $0.uid == uid }) else {
+                return .failure
+            }
+            index = refreshed
             let baseline = unique.map { post -> WeiboPost in
                 var copy = post
                 copy.read = true
@@ -507,13 +539,19 @@ actor WeiboMonitorService {
 
         // A date-format change must not turn every old post into a "new" post.
         // Update the feed and the baseline, but do not notify.
-        if firstPage.dateMissing || pageTier.dateMissing {
+        // Only a page where most dates are unreadable is unsafe to push. A
+        // single bad entry must not silence the other nine.
+        if missingDateRatio > 0.5 {
             let relevance = await decideRelevance(
                 posts: unique,
                 user: users[index],
                 now: now,
                 updatesStats: false
             )
+            guard let refreshed = users.firstIndex(where: { $0.uid == uid }) else {
+                return .failure
+            }
+            index = refreshed
             var merged = postsByUID[uid] ?? []
             let existing = Set(merged.map(\.mid))
             let readPosts = unique.map { post -> WeiboPost in
@@ -542,6 +580,7 @@ actor WeiboMonitorService {
         var newPosts: [WeiboPost] = []
         for post in unique {
             guard !user.seenMids.contains(post.mid) else { continue }
+            guard !missingDateMids.contains(post.mid) else { continue }
             guard post.createdAt > windowStart else { continue }
             guard !(post.isTop && post.createdAt < windowStart) else { continue }
             // `isRetweet` is only true for a pure repost (empty own text); it
@@ -587,20 +626,36 @@ actor WeiboMonitorService {
             }
         }
 
-        if !newPosts.isEmpty {
+        let degradedNewPosts = unique.filter {
+            missingDateMids.contains($0.mid) && !user.seenMids.contains($0.mid)
+        }
+        var degradedReadPosts: [WeiboPost] = []
+        if !newPosts.isEmpty || !degradedNewPosts.isEmpty {
             let relevance = await decideRelevance(
-                posts: newPosts,
+                posts: newPosts + degradedNewPosts,
                 user: users[index],
                 now: now
             )
+            guard let refreshed = users.firstIndex(where: { $0.uid == uid }) else {
+                return .failure
+            }
+            index = refreshed
             newPosts = newPosts.map { post -> WeiboPost in
                 var copy = post
                 copy.relevance = relevance[post.mid]
                 return copy
             }
+            // A post whose date could not be parsed still belongs in the feed;
+            // it is read and never pushed.
+            degradedReadPosts = degradedNewPosts.map { post -> WeiboPost in
+                var copy = post
+                copy.read = true
+                copy.relevance = relevance[post.mid]
+                return copy
+            }
         }
 
-        if newPosts.isEmpty {
+        if newPosts.isEmpty && degradedReadPosts.isEmpty {
             mergeSeenMids(uid: uid, posts: unique, newest: newest)
             users[index].nextDueAt = planner.nextDue(
                 for: users[index], now: now, config: config, isLowPower: isLowPower, rng: &rng
@@ -611,7 +666,9 @@ actor WeiboMonitorService {
 
         var merged = postsByUID[uid] ?? []
         let existing = Set(merged.map(\.mid))
-        merged.append(contentsOf: newPosts.filter { !existing.contains($0.mid) })
+        merged.append(
+            contentsOf: (newPosts + degradedReadPosts).filter { !existing.contains($0.mid) }
+        )
         postsByUID[uid] = trim(posts: merged, now: now)
 
         mergeSeenMids(uid: uid, posts: unique, newest: newest)
@@ -635,11 +692,18 @@ actor WeiboMonitorService {
             alertPosts = newPosts
         }
         queueAlerts(posts: alertPosts, user: users[index], now: now)
+        let eventName = users[index].screenName
+        if !degradedReadPosts.isEmpty {
+            addEvent(
+                .warning,
+                "\(eventName) · \(L10n.string("weibo.events.dateSkipped", language: config.language, degradedReadPosts.count))"
+            )
+        }
 
         await persistPosts(uid: uid, now: now)
         addEvent(
             .success,
-            "\(users[index].screenName) · \(L10n.string("weibo.events.newPosts", language: config.language, newPosts.count))"
+            "\(eventName) · \(L10n.string("weibo.events.newPosts", language: config.language, newPosts.count))"
         )
         if isAuthProbe { finishAuthProbe(now: now) }
         return .success
@@ -780,7 +844,7 @@ actor WeiboMonitorService {
             await sendAuthAlertIfNeeded(now: now)
         }
         Self.logger.notice(
-            "failure uid=\(user.uid, privacy: .public) kind=\(kind.rawValue, privacy: .public) message=\(message, privacy: .public)"
+            "failure uid=\(user.uid, privacy: .private) kind=\(kind.rawValue, privacy: .public) message=\(message, privacy: .public)"
         )
     }
 
@@ -1441,6 +1505,7 @@ actor WeiboMonitorService {
             nextCheckAt: next,
             events: Array(events.suffix(Self.maxEvents)),
             storeError: storeError,
+            storeErrorKey: persistentStoreWarningKey,
             todayPostCount: todayCount,
             gapSuspectedCount: users.filter(\.gapSuspected).count
         )
@@ -1502,12 +1567,16 @@ actor WeiboMonitorService {
     }
 
     private func persistUsers(now: Date) async {
+        // A monitor file that could not be archived must not be replaced by a
+        // rebuilt, settings-lossy account list.
+        guard !monitorWritesBlocked else { return }
         do {
             try await store.save(users: users, now: now)
-            storeError = nil
+            storeError = persistentStoreWarningKey
             consecutiveStoreFailures = 0
         } catch {
             consecutiveStoreFailures += 1
+            persistentStoreWarningKey = nil
             storeError = error.localizedDescription
             Self.logger.error("persist users failed: \(error.localizedDescription, privacy: .public)")
             if consecutiveStoreFailures == 3 {
@@ -1526,6 +1595,7 @@ actor WeiboMonitorService {
             try await store.savePosts(uid: uid, posts: posts, now: now)
         } catch {
             consecutiveStoreFailures += 1
+            persistentStoreWarningKey = nil
             storeError = error.localizedDescription
             Self.logger.error("persist posts failed: \(error.localizedDescription, privacy: .public)")
             if consecutiveStoreFailures == 3 {

@@ -125,6 +125,17 @@ struct DashboardAIBriefingPanel: View {
                      : "基于已采集标题 · \(manifest.coverageStart.formatted(date: .omitted, time: .shortened))–\(manifest.asOf.formatted(date: .omitted, time: .shortened)) · 非完整全天报道")
                     .font(.caption2).foregroundStyle(.secondary)
             }
+            if settings.aiSummaryEnabled, let restoredAt = orchestrator.aiSummaryRestoredAt {
+                Label(
+                    String(
+                        format: "dash.lastGenerated".localized,
+                        restoredAt.formatted(date: .omitted, time: .shortened)
+                    ),
+                    systemImage: "clock.arrow.circlepath"
+                )
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+            }
 
             if !settings.aiSummaryEnabled {
                 emptyState(message: cardStateText, systemImage: "sparkles", actionTitle: "dash.openSettings".localized) {
@@ -165,6 +176,12 @@ struct DashboardAIBriefingPanel: View {
                             Spacer(minLength: 0)
                             retryButton
                         }
+                    }
+                    if let updateError = orchestrator.aiSummaryUpdateError,
+                       summaryState.completedText != nil {
+                        Label(updateError, systemImage: "exclamationmark.triangle.fill")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
                     }
                 }
             }
@@ -212,8 +229,11 @@ struct DashboardAIBriefingPanel: View {
             cachedParseKey = key
         }
         .task(id: sharedSummaryNeedsGeneration) {
+            // Cache first: folding the disk cache in can turn this task off
+            // before it ever asks for a paid generation.
+            await orchestrator.loadCached(settings: settings)
+            guard !Task.isCancelled, sharedSummaryNeedsGeneration else { return }
             // Keep the first frame free of keychain reads, hashing and network.
-            guard sharedSummaryNeedsGeneration else { return }
             try? await Task.sleep(for: .seconds(2))
             guard !Task.isCancelled, sharedSummaryNeedsGeneration else { return }
             await orchestrator.generateSharedSummaryIfNeeded(settings: settings)
@@ -447,7 +467,11 @@ struct DashboardAIBriefingPanel: View {
     }
 
     private var sharedSummaryNeedsGeneration: Bool {
-        AISummaryPresentationPolicy.needsAutomaticGeneration(state: summaryState, enabled: settings.aiSummaryEnabled)
+        !orchestrator.isSummaryQuotaBlockedForToday
+            && AISummaryPresentationPolicy.needsAutomaticGeneration(
+                state: summaryState,
+                enabled: settings.aiSummaryEnabled
+            )
     }
 
     private var canRegenerate: Bool {
@@ -459,7 +483,7 @@ struct DashboardAIBriefingPanel: View {
     }
 
     private var isSummaryRefreshing: Bool {
-        summaryState == .fetching || summaryState == .summarizing
+        summaryState == .fetching || summaryState == .summarizing || orchestrator.aiSummaryUpdating
     }
 }
 

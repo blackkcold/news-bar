@@ -4,7 +4,7 @@
 
 macOS 菜单栏即时新闻聚合器。状态栏图标点击弹出 Popover，展示微博/B站热搜 + RSS 源 + AI 总结。
 
-**当前开发分支**: `feature/v1.5.0` · **最新发版**: v1.5.0
+**当前开发分支**: `release/v2.17.2` · **最新发版**: v2.17.2
 
 ## Architecture
 
@@ -48,8 +48,8 @@ Sources/NewsBar/
 │   │   ├── UpdateBadge.swift     # 更新状态按钮（检查→下载→打开，7 态胶囊按钮）
 │   │   └── BottomBar.swift       # 底部工具栏 (+ batchProgress 进度显示)
 │   ├── Dashboard/
-│   │   ├── DashboardWindow.swift           # 独立 Dashboard 窗口（960×720 起，侧边栏热点卡片 + AI 简报 + 按源分卡 RSS 主区；打开时惰性触发 Dashboard AI 摘要生成）
-│   │   ├── DashboardVisualComponents.swift # Dashboard 视觉组件：DashboardHotTrendCard（可折叠热点卡片）、DashboardAdaptiveRSSMasonryFeed（固定双列 LazyVGrid，列间距 12pt）、DashboardRSSMasonryCard（图文卡片）
+│   │   ├── DashboardWindow.swift           # 独立 Dashboard 窗口（1180×860，最小 960×720，侧边栏热点卡片 + AI 简报 + 按源分卡 RSS 主区；打开时优先恢复缓存简报，缺失时才触发付费生成）
+│   │   ├── DashboardVisualComponents.swift # Dashboard 视觉组件：DashboardHotTrendCard（可折叠热点卡片）、DashboardAdaptiveRSSMasonryFeed（1–3 列自适应瀑布流 HStack + LazyVStack，列间距 12pt，实测宽度兜底）、DashboardRSSMasonryCard（图文卡片）
 │   │   └── DashboardAIBriefingPanel.swift  # AI 简报面板（双分类 Picker：趋势概览 / 每日精选，状态驱动，引用快照回溯，使用独立的 dashboardSummaryState/dashboardParsedSummary）
 │   └── Settings/
 │       ├── SettingsWindow.swift   # 设置窗口 (TabView 5 标签：通用/RSS/AI/通知/关于)
@@ -115,11 +115,11 @@ App 启动
 User opens Dashboard
    → AppDelegate.openDashboard() 创建/复用 NSWindow（1180×860，最小 960×720）
    → DashboardWindow 加载缓存 → 渲染侧边栏热点趋势卡片（微博/B站，可折叠展开）
-   → DashboardAdaptiveRSSMasonryFeed 在每个 RSS 源卡片内固定双列 LazyVGrid 布局（GridItem(.flexible(), spacing: 12) × 2）
+   → DashboardAdaptiveRSSMasonryFeed 在每个 RSS 源卡片内使用 1–3 列自适应瀑布流（HStack + LazyVStack，列间距 12pt，按实测宽度取 min(hint, measured)）
    → DashboardAIBriefingPanel 显示 AI 简报（双分类 Picker），引用快照回溯原文
    → 状态反馈栏显示手动刷新警告和 RSS 批量刷新进度
    → Dashboard 中 RSS 按源分卡（DashboardRSSSourceCard），Popover 保持每源独立 RSSWaterfallView
-   → Dashboard 打开时惰性触发 generateDashboardSummary（详细，默认 360 字，趋势/精选各 4-5 个话题），使用独立的 dashboardSummaryState/dashboardSummaryItems/dashboardParsedSummary 和 dashboardLastHash/dashboardLastTruncatedHash，截断后重开 Dashboard 会自动重试
+   → Dashboard 打开时优先读取缓存简报；只有无缓存时才惰性生成（详细，默认 360 字，趋势/精选各 4-5 个话题），Popover 与 Dashboard 共用同一份 AI 简报状态
 User opens popover
    → PopoverContent.task { loadCached(settings) } 显示缓存数据（内存优先：若内存已有数据则跳过加载）
    → 缓存过期 >15min 且内存空时状态为 idle/暂无数据；刷新失败时按源显示"加载失败"或"更新失败，显示缓存"

@@ -80,6 +80,7 @@ struct WeiboMonitorSnapshot: Equatable, Sendable {
     var nextCheckAt: Date?
     var events: [WeiboMonitorEvent] = []
     var storeError: String?
+    var storeErrorKey: String?
     var todayPostCount: Int = 0
     var gapSuspectedCount: Int = 0
 
