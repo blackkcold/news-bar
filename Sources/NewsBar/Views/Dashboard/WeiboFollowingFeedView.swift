@@ -35,11 +35,21 @@ struct WeiboFollowingFeedView: View {
     private var language: AppLanguage { settings.appLanguage }
 
     var body: some View {
-        Group {
-            if let monitor {
-                content(monitor)
-            } else {
-                unavailableState
+        VStack(alignment: .leading, spacing: 12) {
+            if showsFallbackModeControl {
+                DashboardModeSegmentedControl(
+                    mode: $mode,
+                    followingUnread: followingUnread,
+                    badgeEnabled: badgeEnabled
+                )
+            }
+
+            Group {
+                if let monitor {
+                    content(monitor)
+                } else {
+                    unavailableState
+                }
             }
         }
         .onAppear {
@@ -53,6 +63,16 @@ struct WeiboFollowingFeedView: View {
         .onDisappear {
             WeiboFeedPresence.setVisible(false)
         }
+    }
+
+    /// The filter bar owns the mode control while the feed is usable. When the
+    /// monitor is off, has no accounts, or is unavailable, the filter bar is
+    /// not rendered; keep a fallback switch so the user can always leave the
+    /// following page.
+    private var showsFallbackModeControl: Bool {
+        guard let monitor else { return true }
+        let snapshot = monitor.snapshot
+        return !snapshot.isEnabled || snapshot.users.isEmpty
     }
 
     // MARK: - Content
