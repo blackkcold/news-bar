@@ -1,13 +1,16 @@
 import SwiftUI
 
 /// A width-aware waterfall of following posts. Used by the standalone
-/// following page and by the recommendation page's "关注动态" block, so both
-/// surfaces get the same card and column behavior.
+/// following page; every column is a hard width so a long body or a wide
+/// table image can never paint into the neighbouring column.
 struct FollowingMasonryFeed: View {
     let entries: [FollowingPostEntry]
     let width: CGFloat
     var initialVisibleCount: Int = 24
     var showsLoadMore = true
+    /// Test seam for a wide image without hitting the network. Production
+    /// callers leave this empty and the card uses AsyncImage.
+    var imageOverrides: [String: Image] = [:]
     let onOpen: (WeiboPost) -> Void
 
     @Environment(AppSettings.self) private var settings
@@ -19,12 +22,14 @@ struct FollowingMasonryFeed: View {
         width: CGFloat,
         initialVisibleCount: Int = 24,
         showsLoadMore: Bool = true,
+        imageOverrides: [String: Image] = [:],
         onOpen: @escaping (WeiboPost) -> Void
     ) {
         self.entries = entries
         self.width = width
         self.initialVisibleCount = initialVisibleCount
         self.showsLoadMore = showsLoadMore
+        self.imageOverrides = imageOverrides
         self.onOpen = onOpen
         _visibleCount = State(initialValue: initialVisibleCount)
     }
@@ -58,12 +63,13 @@ struct FollowingMasonryFeed: View {
                             FollowingPostCard(
                                 entry: entry,
                                 columnWidth: columnWidth,
+                                imageOverride: imageOverrides[entry.id],
                                 onOpen: { onOpen(entry.post) }
                             )
-                            .frame(maxWidth: .infinity, alignment: .top)
+                            .frame(width: columnWidth, alignment: .top)
                         }
                     }
-                    .frame(minWidth: 0, maxWidth: columnWidth, alignment: .topLeading)
+                    .frame(width: columnWidth, alignment: .topLeading)
                 }
             }
 

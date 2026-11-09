@@ -135,7 +135,9 @@ struct FollowingRecentMessagesCard: View {
                         .font(.system(size: 10.5))
                         .foregroundStyle(.primary)
                         .lineLimit(2)
+                        .truncationMode(.tail)
                         .multilineTextAlignment(.leading)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                 }
 
                 if !entry.post.read {

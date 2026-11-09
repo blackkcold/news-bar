@@ -6,6 +6,8 @@ import SwiftUI
 struct FollowingPostCard: View {
     let entry: FollowingPostEntry
     let columnWidth: CGFloat
+    /// Test seam: render a supplied wide image without hitting the network.
+    var imageOverride: Image? = nil
     let onOpen: () -> Void
 
     @Environment(AppSettings.self) private var settings
@@ -14,6 +16,9 @@ struct FollowingPostCard: View {
 
     private var isRetro: Bool { settings.appTheme == .retroEditorial }
     private var accent: Color { isRetro ? RetroEditorialTokens.brick : Color.accentColor }
+    private var contentWidth: CGFloat {
+        max(1, columnWidth - FollowingMasonryLayout.cardPadding * 2)
+    }
     private var imageURL: URL? {
         guard let raw = entry.post.imageURLs.first else { return nil }
         return URL(string: raw)
@@ -42,7 +47,8 @@ struct FollowingPostCard: View {
                 metaRow
             }
             .padding(FollowingMasonryLayout.cardPadding)
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(width: columnWidth, alignment: .leading)
+            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
             .contentShape(Rectangle())
             .newsCardSurface(cornerRadius: 14, isHovering: hovering)
         }
@@ -111,14 +117,43 @@ struct FollowingPostCard: View {
         Text(text)
             .font(.system(size: 12.5, weight: entry.post.read ? .regular : .medium))
             .lineLimit(6)
+            .truncationMode(.tail)
             .lineSpacing(2)
             .multilineTextAlignment(.leading)
             .fixedSize(horizontal: false, vertical: true)
+            .frame(width: contentWidth, alignment: .leading)
             .foregroundStyle(.primary)
     }
 
     private func cover(_ url: URL) -> some View {
         ZStack(alignment: .topTrailing) {
+            coverImage(url)
+                .frame(width: contentWidth, height: imageHeight)
+                .clipped()
+                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .strokeBorder(Color.primary.opacity(0.07), lineWidth: 0.5)
+                )
+
+            if entry.post.imageURLs.count > 1 {
+                Text("+\(entry.post.imageURLs.count - 1)")
+                    .font(.system(size: 8, weight: .bold))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 5)
+                    .padding(.vertical, 2)
+                    .background(Capsule().fill(Color.black.opacity(0.55)))
+                    .padding(6)
+            }
+        }
+        .frame(width: contentWidth, height: imageHeight, alignment: .topTrailing)
+    }
+
+    @ViewBuilder
+    private func coverImage(_ url: URL) -> some View {
+        if let imageOverride {
+            imageOverride.resizable().scaledToFill()
+        } else {
             AsyncImage(url: url) { phase in
                 switch phase {
                 case .success(let image):
@@ -133,60 +168,57 @@ struct FollowingPostCard: View {
                     }
                 }
             }
-            .frame(maxWidth: .infinity)
-            .frame(height: imageHeight)
-            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .strokeBorder(Color.primary.opacity(0.07), lineWidth: 0.5)
-            )
-
-            if entry.post.imageURLs.count > 1 {
-                Text("+\(entry.post.imageURLs.count - 1)")
-                    .font(.system(size: 8, weight: .bold))
-                    .foregroundStyle(.white)
-                    .padding(.horizontal, 5)
-                    .padding(.vertical, 2)
-                    .background(Capsule().fill(Color.black.opacity(0.55)))
-                    .padding(6)
-            }
         }
     }
 
     private var metaRow: some View {
+        ViewThatFits(in: .horizontal) {
+            metaRowContent(showsTags: true, showsVerdict: true)
+            metaRowContent(showsTags: false, showsVerdict: true)
+            metaRowContent(showsTags: false, showsVerdict: false)
+        }
+        .frame(width: contentWidth, alignment: .leading)
+    }
+
+    private func metaRowContent(showsTags: Bool, showsVerdict: Bool) -> some View {
         HStack(spacing: 6) {
             Text(relativeTime)
                 .font(.system(size: 8.5))
                 .foregroundStyle(.secondary)
                 .monospacedDigit()
 
-            if entry.post.isLongText {
+            if showsTags, entry.post.isLongText {
                 metaTag(L10n.string("weibo.feed.longText", language: settings.appLanguage))
             }
-            if entry.post.isRetweet {
+            if showsTags, entry.post.isRetweet {
                 metaTag(L10n.string("weibo.feed.retweet", language: settings.appLanguage))
             }
-            if entry.post.imageURLs.count > 1 {
+            if showsTags, entry.post.imageURLs.count > 1 {
                 metaTag(L10n.string("weibo.feed.images", language: settings.appLanguage, entry.post.imageURLs.count))
             }
 
             Spacer(minLength: 0)
 
-            if let verdict = entry.post.relevance?.verdict, verdict != .relevant {
+            if showsVerdict,
+               let verdict = entry.post.relevance?.verdict,
+               verdict != .relevant {
                 Text(L10n.string(verdict.titleKey, language: settings.appLanguage))
                     .font(.system(size: 7.5, weight: .medium))
                     .foregroundStyle(.secondary)
+                    .lineLimit(1)
                     .padding(.horizontal, 5)
                     .padding(.vertical, 1)
                     .background(Capsule().fill(Color.secondary.opacity(0.10)))
             }
         }
+        .lineLimit(1)
     }
 
     private func metaTag(_ value: String) -> some View {
         Text(value)
             .font(.system(size: 7.5))
             .foregroundStyle(.tertiary)
+            .lineLimit(1)
             .padding(.horizontal, 4)
             .padding(.vertical, 1)
             .background(Capsule().fill(Color.secondary.opacity(0.08)))
