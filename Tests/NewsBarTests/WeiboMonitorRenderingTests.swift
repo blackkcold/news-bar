@@ -126,6 +126,11 @@ final class WeiboMonitorRenderingTests: XCTestCase {
             monitor: viewModel,
             filter: .constant(.all),
             searchText: .constant(""),
+            mode: .constant(.following),
+            accountUID: .constant(nil),
+            followingUnread: 0,
+            badgeEnabled: true,
+            availableWidth: 900,
             onOpenSettings: {}
         )
         .frame(width: 900, height: 680)
@@ -157,6 +162,11 @@ final class WeiboMonitorRenderingTests: XCTestCase {
             monitor: viewModel,
             filter: .constant(.all),
             searchText: .constant(""),
+            mode: .constant(.following),
+            accountUID: .constant(nil),
+            followingUnread: 0,
+            badgeEnabled: true,
+            availableWidth: 900,
             onOpenSettings: {}
         )
         .frame(width: 900, height: 680)
@@ -175,6 +185,11 @@ final class WeiboMonitorRenderingTests: XCTestCase {
             monitor: viewModel,
             filter: .constant(.all),
             searchText: .constant(""),
+            mode: .constant(.following),
+            accountUID: .constant(nil),
+            followingUnread: 0,
+            badgeEnabled: true,
+            availableWidth: 360,
             onOpenSettings: {}
         )
         .frame(width: 360, height: 640)

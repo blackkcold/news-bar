@@ -19,6 +19,11 @@ struct WeiboFollowingFeedView: View {
     let monitor: WeiboMonitorViewModel?
     @Binding var filter: WeiboFollowingFilter
     @Binding var searchText: String
+    @Binding var mode: DashboardBrowseMode
+    @Binding var accountUID: String?
+    let followingUnread: Int
+    var badgeEnabled = true
+    var availableWidth: CGFloat = 920
     let onOpenSettings: () -> Void
 
     @State private var showCollapsed = false
@@ -96,6 +101,11 @@ struct WeiboFollowingFeedView: View {
         }
         .frame(maxWidth: 920)
         .frame(maxWidth: .infinity, alignment: .center)
+        .onChange(of: snapshot.users.map(\.uid)) { _, uids in
+            if let accountUID, !uids.contains(accountUID) {
+                self.accountUID = nil
+            }
+        }
     }
 
     private func header(
@@ -372,10 +382,18 @@ struct WeiboFollowingFeedView: View {
                 }
             }
 
+            DashboardModeSegmentedControl(
+                mode: $mode,
+                followingUnread: followingUnread,
+                badgeEnabled: badgeEnabled
+            )
+
             HStack(spacing: 6) {
                 ForEach(WeiboFollowingFilter.allCases) { item in
                     filterChip(item, snapshot: snapshot)
                 }
+
+                accountFilterMenu(snapshot)
 
                 Spacer(minLength: 0)
 
@@ -384,6 +402,89 @@ struct WeiboFollowingFeedView: View {
                     .foregroundStyle(.secondary)
                     .monospacedDigit()
             }
+        }
+    }
+
+    @ViewBuilder
+    private func accountFilterMenu(_ snapshot: WeiboMonitorSnapshot) -> some View {
+        if snapshot.users.count > 1 {
+            Menu {
+                Button {
+                    accountUID = nil
+                } label: {
+                    Label(
+                        L10n.string("weibo.feed.allAccounts", language: language),
+                        systemImage: accountUID == nil ? "checkmark" : "person.2"
+                    )
+                }
+                Divider()
+                ForEach(sortedUsers(snapshot.users)) { user in
+                    Button {
+                        accountUID = user.uid
+                    } label: {
+                        HStack {
+                            Text(displayName(user))
+                            if user.priority == .p0 {
+                                Text("P0")
+                            }
+                            if accountUID == user.uid {
+                                Image(systemName: "checkmark")
+                            }
+                        }
+                    }
+                }
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: "line.3.horizontal.decrease.circle")
+                    Text(accountLabel(snapshot))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.8)
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 7, weight: .semibold))
+                }
+                .font(.system(size: 10))
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background {
+                    if settings.appTheme == .retroEditorial {
+                        Rectangle().fill(RetroEditorialTokens.raisedPaper)
+                    } else {
+                        Capsule().fill(Color(nsColor: .controlBackgroundColor))
+                    }
+                }
+                .overlay {
+                    if settings.appTheme == .retroEditorial {
+                        Rectangle().strokeBorder(RetroEditorialTokens.ink, lineWidth: 1)
+                    } else {
+                        Capsule().strokeBorder(
+                            Color(nsColor: .separatorColor).opacity(0.35),
+                            lineWidth: 1
+                        )
+                    }
+                }
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            .accessibilityLabel(
+                L10n.string("weibo.feed.accountFilter", language: language, accountLabel(snapshot))
+            )
+        }
+    }
+
+    private func accountLabel(_ snapshot: WeiboMonitorSnapshot) -> String {
+        guard let accountUID,
+              let user = snapshot.users.first(where: { $0.uid == accountUID }) else {
+            return L10n.string("weibo.feed.allAccounts", language: language)
+        }
+        return displayName(user)
+    }
+
+    private func sortedUsers(_ users: [WeiboMonitorUser]) -> [WeiboMonitorUser] {
+        users.sorted { lhs, rhs in
+            if lhs.priority.rank != rhs.priority.rank {
+                return lhs.priority.rank < rhs.priority.rank
+            }
+            return lhs.addedAt < rhs.addedAt
         }
     }
 
@@ -439,20 +540,32 @@ struct WeiboFollowingFeedView: View {
         _ monitor: WeiboMonitorViewModel,
         snapshot: WeiboMonitorSnapshot
     ) -> some View {
-        let groups = filteredGroups(snapshot)
-        let collapsed = collapsedPosts(snapshot)
-        if groups.isEmpty && collapsed.isEmpty {
+        let query = feedQuery()
+        let entries = FollowingFeedModel.entries(snapshot: snapshot, query: query)
+        let collapsed = FollowingFeedModel.collapsedPosts(snapshot: snapshot, query: query)
+        if entries.isEmpty && collapsed.isEmpty {
             noMatchState
         } else {
             LazyVStack(alignment: .leading, spacing: 14) {
                 if !collapsed.isEmpty {
                     collapsedSection(monitor, posts: collapsed)
                 }
-                ForEach(groups) { group in
-                    accountGroup(monitor, group: group)
-                }
+                FollowingMasonryFeed(
+                    entries: entries,
+                    width: min(max(1, availableWidth), 920),
+                    onOpen: { monitor.openPost($0) }
+                )
             }
         }
+    }
+
+    private func feedQuery() -> FollowingFeedQuery {
+        FollowingFeedQuery(
+            filter: filter,
+            accountUID: accountUID,
+            searchText: searchText,
+            includeCollapsed: !settings.weiboMonitorRelevanceEnabled
+        )
     }
 
     /// A one-line, collapsed-by-default block. It is the only way a filtered
@@ -651,7 +764,7 @@ struct WeiboFollowingFeedView: View {
     }
 
     private func filteredPostCount(_ snapshot: WeiboMonitorSnapshot) -> Int {
-        filteredGroups(snapshot).reduce(0) { $0 + $1.posts.count }
+        FollowingFeedModel.entries(snapshot: snapshot, query: feedQuery()).count
     }
 
     private func accountGroup(

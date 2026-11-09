@@ -20,6 +20,7 @@ extension Notification.Name {
     static let switchToBrowserTab = Notification.Name("switchToBrowserTab")
     static let researchRequested = Notification.Name("researchRequested")
     static let fireTestNewsPush = Notification.Name("fireTestNewsPush")
+    static let weiboBadgeSettingsChanged = Notification.Name("weiboBadgeSettingsChanged")
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
@@ -308,6 +309,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             }
         }
         NotificationCenter.default.addObserver(
+            forName: .weiboBadgeSettingsChanged,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.updateWeiboBadge(force: true)
+            }
+        }
+        NotificationCenter.default.addObserver(
             forName: .rssSourceAdded,
             object: nil,
             queue: .main
@@ -574,7 +584,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     @MainActor
     private func updateWeiboBadge(force: Bool = false) {
         guard let monitor = weiboMonitor else { return }
-        let unread = monitor.snapshot.unreadCount
+        let unread = settings.weiboMonitorMenuBarBadgeEnabled
+            ? monitor.snapshot.unreadCount
+            : 0
         guard force || unread != lastWeiboUnread else { return }
         lastWeiboUnread = unread
         let button = statusItem?.button

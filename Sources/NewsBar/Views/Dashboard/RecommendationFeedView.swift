@@ -164,6 +164,9 @@ struct RecommendationFeedView: View {
     var onResetFilters: () -> Void = {}
     var onRefresh: () -> Void = {}
     var onShowSources: () -> Void = {}
+    var followingEntries: [FollowingPostEntry] = []
+    var onShowFollowing: () -> Void = {}
+    var onOpenFollowingPost: (WeiboPost) -> Void = { _ in }
     @Environment(AppSettings.self) private var settings
     @Environment(\.accessibilityVoiceOverEnabled) private var voiceOverEnabled
     @State private var controller = InterestController.shared
@@ -178,6 +181,19 @@ struct RecommendationFeedView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
+            if !hasFilter, !followingEntries.isEmpty {
+                FollowingHighlightsSection(
+                    entries: followingEntries,
+                    width: width,
+                    onOpen: onOpenFollowingPost,
+                    onShowFollowing: onShowFollowing
+                )
+                .padding(.bottom, 4)
+
+                Divider()
+                    .opacity(0.25)
+            }
+
             HStack {
                 Label(english ? "For you" : "为你推荐", systemImage: "sparkles").editorialHeading(size: 20)
                 Spacer()

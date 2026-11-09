@@ -14,6 +14,7 @@ struct DashboardWindow: View {
     @State private var browseMode: DashboardBrowseMode = .forYou
     @State private var followingFilter: WeiboFollowingFilter = .all
     @State private var followingSearch = ""
+    @State private var followingAccountUID: String?
     @State private var listWidth: CGFloat = 400
     @State private var tabs = WorkspaceTabStore.shared
 
@@ -174,17 +175,6 @@ struct DashboardWindow: View {
 
             ScrollViewReader { scrollProxy in
                 VStack(spacing: 0) {
-                    // The mode switch stays outside the ScrollView: after the
-                    // first screen there would otherwise be no way back to the
-                    // following feed without scrolling up.
-                    DashboardModePicker(
-                        mode: $browseMode,
-                        followingUnread: weiboMonitor?.snapshot.unreadCount ?? 0
-                    )
-                    .padding(.horizontal, 20)
-                    .padding(.top, 14)
-                    .padding(.bottom, 2)
-
                     ScrollView(.vertical, showsIndicators: true) {
                         VStack(spacing: 0) {
                             // A stable top anchor lets the reader hand-off reset the
@@ -201,6 +191,11 @@ struct DashboardWindow: View {
                                         monitor: weiboMonitor,
                                         filter: $followingFilter,
                                         searchText: $followingSearch,
+                                        mode: $browseMode,
+                                        accountUID: $followingAccountUID,
+                                        followingUnread: weiboMonitor?.snapshot.unreadCount ?? 0,
+                                        badgeEnabled: settings.weiboMonitorDashboardBadgeEnabled,
+                                        availableWidth: contentWidth,
                                         onOpenSettings: onOpenWeiboMonitorSettings ?? onOpenSettings
                                     )
                                 } else {
@@ -209,6 +204,9 @@ struct DashboardWindow: View {
                                     DashboardFilterBar(
                                         searchText: $searchText,
                                         sourceFilter: $sourceFilter,
+                                        mode: $browseMode,
+                                        followingUnread: weiboMonitor?.snapshot.unreadCount ?? 0,
+                                        badgeEnabled: settings.weiboMonitorDashboardBadgeEnabled,
                                         forYou: browseMode == .forYou,
                                         orchestrator: orchestrator,
                                         debouncedQuery: normalizedSearchQuery
@@ -278,8 +276,35 @@ struct DashboardWindow: View {
             onOpenSettings: openInterestSettings,
             onResetFilters: { searchText = ""; sourceFilter = .all },
             onRefresh: { Task { await orchestrator.manualRefresh(settings: settings) } },
-            onShowSources: { browseMode = .bySource }
+            onShowSources: { browseMode = .bySource },
+            followingEntries: followingHighlightEntries,
+            onShowFollowing: { browseMode = .following },
+            onOpenFollowingPost: { weiboMonitor?.openPost($0) }
         )
+    }
+
+    private var followingHighlightEntries: [FollowingPostEntry] {
+        guard browseMode == .forYou, !hasAnyFilter, let monitor = weiboMonitor else {
+            return []
+        }
+        return FollowingFeedModel.recentEntries(
+            snapshot: monitor.snapshot,
+            limit: 6,
+            includeCollapsed: !settings.weiboMonitorRelevanceEnabled
+        )
+    }
+
+    private var followingSidebarEntries: [FollowingPostEntry] {
+        guard let monitor = weiboMonitor else { return [] }
+        return FollowingFeedModel.recentEntries(
+            snapshot: monitor.snapshot,
+            limit: 5,
+            includeCollapsed: !settings.weiboMonitorRelevanceEnabled
+        )
+    }
+
+    private var followingSidebarHasAccounts: Bool {
+        !(weiboMonitor?.snapshot.users.isEmpty ?? true)
     }
 
     private var browseGroups: [DashboardBrowseGroup] {
@@ -315,8 +340,12 @@ struct DashboardWindow: View {
                         orchestrator: orchestrator,
                         hotGroups: hotGroups,
                         searchQuery: normalizedSearchQuery,
+                        followingEntries: followingSidebarEntries,
+                        followingUnread: weiboMonitor?.snapshot.unreadCount ?? 0,
+                        hasFollowingAccounts: followingSidebarHasAccounts,
                         onConfigureAI: onConfigureAI ?? onOpenSettings,
-                        onOpenResearch: onOpenResearchCenter
+                        onOpenFollowingPost: { weiboMonitor?.openPost($0) },
+                        onShowFollowing: { browseMode = .following }
                     )
                     .frame(width: sidebarWidth, alignment: .leading)
                 }
@@ -354,8 +383,12 @@ struct DashboardWindow: View {
                     orchestrator: orchestrator,
                     hotGroups: hotGroups,
                     searchQuery: normalizedSearchQuery,
+                    followingEntries: followingSidebarEntries,
+                    followingUnread: weiboMonitor?.snapshot.unreadCount ?? 0,
+                    hasFollowingAccounts: followingSidebarHasAccounts,
                     onConfigureAI: onConfigureAI ?? onOpenSettings,
-                    onOpenResearch: onOpenResearchCenter
+                    onOpenFollowingPost: { weiboMonitor?.openPost($0) },
+                    onShowFollowing: { browseMode = .following }
                 )
                 .frame(width: sidebarWidth, alignment: .leading)
             }
@@ -365,8 +398,12 @@ struct DashboardWindow: View {
                     orchestrator: orchestrator,
                     hotGroups: hotGroups,
                     searchQuery: normalizedSearchQuery,
+                    followingEntries: followingSidebarEntries,
+                    followingUnread: weiboMonitor?.snapshot.unreadCount ?? 0,
+                    hasFollowingAccounts: followingSidebarHasAccounts,
                     onConfigureAI: onConfigureAI ?? onOpenSettings,
-                    onOpenResearch: onOpenResearchCenter
+                    onOpenFollowingPost: { weiboMonitor?.openPost($0) },
+                    onShowFollowing: { browseMode = .following }
                 )
                 sourceBrowserRegion(
                     groups: rssGroups,
@@ -591,48 +628,13 @@ private struct DashboardMasthead: View {
 
 // MARK: - Filter bar
 
-private struct DashboardModePicker: View {
-    @Environment(AppSettings.self) private var settings
-    @Binding var mode: DashboardBrowseMode
-    let followingUnread: Int
-
-    var body: some View {
-        HStack(spacing: 8) {
-            Picker("", selection: $mode) {
-                ForEach(DashboardBrowseMode.allCases) { item in
-                    Text(L10n.string(item.titleKey, language: settings.appLanguage)).tag(item)
-                }
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .frame(maxWidth: 420)
-            .accessibilityLabel(L10n.string("weibo.feed.mode", language: settings.appLanguage))
-
-            if followingUnread > 0 {
-                Text("\(followingUnread)")
-                    .font(.system(size: 9, weight: .bold))
-                    .foregroundStyle(.white)
-                    .padding(.horizontal, 5)
-                    .padding(.vertical, 1)
-                    .background(Capsule().fill(Color.red))
-                    .accessibilityLabel(
-                        L10n.string(
-                            "weibo.feed.unreadCount",
-                            language: settings.appLanguage,
-                            followingUnread
-                        )
-                    )
-            }
-
-            Spacer(minLength: 0)
-        }
-    }
-}
-
 private struct DashboardFilterBar: View {
     @Environment(AppSettings.self) private var settings
     @Binding var searchText: String
     @Binding var sourceFilter: DashboardSourceFilter
+    @Binding var mode: DashboardBrowseMode
+    let followingUnread: Int
+    let badgeEnabled: Bool
     let forYou: Bool
     let orchestrator: NewsOrchestrator
     let debouncedQuery: String?
@@ -686,6 +688,12 @@ private struct DashboardFilterBar: View {
                         .strokeBorder(Color(nsColor: .separatorColor).opacity(0.45), lineWidth: 1)
                 }
             }
+
+            DashboardModeSegmentedControl(
+                mode: $mode,
+                followingUnread: followingUnread,
+                badgeEnabled: badgeEnabled
+            )
 
             HStack(spacing: 6) {
                 ForEach(DashboardSourceFilter.allCases) { filter in
@@ -833,8 +841,12 @@ private struct DashboardSidebarRegion: View {
     let orchestrator: NewsOrchestrator
     let hotGroups: [DashboardBrowseGroup]
     let searchQuery: String?
+    let followingEntries: [FollowingPostEntry]
+    let followingUnread: Int
+    let hasFollowingAccounts: Bool
     let onConfigureAI: () -> Void
-    let onOpenResearch: (String?) -> Void
+    let onOpenFollowingPost: (WeiboPost) -> Void
+    let onShowFollowing: () -> Void
 
     private func items(for source: NewsSource) -> [NewsItem] {
         let items: [NewsItem]
@@ -860,7 +872,8 @@ private struct DashboardSidebarRegion: View {
             )
 
             // A chip such as RSS empties this list; keeping the heading would
-            // leave an orphan "02" block with no cards above "03".
+            // leave an orphan "02" block with no cards above the following
+            // section.
             if !hotGroups.isEmpty {
                 EditorialSectionHeading(
                     index: "02",
@@ -868,148 +881,31 @@ private struct DashboardSidebarRegion: View {
                     subtitle: L10n.string("dash.hotTrends.subtitle")
                 )
 
-                ForEach(hotGroups) { group in
-                    DashboardHotTrendCard(
-                        source: group.source,
-                        items: items(for: group.source)
-                    )
-                }
+                DashboardIntegratedHotTrendCard(
+                    weiboItems: items(for: .weibo),
+                    bilibiliItems: items(for: .bilibili)
+                )
             }
 
-            DashboardResearchSection(
-                index: "03",
-                entries: orchestrator.researchHighlights,
-                onOpen: onOpenResearch
-            )
+            if hasFollowingAccounts {
+                EditorialSectionHeading(
+                    index: hotGroups.isEmpty ? "02" : "03",
+                    title: L10n.string("dash.followingRecent.title"),
+                    subtitle: L10n.string("dash.followingRecent.subtitle")
+                )
+
+                FollowingRecentMessagesCard(
+                    entries: followingEntries,
+                    unreadCount: followingUnread,
+                    onOpen: onOpenFollowingPost,
+                    onShowMore: onShowFollowing
+                )
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
-// MARK: - Research sidebar section
-
-private struct DashboardResearchSection: View {
-    @Environment(AppSettings.self) private var settings
-    let index: String
-    let entries: [ResearchIndexEntry]
-    let onOpen: (String?) -> Void
-
-    private static let relativeFormatter: RelativeDateTimeFormatter = {
-        let formatter = RelativeDateTimeFormatter()
-        formatter.unitsStyle = .short
-        return formatter
-    }()
-
-    var body: some View {
-        if !entries.isEmpty {
-            VStack(alignment: .leading, spacing: 10) {
-                EditorialSectionHeading(
-                    index: index,
-                    title: L10n.string("research.dashboard.title", language: settings.appLanguage),
-                    subtitle: L10n.string("research.dashboard.subtitle", language: settings.appLanguage)
-                )
-
-                VStack(spacing: 2) {
-                    ForEach(entries) { entry in
-                        Button {
-                            onOpen(entry.id)
-                        } label: {
-                            row(entry)
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel(accessibilityLabel(entry))
-                    }
-                }
-
-                Button {
-                    onOpen(nil)
-                } label: {
-                    HStack(spacing: 4) {
-                        Text(L10n.string("research.dashboard.viewAll", language: settings.appLanguage))
-                        Image(systemName: "chevron.right")
-                            .font(.system(size: 8, weight: .semibold))
-                    }
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(.secondary)
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .help(L10n.string("research.center.title", language: settings.appLanguage))
-            }
-        }
-    }
-
-    private func row(_ entry: ResearchIndexEntry) -> some View {
-        HStack(alignment: .top, spacing: 8) {
-            Circle()
-                .fill(tint(entry))
-                .frame(width: 6, height: 6)
-                .padding(.top, 4)
-                .accessibilityHidden(true)
-
-            VStack(alignment: .leading, spacing: 3) {
-                Text(displayTitle(entry))
-                    .font(.system(size: 11, weight: entry.isRead ? .regular : .semibold))
-                    .foregroundStyle(.primary)
-                    .lineLimit(2)
-                    .multilineTextAlignment(.leading)
-                    .fixedSize(horizontal: false, vertical: true)
-
-                HStack(spacing: 4) {
-                    Text(L10n.string("research.origin.\(entry.origin.rawValue)", language: settings.appLanguage))
-                    Text("·")
-                    Text(Self.relativeFormatter.localizedString(for: entry.updatedAt, relativeTo: Date()))
-                    Spacer(minLength: 0)
-                    badge(entry)
-                }
-                .font(.system(size: 9))
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-            }
-        }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 6)
-        .contentShape(Rectangle())
-    }
-
-    private func displayTitle(_ entry: ResearchIndexEntry) -> String {
-        entry.topic.isEmpty
-            ? ResearchStatusPresentation.label(entry.status, language: settings.appLanguage)
-            : entry.topic
-    }
-
-    @ViewBuilder
-    private func badge(_ entry: ResearchIndexEntry) -> some View {
-        if entry.status == .running || entry.status == .queued {
-            Text(ResearchStatusPresentation.label(entry.status, language: settings.appLanguage))
-                .font(.system(size: 9, weight: .semibold))
-                .foregroundStyle(tint(entry))
-        } else if let verdict = entry.verdict {
-            Text(L10n.string("research.verdict.short.\(verdict.rawValue)", language: settings.appLanguage))
-                .font(.system(size: 9, weight: .semibold))
-                .foregroundStyle(tint(entry))
-        } else if entry.strength > 0 {
-            Text("\(entry.strength)/4")
-                .font(.system(size: 9, weight: .semibold))
-                .foregroundStyle(tint(entry))
-        }
-    }
-
-    private func tint(_ entry: ResearchIndexEntry) -> Color {
-        ResearchStatusPresentation.tint(entry.status)
-    }
-
-    private func accessibilityLabel(_ entry: ResearchIndexEntry) -> String {
-        let separator = settings.appLanguage == .en ? ", " : "，"
-        return [
-            displayTitle(entry),
-            ResearchStatusPresentation.label(entry.status, language: settings.appLanguage),
-            L10n.string("research.origin.\(entry.origin.rawValue)", language: settings.appLanguage),
-        ].joined(separator: separator)
-    }
-}
-
-// MARK: - Source browser
 
 private struct DashboardSourceBrowserRegion: View {
     @Environment(AppSettings.self) private var settings

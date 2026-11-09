@@ -244,6 +244,26 @@ final class AppSettings {
     var weiboMonitorShowPopoverChip: Bool {
         didSet { TestIsolation.defaults.set(weiboMonitorShowPopoverChip, forKey: "weiboMonitorShowPopoverChip") }
     }
+    /// Red unread count on the menu-bar status item. Separate from the
+    /// Dashboard badge so a user can keep one and hide the other.
+    var weiboMonitorMenuBarBadgeEnabled: Bool {
+        didSet {
+            TestIsolation.defaults.set(
+                weiboMonitorMenuBarBadgeEnabled,
+                forKey: "weiboMonitorMenuBarBadgeEnabled"
+            )
+        }
+    }
+    /// Red unread count on the Dashboard "关注" segment. The following page
+    /// and the sidebar card keep their unread text either way.
+    var weiboMonitorDashboardBadgeEnabled: Bool {
+        didSet {
+            TestIsolation.defaults.set(
+                weiboMonitorDashboardBadgeEnabled,
+                forKey: "weiboMonitorDashboardBadgeEnabled"
+            )
+        }
+    }
     // MARK: - Relevance filtering
 
     /// Collapse off-topic and commercial posts, and stop them from notifying.
@@ -751,6 +771,10 @@ final class AppSettings {
         )
         self.weiboMonitorAuthAlertAt = defaults.object(forKey: "weiboMonitorAuthAlertAt") as? Date
         self.weiboMonitorShowPopoverChip = defaults.boolIfPresent(forKey: "weiboMonitorShowPopoverChip") ?? true
+        self.weiboMonitorMenuBarBadgeEnabled =
+            defaults.boolIfPresent(forKey: "weiboMonitorMenuBarBadgeEnabled") ?? true
+        self.weiboMonitorDashboardBadgeEnabled =
+            defaults.boolIfPresent(forKey: "weiboMonitorDashboardBadgeEnabled") ?? true
         self.weiboMonitorRelevanceEnabled = defaults.boolIfPresent(forKey: "weiboMonitorRelevanceEnabled") ?? true
         let storedRelevanceMode = defaults.stringIfPresent(forKey: "weiboMonitorRelevanceMode") ?? ""
         self.weiboMonitorRelevanceModeRaw =
