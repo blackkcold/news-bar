@@ -8,6 +8,9 @@ struct AISearchArchiveView: View {
     let onCopy: (AISearchArchiveEntry) -> Void
     let onOpenSource: (URL) -> Void
     let onRemove: (AISearchArchiveEntry) -> Void
+    /// The rail passes the free height under its own header; the standalone
+    /// quick-search card keeps the historical 460pt cap.
+    var maxHeight: CGFloat = 460
 
     private struct DayGroup: Identifiable {
         let day: Date
@@ -61,7 +64,7 @@ struct AISearchArchiveView: View {
             }
             .padding(.vertical, 2)
         }
-        .frame(maxHeight: 460)
+        .frame(maxHeight: maxHeight)
         .accessibilityElement(children: .contain)
     }
 

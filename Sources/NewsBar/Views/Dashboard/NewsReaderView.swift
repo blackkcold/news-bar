@@ -1222,19 +1222,37 @@ struct ReaderContentView: View {
     @State private var askExternal = false
     @State private var showPrivacy = false
     @State private var showResearch = false
-    @State private var pageSummaryInput: PageSummaryInput?
-    @State private var isPreparingPageSummary = false
-    @State private var pageSummaryUnavailable = false
     @State private var research = ReaderResearchPanelModel()
     @State private var explainModel = SelectionExplainModel()
     @State private var searchModel = AISearchPanelModel()
     @State private var quickSearchModel = QuickSearchModel()
-    @State private var showQuickSearch = false
-    @State private var quickSearchInitialSurface: QuickSearchSurface = .ai
+    @State private var auxiliary = ReaderAuxiliaryModel()
     @State private var archiveController = AISearchArchiveController.shared
     @State private var browserData = BrowserDataController.shared
     @Environment(AppSettings.self) private var settings
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    init(
+        model: NewsReaderModel,
+        activeNewsItems: [NewsItem] = [],
+        readerPresented: Bool = true,
+        isActiveTab: Bool = true,
+        onClose: @escaping () -> Void,
+        onOpenSettings: @escaping () -> Void = {},
+        onOpenResearch: @escaping (String) -> Void = { _ in },
+        onConfigureAI: @escaping () -> Void = {},
+        initialAuxiliaryTab: ReaderAuxiliaryTab? = nil
+    ) {
+        self.model = model
+        self.activeNewsItems = activeNewsItems
+        self.readerPresented = readerPresented
+        self.isActiveTab = isActiveTab
+        self.onClose = onClose
+        self.onOpenSettings = onOpenSettings
+        self.onOpenResearch = onOpenResearch
+        self.onConfigureAI = onConfigureAI
+        _auxiliary = State(initialValue: ReaderAuxiliaryModel(initialTab: initialAuxiliaryTab))
+    }
 
     private var explainPanel: some View {
         SelectionExplainPanel(
@@ -1285,23 +1303,6 @@ struct ReaderContentView: View {
 
             ZStack(alignment: .top) {
                 readerContent
-                if let notice = model.notice {
-                    noticeView(notice)
-                }
-                if let message = model.readerModeNotice {
-                    readerModeNoticeView(message)
-                }
-                if model.isPageWidthConstrained,
-                   !model.isReaderModeActive,
-                   !model.widthFitNoticeDismissed,
-                   !model.loading {
-                    VStack {
-                        Spacer(minLength: 0)
-                        widthFitNotice
-                            .padding(12)
-                    }
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
-                }
                 if showResearch {
                     HStack(spacing: 0) {
                         Color.clear
@@ -1318,26 +1319,86 @@ struct ReaderContentView: View {
                     }
                 }
             }
-            .animation(reduceMotion ? nil : DashboardMotion.micro, value: model.notice != nil)
-            .animation(reduceMotion ? nil : DashboardMotion.micro, value: model.isPageWidthConstrained)
             .overlay(alignment: .trailing) {
                 QuickSearchEdgeButton(
-                    isPresented: $showQuickSearch,
                     isVisible: QuickSearchEdgeButton.shouldBeVisible(
                         readerPresented: readerPresented,
                         researchOpen: showResearch,
-                        searchOrArchiveOpen: showQuickSearch,
-                        selectionExplanationOpen: explainModel.state != .idle
+                        searchOrArchiveOpen: false,
+                        selectionExplanationOpen: explainModel.state != .idle,
+                        auxiliaryRailOpen: auxiliary.isOpen
                     ),
                     language: settings.appLanguage,
-                    action: { openQuickSearch(.web) }
+                    action: { openAuxiliarySearch(surface: .web) }
                 )
                 .padding(.trailing, 8)
             }
             .animation(
                 reduceMotion ? nil : DashboardMotion.micro,
-                value: showQuickSearch || showResearch || explainModel.state != .idle
+                value: auxiliary.isOpen || showResearch || explainModel.state != .idle
             )
+            .overlay(alignment: .trailing) {
+                if auxiliary.isOpen {
+                    ReaderAuxiliaryRail(
+                        auxiliary: auxiliary,
+                        searchModel: searchModel,
+                        quickSearchModel: quickSearchModel,
+                        archiveController: archiveController,
+                        activeNewsItems: activeNewsItems,
+                        readingHistory: browserData.history,
+                        pageContext: overviewPageContext,
+                        language: settings.appLanguage,
+                        isActiveTab: isActiveTab,
+                        onOpenResult: { url in
+                            closeAuxiliary()
+                            model.openReaderModeLink(url)
+                        },
+                        onOpenSource: { url in
+                            closeAuxiliary()
+                            model.openReaderModeLink(url)
+                        },
+                        onConfigureAI: {
+                            closeAuxiliary()
+                            onConfigureAI()
+                        },
+                        onClose: { closeAuxiliary() },
+                        onOpenCitation: { citation in
+                            closeAuxiliary()
+                            NewsNavigationRouter.shared.open(
+                                citation.item,
+                                surface: "pageSummary",
+                                position: citation.position
+                            )
+                        },
+                        onSwitchToReaderMode: {
+                            closeAuxiliary()
+                            Task { await model.toggleReaderMode() }
+                        }
+                    )
+                    .padding(.vertical, 16)
+                    .padding(.trailing, 16)
+                    .transition(.move(edge: .trailing).combined(with: .opacity))
+                    .onAppear { searchModel.setRevealEnabled(!reduceMotion) }
+                    .onChange(of: reduceMotion) { _, value in
+                        searchModel.setRevealEnabled(!value)
+                    }
+                }
+            }
+            .animation(
+                reduceMotion ? DashboardMotion.reduced : DashboardMotion.micro,
+                value: auxiliary.isOpen
+            )
+            .overlay(alignment: .top) {
+                VStack(spacing: 0) {
+                    if let notice = model.notice {
+                        noticeView(notice)
+                    }
+                    if let message = model.readerModeNotice {
+                        readerModeNoticeView(message)
+                    }
+                }
+                .animation(reduceMotion ? nil : DashboardMotion.micro, value: model.notice != nil)
+            }
             .overlay(alignment: .bottomTrailing) {
                 if explainModel.state != .idle {
                     explainPanel
@@ -1350,40 +1411,17 @@ struct ReaderContentView: View {
                 }
             }
             .animation(reduceMotion ? nil : DashboardMotion.micro, value: explainModel.state)
-            .overlay(alignment: .topTrailing) {
-                if showQuickSearch {
-                    QuickSearchPanel(
-                        model: quickSearchModel,
-                        aiModel: searchModel,
-                        archiveController: archiveController,
-                        activeNewsItems: activeNewsItems,
-                        readingHistory: browserData.history,
-                        settings: settings,
-                        language: settings.appLanguage,
-                        initialSurface: quickSearchInitialSurface,
-                        onOpenResult: { url in
-                            closeQuickSearch()
-                            model.openReaderModeLink(url)
-                        },
-                        onOpenSource: { url in
-                            closeQuickSearch()
-                            model.openReaderModeLink(url)
-                        },
-                        onClose: closeQuickSearch,
-                        onConfigureAI: {
-                            closeQuickSearch()
-                            onConfigureAI()
-                        }
-                    )
-                    .padding(16)
-                    .transition(.move(edge: .trailing).combined(with: .opacity))
-                    .onAppear { searchModel.setRevealEnabled(!reduceMotion) }
-                    .onChange(of: reduceMotion) { _, value in
-                        searchModel.setRevealEnabled(!value)
-                    }
+            .overlay(alignment: .bottom) {
+                if model.isPageWidthConstrained,
+                   !model.isReaderModeActive,
+                   !model.widthFitNoticeDismissed,
+                   !model.loading {
+                    widthFitNotice
+                        .padding(12)
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
                 }
             }
-            .animation(reduceMotion ? nil : DashboardMotion.micro, value: showQuickSearch)
+            .animation(reduceMotion ? nil : DashboardMotion.micro, value: model.isPageWidthConstrained)
             .overlay(alignment: .bottom) {
                 ZStack {
                     if let message = feedbackMessage {
@@ -1401,19 +1439,6 @@ struct ReaderContentView: View {
         }
         .readerSurface(cornerRadius: 12)
         .disabled(!isActiveTab)
-        .sheet(item: $pageSummaryInput) { input in
-            PageSummarySheet(input: input, onOpenSettings: onConfigureAI)
-        }
-        .alert(
-            english ? "No readable page text" : "没有可读页面正文",
-            isPresented: $pageSummaryUnavailable
-        ) {
-            Button("OK", role: .cancel) {}
-        } message: {
-            Text(english
-                ? "Wait for the page to finish loading, or switch to reader mode, then try again."
-                : "可以等页面加载完成，或切换到阅读模式后再试。")
-        }
         .task(id: model.currentURL + "\n" + model.pageTitle + "\n\(model.loading)") { await refreshResearch() }
         .onAppear {
             searchModel.pageContextProvider = { [model] in
@@ -1464,12 +1489,18 @@ struct ReaderContentView: View {
         }
         .onChange(of: model.selectionExplainRequest) { _, request in
             guard let request else { return }
+            closeAuxiliary()
             explainModel.explain(request.text, settings: settings)
         }
         .onChange(of: model.currentURL) { _, _ in
             explainModel.dismiss()
             // An answer tied to the previous reader page must not survive navigation.
-            if showQuickSearch { closeQuickSearch() }
+            closeAuxiliary(resetOverview: true)
+        }
+        .onChange(of: auxiliary.tab) { _, tab in
+            if tab == .overview {
+                prepareOverviewIfNeeded()
+            }
         }
         .onReceive(NotificationCenter.default.publisher(for: .researchRecordsChanged)) { _ in
             Task { await refreshResearch() }
@@ -1618,7 +1649,7 @@ struct ReaderContentView: View {
                 }
                 .frame(minWidth: 28, minHeight: 28)
             }
-            .keyboardShortcut(showResearch || explainModel.state != .idle || showQuickSearch ? nil : KeyboardShortcut(.escape, modifiers: []))
+            .keyboardShortcut(showResearch || explainModel.state != .idle || auxiliary.isOpen ? nil : KeyboardShortcut(.escape, modifiers: []))
             .accessibilityLabel(english ? "Back to list" : "返回列表")
             .help(english ? "Back to list (Esc)" : "返回列表（Esc）")
             HStack(spacing: 2) {
@@ -1654,10 +1685,14 @@ struct ReaderContentView: View {
             .disabled(model.isReaderModeActive)
             if settings.aiSearchEnabled {
                 Button {
-                    toggleQuickSearch()
+                    toggleAuxiliarySearch()
                 } label: {
                     Image(systemName: "magnifyingglass")
                         .frame(width: 28, height: 28)
+                        .background(
+                            auxiliary.tab == .search ? Color.accentColor.opacity(0.14) : Color.clear,
+                            in: RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        )
                 }
                 .keyboardShortcut("k", modifiers: .command)
                 .accessibilityLabel(L10n.string("reader.search.toolbar", language: settings.appLanguage))
@@ -1681,10 +1716,10 @@ struct ReaderContentView: View {
                 ? (english ? "Back to the web page" : "返回网页")
                 : (english ? "Re-layout this article as text" : "以原生排版阅读正文"))
             Button {
-                Task { await preparePageSummary() }
+                toggleAuxiliaryOverview()
             } label: {
                 HStack(spacing: 5) {
-                    if isPreparingPageSummary {
+                    if auxiliary.tab == .overview, auxiliary.phase == .preparing {
                         ProgressView().controlSize(.mini)
                     } else {
                         Image(systemName: "text.badge.star")
@@ -1692,13 +1727,24 @@ struct ReaderContentView: View {
                     Text(english ? "Page overview" : "页面概览")
                 }
                 .frame(minWidth: 28, minHeight: 28)
+                .background(
+                    auxiliary.tab == .overview ? Color.accentColor.opacity(0.14) : Color.clear,
+                    in: RoundedRectangle(cornerRadius: 6, style: .continuous)
+                )
             }
-            .disabled(isPreparingPageSummary || model.loading)
+            .keyboardShortcut("o", modifiers: [.command, .shift])
             .accessibilityLabel(english ? "Page overview" : "页面概览")
             .help(english
-                ? "Summarize the page open in this reader without asking a question"
-                : "概括当前阅读器打开的页面，不需要输入问题")
-            Button { showResearch.toggle() } label: {
+                ? "Summarize the page open in this reader without asking a question (⌘⇧O)"
+                : "概括当前阅读器打开的页面，不需要输入问题（⌘⇧O）")
+            Button {
+                if showResearch {
+                    showResearch = false
+                } else {
+                    closeAuxiliary()
+                    showResearch = true
+                }
+            } label: {
                 Image(systemName: "sidebar.trailing")
                     .frame(width: 28, height: 28)
                     .overlay(alignment: .topTrailing) {
@@ -1760,51 +1806,85 @@ struct ReaderContentView: View {
         .controlSize(.regular)
     }
 
-    private func toggleQuickSearch() {
-        if showQuickSearch {
-            closeQuickSearch()
+    private func toggleAuxiliarySearch() {
+        if auxiliary.tab == .search {
+            closeAuxiliary()
         } else {
-            openQuickSearch(.ai)
+            openAuxiliary(.search, surface: .ai)
         }
     }
 
-    private func openQuickSearch(_ surface: QuickSearchSurface) {
-        quickSearchInitialSurface = surface
-        showQuickSearch = true
-        if surface == .ai { searchModel.present() }
+    private func openAuxiliarySearch(surface: QuickSearchSurface) {
+        openAuxiliary(.search, surface: surface)
     }
 
-    private func closeQuickSearch() {
-        showQuickSearch = false
+    private func toggleAuxiliaryOverview() {
+        if auxiliary.tab == .overview {
+            closeAuxiliary()
+        } else {
+            openAuxiliary(.overview)
+        }
+    }
+
+    private func openAuxiliary(_ tab: ReaderAuxiliaryTab, surface: QuickSearchSurface? = nil) {
+        if let surface {
+            auxiliary.searchSurface = surface
+        }
+        showResearch = false
+        if explainModel.state != .idle {
+            explainModel.dismiss()
+        }
+        auxiliary.open(tab)
+        if tab == .overview {
+            prepareOverviewIfNeeded()
+        }
+        if tab == .search, auxiliary.searchSurface == .ai {
+            searchModel.present()
+        }
+    }
+
+    private func closeAuxiliary(resetOverview: Bool = false) {
+        if resetOverview {
+            auxiliary.resetForNavigation()
+        } else {
+            auxiliary.close()
+        }
         searchModel.dismiss()
+        // Esc/X should hand the keyboard back to the page, not leave focus on
+        // a control that has just left the hierarchy.
+        if let web = model.webView {
+            DispatchQueue.main.async {
+                web.window?.makeFirstResponder(web)
+            }
+        }
+    }
+
+    private func prepareOverviewIfNeeded() {
+        let context = ReaderOverviewContext(
+            title: model.pageTitle,
+            url: model.currentURL,
+            isPrivate: model.request.privateSession || InterestController.shared.privateReading,
+            language: settings.appLanguage
+        )
+        auxiliary.prepareOverview(context: context) { [model] in
+            if let document = model.readerModeDocument {
+                return document.plainText
+            }
+            return await model.currentPagePlainText()
+        }
+    }
+
+    private var overviewPageContext: PageSummaryPanelContext {
+        PageSummaryPanelContext(
+            title: model.pageTitle,
+            url: model.currentURL,
+            isPrivate: model.request.privateSession || InterestController.shared.privateReading,
+            language: settings.appLanguage
+        )
     }
 
     private func refreshResearch() async {
         await research.refresh(item: model.request.item, requestURL: model.request.url, currentURL: model.currentURL, title: model.loading ? "" : model.pageTitle)
-    }
-
-    private func preparePageSummary() async {
-        guard !isPreparingPageSummary else { return }
-        isPreparingPageSummary = true
-        defer { isPreparingPageSummary = false }
-
-        let text: String?
-        if let document = model.readerModeDocument {
-            text = document.plainText
-        } else {
-            text = await model.currentPagePlainText()
-        }
-        guard let text, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            pageSummaryUnavailable = true
-            return
-        }
-        pageSummaryInput = .article(
-            title: model.pageTitle,
-            url: model.currentURL,
-            text: text,
-            language: settings.appLanguage,
-            isPrivate: model.request.privateSession || InterestController.shared.privateReading
-        )
     }
 
     private func verifyCurrentPage() {

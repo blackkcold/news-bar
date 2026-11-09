@@ -1,4 +1,20 @@
-## [Unreleased]
+## [v2.17.3] - 2026-11-09
+
+### ✨ 新增
+
+- **阅读器辅助栏**：搜索与页面概览合并为阅读器右缘的 360pt 浮动双页签。栏覆盖在正文之上，不改变 WKWebView 宽度，因此不会触发网页重排；搜索保留本地/网页/AI/档案四个子页签与草稿，概览在栏内完成正文提取、一次性披露、生成、失败重试与引用跳转。
+- **页面概览改为栏内面板**：打开即显示准备状态，不再弹居中 sheet；正文不可读时在栏内提示并可重试或切换阅读模式；同一篇文章确认一次，关闭再开不重复披露，换页自动清空。
+- **互斥与键盘**：辅助栏与研究侧栏、划词解释互斥；⌘K 打开搜索，⌘⇧O 打开概览，Esc 逐层收起（档案回放先返回档案列表），关闭栏取消进行中的请求，焦点回到阅读区。
+- **AI 面板嵌入**：去掉 420pt 外层 chrome 与重复导航，答案画布按栏内可用高度收缩，长答案不会把 footer 顶出栏外。
+
+### ✅ 测试
+
+- 新增 `ReaderAuxiliaryModelTests`、`PageSummaryPanelRenderingTests`、`ReaderAuxiliaryRailRenderingTests`；`QuickSearchRenderingTests` 改为 360pt 栏宽（332pt 内容宽）四 surface × 中英渲染；`ReaderRenderingTests` 增加辅助栏打开变体；`AnswerCanvasRenderingTests` 增加嵌入 AI 面板高度约束。
+- `swift test`：1783 项，6 项跳过，0 失败。
+
+### ⚠️ 签名说明
+
+- 本版为 adhoc 签名，未经过 Apple 公证。首次打开如被 Gatekeeper 拦截，请在 Finder 中右键 NewsBar.app → 打开。
 
 ## [v2.17.2] - 2026-11-09
 

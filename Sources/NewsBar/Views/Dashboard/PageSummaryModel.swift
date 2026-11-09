@@ -1,7 +1,7 @@
 import Foundation
 import Observation
 
-/// Presentation state for one page overview. A new sheet owns a new model, so
+/// Presentation state for one page overview. A new rail owns a new model, so
 /// one page's request can never publish into another page's card.
 @MainActor
 @Observable
@@ -99,6 +99,20 @@ final class PageSummaryModel {
         if state.isBusy {
             state = summary == nil ? .idle : .ready
         }
+    }
+
+    /// Clears everything owned by this page overview. Used when the reader
+    /// navigates to another page; a close keeps a finished summary so the same
+    /// page can be reopened without a second request.
+    func reset() {
+        generation += 1
+        task?.cancel()
+        task = nil
+        state = .idle
+        summary = nil
+        isPrivate = false
+        input = nil
+        errorMessage = nil
     }
 
     private func resolve(settings: AppSettings) async throws -> (ValidatedAIConfiguration, String) {

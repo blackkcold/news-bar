@@ -65,21 +65,10 @@ enum QuickSearchAccessibilityLabels {
     }
 }
 
-struct QuickSearchArchiveReplayCloseButton: View {
-    let language: AppLanguage
-    let action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            Image(systemName: "xmark")
-        }
-        .buttonStyle(.borderless)
-        .keyboardShortcut(.escape, modifiers: [])
-        .accessibilityLabel(QuickSearchAccessibilityLabels.close(language: language))
-    }
-}
-
-struct QuickSearchPanel: View {
+/// Search content for the reader auxiliary rail. It owns no outer chrome:
+/// the rail supplies the width, material, padding and the close control, so
+/// the AI surface cannot end up inside a second floating panel.
+struct QuickSearchContent: View {
     @Bindable var model: QuickSearchModel
     @Bindable var aiModel: AISearchPanelModel
     @Bindable var archiveController: AISearchArchiveController
@@ -87,67 +76,43 @@ struct QuickSearchPanel: View {
     let readingHistory: [ReaderHistoryEntry]
     @Bindable var settings: AppSettings
     let language: AppLanguage
+    @Binding var surface: QuickSearchSurface
+    @Binding var selectedArchiveEntry: AISearchArchiveEntry?
+    /// The rail sets this false while the overview tab is showing. Only the
+    /// visible tab may take first responder.
+    var isActive = true
+    /// The rail fills the free height under its header. The standalone preview
+    /// keeps the historical fixed caps so its existing snapshot stays stable.
+    var fillsAvailableHeight = true
+    /// Free height inside the rail, used to cap the answer canvas and archive.
+    var availableHeight: CGFloat = 520
     let onOpenResult: (URL) -> Void
     let onOpenSource: (URL) -> Void
-    let onClose: () -> Void
     let onConfigureAI: () -> Void
 
-    @State private var surface: QuickSearchSurface
-    @State private var selectedArchiveEntry: AISearchArchiveEntry?
     @State private var webGateway = ManualSearchGateway()
+    @State private var webTask: Task<Void, Never>?
     @FocusState private var queryFocused: Bool
-
-    init(
-        model: QuickSearchModel,
-        aiModel: AISearchPanelModel,
-        archiveController: AISearchArchiveController,
-        activeNewsItems: [NewsItem],
-        readingHistory: [ReaderHistoryEntry],
-        settings: AppSettings,
-        language: AppLanguage,
-        initialSurface: QuickSearchSurface,
-        onOpenResult: @escaping (URL) -> Void,
-        onOpenSource: @escaping (URL) -> Void,
-        onClose: @escaping () -> Void,
-        onConfigureAI: @escaping () -> Void
-    ) {
-        self.model = model
-        self.aiModel = aiModel
-        self.archiveController = archiveController
-        self.activeNewsItems = activeNewsItems
-        self.readingHistory = readingHistory
-        self.settings = settings
-        self.language = language
-        self.onOpenResult = onOpenResult
-        self.onOpenSource = onOpenSource
-        self.onClose = onClose
-        self.onConfigureAI = onConfigureAI
-        _surface = State(initialValue: initialSurface)
-        _selectedArchiveEntry = State(initialValue: nil)
-    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             surfacePicker
-            if surface == .ai, selectedArchiveEntry == nil {
-                aiPanel
+            if let selectedArchiveEntry {
+                archiveReplay(selectedArchiveEntry)
             } else {
-                if let selectedArchiveEntry {
-                    archiveReplay(selectedArchiveEntry)
-                } else {
-                    searchHeader
-                    surfaceContent
-                }
+                surfaceContent
             }
         }
-        .padding(12)
-        .frame(width: 452, alignment: .topLeading)
-        .floatingPanelSurface(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .frame(maxWidth: .infinity, maxHeight: fillsAvailableHeight ? .infinity : nil, alignment: .topLeading)
         .accessibilityElement(children: .contain)
-        .onAppear {
-            if surface == .local { refreshLocalResults() }
-            if surface == .ai { aiModel.present() }
-            if surface != .ai { queryFocused = true }
+        .onAppear { activateIfNeeded() }
+        .onChange(of: isActive) { _, active in
+            if active {
+                activateIfNeeded()
+            } else {
+                queryFocused = false
+                webTask?.cancel()
+            }
         }
         .onChange(of: model.query) { _, _ in
             if surface == .local { refreshLocalResults() }
@@ -157,11 +122,13 @@ struct QuickSearchPanel: View {
         }
         .onChange(of: surface) { _, newSurface in
             if newSurface == .local { refreshLocalResults() }
-            if newSurface != .ai { queryFocused = true }
+            if newSurface == .ai { aiModel.present() }
+            queryFocused = newSurface != .ai
         }
         .onChange(of: settings.aiSearchEnabled) { _, isEnabled in
             if !isEnabled, surface == .ai { selectSurface(.local) }
         }
+        .onDisappear { webTask?.cancel() }
     }
 
     private var surfacePicker: some View {
@@ -185,27 +152,11 @@ struct QuickSearchPanel: View {
         } label: {
             Text(QuickSearchAccessibilityLabels.surface(candidate, language: language))
                 .lineLimit(1)
+                .minimumScaleFactor(0.8)
         }
         .controlSize(.small)
         .disabled(candidate == .ai && !settings.aiSearchEnabled)
         .accessibilityLabel(QuickSearchAccessibilityLabels.surface(candidate, language: language))
-    }
-
-    private var searchHeader: some View {
-        HStack(spacing: 8) {
-            Image(systemName: surface == .archive ? "clock.arrow.circlepath" : "magnifyingglass")
-                .foregroundStyle(.secondary)
-                .accessibilityHidden(true)
-            Text(QuickSearchAccessibilityLabels.surface(surface, language: language))
-                .font(.headline)
-            Spacer(minLength: 0)
-            Button(action: onClose) {
-                Image(systemName: "xmark")
-            }
-            .buttonStyle(.borderless)
-            .keyboardShortcut(.escape, modifiers: [])
-            .accessibilityLabel(QuickSearchAccessibilityLabels.close(language: language))
-        }
     }
 
     @ViewBuilder
@@ -230,17 +181,17 @@ struct QuickSearchPanel: View {
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
             if model.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                ContentUnavailableView(
+                emptyState(
                     L10n.string("reader.quickSearch.localPrompt", language: language),
-                    systemImage: "magnifyingglass"
+                    systemImage: "magnifyingglass",
+                    minHeight: 180
                 )
-                .frame(maxWidth: .infinity, minHeight: 180)
             } else if model.localResults.isEmpty {
-                ContentUnavailableView(
+                emptyState(
                     L10n.string("reader.quickSearch.noResults", language: language),
-                    systemImage: "doc.text.magnifyingglass"
+                    systemImage: "doc.text.magnifyingglass",
+                    minHeight: 180
                 )
-                .frame(maxWidth: .infinity, minHeight: 180)
             } else {
                 ScrollView {
                     LazyVStack(spacing: 6) {
@@ -249,9 +200,10 @@ struct QuickSearchPanel: View {
                         }
                     }
                 }
-                .frame(maxHeight: 470)
+                .frame(maxHeight: resultsMaxHeight(470))
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: fillsAvailableHeight ? .infinity : nil, alignment: .topLeading)
     }
 
     private var webSearch: some View {
@@ -277,7 +229,11 @@ struct QuickSearchPanel: View {
 
             if model.isSearching {
                 ProgressView(L10n.string("reader.quickSearch.searching", language: language))
-                    .frame(maxWidth: .infinity, minHeight: 120)
+                    .frame(
+                        maxWidth: .infinity,
+                        minHeight: fillsAvailableHeight ? nil : 120,
+                        maxHeight: fillsAvailableHeight ? .infinity : nil
+                    )
             } else if let error = model.error {
                 VStack(spacing: 8) {
                     Text(error)
@@ -288,7 +244,11 @@ struct QuickSearchPanel: View {
                         .buttonStyle(.bordered)
                         .controlSize(.small)
                 }
-                .frame(maxWidth: .infinity, minHeight: 120)
+                .frame(
+                    maxWidth: .infinity,
+                    minHeight: fillsAvailableHeight ? nil : 120,
+                    maxHeight: fillsAvailableHeight ? .infinity : nil
+                )
             } else if !model.webHits.isEmpty {
                 ScrollView {
                     LazyVStack(spacing: 6) {
@@ -297,15 +257,16 @@ struct QuickSearchPanel: View {
                         }
                     }
                 }
-                .frame(maxHeight: 470)
+                .frame(maxHeight: resultsMaxHeight(470))
             } else {
-                ContentUnavailableView(
+                emptyState(
                     L10n.string("reader.quickSearch.webPrompt", language: language),
-                    systemImage: "globe"
+                    systemImage: "globe",
+                    minHeight: 160
                 )
-                .frame(maxWidth: .infinity, minHeight: 160)
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: fillsAvailableHeight ? .infinity : nil, alignment: .topLeading)
     }
 
     private var archiveBrowse: some View {
@@ -326,9 +287,11 @@ struct QuickSearchPanel: View {
                 onOpenSource: openArchivedSource,
                 onRemove: { entry in
                     Task { await archiveController.remove(id: entry.id) }
-                }
+                },
+                maxHeight: archiveMaxHeight
             )
         }
+        .frame(maxWidth: .infinity, maxHeight: fillsAvailableHeight ? .infinity : nil, alignment: .topLeading)
     }
 
     private func archiveReplay(_ entry: AISearchArchiveEntry) -> some View {
@@ -362,7 +325,6 @@ struct QuickSearchPanel: View {
                 }
                 .buttonStyle(.borderless)
                 .accessibilityLabel(QuickSearchAccessibilityLabels.remove(language: language))
-                QuickSearchArchiveReplayCloseButton(language: language, action: onClose)
             }
             Text(entry.query)
                 .font(.headline)
@@ -376,13 +338,14 @@ struct QuickSearchPanel: View {
             AnswerDocumentView(
                 document: AISearchArchiveView.restoredAnswer(for: entry),
                 language: language,
-                maxHeight: 400,
+                maxHeight: replayMaxHeight,
                 onOpenSource: { source in
                     guard let url = ReaderNavigationPolicy.allowedURL(source.url) else { return }
                     onOpenSource(url)
                 }
             )
         }
+        .frame(maxWidth: .infinity, maxHeight: fillsAvailableHeight ? .infinity : nil, alignment: .topLeading)
     }
 
     private var aiPanel: some View {
@@ -394,7 +357,7 @@ struct QuickSearchPanel: View {
             webEnabled: settings.aiSearchUseWeb,
             onSubmit: { aiModel.submit(settings: settings) },
             onRetry: { aiModel.retry(settings: settings) },
-            onClose: onClose,
+            onClose: {},
             onOpenCitation: { url in
                 guard let allowedURL = ReaderNavigationPolicy.allowedURL(url.absoluteString) else { return }
                 onOpenSource(allowedURL)
@@ -402,7 +365,10 @@ struct QuickSearchPanel: View {
             onCopy: copy,
             onOpenSettings: onConfigureAI,
             onReturnToSearch: { selectSurface(.local) },
-            onOpenArchive: { selectSurface(.archive) }
+            onOpenArchive: { selectSurface(.archive) },
+            embedded: true,
+            isActive: isActive && surface == .ai,
+            answerMaxHeight: answerMaxHeight
         )
     }
 
@@ -489,6 +455,40 @@ struct QuickSearchPanel: View {
         .accessibilityLabel(L10n.string("reader.quickSearch.result", language: language, hit.title, hit.domain))
     }
 
+    private func emptyState(_ title: String, systemImage: String, minHeight: CGFloat) -> some View {
+        ContentUnavailableView(title, systemImage: systemImage)
+            .frame(
+                maxWidth: .infinity,
+                minHeight: fillsAvailableHeight ? nil : minHeight,
+                maxHeight: fillsAvailableHeight ? .infinity : nil
+            )
+    }
+
+    private func resultsMaxHeight(_ fallback: CGFloat) -> CGFloat? {
+        fillsAvailableHeight ? .infinity : fallback
+    }
+
+    private var answerMaxHeight: CGFloat {
+        guard fillsAvailableHeight else { return 360 }
+        let chrome: CGFloat = aiModel.hasAcknowledgedPrivacy ? 230 : 290
+        return min(360, max(140, availableHeight - chrome))
+    }
+
+    private var archiveMaxHeight: CGFloat {
+        fillsAvailableHeight ? max(160, availableHeight - 120) : 460
+    }
+
+    private var replayMaxHeight: CGFloat {
+        fillsAvailableHeight ? max(160, availableHeight - 160) : 400
+    }
+
+    private func activateIfNeeded() {
+        guard isActive else { return }
+        if surface == .local { refreshLocalResults() }
+        if surface == .ai { aiModel.present() }
+        queryFocused = surface != .ai
+    }
+
     private func resultTitle(_ result: QuickSearchResult) -> String {
         switch result {
         case .news(let item): return item.title
@@ -519,6 +519,7 @@ struct QuickSearchPanel: View {
         aiModel.question = aiQuestion
         surface = nextSurface
         selectedArchiveEntry = nil
+        queryFocused = nextSurface != .ai
         if nextSurface == .ai { aiModel.present() }
     }
 
@@ -532,8 +533,9 @@ struct QuickSearchPanel: View {
     }
 
     private func submitWebSearch() {
+        webTask?.cancel()
         let query = model.query
-        Task {
+        webTask = Task {
             let keys = await SearchKeyStore.loadAll()
             await model.searchWeb(
                 query: query,
