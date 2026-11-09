@@ -13,7 +13,7 @@
   "release_branch": true,
   "auto_merge": false,
   "release_note_style": "structured-cn",
-  "summary": "阅读器辅助栏 + Dashboard 关注瀑布流；2.17.4 修复关注页在监控关闭/无账号时无法切回推荐",
-  "summary_en": "Reader auxiliary rail plus a Dashboard following waterfall; 2.17.4 keeps the browse switch reachable when the following monitor is off or empty",
+  "summary": "关注瀑布流卡片硬裁切，修复宽图/长文跨列；移除首页推荐流重复的“关注动态”，只保留右栏关注最近消息",
+  "summary_en": "Clamp following masonry cards to their columns, fixing wide images and long text overflow; remove the duplicate following highlights block from the recommendation feed",
   "validation": "swift test 1798 项（6 项跳过，0 失败）+ adhoc release build + 本机安装验收"
 }
