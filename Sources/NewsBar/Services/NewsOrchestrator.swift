@@ -13,6 +13,15 @@ enum AISummaryState: Equatable, Sendable {
     static func content(_ text: String, wasTruncated: Bool) -> AISummaryState {
         wasTruncated ? .truncated(text) : .done(text)
     }
+
+    /// The text a completed result carries. `.idle` means "no active work",
+    /// not "no content": a cached result can be on screen while idle.
+    var completedText: String? {
+        switch self {
+        case .done(let text), .truncated(let text): return text
+        case .idle, .noKey, .fetching, .summarizing, .error: return nil
+        }
+    }
 }
 
 enum SourceLoadState: Equatable, Sendable {
@@ -63,8 +72,25 @@ final class NewsOrchestrator {
     // Shared summary context — Popup and Dashboard render the same generated result.
     var aiSummaryState = AISummaryState.idle
     var aiSummaryItems: [NewsItem] = []
+    var aiSummaryText: String?
     var aiParsedSummary: ParsedSummary?
     var aiSummaryManifest: SummaryManifest?
+    /// Set when the visible result came from disk. The UI labels it as the
+    /// previous result instead of pretending it is fresh.
+    var aiSummaryRestoredAt: Date?
+    /// A refresh is running while a previous result stays on screen.
+    var aiSummaryUpdating = false
+    /// A failed refresh that kept the previous result visible.
+    var aiSummaryUpdateError: String?
+
+    var hasRenderableSummary: Bool {
+        aiSummaryText != nil && !aiSummaryItems.isEmpty
+    }
+
+    var isSummaryQuotaBlockedForToday: Bool {
+        guard let burstQuotaBlockedOn else { return false }
+        return Calendar.current.isDate(burstQuotaBlockedOn, inSameDayAs: Date())
+    }
 
     var isRefreshing = false
     var sourceStates: [String: SourceLoadState] = [:]
@@ -94,8 +120,8 @@ final class NewsOrchestrator {
     @ObservationIgnored private var researchObserver: NSObjectProtocol?
     private var legacyResearchImported = false
     // A stable actor per language serializes saves and clears of the same file.
-    private let chineseSummaryCache = AISummaryCacheStore(language: .zh)
-    private let englishSummaryCache = AISummaryCacheStore(language: .en)
+    private let chineseSummaryCache: AISummaryCacheStore
+    private let englishSummaryCache: AISummaryCacheStore
     private func summaryCache(for language: AppLanguage) -> AISummaryCacheStore {
         switch language {
         case .zh: return chineseSummaryCache
@@ -129,6 +155,8 @@ final class NewsOrchestrator {
     private var lastSummaryGeneratedAt: Date?
     /// Last summary triggered by a Weibo "爆" label, to throttle repeats.
     private var lastBurstSummaryAt: Date?
+    private var lastBurstSummaryKey: String?
+    private var burstQuotaBlockedOn: Date?
     private var lastHourlyPushAt: Date?
     /// Titles of Weibo "爆" topics already pushed, to avoid re-notifying the same one.
     private var notifiedBurstTopics: Set<String> = []
@@ -153,7 +181,12 @@ final class NewsOrchestrator {
     /// The shared result uses the detailed Dashboard prompt. Popup limits rows at render time.
     static let sharedSummaryTarget: SummaryTarget = .dashboard
 
-    init() {
+    init(
+        chineseSummaryCache: AISummaryCacheStore = AISummaryCacheStore(language: .zh),
+        englishSummaryCache: AISummaryCacheStore = AISummaryCacheStore(language: .en)
+    ) {
+        self.chineseSummaryCache = chineseSummaryCache
+        self.englishSummaryCache = englishSummaryCache
         researchObserver = NotificationCenter.default.addObserver(
             forName: .researchRecordsChanged,
             object: nil,
@@ -236,6 +269,19 @@ final class NewsOrchestrator {
         isManualRegeneration || consecutiveTruncations < limit
     }
 
+    /// Identity of the current "爆" topic set. Sorting makes a reorder from the
+    /// feed harmless; a new title or link changes the key and allows one new
+    /// generation.
+    nonisolated internal static func burstIdentity(items: [NewsItem]) -> String? {
+        let burst = items.filter { $0.hotLabel == "爆" }
+        guard !burst.isEmpty else { return nil }
+        let seed = burst
+            .sorted { $0.url == $1.url ? $0.title < $1.title : $0.url < $1.url }
+            .map { "\($0.title)\n\($0.url)" }
+            .joined(separator: "\n")
+        return ContentIdentity.digest(seed)
+    }
+
     internal static func shouldRecoverSharedSummary(
         hasNewContent: Bool, isRepeatedTruncation: Bool, state: AISummaryState
     ) -> Bool {
@@ -244,6 +290,13 @@ final class NewsOrchestrator {
     }
 
     // MARK: - Public API
+
+    /// Key-chain work runs after the cached summary is already on screen. It
+    /// must not blank that result while it resolves which key to use.
+    func resetSummaryStateForKeyLookup() {
+        guard !hasRenderableSummary else { return }
+        aiSummaryState = .idle
+    }
 
     func loadCached(settings: AppSettings) async {
         guard cacheClearDepth == 0 else { return }
@@ -1529,6 +1582,26 @@ final class NewsOrchestrator {
             && newHash != sharedSummaryLastTruncatedHash
         let elapsed = Date().timeIntervalSince(lastSummaryGeneratedAt ?? .distantPast)
         let hasBurstWeibo = weiboItems.contains { $0.hotLabel == "爆" }
+        let burstKey = Self.burstIdentity(items: weiboItems)
+        let repeatedBurst = burstKey != nil && burstKey == lastBurstSummaryKey
+        if let burstKey, !repeatedBurst {
+            let today = Calendar.current.startOfDay(for: Date())
+            if burstQuotaBlockedOn == today { return }
+            let snapshot = AIQuotaStore.shared.snapshot()
+            let policy = settings.aiQuotaPolicy
+            if snapshot.isUsable, policy.blocks(count: snapshot.count, costMicros: snapshot.costMicros) {
+                // The ledger is exhausted for today. Keep any previous result
+                // and stop asking; midnight (or a new day) starts a fresh check.
+                burstQuotaBlockedOn = today
+                let message = "error.aiQuotaExhausted".localized
+                if hasRenderableSummary {
+                    aiSummaryUpdateError = message
+                } else {
+                    aiSummaryState = .error(message)
+                }
+                return
+            }
+        }
         let elapsedSinceBurst = Date().timeIntervalSince(lastBurstSummaryAt ?? .distantPast)
         let shouldGenerate = Self.shouldGenerateSummary(
             hasCachedSummary: sharedSummaryLastHash != nil,
@@ -1541,11 +1614,14 @@ final class NewsOrchestrator {
             shouldRecover: Self.shouldRecoverAISummary(from: aiSummaryState),
             hasBurstWeibo: hasBurstWeibo,
             elapsedSinceBurstSummary: elapsedSinceBurst,
-            isRepeatedTruncation: newHash == sharedSummaryLastTruncatedHash
+            isRepeatedTruncation: newHash == sharedSummaryLastTruncatedHash || repeatedBurst
         )
 
         if shouldGenerate {
-            aiSummaryState = .fetching
+            let hadRenderableSummary = hasRenderableSummary
+            if !hadRenderableSummary { aiSummaryState = .fetching }
+            aiSummaryUpdating = hadRenderableSummary
+            aiSummaryUpdateError = nil
             AISummaryService.initBudget(
                 target: Self.sharedSummaryTarget,
                 mode: .shared,
@@ -1564,6 +1640,11 @@ final class NewsOrchestrator {
                 summaryRevision: summaryRevision,
                 cacheToken: token
             )
+            if let burstKey,
+               aiSummaryUpdateError == nil,
+               sharedSummaryLastHash == newHash || sharedSummaryLastTruncatedHash == newHash {
+                lastBurstSummaryKey = burstKey
+            }
             settings.refreshAIUsageMirror()
         }
     }
@@ -1823,17 +1904,23 @@ final class NewsOrchestrator {
             let bound = try await settings.resolveBoundAPIKey(expected: settings.aiKeyContext)
             guard settings.isCurrentAIKey(bound) else { throw AISearchError.configurationChanged }
             guard !bound.key.isEmpty || bound.context.providerID == AIProvider.ollamaCloud.rawValue else {
-                if reportError && reportIf() { aiSummaryState = .noKey }
+                if reportError && reportIf() {
+                    reportSummaryFailure("dash.state.noKey".localized, fallbackState: .noKey)
+                }
                 return nil
             }
             return bound
         } catch is CancellationError {
             return nil
         } catch let error as AISearchError {
-            if reportError && reportIf() { aiSummaryState = .error(error.message(settings.appLanguage)) }
+            if reportError && reportIf() {
+                reportSummaryFailure(error.message(settings.appLanguage))
+            }
             return nil
         } catch {
-            if reportError && reportIf() { aiSummaryState = .error(AISearchError.keyReadFailed.message(settings.appLanguage)) }
+            if reportError && reportIf() {
+                reportSummaryFailure(AISearchError.keyReadFailed.message(settings.appLanguage))
+            }
             return nil
         }
     }
@@ -1844,9 +1931,9 @@ final class NewsOrchestrator {
         guard let configuration = await settings.validatedAIConfiguration(boundKey: bound) else {
             guard reportIf() else { return nil }
             if !settings.isCurrentAIKey(bound) {
-                aiSummaryState = .error(AISearchError.configurationChanged.message(settings.appLanguage))
+                reportSummaryFailure(AISearchError.configurationChanged.message(settings.appLanguage))
             } else if let error = settings.modelCatalogError {
-                aiSummaryState = .error(error.message(language: settings.appLanguage))
+                reportSummaryFailure(error.message(language: settings.appLanguage))
             }
             return nil
         }
@@ -1869,12 +1956,13 @@ final class NewsOrchestrator {
         guard AISummaryService.tryAcquireGenerationLock(for: Self.sharedSummaryTarget) else { return }
         defer { AISummaryService.releaseGenerationLock(for: Self.sharedSummaryTarget) }
         guard isEligible() else { return }
-        let currentItems = allActiveItems(settings: settings)
-        guard !currentItems.isEmpty,
-              summaryGenerationHash(items: currentItems, settings: settings) == cached.contentHash else { return }
-
+        // Cache first: the last completed result is the best thing to show
+        // while the feed catches up. It is labelled with its generation time
+        // and a manual update button, never silently discarded because the
+        // current item hash changed.
         let trendIndices = cached.manifest?.trendIndices ?? Set(cached.items.enumerated().filter { $0.element.source.isBuiltIn }.map(\.offset))
         aiSummaryItems = cached.items
+        aiSummaryText = cached.summary
         aiSummaryManifest = cached.manifest
         aiParsedSummary = AISummaryParser.parseDualSummary(
             cached.summary,
@@ -1885,7 +1973,36 @@ final class NewsOrchestrator {
         sharedSummaryLastTruncatedHash = cached.truncatedContentHash
         sharedSummaryConsecutiveTruncationCount = 0
         lastSummaryGeneratedAt = cached.generatedAt
+        aiSummaryRestoredAt = cached.generatedAt
+        aiSummaryUpdateError = nil
+        aiSummaryUpdating = false
         aiSummaryState = cached.presentationState
+    }
+
+    /// Keeps a completed result on screen when a refresh fails. Only a run with
+    /// nothing to show falls back to the full error state.
+    private func failSummary(_ message: String, fallbackState: AISummaryState? = nil) {
+        if aiSummaryUpdating, hasRenderableSummary {
+            aiSummaryUpdateError = message
+        } else if let fallbackState {
+            aiSummaryState = fallbackState
+        } else {
+            aiSummaryState = .error(message)
+        }
+        aiSummaryUpdating = false
+    }
+
+    /// Used before `generateSummary` starts. There is no `aiSummaryUpdating`
+    /// flag yet, so content presence alone decides whether the error replaces
+    /// the card or appears beside it.
+    private func reportSummaryFailure(_ message: String, fallbackState: AISummaryState? = nil) {
+        if hasRenderableSummary {
+            aiSummaryUpdateError = message
+        } else if let fallbackState {
+            aiSummaryState = fallbackState
+        } else {
+            aiSummaryState = .error(message)
+        }
     }
 
     @discardableResult
@@ -1914,7 +2031,14 @@ final class NewsOrchestrator {
                 && epoch == interest.state.consentEpoch && settings.isCurrentAISummaryRun(summaryRevision)
                 && settings.isCurrentAIConfiguration(configuration)
         }
+        // Capture the previous result before any guard can change the state.
+        // A failed refresh keeps it visible instead of replacing it with an
+        // error card.
+        let hadRenderableSummary = hasRenderableSummary
+        aiSummaryUpdating = hadRenderableSummary
+        aiSummaryUpdateError = nil
         defer {
+            aiSummaryUpdating = false
             if !isCurrentRun(),
                aiSummaryState == .summarizing || aiSummaryState == .fetching { aiSummaryState = .idle }
         }
@@ -1934,9 +2058,12 @@ final class NewsOrchestrator {
                                        asOf: now, coverageStart: max(now.addingTimeInterval(-24 * 3600), state.archiveStartedAt ?? now), trendHistoryHash: trendHistoryHash)
         let items = manifest.items
         let frozenThinking = settings.aiDisableDeepSeekThinking
-        guard !items.isEmpty else { aiSummaryState = .idle; return 0 }
+        guard !items.isEmpty else {
+            if !hasRenderableSummary { aiSummaryState = .idle }
+            return 0
+        }
         guard !apiKey.isEmpty || configuration.providerID == AIProvider.ollamaCloud.rawValue else {
-            aiSummaryState = .noKey
+            failSummary("dash.state.noKey".localized, fallbackState: .noKey)
             return AISummaryService.readGenerationAttempts(target: Self.sharedSummaryTarget, mode: budgetMode)
         }
 
@@ -1946,11 +2073,13 @@ final class NewsOrchestrator {
             limit: maxConsecutiveTruncations,
             isManualRegeneration: isManualRegeneration
         ) else {
-            aiSummaryState = .error(L10n.string("error.aiTruncated", maxConsecutiveTruncations))
+            failSummary(L10n.string("error.aiTruncated", maxConsecutiveTruncations))
             return AISummaryService.readGenerationAttempts(target: Self.sharedSummaryTarget, mode: budgetMode)
         }
 
-        aiSummaryState = .summarizing
+        if !hadRenderableSummary {
+            aiSummaryState = .summarizing
+        }
         let trendRange = 4...5
         let dailyRange = 4...5
 
@@ -2027,13 +2156,17 @@ final class NewsOrchestrator {
             // clear error instead of `.done`, and do not publish the raw text/items
             // so the Popup raw-text fallback cannot render the invalid output.
             if !finalResult.isTruncated, Self.needsFormatRetry(finalParsed) {
-                aiSummaryState = .error("error.aiFormat".localized)
+                failSummary("error.aiFormat".localized)
                 return requestCount
             }
 
             aiSummaryItems = items
+            aiSummaryText = finalResult.summary
             aiSummaryManifest = manifest
             aiParsedSummary = finalParsed
+            aiSummaryUpdating = false
+            aiSummaryUpdateError = nil
+            aiSummaryRestoredAt = nil
             // A truncated result with both sections may be cached to avoid
             // repeated requests, but it must still be presented as incomplete.
             if finalResult.isTruncated, !Self.hasBothSections(finalParsed) {
@@ -2072,10 +2205,13 @@ final class NewsOrchestrator {
             }
             return requestCount
         } catch is CancellationError {
-            if isCurrentRun() { aiSummaryState = .idle }
+            if isCurrentRun() {
+                aiSummaryUpdating = false
+                if !hasRenderableSummary { aiSummaryState = .idle }
+            }
         } catch NewsBarError.apiKeyInvalid {
             guard isCurrentRun() else { return AISummaryService.readGenerationAttempts(target: Self.sharedSummaryTarget, mode: budgetMode) }
-            aiSummaryState = .error("error.aiKeyInvalid".localized)
+            failSummary("error.aiKeyInvalid".localized)
         } catch NewsBarError.rateLimited {
             guard isCurrentRun() else { return AISummaryService.readGenerationAttempts(target: Self.sharedSummaryTarget, mode: budgetMode) }
             let snapshot = AIQuotaStore.shared.snapshot()
@@ -2084,7 +2220,7 @@ final class NewsOrchestrator {
                 mode: budgetMode
             )
             if mode == .cost {
-                aiSummaryState = .error(L10n.string(
+                failSummary(L10n.string(
                     "error.aiCostCapReached",
                     AICostFormat.yuan(snapshot.costMicros),
                     AICostFormat.yuan(settings.aiCostCapMicros)
@@ -2094,32 +2230,32 @@ final class NewsOrchestrator {
                     target: Self.sharedSummaryTarget,
                     mode: budgetMode
                 ) ?? 0
-                aiSummaryState = .error(L10n.string("error.aiCapReached", snapshot.count, cap))
+                failSummary(L10n.string("error.aiCapReached", snapshot.count, cap))
             }
         } catch let error as NewsBarError {
             guard isCurrentRun() else { return AISummaryService.readGenerationAttempts(target: Self.sharedSummaryTarget, mode: budgetMode) }
             switch error {
             case .parseFailedWithDetail(let detail):
                 NSLog("[NewsOrchestrator] AI summary retry exhausted: %@", detail)
-                aiSummaryState = .error(L10n.string("error.aiUnavailable", detail))
+                failSummary(L10n.string("error.aiUnavailable", detail))
             case .parseFailed:
-                aiSummaryState = .error("error.aiBadFormat".localized)
+                failSummary("error.aiBadFormat".localized)
             default:
                 NSLog("[NewsOrchestrator] AI summary NewsBarError: %@", error.localizedDescription)
-                aiSummaryState = .error("error.aiFailed".localized)
+                failSummary("error.aiFailed".localized)
             }
         } catch let error as URLError {
             guard isCurrentRun() else { return AISummaryService.readGenerationAttempts(target: Self.sharedSummaryTarget, mode: budgetMode) }
             NSLog("[NewsOrchestrator] AI summary URLError: %@", error.localizedDescription)
-            aiSummaryState = .error(error.code == .timedOut ? "error.aiTimeout".localized : "error.aiNoNetwork".localized)
+            failSummary(error.code == .timedOut ? "error.aiTimeout".localized : "error.aiNoNetwork".localized)
         } catch let error as DecodingError {
             guard isCurrentRun() else { return AISummaryService.readGenerationAttempts(target: Self.sharedSummaryTarget, mode: budgetMode) }
             NSLog("[NewsOrchestrator] AI summary DecodingError: %@", error.localizedDescription)
-            aiSummaryState = .error("error.aiBadFormat".localized)
+            failSummary("error.aiBadFormat".localized)
         } catch {
             guard isCurrentRun() else { return AISummaryService.readGenerationAttempts(target: Self.sharedSummaryTarget, mode: budgetMode) }
             NSLog("[NewsOrchestrator] AI summary failed: %@", error.localizedDescription)
-            aiSummaryState = .error("error.aiFailed".localized)
+            failSummary("error.aiFailed".localized)
         }
         return AISummaryService.readGenerationAttempts(target: Self.sharedSummaryTarget, mode: budgetMode)
     }
@@ -2335,11 +2471,18 @@ final class NewsOrchestrator {
         await PageSummaryCacheStore.shared.clear()
         aiSummaryState = .idle
         aiSummaryItems = []
+        aiSummaryText = nil
         aiParsedSummary = nil
         aiSummaryManifest = nil
+        aiSummaryRestoredAt = nil
+        aiSummaryUpdating = false
+        aiSummaryUpdateError = nil
         sharedSummaryLastHash = nil
         sharedSummaryLastTruncatedHash = nil
         sharedSummaryConsecutiveTruncationCount = 0
+        lastBurstSummaryAt = nil
+        lastBurstSummaryKey = nil
+        burstQuotaBlockedOn = nil
         notifiedBurstTopics = []
         notifiedKeywordPairs = []
         legacyBurstArtifacts = [:]
@@ -2376,12 +2519,20 @@ final class NewsOrchestrator {
         rssItemsMap = [:]
         aiSummaryState = .idle
         aiSummaryItems = []
+        aiSummaryText = nil
         aiParsedSummary = nil
+        aiSummaryManifest = nil
+        aiSummaryRestoredAt = nil
+        aiSummaryUpdating = false
+        aiSummaryUpdateError = nil
         sourceStates = [:]
         sharedSummaryLastHash = nil
         sharedSummaryLastTruncatedHash = nil
         sharedSummaryConsecutiveTruncationCount = 0
         lastSummaryGeneratedAt = nil
+        lastBurstSummaryAt = nil
+        lastBurstSummaryKey = nil
+        burstQuotaBlockedOn = nil
         lastHotRefresh = nil
         lastSourceRefresh = [:]
         lastSourceAttempt = [:]

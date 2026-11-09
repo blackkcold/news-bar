@@ -10,6 +10,8 @@ struct AISummaryCard: View {
     var onRegenerate: (() -> Void)?
     var onConfigureKey: (() -> Void)?
     var contextID: String? = nil
+    var restoredAt: Date? = nil
+    var updateError: String? = nil
 
     @State private var renderModel: SummaryRenderModel?
     @State private var revealedSectionCount = 0
@@ -197,6 +199,27 @@ struct AISummaryCard: View {
     @ViewBuilder
     private var summaryContent: some View {
         VStack(alignment: .leading, spacing: 6) {
+            if let restoredAt {
+                HStack(spacing: 4) {
+                    Image(systemName: "clock.arrow.circlepath")
+                        .font(.system(size: 9))
+                    Text(String(
+                        format: "aiCard.lastGenerated".localized,
+                        restoredAt.formatted(date: .omitted, time: .shortened)
+                    ))
+                        .font(.system(size: 10))
+                }
+                .foregroundStyle(.secondary)
+            }
+            if let updateError {
+                HStack(spacing: 4) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.system(size: 9))
+                    Text(String(format: "aiCard.updateFailed".localized, updateError))
+                        .font(.system(size: 10))
+                }
+                .foregroundStyle(.orange)
+            }
             if let model = renderModel {
                 if model.groups.isEmpty {
                     Text(model.fallbackAttributed)

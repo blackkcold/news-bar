@@ -7,6 +7,9 @@ struct WeiboMonitorLoadResult: Sendable {
     /// Accounts whose posts file exists but could not be read. The service must
     /// not overwrite these files with a partial in-memory array.
     var unloadedUIDs: Set<String>
+    /// A monitor file that could not be read and could not be archived. Writing
+    /// now would destroy the only copy of the user's account settings.
+    var monitorWriteBlocked: Bool = false
 
     static let empty = WeiboMonitorLoadResult(
         users: [],
@@ -75,14 +78,28 @@ actor WeiboMonitorStore {
         var users: [WeiboMonitorUser] = []
         var monitorIsAuthoritative = false
         var canCleanOrphans = false
+        var monitorWriteBlocked = false
 
-        switch readFile(monitorURL) {
+        var monitorRead = readFile(monitorURL)
+        if case .failed = monitorRead {
+            // A locked or remounting volume often recovers immediately. One
+            // short retry avoids archiving a healthy file for a transient read.
+            try? await Task.sleep(for: .milliseconds(150))
+            monitorRead = readFile(monitorURL)
+        }
+        switch monitorRead {
         case .missing:
             // No monitor file: posts may still exist from a previous install or
             // a manual reset. Rebuild from them rather than deleting them.
             canCleanOrphans = true
         case .failed:
             issues.append("monitor.unreadable")
+            // Preserve the bytes before the service rewrites the account list.
+            // If the archive cannot be made, writes stay blocked.
+            if !archiveUnreadable(monitorURL) {
+                monitorWriteBlocked = true
+                issues.append("monitor.writeBlocked")
+            }
         case .data(let data):
             do {
                 let snapshot = try Self.decodeSnapshot(data)
@@ -162,7 +179,8 @@ actor WeiboMonitorStore {
             users: users,
             postsByUID: postsByUID,
             issues: issues,
-            unloadedUIDs: unloaded
+            unloadedUIDs: unloaded,
+            monitorWriteBlocked: monitorWriteBlocked
         )
     }
 
@@ -328,6 +346,24 @@ actor WeiboMonitorStore {
         let destination = url.appendingPathExtension("corrupt-\(stamp)-\(suffix)")
         try? FileManager.default.removeItem(at: destination)
         try FileManager.default.moveItem(at: url, to: destination)
+    }
+
+    /// A read failure may be transient (an unmounted volume, a permissions
+    /// glitch) or permanent. Either way the bytes are the only copy of the
+    /// user's account settings, so move them aside before the service writes a
+    /// rebuilt list. Returns false when the bytes could not be protected.
+    private func archiveUnreadable(_ url: URL) -> Bool {
+        guard FileManager.default.fileExists(atPath: url.path) else { return true }
+        let stamp = Int(Date().timeIntervalSince1970)
+        let suffix = UUID().uuidString.prefix(8)
+        let destination = url.appendingPathExtension("unreadable-\(stamp)-\(suffix)")
+        do {
+            try? FileManager.default.removeItem(at: destination)
+            try FileManager.default.moveItem(at: url, to: destination)
+            return true
+        } catch {
+            return false
+        }
     }
 
     private static func encode<T: Encodable>(_ value: T) throws -> Data {

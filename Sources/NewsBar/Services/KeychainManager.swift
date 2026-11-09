@@ -50,6 +50,15 @@ enum KeychainManager {
         #endif
     }
 
+    /// Three-state read used by one-shot migrations. `nil` cannot distinguish
+    /// "there is no legacy key" from "the keychain refused the read"; treating
+    /// a refusal as missing would set the migration flag and lose the key.
+    enum ReadResult: Equatable {
+        case found(String)
+        case missing
+        case failed
+    }
+
     // MARK: - Query Helpers
 
     /// Build a base keychain query dictionary.
@@ -104,16 +113,32 @@ enum KeychainManager {
     /// - Returns: The legacy `Data` when a legacy item is readable.  If the
     ///   data protection write fails, the legacy copy is preserved and the data
     ///   is still returned so existing users are not locked out.
+    private enum LegacyMigrationResult {
+        case found(Data)
+        case missing
+        case failed
+    }
+
     private static func migrateFromLegacy(account: String) -> Data? {
+        guard case let .found(data) = migrateFromLegacyResult(account: account) else {
+            return nil
+        }
+        return data
+    }
+
+    private static func migrateFromLegacyResult(account: String) -> LegacyMigrationResult {
         var legacyQuery = baseQuery(account: account, useDataProtection: false)
         legacyQuery[kSecReturnData as String] = true
         legacyQuery[kSecMatchLimit as String] = kSecMatchLimitOne
         applyNoUI(to: &legacyQuery)
 
         var result: AnyObject?
-        guard SecItemCopyMatching(legacyQuery as CFDictionary, &result) == errSecSuccess,
-              let data = result as? Data else {
-            return nil
+        let status = SecItemCopyMatching(legacyQuery as CFDictionary, &result)
+        if status == errSecItemNotFound {
+            return .missing
+        }
+        guard status == errSecSuccess, let data = result as? Data else {
+            return .failed
         }
 
         let dpDeleteQuery = baseQuery(account: account, useDataProtection: true)
@@ -130,7 +155,7 @@ enum KeychainManager {
             SecItemDelete(deleteQuery as CFDictionary)
         }
 
-        return data
+        return .found(data)
     }
 
     /// Compatibility fallback for environments where the data protection
@@ -174,8 +199,8 @@ enum KeychainManager {
         return false
     }
 
-    static func readAPIKey(account: String, allowUI: Bool = false) -> String? {
-        guard !isDisabled else { return nil }
+    static func readAPIKeyResult(account: String, allowUI: Bool = false) -> ReadResult {
+        guard !isDisabled else { return .missing }
 
         // 1. Primary path: data protection keychain
         var dpQuery = baseQuery(account: account, useDataProtection: true)
@@ -188,22 +213,38 @@ enum KeychainManager {
         var result: AnyObject?
         let dpStatus = SecItemCopyMatching(dpQuery as CFDictionary, &result)
 
-        if dpStatus == errSecSuccess,
-           let data = result as? Data,
-           let key = String(data: data, encoding: .utf8) {
-            return key
+        if dpStatus == errSecSuccess {
+            guard let data = result as? Data,
+                  let key = String(data: data, encoding: .utf8) else {
+                return .failed
+            }
+            return .found(key)
         }
 
         // 2. Fallback only when the data protection item is absent/unavailable.
         // Do not continue probing legacy keychains after auth/ACL failures.
         if dpStatus == errSecItemNotFound || dpStatus == errSecMissingEntitlement || dpStatus == errSecNotAvailable {
-            if let migratedData = migrateFromLegacy(account: account),
-               let key = String(data: migratedData, encoding: .utf8) {
-                return key
+            switch migrateFromLegacyResult(account: account) {
+            case .missing:
+                return .missing
+            case .failed:
+                return .failed
+            case .found(let migratedData):
+                guard let key = String(data: migratedData, encoding: .utf8) else {
+                    return .failed
+                }
+                return .found(key)
             }
         }
 
-        return nil
+        return .failed
+    }
+
+    static func readAPIKey(account: String, allowUI: Bool = false) -> String? {
+        guard case let .found(key) = readAPIKeyResult(account: account, allowUI: allowUI) else {
+            return nil
+        }
+        return key
     }
 
     static func checkAPIKeyExistence(account: String) -> KeyExistence {
@@ -311,36 +352,15 @@ enum KeychainManager {
         return saveToLegacyFallback(data, account: onePasswordRefAccount)
     }
 
+    static func readOnePasswordRefResult(allowUI: Bool = false) -> ReadResult {
+        readAPIKeyResult(account: onePasswordRefAccount, allowUI: allowUI)
+    }
+
     static func readOnePasswordRef(allowUI: Bool = false) -> String? {
-        guard !isDisabled else { return nil }
-
-        // 1. Primary path: data protection keychain
-        var dpQuery = baseQuery(account: onePasswordRefAccount, useDataProtection: true)
-        dpQuery[kSecReturnData as String] = true
-        dpQuery[kSecMatchLimit as String] = kSecMatchLimitOne
-        if !allowUI {
-            applyNoUI(to: &dpQuery)
+        guard case let .found(ref) = readOnePasswordRefResult(allowUI: allowUI) else {
+            return nil
         }
-
-        var result: AnyObject?
-        let dpStatus = SecItemCopyMatching(dpQuery as CFDictionary, &result)
-
-        if dpStatus == errSecSuccess,
-           let data = result as? Data,
-           let ref = String(data: data, encoding: .utf8) {
-            return ref
-        }
-
-        // 2. Fallback only when the data protection item is absent/unavailable.
-        // Do not continue probing legacy keychains after auth/ACL failures.
-        if dpStatus == errSecItemNotFound || dpStatus == errSecMissingEntitlement || dpStatus == errSecNotAvailable {
-            if let migratedData = migrateFromLegacy(account: onePasswordRefAccount),
-               let ref = String(data: migratedData, encoding: .utf8) {
-                return ref
-            }
-        }
-
-        return nil
+        return ref
     }
 
     static func deleteOnePasswordRef() {

@@ -165,26 +165,46 @@ enum NotificationService {
         try? await UNUserNotificationCenter.current().add(request)
     }
 
-    static func rescheduleDailyPush(items: [NewsItem], count: Int, hour: Int, minute: Int = 0) {
-        guard count > 0, !items.isEmpty else { return }
-
-        let center = UNUserNotificationCenter.current()
-        center.removePendingNotificationRequests(withIdentifiers: [NotificationIdentifier.dailyRequest])
-
-        let topItems = Array(items.prefix(normalizedPushCount(count)))
-        let content = titleContent(items: topItems, daily: true)
-
+    static func makeDailyRequest(
+        items: [NewsItem],
+        count: Int,
+        hour: Int,
+        minute: Int
+    ) -> UNNotificationRequest? {
+        let content: UNMutableNotificationContent
+        if !items.isEmpty, count > 0 {
+            let topItems = Array(items.prefix(normalizedPushCount(count)))
+            content = titleContent(items: topItems, daily: true)
+        } else {
+            // A day without news still gets its daily reminder. The content is
+            // replaced by the next refresh; the trigger must never disappear.
+            content = templateDailyContent()
+        }
         var dateComponents = DateComponents()
         dateComponents.hour = hour
         dateComponents.minute = minute
-
-        // A frozen title snapshot is sent once, not repeated indefinitely after app exit.
-        let trigger = UNCalendarNotificationTrigger(dateMatching: dateComponents, repeats: false)
-        let request = UNNotificationRequest(
+        let trigger = UNCalendarNotificationTrigger(dateMatching: dateComponents, repeats: true)
+        return UNNotificationRequest(
             identifier: NotificationIdentifier.dailyRequest,
             content: content,
             trigger: trigger
         )
+    }
+
+    private static func templateDailyContent() -> UNMutableNotificationContent {
+        let content = UNMutableNotificationContent()
+        content.title = L10n.string("notif.dailyTitle", language: L10n.currentLanguage)
+        content.body = L10n.string("notif.clickToView", language: L10n.currentLanguage)
+        content.sound = nil
+        content.userInfo = ["type": "daily"]
+        return content
+    }
+
+    static func rescheduleDailyPush(items: [NewsItem], count: Int, hour: Int, minute: Int = 0) {
+        let center = UNUserNotificationCenter.current()
+        guard let request = makeDailyRequest(items: items, count: count, hour: hour, minute: minute) else {
+            return
+        }
         center.add(request) { error in
             if let error = error {
                 NSLog("[NotificationService] rescheduleDailyPush failed: %@", error.localizedDescription)
@@ -194,24 +214,9 @@ enum NotificationService {
 
     static func scheduleDailyPush(hour: Int, minute: Int = 0) {
         let center = UNUserNotificationCenter.current()
-        center.removePendingNotificationRequests(withIdentifiers: [NotificationIdentifier.dailyRequest])
-
-        let content = UNMutableNotificationContent()
-        content.title = L10n.string("notif.dailyTitle", language: L10n.currentLanguage)
-        content.body = L10n.string("notif.clickToView", language: L10n.currentLanguage)
-        content.sound = nil
-        content.userInfo = ["type": "daily"]
-
-        var dateComponents = DateComponents()
-        dateComponents.hour = hour
-        dateComponents.minute = minute
-
-        let trigger = UNCalendarNotificationTrigger(dateMatching: dateComponents, repeats: true)
-        let request = UNNotificationRequest(
-            identifier: NotificationIdentifier.dailyRequest,
-            content: content,
-            trigger: trigger
-        )
+        guard let request = makeDailyRequest(items: [], count: 0, hour: hour, minute: minute) else {
+            return
+        }
         center.add(request) { error in
             if let error = error {
                 NSLog("[NotificationService] scheduleDailyPush failed: %@", error.localizedDescription)

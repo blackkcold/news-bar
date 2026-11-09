@@ -440,6 +440,20 @@ struct DashboardRSSSourceCard: View {
 
 // MARK: - Dashboard RSS Masonry Feed
 
+/// Shared dashboard geometry. Keeping these here prevents the sidebar, the
+/// feed gap and the masonry card from drifting apart in separate files.
+enum DashboardLayoutMetrics {
+    static let layoutBreakpoint: CGFloat = 960
+    static let sidebarWidth: CGFloat = 336
+    static let sidebarGap: CGFloat = 20
+    static let rssContentInset: CGFloat = 28
+    static let cardTextInset: CGFloat = 24
+    static let cardMinTextWidth: CGFloat = 40
+    static let cardTextBaseHeight: CGFloat = 24 + 10 + 14
+    static let cardTitleLineHeight: CGFloat = 17
+    static let cardImageHeight: CGFloat = 128
+}
+
 struct RSSMasonryPlan {
     let columnCount: Int
     let columnWidth: CGFloat
@@ -453,7 +467,7 @@ struct DashboardAdaptiveRSSMasonryFeed: View {
     /// column count, so the RSS feed and the recommendation feed switch
     /// columns at exactly the same dashboard width.
     let layoutWidth: CGFloat
-    static let contentInset: CGFloat = 28
+    static let contentInset: CGFloat = DashboardLayoutMetrics.rssContentInset
     var title: String = "RSS 订阅"
     var state: SourceLoadState = .idle
     var showsHeader: Bool = true
@@ -466,6 +480,15 @@ struct DashboardAdaptiveRSSMasonryFeed: View {
     @Environment(\.accessibilityVoiceOverEnabled) private var voiceOverEnabled
     @State private var cachedSourceSummaries: [(name: String, count: Int)] = []
     @State private var revealedLimit: Int?
+    @State private var measuredWidth: CGFloat = 0
+
+    private var effectiveLayoutWidth: CGFloat {
+        guard measuredWidth.isFinite, measuredWidth > 1 else { return layoutWidth }
+        // `layoutWidth` includes the 28 pt card inset that `plan` subtracts;
+        // the measured HStack lives inside that inset, so add it back before
+        // taking the smaller of the hint and reality.
+        return min(layoutWidth, measuredWidth + Self.contentInset)
+    }
 
     /// Pure layout plan, also used by tests to lock the shared column rule.
     static func plan(
@@ -493,17 +516,18 @@ struct DashboardAdaptiveRSSMasonryFeed: View {
         let hasImage = item.imageURL.flatMap(URL.init(string:)) != nil
         let lines = CGFloat(WaterfallLayout.estimatedTitleLines(
             item.displayTitle,
-            availableWidth: max(40, columnWidth - 24),
+            availableWidth: max(DashboardLayoutMetrics.cardMinTextWidth, columnWidth - DashboardLayoutMetrics.cardTextInset),
             maxLines: hasImage ? 3 : 4
         ))
-        let textCard: CGFloat = 24 + 10 + 14 + 17 * lines
-        return hasImage ? textCard + 128 : textCard
+        let textCard = DashboardLayoutMetrics.cardTextBaseHeight
+            + DashboardLayoutMetrics.cardTitleLineHeight * lines
+        return hasImage ? textCard + DashboardLayoutMetrics.cardImageHeight : textCard
     }
 
     private var masonry: some View {
         let plan = Self.plan(
             for: renderedItems,
-            width: layoutWidth,
+            width: effectiveLayoutWidth,
             prefersSingleColumn: voiceOverEnabled
         )
         return HStack(alignment: .top, spacing: WaterfallLayout.columnSpacing) {
@@ -518,6 +542,12 @@ struct DashboardAdaptiveRSSMasonryFeed: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+        .onGeometryChange(for: CGFloat.self) { proxy in
+            proxy.size.width
+        } action: { newWidth in
+            guard newWidth > 1, abs(newWidth - measuredWidth) > 0.5 else { return }
+            measuredWidth = newWidth
+        }
     }
 
     private var sourceSummaries: [(name: String, count: Int)] {

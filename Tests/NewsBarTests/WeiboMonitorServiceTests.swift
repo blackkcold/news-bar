@@ -7,6 +7,7 @@ private actor FakeWeiboFeed: WeiboFeedFetching {
     private(set) var requests: [(uid: String, page: Int, at: Date)] = []
     private var longTexts: [String: String] = [:]
     private var missingDateKeys: Set<String> = []
+    private var missingDateMids: Set<String> = []
 
     func setPage(uid: String, page: Int, posts: [WeiboPost]) {
         pages[uid, default: [:]][page] = posts
@@ -14,6 +15,10 @@ private actor FakeWeiboFeed: WeiboFeedFetching {
 
     func setDateMissing(uid: String, page: Int) {
         missingDateKeys.insert("\(uid):\(page)")
+    }
+
+    func setDateMissingMids(_ mids: Set<String>) {
+        missingDateMids.formUnion(mids)
     }
 
     func setOutcome(_ outcome: WeiboFetchOutcome?) {
@@ -40,7 +45,8 @@ private actor FakeWeiboFeed: WeiboFeedFetching {
             avatarURL: nil,
             sinceMid: posts.first?.mid,
             rawCount: posts.count,
-            dateMissing: missingDateKeys.contains("\(uid):\(page)")
+            dateMissing: missingDateKeys.contains("\(uid):\(page)") || !missingDateMids.isEmpty,
+            missingDateMids: missingDateMids
         )
         return .success(page: parsed, tier: .desktop, latency: 0.01)
     }
@@ -62,6 +68,79 @@ private actor FakeWeiboNotifier: WeiboAlertNotifying {
 
     func sendAuthExpired(language: AppLanguage) async {
         authAlerts += 1
+    }
+}
+
+private struct RelevancePauseTimeout: Error {}
+
+/// Parks the relevance await so a test can mutate the account list while
+/// `fetchAndProcess` is suspended. This is the exact window that used to leave
+/// a stale array index behind.
+private actor PausingRelevanceDecider: WeiboRelevanceDeciding {
+    nonisolated let providerID = "test.pausing"
+    nonisolated let isLocal = true
+    nonisolated let isFree = true
+
+    private var didStart = false
+    private var startWaiter: CheckedContinuation<Void, Never>?
+    private var releaseWaiter: CheckedContinuation<Void, Never>?
+    private var shouldRelease = false
+
+    func decide(text: String, context: WeiboDecisionContext) async throws -> WeiboDecisionResult {
+        didStart = true
+        startWaiter?.resume()
+        startWaiter = nil
+        await withCheckedContinuation { continuation in
+            if shouldRelease {
+                shouldRelease = false
+                continuation.resume()
+            } else {
+                releaseWaiter = continuation
+            }
+        }
+        return WeiboDecisionResult(
+            isAd: 0.1,
+            isOffTopic: 0.1,
+            topic: "测试",
+            topicConfidence: 0.9,
+            infoScore: 0.9,
+            model: "test",
+            inputTokens: 0,
+            outputTokens: 0,
+            costMicros: 0
+        )
+    }
+
+    func waitUntilStarted() async throws {
+        if didStart { return }
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            group.addTask { [weak self] in
+                guard let self else { return }
+                await self.waitForStart()
+            }
+            group.addTask {
+                try await Task.sleep(nanoseconds: 2_000_000_000)
+                throw RelevancePauseTimeout()
+            }
+            _ = try await group.next()
+            group.cancelAll()
+        }
+    }
+
+    private func waitForStart() async {
+        if didStart { return }
+        await withCheckedContinuation { continuation in
+            startWaiter = continuation
+        }
+    }
+
+    func releaseDecision() {
+        if let releaseWaiter {
+            self.releaseWaiter = nil
+            releaseWaiter.resume()
+        } else {
+            shouldRelease = true
+        }
     }
 }
 
@@ -366,6 +445,76 @@ final class WeiboMonitorServiceTests: XCTestCase {
         XCTAssertTrue(notifications.isEmpty)
     }
 
+    func testOneMissingDateOnlySkipsThatPost() async throws {
+        let now = Date()
+        let uid = try uid()
+        _ = try await service.addUser(input: uid, priority: .p0, now: now)
+        let old = makePost(mid: "old", text: "旧帖", createdAt: now.addingTimeInterval(-60))
+        await feed.setPage(uid: uid, page: 1, posts: [old])
+        await service.tick(
+            now: now, config: config, credentials: credentials, isLowPower: false, isOnline: true
+        )
+
+        var generous = config
+        generous.perAccountHourlyCap = 20
+        generous.globalHourlyCap = 20
+        let later = now.addingTimeInterval(180)
+        let good = (0..<9).map { index in
+            makePost(
+                mid: "good-\(index)",
+                text: "正常新帖 \(index)",
+                createdAt: later.addingTimeInterval(-Double(index))
+            )
+        }
+        let bad = makePost(mid: "bad-date", text: "坏日期", createdAt: later)
+        await feed.setPage(uid: uid, page: 1, posts: [bad] + good + [old])
+        await feed.setDateMissingMids([bad.mid])
+        await service.tick(
+            now: later, config: generous, credentials: credentials, isLowPower: false, isOnline: true
+        )
+        await service.flushAlerts(now: later.addingTimeInterval(45))
+
+        let snapshot = await service.snapshot()
+        XCTAssertEqual(snapshot.unreadCount, 9)
+        XCTAssertEqual(snapshot.postsByUID[uid]?.count, 11)
+        XCTAssertEqual(snapshot.postsByUID[uid]?.first(where: { $0.mid == bad.mid })?.read, true)
+        let notifications = await notifier.notifications
+        XCTAssertEqual(notifications.count, 1)
+        XCTAssertEqual(notifications.first?.postCount, 9)
+    }
+
+    func testMostlyMissingDatesSuppressesTheWholePage() async throws {
+        let now = Date()
+        let uid = try uid()
+        _ = try await service.addUser(input: uid, priority: .p0, now: now)
+        let old = makePost(mid: "old", text: "旧帖", createdAt: now.addingTimeInterval(-60))
+        await feed.setPage(uid: uid, page: 1, posts: [old])
+        await service.tick(
+            now: now, config: config, credentials: credentials, isLowPower: false, isOnline: true
+        )
+
+        let later = now.addingTimeInterval(180)
+        let posts = (0..<10).map { index in
+            makePost(
+                mid: "date-\(index)",
+                text: "条目 \(index)",
+                createdAt: later.addingTimeInterval(-Double(index))
+            )
+        }
+        let broken: Set<String> = Set(posts.prefix(6).map(\.mid))
+        await feed.setPage(uid: uid, page: 1, posts: posts + [old])
+        await feed.setDateMissingMids(broken)
+        await service.tick(
+            now: later, config: config, credentials: credentials, isLowPower: false, isOnline: true
+        )
+        await service.flushAlerts(now: later.addingTimeInterval(45))
+
+        let snapshot = await service.snapshot()
+        XCTAssertEqual(snapshot.unreadCount, 0)
+        let notifications = await notifier.notifications
+        XCTAssertTrue(notifications.isEmpty)
+    }
+
     func testLongTextIsUsedForNotification() async throws {
         let now = Date()
         let uid = try uid()
@@ -577,5 +726,130 @@ final class WeiboMonitorServiceTests: XCTestCase {
         } catch {
             XCTAssertEqual(error as? WeiboMonitorAddError, .invalidInput)
         }
+    }
+
+    func testRemovingAccountWhileRelevanceIsPendingDoesNotCrashOrResurrectIt() async throws {
+        let now = Date()
+        let uid = try uid()
+        let text = "今天天气真不错，出去走走看看"
+        let local = WeiboRelevanceModel().evaluate(
+            text: text,
+            imageCount: 0,
+            accountBaseline: 0.5,
+            userKeywords: [],
+            crossPostIndex: nil,
+            mode: .balanced,
+            now: now
+        )
+        XCTAssertEqual(local.verdict, .offTopic, "fixture must reach the correction await")
+
+        _ = try await service.addUser(input: uid, priority: .p0, now: now)
+        await feed.setPage(
+            uid: uid,
+            page: 1,
+            posts: [makePost(mid: "race-1", text: text, createdAt: now.addingTimeInterval(-30))]
+        )
+
+        var relevanceConfig = config
+        relevanceConfig.relevanceEnabled = true
+        relevanceConfig.relevanceAICorrection = true
+        relevanceConfig.relevanceMode = .balanced
+
+        let decider = PausingRelevanceDecider()
+        let tick = Task {
+            await service.tick(
+                now: now,
+                config: relevanceConfig,
+                credentials: credentials,
+                isLowPower: false,
+                isOnline: true,
+                relevanceDeciders: [decider]
+            )
+        }
+        try await decider.waitUntilStarted()
+        await service.removeUser(uid: uid, now: now)
+        await decider.releaseDecision()
+        await tick.value
+
+        let snapshot = await service.snapshot()
+        XCTAssertTrue(snapshot.users.isEmpty)
+        XCTAssertTrue(snapshot.postsByUID.isEmpty)
+    }
+
+    func testPriorityChangeDuringRelevanceAwaitSurvivesThePoll() async throws {
+        let now = Date()
+        let uid = try uid()
+        let text = "今天天气真不错，出去走走看看"
+        _ = try await service.addUser(input: uid, priority: .p0, now: now)
+        await feed.setPage(
+            uid: uid,
+            page: 1,
+            posts: [makePost(mid: "race-2", text: text, createdAt: now.addingTimeInterval(-30))]
+        )
+
+        var relevanceConfig = config
+        relevanceConfig.relevanceEnabled = true
+        relevanceConfig.relevanceAICorrection = true
+        relevanceConfig.relevanceMode = .balanced
+
+        let decider = PausingRelevanceDecider()
+        let tick = Task {
+            await service.tick(
+                now: now,
+                config: relevanceConfig,
+                credentials: credentials,
+                isLowPower: false,
+                isOnline: true,
+                relevanceDeciders: [decider]
+            )
+        }
+        try await decider.waitUntilStarted()
+        await service.setPriority(uid: uid, priority: .p1, now: now)
+        await decider.releaseDecision()
+        await tick.value
+
+        let snapshot = await service.snapshot()
+        XCTAssertEqual(snapshot.users.first?.priority, .p1)
+        XCTAssertEqual(snapshot.postsByUID[uid]?.count, 1)
+    }
+
+    func testUnreadableMonitorIsArchivedAndTheWarningSurvivesTheFirstSave() async throws {
+        let now = Date()
+        let uid = try uid()
+        _ = try await service.addUser(input: uid, priority: .p0, now: now)
+        await feed.setPage(
+            uid: uid,
+            page: 1,
+            posts: [makePost(mid: "archive-1", text: "基线", createdAt: now.addingTimeInterval(-60))]
+        )
+        await service.tick(
+            now: now, config: config, credentials: credentials, isLowPower: false, isOnline: true
+        )
+
+        let monitorURL = root.appendingPathComponent("monitor.json")
+        try FileManager.default.removeItem(at: monitorURL)
+        try FileManager.default.createDirectory(at: monitorURL, withIntermediateDirectories: true)
+
+        let recovered = WeiboMonitorService(
+            store: store,
+            feed: feed,
+            notifier: notifier,
+            planner: WeiboPollPlanner(calendar: WeiboMonitorTestSupport.calendar),
+            alertPolicy: WeiboAlertPolicy(calendar: WeiboMonitorTestSupport.calendar),
+            rng: WeiboRNG(seed: 42),
+            sleeper: { _ in },
+            autoFlushAlerts: false,
+            changeNotifier: {},
+            authAlertRecorder: { _ in }
+        )
+        await recovered.start(now: now.addingTimeInterval(60), config: config)
+
+        let snapshot = await recovered.snapshot()
+        XCTAssertEqual(snapshot.users.map(\.uid), [uid])
+        XCTAssertEqual(snapshot.storeErrorKey, "weibo.events.monitorUnreadable")
+        let files = try FileManager.default.contentsOfDirectory(atPath: root.path)
+        XCTAssertTrue(files.contains { $0.hasPrefix("monitor.json.unreadable-") })
+        let values = try monitorURL.resourceValues(forKeys: [.isDirectoryKey])
+        XCTAssertEqual(values.isDirectory, false)
     }
 }

@@ -28,10 +28,12 @@ struct NewsItem: Identifiable, Hashable, Codable, Sendable {
         hotLabel: String? = nil,
         translatedTitle: String? = nil,
         publishedAt: Date? = nil,
-        readerURL: String? = nil
+        readerURL: String? = nil,
+        identity: String? = nil
     ) {
-        let identity = "\(source.id)\n\(url)"
-        let digest = SHA256.hash(data: Data(identity.utf8))
+        let identityKey = identity ?? url
+        let identityHashInput = "\(source.id)\n\(identityKey)"
+        let digest = SHA256.hash(data: Data(identityHashInput.utf8))
         self.id = digest.map { String(format: "%02x", $0) }.joined()
         self.title = title
         self.url = url

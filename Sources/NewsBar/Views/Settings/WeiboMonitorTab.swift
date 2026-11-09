@@ -321,12 +321,13 @@ struct WeiboMonitorTab: View {
         }
 
         if snapshot.storeError != nil {
+            let messageKey = snapshot.storeErrorKey ?? "weibo.events.storeError"
             items.append(
                 Banner(
                     id: "store",
                     symbol: "externaldrive.badge.exclamationmark",
                     tint: .red,
-                    text: L10n.string("weibo.events.storeError", language: language),
+                    text: L10n.string(messageKey, language: language),
                     actionTitle: nil,
                     action: nil
                 )

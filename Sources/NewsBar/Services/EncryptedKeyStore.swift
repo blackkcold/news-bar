@@ -1288,6 +1288,24 @@ actor EncryptedKeyStore {
 
     // MARK: - Keychain 迁移
 
+    enum KeychainMigrationAction: Equatable {
+        case migrate(String)
+        case markComplete
+        case retry
+    }
+
+    static func keychainMigrationAction(_ result: KeychainManager.ReadResult) -> KeychainMigrationAction {
+        switch result {
+        case .found(let value):
+            return value.isEmpty ? .markComplete : .migrate(value)
+        case .missing:
+            return .markComplete
+        case .failed:
+            // An unreadable keychain is not proof that no key exists.
+            return .retry
+        }
+    }
+
     /// 一次性迁移: 从 Keychain 读取所有条目，加密写入文件。
     /// 使用逐 item 原子策略：写入文件并验证 → 删除 Keychain 项 → 记录 per-item flag。
     /// 崩溃安全：未完成迁移的项下次启动自动重试。
@@ -1312,17 +1330,24 @@ actor EncryptedKeyStore {
             guard !defaults.bool(forKey: migratedKey + account) else { continue }
 
             // 从 Keychain 读取
-            let key: String?
+            let readResult: KeychainManager.ReadResult
             if account == "one-password-ref" {
-                key = KeychainManager.readOnePasswordRef()
+                readResult = KeychainManager.readOnePasswordRefResult()
             } else {
-                key = KeychainManager.readAPIKey(account: account)
+                readResult = KeychainManager.readAPIKeyResult(account: account)
             }
-
-            guard let keyValue = key, !keyValue.isEmpty else {
-                // 无 Keychain 数据，标记已迁移（跳过此项）
+            let keyValue: String
+            switch Self.keychainMigrationAction(readResult) {
+            case .retry:
+                // The keychain refused the read. Keep the per-item flag unset
+                // so the next launch retries instead of losing the key.
+                NSLog("[EncryptedKeyStore] Keychain read failed for \(account), retry next launch")
+                continue
+            case .markComplete:
                 defaults.set(true, forKey: migratedKey + account)
                 continue
+            case .migrate(let value):
+                keyValue = value
             }
 
             // 同步写入 EncryptedKeyStore

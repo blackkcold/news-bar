@@ -22,8 +22,8 @@ struct DashboardWindow: View {
     var onOpenResearchCenter: (String?) -> Void = { _ in }
     var onOpenWeiboMonitorSettings: (() -> Void)? = nil
 
-    private let layoutBreakpoint: CGFloat = 960
-    private let sidebarWidth: CGFloat = 336
+    private let layoutBreakpoint = DashboardLayoutMetrics.layoutBreakpoint
+    private let sidebarWidth = DashboardLayoutMetrics.sidebarWidth
 
     private var normalizedSearchQuery: String? {
         DashboardSearch.normalized(debouncedSearchText)
@@ -304,7 +304,7 @@ struct DashboardWindow: View {
         let rssGroups = groups.filter { !$0.source.isBuiltIn }
         let matchedHotGroups = hotGroups.filter { $0.matchCount > 0 }
         let hotMatchCount = hotGroups.reduce(0) { $0 + $1.matchCount }
-        let feedWidth = max(0, availableWidth - sidebarWidth - 20)
+        let feedWidth = max(0, availableWidth - sidebarWidth - DashboardLayoutMetrics.sidebarGap)
 
         if browseMode == .forYou {
             if isWideLayout && !isReaderCompact {

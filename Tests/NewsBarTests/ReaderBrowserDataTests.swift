@@ -14,6 +14,11 @@ private actor MemoryCookiePersistence: ReaderCookiePersisting {
         self.failClear = failClear
     }
 
+    init(data: Data?) {
+        self.data = data
+        self.failClear = false
+    }
+
     func load() async throws -> Data? { data }
     func save(_ data: Data) async throws { self.data = data }
     func clear() async throws {
@@ -249,6 +254,22 @@ private actor HeldLoadCookiePersistence: ReaderCookiePersisting {
     }
 }
 
+private actor ReadFailingCookiePersistence: ReaderCookiePersisting {
+    private var data: Data?
+    private var failLoads = true
+
+    init(data: Data?) { self.data = data }
+
+    func load() async throws -> Data? {
+        if failLoads { throw ReaderCookieVaultError.corruptedStore }
+        return data
+    }
+    func save(_ data: Data) async throws { self.data = data }
+    func clear() async throws { data = nil }
+    func allowReads() { failLoads = false }
+    func currentData() -> Data? { data }
+}
+
 private actor MemoryHistoryPersistence: ReaderHistoryPersisting {
     private var data: Data?
     func load() async throws -> Data? { data }
@@ -257,6 +278,25 @@ private actor MemoryHistoryPersistence: ReaderHistoryPersisting {
 }
 
 final class EncryptedReaderCookiePersistenceTests: XCTestCase {
+    func testKeychainMigrationRetriesAfterAReadFailure() {
+        XCTAssertEqual(
+            EncryptedKeyStore.keychainMigrationAction(.failed),
+            .retry
+        )
+        XCTAssertEqual(
+            EncryptedKeyStore.keychainMigrationAction(.missing),
+            .markComplete
+        )
+        XCTAssertEqual(
+            EncryptedKeyStore.keychainMigrationAction(.found("")),
+            .markComplete
+        )
+        XCTAssertEqual(
+            EncryptedKeyStore.keychainMigrationAction(.found("sk-test")),
+            .migrate("sk-test")
+        )
+    }
+
     func testClearReportsEncryptedStoreWriteFailure() async throws {
         let directory = try researchTestDirectory()
         defer {
@@ -974,6 +1014,74 @@ final class ReaderCookieVaultTests: XCTestCase {
             cookies: [cookie("sid", domain: "another.test")], host: "another.test", title: nil, epoch: epoch
         )
         XCTAssertEqual(oldSession, 0)
+    }
+
+    @MainActor
+    func testReadFailureDuringPrepareFailsClosedAndPreservesStoredSites() async throws {
+        let seedPersistence = MemoryCookiePersistence()
+        let seed = ReaderCookieVault(persistence: seedPersistence)
+        await seed.prepare(now: now)
+        _ = try await seed.upsert(
+            cookies: [cookie("sid")], host: "example.com", allowEmptyRemoval: false, now: now
+        )
+        _ = try await seed.upsert(
+            cookies: [cookie("sid", domain: "another.test")],
+            host: "another.test",
+            allowEmptyRemoval: false,
+            now: now
+        )
+        let storedValue = try await seedPersistence.load()
+        let stored = try XCTUnwrap(storedValue)
+
+        let persistence = ReadFailingCookiePersistence(data: stored)
+        let vault = ReaderCookieVault(persistence: persistence)
+        await vault.prepare(now: now)
+
+        let requiresReconciliation = await vault.requiresReconciliation
+        XCTAssertTrue(requiresReconciliation)
+        do {
+            _ = try await vault.upsert(
+                cookies: [cookie("sid", value: "new")],
+                host: "example.com",
+                allowEmptyRemoval: false,
+                now: now
+            )
+            XCTFail("A read failure must block writes")
+        } catch ReaderCookieVaultError.stateUnverified {
+            // expected
+        }
+        let unchanged = try await persistence.currentData()
+        XCTAssertEqual(unchanged, stored)
+
+        await persistence.allowReads()
+        try await vault.reconcileUnverifiedState()
+        let sites = await vault.siteSummaries(now: now)
+        XCTAssertEqual(Set(sites.map(\.host)), Set(["example.com", "another.test"]))
+    }
+
+    @MainActor
+    func testCorruptPayloadDuringPrepareFailsClosed() async throws {
+        let corrupt = Data("not-a-cookie-snapshot".utf8)
+        let persistence = MemoryCookiePersistence(data: corrupt)
+        let vault = ReaderCookieVault(persistence: persistence)
+
+        await vault.prepare()
+
+        let requiresReconciliation = await vault.requiresReconciliation
+        XCTAssertTrue(requiresReconciliation)
+        do {
+            _ = try await vault.upsert(
+                cookies: [cookie("sid")],
+                host: "example.com",
+                allowEmptyRemoval: false,
+                now: now
+            )
+            XCTFail("A corrupt snapshot must block writes")
+        } catch ReaderCookieVaultError.stateUnverified {
+            // expected
+        }
+        let unchanged = try await persistence.load()
+        XCTAssertEqual(unchanged, corrupt)
     }
 
     @MainActor

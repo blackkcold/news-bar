@@ -3,7 +3,7 @@
   "tag_prefix": "v",
   "build_command": "scripts/build.sh",
   "release_command": "scripts/release.sh",
-  "test_command": null,
+  "test_command": "swift test",
   "docs": [
     "RELEASE_NOTES.md",
     "README.md"
@@ -13,7 +13,7 @@
   "release_branch": true,
   "auto_merge": false,
   "release_note_style": "structured-cn",
-  "summary": "修复推荐瀑布流卡片越界，统一卡片内容截断与列宽契约",
-  "summary_en": "Fix recommendation masonry overflow and unify the card width and truncation contract",
-  "validation": "swift test 1750 项（6 项跳过，0 失败）+ release build + 本机安装验收"
+  "summary": "加固微博监控数据安全与推送可靠性，AI 简报缓存优先，RSS 身份稳定，发布链路可审计",
+  "summary_en": "Harden Weibo monitor data safety and delivery reliability, cache-first AI briefing, stable RSS identity, auditable release pipeline",
+  "validation": "swift test 1771 项（6 项跳过，0 失败）+ adhoc release build + 本机安装验收"
 }

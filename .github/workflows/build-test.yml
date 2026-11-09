@@ -2,9 +2,9 @@ name: Build & Test
 
 on:
   pull_request:
-    branches: [main]
+    branches: [main, 'release/**']
   push:
-    branches: [main]
+    branches: [main, 'release/**']
 
 jobs:
   build-and-test:
@@ -13,14 +13,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Select Xcode
-        run: sudo xcode-select -s /Applications/Xcode_latest.app/Contents/Developer 2>/dev/null || true
-
-      - name: Show Swift version
-        run: swift --version
-
-      - name: Build
-        run: swift build -c release 2>&1
+      - name: Show toolchain
+        run: |
+          xcode-select -p
+          swift --version
 
       - name: Test
         run: swift test 2>&1
+
+      - name: Build
+        run: swift build -c release 2>&1

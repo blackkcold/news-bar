@@ -1271,12 +1271,9 @@ struct ReaderContentView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            GeometryReader { geometry in
-                toolbar(compact: geometry.size.width < 700)
-                    .padding(.horizontal, 12)
-                    .frame(height: 58)
-            }
-            .frame(height: 58)
+            toolbar()
+                .padding(.horizontal, 12)
+                .frame(height: 58)
             ProgressView(value: model.progress)
                 .progressViewStyle(.linear)
                 .tint(.accentColor)
@@ -1612,12 +1609,12 @@ struct ReaderContentView: View {
         .transition(.move(edge: .bottom).combined(with: .opacity))
     }
 
-    private func toolbar(compact: Bool) -> some View {
+    private func toolbar() -> some View {
         HStack(spacing: 8) {
             Button(action: onClose) {
                 HStack(spacing: 5) {
                     Image(systemName: "sidebar.left")
-                    if !compact { Text(english ? "Back to list" : "返回列表") }
+                    Text(english ? "Back to list" : "返回列表")
                 }
                 .frame(minWidth: 28, minHeight: 28)
             }
@@ -1692,9 +1689,7 @@ struct ReaderContentView: View {
                     } else {
                         Image(systemName: "text.badge.star")
                     }
-                    if !compact {
-                        Text(english ? "Page overview" : "页面概览")
-                    }
+                    Text(english ? "Page overview" : "页面概览")
                 }
                 .frame(minWidth: 28, minHeight: 28)
             }
@@ -1753,7 +1748,7 @@ struct ReaderContentView: View {
             Button { askExternal = true } label: {
                 HStack(spacing: 5) {
                     Image(systemName: "arrow.up.forward.app")
-                    if !compact { Text(english ? "Browser" : "浏览器打开") }
+                    Text(english ? "Browser" : "浏览器打开")
                 }
                 .frame(minWidth: 28, minHeight: 28)
             }

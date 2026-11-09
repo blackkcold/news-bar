@@ -21,7 +21,6 @@ struct WeiboFollowingFeedView: View {
     @Binding var searchText: String
     let onOpenSettings: () -> Void
 
-    @State private var hoveredPostID: String?
     @State private var showCollapsed = false
 
     private var accent: Color {
@@ -710,10 +709,10 @@ struct WeiboFollowingFeedView: View {
         _ monitor: WeiboMonitorViewModel,
         post: WeiboPost
     ) -> some View {
-        let hovered = hoveredPostID == post.id
-        return Button {
-            monitor.openPost(post)
-        } label: {
+        HoverRow { hovered in
+            Button {
+                monitor.openPost(post)
+            } label: {
             VStack(alignment: .leading, spacing: 6) {
                 HStack(alignment: .top, spacing: 6) {
                     if !post.read {
@@ -773,14 +772,12 @@ struct WeiboFollowingFeedView: View {
             )
         }
         .buttonStyle(.plain)
-        .onHover { hovering in
-            hoveredPostID = hovering ? post.id : nil
-        }
         .accessibilityElement(children: .combine)
         .accessibilityLabel(post.displayText)
         .accessibilityValue(
             post.read ? "" : L10n.string("weibo.feed.filter.unread", language: language)
         )
+        }
     }
 
     private func thumbnail(_ raw: String) -> some View {
@@ -1050,16 +1047,46 @@ struct WeiboFollowingFeedView: View {
         if delta < 7 * 24 * 3600 {
             return L10n.string("weibo.feed.daysAgo", language: language, max(1, Int(delta / 86400)))
         }
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: language.bcp47)
-        formatter.dateFormat = "MM-dd HH:mm"
-        return formatter.string(from: date)
+        return cachedFormatter("MM-dd HH:mm").string(from: date)
     }
 
     private func formatted(_ date: Date) -> String {
+        let format = Calendar.current.isDateInToday(date) ? "HH:mm" : "MM-dd HH:mm"
+        return cachedFormatter(format).string(from: date)
+    }
+
+    /// A formatter per locale/format, reused across body evaluations. Creating
+    /// a DateFormatter inside `body` allocated on every hover and scroll tick.
+    private func cachedFormatter(_ format: String) -> DateFormatter {
+        let key = "\(language.bcp47)|\(format)" as NSString
+        if let cached = Self.formatterCache.object(forKey: key) {
+            return cached
+        }
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: language.bcp47)
-        formatter.dateFormat = Calendar.current.isDateInToday(date) ? "HH:mm" : "MM-dd HH:mm"
-        return formatter.string(from: date)
+        formatter.dateFormat = format
+        Self.formatterCache.setObject(formatter, forKey: key)
+        return formatter
+    }
+
+    private static let formatterCache = NSCache<NSString, DateFormatter>()
+}
+
+/// Keeps hover state inside the row. A container-level `@State` re-evaluated
+/// every account group and every filtered post on each hover change.
+private struct HoverRow<Content: View>: View {
+    let content: (Bool) -> Content
+    @State private var hovered = false
+
+    init(@ViewBuilder content: @escaping (Bool) -> Content) {
+        self.content = content
+    }
+
+    var body: some View {
+        content(hovered)
+            .onHover { hovering in
+                guard hovered != hovering else { return }
+                hovered = hovering
+            }
     }
 }

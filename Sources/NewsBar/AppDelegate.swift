@@ -479,8 +479,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             let context = self.settings.aiKeyContext
             let account = context.account
             let store = EncryptedKeyStore()
-            if case let .found(key) = await store.readProviderAPIKeyResult(account: account, endpointIdentity: context.endpointIdentity), !key.isEmpty {
+            switch await store.readProviderAPIKeyResult(account: account, endpointIdentity: context.endpointIdentity) {
+            case .found(let key) where !key.isEmpty:
                 _ = self.settings.activateAPIKey(key, providerID: context.providerID, revision: context.revision)
+            case .failed:
+                NSLog("[AppDelegate] Cached provider key read failed for \(account)")
+            case .found, .missing:
+                break
             }
         }
     }
@@ -491,15 +496,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             guard self.settings.aiSummaryEnabled, self.settings.cachedAPIKey == nil else { return }
             guard self.currentProviderHasSavedKeyFlag() else {
                 let keyOptional = self.settings.aiProvider == AIProvider.ollamaCloud.rawValue
-                self.orchestrator?.aiSummaryState = keyOptional ? .idle : .noKey
+                if self.orchestrator?.hasRenderableSummary != true {
+                    self.orchestrator?.aiSummaryState = keyOptional ? .idle : .noKey
+                }
                 return
             }
             let context = self.settings.aiKeyContext
             let account = context.account
             let providerID = context.providerID
-            self.orchestrator?.aiSummaryState = .idle
+            self.orchestrator?.resetSummaryStateForKeyLookup()
             let store = EncryptedKeyStore()
-            if case let .found(key) = await store.readProviderAPIKeyResult(account: account, endpointIdentity: context.endpointIdentity), !key.isEmpty {
+            switch await store.readProviderAPIKeyResult(account: account, endpointIdentity: context.endpointIdentity) {
+            case .found(let key) where !key.isEmpty:
                 guard self.settings.activeAPIKeyAccount == account,
                       self.settings.activateAPIKey(key, providerID: providerID, revision: context.revision) else { return }
                 for flag in AIProvider.loadedKeyFlagNames(providerID: providerID, account: account) {
@@ -508,27 +516,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 Task {
                     await self.orchestrator?.manualRefresh(settings: self.settings)
                 }
+            case .failed:
+                // Keep the visible error card's existing path: do not pretend
+                // the user has no key when the store simply could not read it.
+                NSLog("[AppDelegate] Saved provider key read failed for \(account)")
+                let message = AISearchError.keyReadFailed.message(self.settings.appLanguage)
+                if self.orchestrator?.hasRenderableSummary == true {
+                    self.orchestrator?.aiSummaryUpdateError = message
+                } else {
+                    self.orchestrator?.aiSummaryState = .error(message)
+                }
+            case .found, .missing:
+                break
             }
-        }
-    }
-
-    private func handleMissingAPIKey() {
-        Task { @MainActor in orchestrator?.aiSummaryState = .noKey }
-        let defaults = TestIsolation.defaults
-        if defaults.bool(forKey: "hasShownAIKeySetupPrompt") { return }
-
-        let alert = NSAlert()
-        alert.messageText = "app.alert.noKeyTitle".localized
-        alert.informativeText = "app.alert.noKeyBody".localized
-        alert.alertStyle = .informational
-        alert.addButton(withTitle: "app.alert.goToSettings".localized)
-        alert.addButton(withTitle: "app.alert.later".localized)
-
-        let response = alert.runModal()
-        if response == .alertFirstButtonReturn {
-            self.openSettings(toAITab: true)
-        } else {
-            defaults.set(true, forKey: "hasShownAIKeySetupPrompt")
         }
     }
 
@@ -539,7 +539,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             queue: .main
         ) { [weak self] _ in
             guard let self else { return }
-            Task { @MainActor in self.orchestrator?.aiSummaryState = .idle }
+            Task { @MainActor in self.orchestrator?.resetSummaryStateForKeyLookup() }
             Task {
                 await self.orchestrator?.manualRefresh(settings: self.settings)
             }

@@ -490,24 +490,36 @@ private struct PopoverAISummarySection: View {
     @State private var isExpanded = true
 
     var body: some View {
-        if settings.aiSummaryEnabled, orchestrator.aiSummaryState != .idle {
+        if settings.aiSummaryEnabled, displayState != .idle {
             AISummaryCard(
-                state: orchestrator.aiSummaryState,
+                state: displayState,
                 isExpanded: $isExpanded,
                 allItems: orchestrator.aiSummaryItems,
                 parsedSummary: orchestrator.aiParsedSummary,
                 maxSectionsPerCategory: 2,
-                isRegenerating: orchestrator.aiSummaryState == .fetching || orchestrator.aiSummaryState == .summarizing,
+                isRegenerating: displayState == .fetching
+                    || displayState == .summarizing
+                    || orchestrator.aiSummaryUpdating,
                 onRegenerate: {
                     Task {
                         await orchestrator.regenerateAISummary(settings: settings)
                     }
                 },
                 onConfigureKey: onConfigureKey,
-                contextID: orchestrator.aiSummaryManifest?.id.uuidString
+                contextID: orchestrator.aiSummaryManifest?.id.uuidString,
+                restoredAt: orchestrator.aiSummaryRestoredAt,
+                updateError: orchestrator.aiSummaryUpdateError
             )
             .padding(.horizontal, PopoverLayout.horizontalInset)
             .padding(.bottom, 6)
         }
+    }
+
+    /// The cache can leave a completed result visible while no work is running.
+    private var displayState: AISummaryState {
+        if orchestrator.aiSummaryState == .idle, let text = orchestrator.aiSummaryText {
+            return .done(text)
+        }
+        return orchestrator.aiSummaryState
     }
 }
