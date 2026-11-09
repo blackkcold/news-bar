@@ -213,6 +213,35 @@ final class AnswerCanvasRenderingTests: XCTestCase {
     }
 
     @MainActor
+    func testEmbeddedSearchPanelKeepsFooterInsideRailHeight() async {
+        let model = await Self.readySearchModel(Self.termDocument())
+        let panel = AISearchPanel(
+            model: model,
+            language: .en,
+            providerName: "Provider",
+            modelName: "test-model",
+            webEnabled: true,
+            onSubmit: {},
+            onRetry: {},
+            onClose: {},
+            onOpenCitation: { _ in },
+            onCopy: { _ in },
+            onOpenSettings: {},
+            embedded: true,
+            isActive: true,
+            answerMaxHeight: 180
+        )
+        .frame(width: 332)
+
+        let host = NSHostingView(rootView: panel)
+        host.frame = NSRect(x: 0, y: 0, width: 332, height: 520)
+        host.layoutSubtreeIfNeeded()
+
+        XCTAssertLessThanOrEqual(host.fittingSize.width, 332.5)
+        XCTAssertLessThanOrEqual(host.fittingSize.height, 520)
+    }
+
+    @MainActor
     private static func searchPanel(_ model: AISearchPanelModel) -> some View {
         AISearchPanel(
             model: model,

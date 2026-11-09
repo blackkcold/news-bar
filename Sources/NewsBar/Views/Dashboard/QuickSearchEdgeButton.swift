@@ -1,17 +1,13 @@
 import SwiftUI
 
 struct QuickSearchEdgeButton: View {
-    @Binding var isPresented: Bool
     let isVisible: Bool
     let language: AppLanguage
     let action: () -> Void
 
     var body: some View {
         if isVisible {
-            Button {
-                isPresented = true
-                action()
-            } label: {
+            Button(action: action) {
                 Image(systemName: "magnifyingglass")
                     .frame(width: 34, height: 42)
                     .contentShape(Capsule())
@@ -29,11 +25,13 @@ struct QuickSearchEdgeButton: View {
         readerPresented: Bool,
         researchOpen: Bool,
         searchOrArchiveOpen: Bool,
-        selectionExplanationOpen: Bool
+        selectionExplanationOpen: Bool,
+        auxiliaryRailOpen: Bool = false
     ) -> Bool {
         readerPresented
             && !researchOpen
             && !searchOrArchiveOpen
             && !selectionExplanationOpen
+            && !auxiliaryRailOpen
     }
 }

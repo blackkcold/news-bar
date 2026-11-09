@@ -1,53 +1,69 @@
 import SwiftUI
 
-/// A page overview is deliberately a sheet, not a message in the AI-search
-/// transcript: it has no question field and leaves no search history entry.
-struct PageSummarySheet: View {
-    let input: PageSummaryInput
+/// Where the overview came from: the page open in the reader. Kept separate
+/// from `PageSummaryInput` so the rail can show the page identity while the
+/// body is still being extracted.
+struct PageSummaryPanelContext: Equatable {
+    let title: String
+    let url: String?
+    let isPrivate: Bool
+    let language: AppLanguage
+}
+
+enum PageSummaryPanelPhase: Equatable {
+    case preparing
+    case disclosure
+    case readyToGenerate
+    case generating
+    case ready
+    case failed(String)
+    case unavailable(String)
+}
+
+/// Page overview content. The rail owns the width, material, padding and the
+/// close control; this view only lays out the overview and its fixed footer.
+/// Every state is passed in, so rendering tests can cover all of them without
+/// a network request or an API key.
+struct PageSummaryPanel: View {
+    let context: PageSummaryPanelContext
+    let phase: PageSummaryPanelPhase
+    let input: PageSummaryInput?
+    let summary: PageSummary?
+    let errorMessage: String?
+    let providerName: String
+    var showsCloseButton = false
+    var onGenerate: () -> Void = {}
+    var onCancelDisclosure: () -> Void = {}
+    var onRetry: () -> Void = {}
     var onOpenSettings: () -> Void = {}
+    var onClose: () -> Void = {}
+    var onOpenCitation: (PageSummaryCitation) -> Void = { _ in }
+    var onSwitchToReaderMode: (() -> Void)? = nil
 
-    @Environment(AppSettings.self) private var settings
-    @Environment(\.dismiss) private var dismiss
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var model = PageSummaryModel()
-    @State private var hasConfirmed = false
-    @State private var didStart = false
-
-    private var english: Bool { settings.appLanguage == .en }
-    private var providerName: String {
-        settings.providerDisplayName(forID: settings.aiProvider)
-    }
-    private var requiresDisclosure: Bool {
-        input.scope == .article && !hasConfirmed
-    }
+    private var english: Bool { context.language == .en }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            header
-            basisLine
-
-            if requiresDisclosure {
-                disclosure
-            } else {
-                content
+        VStack(alignment: .leading, spacing: 0) {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 14) {
+                    header
+                    if let input {
+                        basisLine(input)
+                    }
+                    content
+                }
+                .padding(.bottom, 12)
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
 
-            Spacer(minLength: 0)
             footer
         }
-        .padding(22)
-        .frame(width: 580)
-        .frame(minHeight: 380, alignment: .topLeading)
-        .background(.regularMaterial)
-        .onAppear {
-            guard !didStart, input.scope == .list else { return }
-            start()
-        }
-        .onDisappear { model.cancel() }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .accessibilityElement(children: .contain)
     }
 
     private var header: some View {
-        HStack(alignment: .center, spacing: 10) {
+        HStack(alignment: .top, spacing: 10) {
             ZStack {
                 Circle()
                     .fill(Color.accentColor.opacity(0.14))
@@ -56,15 +72,18 @@ struct PageSummarySheet: View {
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(Color.accentColor)
             }
+            .accessibilityHidden(true)
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(english ? "Page overview" : "页面概览")
                     .font(.headline)
-                Text(input.title)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                if let host = input.url.flatMap(URL.init(string:))?.host {
+                if !context.title.isEmpty {
+                    Text(context.title)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
+                if let host = context.url.flatMap(URL.init(string:))?.host {
                     Text(host)
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
@@ -74,38 +93,40 @@ struct PageSummarySheet: View {
 
             Spacer(minLength: 0)
 
-            if input.isPrivate {
+            if context.isPrivate {
                 Label(english ? "Private" : "隐私阅读", systemImage: "hand.raised.fill")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                     .labelStyle(.titleAndIcon)
+                    .fixedSize()
             }
 
-            Button {
-                model.cancel()
-                dismiss()
-            } label: {
-                Image(systemName: "xmark")
-                    .font(.system(size: 11, weight: .semibold))
-                    .frame(width: 24, height: 24)
+            if showsCloseButton {
+                Button(action: onClose) {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 11, weight: .semibold))
+                        .frame(width: 24, height: 24)
+                }
+                .buttonStyle(.borderless)
+                .accessibilityLabel(english ? "Close" : "关闭")
+                .help(english ? "Close" : "关闭")
             }
-            .buttonStyle(.borderless)
-            .accessibilityLabel(english ? "Close" : "关闭")
-            .help(english ? "Close" : "关闭")
         }
     }
 
-    private var basisLine: some View {
-        HStack(spacing: 6) {
+    private func basisLine(_ input: PageSummaryInput) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
             Image(systemName: input.scope == .article ? "doc.text" : "list.bullet")
                 .font(.system(size: 10, weight: .semibold))
-            Text(basisText)
+                .accessibilityHidden(true)
+            Text(basisText(input))
                 .font(.caption)
+                .fixedSize(horizontal: false, vertical: true)
         }
         .foregroundStyle(.secondary)
     }
 
-    private var basisText: String {
+    private func basisText(_ input: PageSummaryInput) -> String {
         if input.scope == .article {
             let characters = input.articleText?.count ?? 0
             let cap = PageSummaryService.maxArticleCharacters
@@ -121,6 +142,75 @@ struct PageSummarySheet: View {
         return english
             ? "Based on \(input.listRows.count) loaded headlines · titles only"
             : "基于当前已加载的 \(input.listRows.count) 条标题 · 仅标题"
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        switch phase {
+        case .preparing:
+            preparing
+        case .unavailable(let message):
+            unavailable(message)
+        case .disclosure:
+            disclosure
+        case .readyToGenerate:
+            readyToGenerate
+        case .generating:
+            if let summary {
+                VStack(alignment: .leading, spacing: 12) {
+                    busyBanner
+                    summaryContent(summary)
+                }
+            } else {
+                loading
+            }
+        case .ready:
+            if let summary {
+                summaryContent(summary)
+            } else {
+                loading
+            }
+        case .failed(let message):
+            if let summary {
+                VStack(alignment: .leading, spacing: 12) {
+                    errorBanner(message)
+                    summaryContent(summary)
+                }
+            } else {
+                failureCard(message)
+            }
+        }
+    }
+
+    private var preparing: some View {
+        VStack(spacing: 12) {
+            ProgressView()
+                .controlSize(.regular)
+            Text(english ? "Reading this page's text…" : "正在读取当前页面正文…")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+        }
+        .frame(maxWidth: .infinity, minHeight: 170)
+    }
+
+    private func unavailable(_ message: String) -> some View {
+        stateCard(
+            symbol: "doc.text.magnifyingglass",
+            message: message,
+            detail: english
+                ? "Wait for the page to finish loading, or switch to reader mode, then try again."
+                : "可以等页面加载完成，或切换到阅读模式后再试。"
+        ) {
+            HStack(spacing: 10) {
+                Button(english ? "Try again" : "重试", action: onRetry)
+                    .buttonStyle(.borderedProminent)
+                if let onSwitchToReaderMode {
+                    Button(english ? "Reader mode" : "切换到阅读模式", action: onSwitchToReaderMode)
+                        .buttonStyle(.borderless)
+                }
+            }
+        }
     }
 
     private var disclosure: some View {
@@ -145,22 +235,19 @@ struct PageSummarySheet: View {
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
-            if input.isPrivate {
+            if context.isPrivate || input?.isPrivate == true {
                 Text(english
                     ? "Private reading is on: this overview stays in this session and is not cached."
                     : "隐私阅读已开启：概览只保留在本次会话，不会写入缓存。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
             HStack(spacing: 10) {
-                Button(english ? "Generate overview" : "生成概览") {
-                    hasConfirmed = true
-                    start()
-                }
-                .buttonStyle(.borderedProminent)
-
-                Button(english ? "Cancel" : "取消") { dismiss() }
+                Button(english ? "Generate overview" : "生成概览", action: onGenerate)
+                    .buttonStyle(.borderedProminent)
+                Button(english ? "Cancel" : "取消", action: onCancelDisclosure)
                     .buttonStyle(.borderless)
             }
         }
@@ -173,20 +260,28 @@ struct PageSummarySheet: View {
         }
     }
 
-    @ViewBuilder
-    private var content: some View {
-        if let summary = model.summary {
-            summaryContent(summary)
-        } else if model.isBusy {
-            loadingContent
-        } else if case .failed(let message) = model.state {
-            failureContent(message)
-        } else {
-            loadingContent
+    private var readyToGenerate: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Image(systemName: "lock.shield")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text(english
+                    ? "Sends this page's text to \(providerName), up to \(PageSummaryService.maxArticleCharacters) characters."
+                    : "会把当前页正文发送给 \(providerName)，最多 \(PageSummaryService.maxArticleCharacters) 字。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Button(english ? "Generate overview" : "生成概览", action: onGenerate)
+                .buttonStyle(.borderedProminent)
         }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.quaternary.opacity(0.28), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
     }
 
-    private var loadingContent: some View {
+    private var loading: some View {
         VStack(spacing: 12) {
             ProgressView()
                 .controlSize(.regular)
@@ -197,19 +292,60 @@ struct PageSummarySheet: View {
         .frame(maxWidth: .infinity, minHeight: 150)
     }
 
-    private func failureContent(_ message: String) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Label(message, systemImage: "exclamationmark.triangle.fill")
-                .font(.callout)
-                .foregroundStyle(.orange)
-                .fixedSize(horizontal: false, vertical: true)
+    private var busyBanner: some View {
+        HStack(spacing: 7) {
+            ProgressView().controlSize(.mini)
+            Text(english ? "Updating the overview…" : "正在更新概览…")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
 
+    private func errorBanner(_ message: String) -> some View {
+        Label(
+            english ? "Generation failed; showing the previous overview. \(message)" : "生成失败，正在显示上次结果。\(message)",
+            systemImage: "exclamationmark.triangle"
+        )
+        .font(.caption)
+        .foregroundStyle(.orange)
+        .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private func failureCard(_ message: String) -> some View {
+        stateCard(
+            symbol: "exclamationmark.triangle.fill",
+            message: message,
+            detail: english
+                ? "The page is still open; you can retry without losing your place."
+                : "页面仍保持打开，可以重试且不会丢失阅读位置。"
+        ) {
             HStack(spacing: 10) {
-                Button(english ? "Try again" : "重试") { start() }
+                Button(english ? "Try again" : "重试", action: onRetry)
                     .buttonStyle(.borderedProminent)
                 Button(english ? "AI settings" : "AI 设置", action: onOpenSettings)
                     .buttonStyle(.borderless)
             }
+        }
+    }
+
+    private func stateCard<Actions: View>(
+        symbol: String,
+        message: String,
+        detail: String?,
+        @ViewBuilder actions: () -> Actions
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Label(message, systemImage: symbol)
+                .font(.callout)
+                .foregroundStyle(.orange)
+                .fixedSize(horizontal: false, vertical: true)
+            if let detail {
+                Text(detail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            actions()
         }
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -218,9 +354,9 @@ struct PageSummarySheet: View {
 
     private func summaryContent(_ summary: PageSummary) -> some View {
         VStack(alignment: .leading, spacing: 14) {
-            if let error = model.errorMessage {
+            if let errorMessage, phase != .generating {
                 Label(
-                    english ? "Generation failed; showing the previous overview. \(error)" : "生成失败，正在显示上次结果。\(error)",
+                    english ? "Generation failed; showing the previous overview. \(errorMessage)" : "生成失败，正在显示上次结果。\(errorMessage)",
                     systemImage: "exclamationmark.triangle"
                 )
                 .font(.caption)
@@ -232,6 +368,7 @@ struct PageSummarySheet: View {
                 .font(.system(size: 17, weight: .semibold))
                 .foregroundStyle(.primary)
                 .fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
 
             VStack(alignment: .leading, spacing: 9) {
                 ForEach(Array(summary.points.enumerated()), id: \.element.id) { index, point in
@@ -244,9 +381,10 @@ struct PageSummarySheet: View {
                         Text(point.text)
                             .font(.callout)
                             .fixedSize(horizontal: false, vertical: true)
+                            .textSelection(.enabled)
                         if let citation = point.citationIndex,
                            let source = summary.citations.first(where: { $0.index == citation }) {
-                            Button("#\(citation)") { open(source) }
+                            Button("#\(citation)") { onOpenCitation(source) }
                                 .font(.caption2.weight(.semibold))
                                 .buttonStyle(.borderless)
                                 .foregroundStyle(Color.accentColor)
@@ -264,7 +402,7 @@ struct PageSummarySheet: View {
                         .foregroundStyle(.secondary)
                     ForEach(summary.citations) { citation in
                         Button {
-                            open(citation)
+                            onOpenCitation(citation)
                         } label: {
                             HStack(spacing: 6) {
                                 Text("#\(citation.index)")
@@ -291,7 +429,7 @@ struct PageSummarySheet: View {
         VStack(spacing: 8) {
             Divider()
             HStack(spacing: 8) {
-                if let summary = model.summary {
+                if let summary {
                     Text(english
                         ? "\(summary.providerName) · \(summary.model) · \(summary.inputCharacters) characters"
                         : "\(summary.providerName) · \(summary.model) · 输入 \(summary.inputCharacters) 字")
@@ -311,12 +449,10 @@ struct PageSummarySheet: View {
 
                 Spacer(minLength: 0)
 
-                if model.summary != nil || !requiresDisclosure {
-                    Button {
-                        start()
-                    } label: {
+                if summary != nil {
+                    Button(action: onGenerate) {
                         Label(
-                            model.isBusy
+                            phase == .generating
                                 ? (english ? "Generating…" : "生成中…")
                                 : (english ? "Regenerate" : "重新生成"),
                             systemImage: "arrow.clockwise"
@@ -324,25 +460,10 @@ struct PageSummarySheet: View {
                         .font(.caption)
                     }
                     .buttonStyle(.borderless)
-                    .disabled(model.isBusy)
+                    .disabled(phase == .generating)
                 }
             }
         }
-    }
-
-    private func start() {
-        guard !model.isBusy else { return }
-        didStart = true
-        model.summarize(input: input, settings: settings)
-    }
-
-    private func open(_ citation: PageSummaryCitation) {
-        model.cancel()
-        dismiss()
-        NewsNavigationRouter.shared.open(
-            citation.item,
-            surface: "pageSummary",
-            position: citation.position
-        )
+        .padding(.top, 8)
     }
 }

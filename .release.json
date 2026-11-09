@@ -13,7 +13,7 @@
   "release_branch": true,
   "auto_merge": false,
   "release_note_style": "structured-cn",
-  "summary": "加固微博监控数据安全与推送可靠性，AI 简报缓存优先，RSS 身份稳定，发布链路可审计",
-  "summary_en": "Harden Weibo monitor data safety and delivery reliability, cache-first AI briefing, stable RSS identity, auditable release pipeline",
-  "validation": "swift test 1771 项（6 项跳过，0 失败）+ adhoc release build + 本机安装验收"
+  "summary": "阅读器辅助栏 + Dashboard 关注瀑布流：搜索与概览右栏、关注瀑布流与账号筛选、整合热搜、关注最近消息与独立角标开关",
+  "summary_en": "Reader auxiliary rail plus a Dashboard following waterfall: search/overview rail, following masonry and account filters, integrated hot search, recent following messages and independent badge switches",
+  "validation": "swift test 1798 项（6 项跳过，0 失败）+ adhoc release build + 本机安装验收"
 }

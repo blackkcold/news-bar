@@ -48,11 +48,11 @@ final class QuickSearchRenderingTests: XCTestCase {
         )
 
         XCTAssertEqual(
-            QuickSearchPanel.allowedReaderURL(for: .news(allowedNews))?.absoluteString,
+            QuickSearchContent.allowedReaderURL(for: .news(allowedNews))?.absoluteString,
             "https://news.example/story"
         )
-        XCTAssertNil(QuickSearchPanel.allowedReaderURL(for: .news(unsafeNews)))
-        XCTAssertNil(QuickSearchPanel.allowedReaderURL(for: unsafeHit))
+        XCTAssertNil(QuickSearchContent.allowedReaderURL(for: .news(unsafeNews)))
+        XCTAssertNil(QuickSearchContent.allowedReaderURL(for: unsafeHit))
     }
 
     func testEdgeButtonHidesWhenResearchOrAnswerOverlayIsOpen() {
@@ -86,21 +86,22 @@ final class QuickSearchRenderingTests: XCTestCase {
             searchOrArchiveOpen: false,
             selectionExplanationOpen: false
         ))
+        XCTAssertFalse(QuickSearchEdgeButton.shouldBeVisible(
+            readerPresented: true,
+            researchOpen: false,
+            searchOrArchiveOpen: false,
+            selectionExplanationOpen: false,
+            auxiliaryRailOpen: true
+        ))
     }
 
-    func testArchiveReplayCloseControlRenders() throws {
-        let closeButton = QuickSearchArchiveReplayCloseButton(language: .en, action: {})
-
-        let image = try Self.render(closeButton, size: CGSize(width: 160, height: 80))
-
-        XCTAssertGreaterThan(image.count, 100)
-        XCTAssertEqual(QuickSearchAccessibilityLabels.close(language: .en), "Close quick search")
-    }
-
-    func testQuickSearchSurfacesRenderInChineseAndEnglishWithAccessibleLabels() throws {
+    func testQuickSearchSurfacesRenderAtRailWidthInChineseAndEnglish() throws {
         let settings = AppSettings()
         let archiveController = AISearchArchiveController()
         let languages: [AppLanguage] = [.zh, .en]
+        let output = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+            .appendingPathComponent(".build/auxiliary-rail-ui-validation")
+        try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
 
         for language in languages {
             let labels = [
@@ -115,28 +116,65 @@ final class QuickSearchRenderingTests: XCTestCase {
             XCTAssertTrue(labels.allSatisfy { !$0.isEmpty && !$0.contains("reader.quickSearch.") })
 
             for surface in QuickSearchSurface.allCases {
-                let panel = QuickSearchPanel(
+                let content = QuickSearchContent(
                     model: QuickSearchModel(),
-                    aiModel: AISearchPanelModel(),
+                    aiModel: AISearchPanelModel(privacyAcknowledged: false),
                     archiveController: archiveController,
                     activeNewsItems: [],
                     readingHistory: [],
                     settings: settings,
                     language: language,
-                    initialSurface: surface,
+                    surface: .constant(surface),
+                    selectedArchiveEntry: .constant(nil),
+                    isActive: true,
+                    fillsAvailableHeight: true,
+                    availableHeight: 451,
                     onOpenResult: { _ in },
                     onOpenSource: { _ in },
-                    onClose: {},
                     onConfigureAI: {}
                 )
-                let image = try Self.render(panel, size: CGSize(width: 520, height: 720))
+                .frame(width: 332, height: 451)
+
+                let image = try Self.render(content, size: CGSize(width: 332, height: 451))
                 XCTAssertGreaterThan(image.count, 500, "\(surface) should render in \(language)")
+                try image.write(to: output.appendingPathComponent("quick-search-\(surface.rawValue)-\(language.rawValue).png"))
             }
         }
     }
 
+    func testQuickSearchContentFitsTheRailWithoutHorizontalOverflow() throws {
+        let settings = AppSettings()
+        let content = QuickSearchContent(
+            model: QuickSearchModel(),
+            aiModel: AISearchPanelModel(privacyAcknowledged: true),
+            archiveController: AISearchArchiveController(),
+            activeNewsItems: [],
+            readingHistory: [],
+            settings: settings,
+            language: .en,
+            surface: .constant(.archive),
+            selectedArchiveEntry: .constant(nil),
+            isActive: true,
+            fillsAvailableHeight: true,
+            availableHeight: 451,
+            onOpenResult: { _ in },
+            onOpenSource: { _ in },
+            onConfigureAI: {}
+        )
+        .frame(width: 332, height: 451)
+
+        let host = NSHostingView(rootView: content)
+        host.frame = NSRect(x: 0, y: 0, width: 332, height: 451)
+        host.layoutSubtreeIfNeeded()
+
+        XCTAssertLessThanOrEqual(host.fittingSize.width, 332.5)
+    }
+
     private static func render<Content: View>(_ view: Content, size: CGSize) throws -> Data {
-        let host = NSHostingView(rootView: view)
+        let host = NSHostingView(rootView: ZStack {
+            Color(nsColor: .windowBackgroundColor)
+            view
+        })
         let window = NSWindow(
             contentRect: NSRect(origin: .zero, size: size),
             styleMask: [.borderless],

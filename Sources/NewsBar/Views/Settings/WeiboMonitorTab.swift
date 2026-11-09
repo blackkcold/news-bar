@@ -101,6 +101,12 @@ struct WeiboMonitorTab: View {
         }
 
         Section {
+            badgeSettingsSection
+        } header: {
+            Text(L10n.string("weibo.badge.section", language: settings.appLanguage))
+        }
+
+        Section {
             relevanceSection(snapshot: snapshot)
         } header: {
             Text(L10n.string("weibo.relevance.section", language: settings.appLanguage))
@@ -828,6 +834,46 @@ struct WeiboMonitorTab: View {
             )
             if added { addText = "" }
         }
+    }
+
+    // MARK: - Badge settings
+
+    private var badgeSettingsSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Toggle(
+                L10n.string("weibo.badge.menuBar", language: language),
+                isOn: Binding(
+                    get: { settings.weiboMonitorMenuBarBadgeEnabled },
+                    set: { enabled in
+                        settings.weiboMonitorMenuBarBadgeEnabled = enabled
+                        postBadgeSettingsChanged()
+                    }
+                )
+            )
+            .toggleStyle(.switch)
+
+            Toggle(
+                L10n.string("weibo.badge.dashboard", language: language),
+                isOn: Binding(
+                    get: { settings.weiboMonitorDashboardBadgeEnabled },
+                    set: { enabled in
+                        settings.weiboMonitorDashboardBadgeEnabled = enabled
+                        postBadgeSettingsChanged()
+                    }
+                )
+            )
+            .toggleStyle(.switch)
+
+            Text(L10n.string("weibo.badge.footer", language: language))
+                .font(.system(size: 9.5))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(.vertical, 2)
+    }
+
+    private func postBadgeSettingsChanged() {
+        NotificationCenter.default.post(name: .weiboBadgeSettingsChanged, object: nil)
     }
 
     // MARK: - Relevance
