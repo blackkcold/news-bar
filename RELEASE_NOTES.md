@@ -6,11 +6,16 @@
 - **页面概览改为栏内面板**：打开即显示准备状态，不再弹居中 sheet；正文不可读时在栏内提示并可重试或切换阅读模式；同一篇文章确认一次，关闭再开不重复披露，换页自动清空。
 - **互斥与键盘**：辅助栏与研究侧栏、划词解释互斥；⌘K 打开搜索，⌘⇧O 打开概览，Esc 逐层收起（档案回放先返回档案列表），关闭栏取消进行中的请求，焦点回到阅读区。
 - **AI 面板嵌入**：去掉 420pt 外层 chrome 与重复导航，答案画布按栏内可用高度收缩，长答案不会把 footer 顶出栏外。
+- **Dashboard 关注瀑布流**：独立关注页从按账号分组列表改为按时间倒序的瀑布流；每张卡自带账号头像、P0 标签与未读点，保留被相关性过滤的折叠区；筛选支持搜索、账号菜单、全部/未读/P0。
+- **推荐页关注动态**：在“为你推荐”瀑布流上方新增独立“关注动态”区块（6 条 + 查看全部），关注内容不进入兴趣排序，避免污染本地学习模型。
+- **右栏重构**：微博与 B站 热搜合并为一张可切换的“热搜”卡；新增“关注最近消息”卡（5 条 + 显示更多）；研究侧栏移除，研究入口保留在工具栏。
+- **模式切换与角标**：模式切换器从顶部移到搜索栏下方；未读角标只挂在“关注”段；菜单栏角标与 Dashboard 关注角标拆成两个独立开关，均可关闭，默认开启。
 
 ### ✅ 测试
 
 - 新增 `ReaderAuxiliaryModelTests`、`PageSummaryPanelRenderingTests`、`ReaderAuxiliaryRailRenderingTests`；`QuickSearchRenderingTests` 改为 360pt 栏宽（332pt 内容宽）四 surface × 中英渲染；`ReaderRenderingTests` 增加辅助栏打开变体；`AnswerCanvasRenderingTests` 增加嵌入 AI 面板高度约束。
-- `swift test`：1783 项，6 项跳过，0 失败。
+- 新增 `FollowingFeedModelTests`、`FollowingMasonryRenderingTests`、`DashboardIntegratedHotTrendCardRenderingTests`、`FollowingRecentMessagesCardRenderingTests`、`DashboardModeSegmentedControlTests`、`WeiboBadgeSettingsTests`。
+- `swift test`：1798 项，6 项跳过，0 失败。
 
 ### ⚠️ 签名说明
 

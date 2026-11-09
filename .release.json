@@ -13,7 +13,7 @@
   "release_branch": true,
   "auto_merge": false,
   "release_note_style": "structured-cn",
-  "summary": "阅读器辅助栏：搜索与页面概览合并为 360pt 双页签右栏，概览栏内生成，键盘与焦点仲裁，AI 面板嵌入",
-  "summary_en": "Reader auxiliary rail: search and page overview share a 360pt two-tab rail, overview runs in-panel, keyboard and focus arbitration, embedded AI panel",
-  "validation": "swift test 1783 项（6 项跳过，0 失败）+ adhoc release build + 本机安装验收"
+  "summary": "阅读器辅助栏 + Dashboard 关注瀑布流：搜索与概览右栏、关注瀑布流与账号筛选、整合热搜、关注最近消息与独立角标开关",
+  "summary_en": "Reader auxiliary rail plus a Dashboard following waterfall: search/overview rail, following masonry and account filters, integrated hot search, recent following messages and independent badge switches",
+  "validation": "swift test 1798 项（6 项跳过，0 失败）+ adhoc release build + 本机安装验收"
 }
