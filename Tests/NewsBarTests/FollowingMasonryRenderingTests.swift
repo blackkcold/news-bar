@@ -105,27 +105,6 @@ final class FollowingMasonryRenderingTests: XCTestCase {
         }
     }
 
-    func testFollowingHighlightsSectionRendersAtRecommendationWidth() throws {
-        let settings = AppSettings()
-        settings.appLanguage = .zh
-        settings.appTheme = .modern
-        defer {
-            settings.appTheme = .modern
-            settings.appLanguage = .zh
-        }
-        let section = FollowingHighlightsSection(
-            entries: entries(count: 6),
-            width: 784,
-            onOpen: { _ in },
-            onShowFollowing: {}
-        )
-        .environment(settings)
-        .frame(width: 784, height: 520)
-
-        let data = try Self.render(section, size: CGSize(width: 784, height: 520))
-        XCTAssertGreaterThan(data.count, 1_000)
-    }
-
     private static func render<Content: View>(_ view: Content, size: CGSize) throws -> Data {
         let host = NSHostingView(rootView: ZStack {
             Color(nsColor: .windowBackgroundColor)

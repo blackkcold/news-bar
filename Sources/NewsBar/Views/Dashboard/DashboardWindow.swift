@@ -276,21 +276,7 @@ struct DashboardWindow: View {
             onOpenSettings: openInterestSettings,
             onResetFilters: { searchText = ""; sourceFilter = .all },
             onRefresh: { Task { await orchestrator.manualRefresh(settings: settings) } },
-            onShowSources: { browseMode = .bySource },
-            followingEntries: followingHighlightEntries,
-            onShowFollowing: { browseMode = .following },
-            onOpenFollowingPost: { weiboMonitor?.openPost($0) }
-        )
-    }
-
-    private var followingHighlightEntries: [FollowingPostEntry] {
-        guard browseMode == .forYou, !hasAnyFilter, let monitor = weiboMonitor else {
-            return []
-        }
-        return FollowingFeedModel.recentEntries(
-            snapshot: monitor.snapshot,
-            limit: 6,
-            includeCollapsed: !settings.weiboMonitorRelevanceEnabled
+            onShowSources: { browseMode = .bySource }
         )
     }
 
