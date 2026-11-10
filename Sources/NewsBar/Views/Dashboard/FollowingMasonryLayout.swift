@@ -9,6 +9,16 @@ enum FollowingMasonryLayout {
     static let imageHeightCap: CGFloat = 190
     static let imageHeightFloor: CGFloat = 96
 
+    /// The widest the following waterfall may get. 3 × 372 + 2 × 12 = 1140,
+    /// which makes every card exactly as wide as an RSS item card at the
+    /// default 1180-wide window. Wider windows keep the card size and leave
+    /// trailing space rather than growing the reading measure.
+    static let maxFeedWidth: CGFloat = 1140
+
+    static func feedWidth(for availableWidth: CGFloat) -> CGFloat {
+        min(max(1, availableWidth), maxFeedWidth)
+    }
+
     static func columnCount(for width: CGFloat) -> Int {
         WaterfallLayout.columnCount(for: width)
     }

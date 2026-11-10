@@ -9,6 +9,17 @@ enum WeiboFollowingFilter: String, CaseIterable, Identifiable {
     var titleKey: String { "weibo.feed.filter.\(rawValue)" }
 }
 
+/// The reader can squeeze this page to a 280 pt content width. At that size
+/// the dashboard-sized chips wrap, so fall back to the pre-unification compact
+/// metrics below 380 pt. Normal widths keep the shared dashboard baseline.
+private enum FollowingCompactFilterMetrics {
+    static let threshold: CGFloat = 380
+    static let chipFontSize: CGFloat = 10.5
+    static let chipHorizontalPadding: CGFloat = 10
+    static let chipVerticalPadding: CGFloat = 5
+    static let countFontSize: CGFloat = 9.5
+}
+
 /// Dashboard → Following. It is a browse mode, not a source filter: the feed
 /// groups posts by account, keeps unread weight visible, and opens the original
 /// post in the existing reader (with the reader's cookie session).
@@ -23,7 +34,7 @@ struct WeiboFollowingFeedView: View {
     @Binding var accountUID: String?
     let followingUnread: Int
     var badgeEnabled = true
-    var availableWidth: CGFloat = 920
+    var availableWidth: CGFloat = FollowingMasonryLayout.maxFeedWidth
     let onOpenSettings: () -> Void
 
     @State private var showCollapsed = false
@@ -33,6 +44,10 @@ struct WeiboFollowingFeedView: View {
     }
 
     private var language: AppLanguage { settings.appLanguage }
+
+    private var usesCompactFilterMetrics: Bool {
+        availableWidth < FollowingCompactFilterMetrics.threshold
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -81,7 +96,7 @@ struct WeiboFollowingFeedView: View {
     private func content(_ monitor: WeiboMonitorViewModel) -> some View {
         let snapshot = monitor.snapshot
 
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: 18) {
             header(monitor, snapshot: snapshot)
 
             if let banner = authBanner(monitor, snapshot: snapshot) {
@@ -119,8 +134,7 @@ struct WeiboFollowingFeedView: View {
                 feed(monitor, snapshot: snapshot)
             }
         }
-        .frame(maxWidth: 920)
-        .frame(maxWidth: .infinity, alignment: .center)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .onChange(of: snapshot.users.map(\.uid)) { _, uids in
             if let accountUID, !uids.contains(accountUID) {
                 self.accountUID = nil
@@ -358,70 +372,63 @@ struct WeiboFollowingFeedView: View {
     // MARK: - Filter
 
     private func filterBar(snapshot: WeiboMonitorSnapshot) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 9) {
-                Image(systemName: "magnifyingglass")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(.secondary)
-
-                TextField(
-                    L10n.string("weibo.feed.searchPlaceholder", language: language),
-                    text: $searchText
-                )
-                .textFieldStyle(.plain)
-                .font(.system(size: 12.5))
-
-                if !searchText.isEmpty {
-                    Button {
-                        searchText = ""
-                    } label: {
-                        Image(systemName: "xmark.circle.fill")
-                            .font(.system(size: 11))
-                            .foregroundStyle(.secondary)
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel(L10n.string("dash.searchClear", language: language))
-                }
-            }
-            .padding(.horizontal, 11)
-            .padding(.vertical, 8)
-            .background {
-                if settings.appTheme == .retroEditorial {
-                    Rectangle().fill(RetroEditorialTokens.raisedPaper)
-                } else {
-                    RoundedRectangle(cornerRadius: 11, style: .continuous)
-                        .fill(Color(nsColor: .controlBackgroundColor))
-                }
-            }
-            .overlay {
-                if settings.appTheme == .retroEditorial {
-                    Rectangle().strokeBorder(RetroEditorialTokens.ink, lineWidth: 1.3)
-                } else {
-                    RoundedRectangle(cornerRadius: 11, style: .continuous)
-                        .strokeBorder(Color(nsColor: .separatorColor).opacity(0.45), lineWidth: 1)
-                }
-            }
+        VStack(alignment: .leading, spacing: 10) {
+            DashboardSearchField(
+                text: $searchText,
+                placeholder: L10n.string("weibo.feed.searchPlaceholder", language: language)
+            )
 
             DashboardModeSegmentedControl(
                 mode: $mode,
                 followingUnread: followingUnread,
                 badgeEnabled: badgeEnabled
             )
+            .frame(
+                maxWidth: FollowingMasonryLayout.maxFeedWidth,
+                alignment: .leading
+            )
 
             HStack(spacing: 6) {
                 ForEach(WeiboFollowingFilter.allCases) { item in
-                    filterChip(item, snapshot: snapshot)
+                    DashboardFilterChip(
+                        title: L10n.string(item.titleKey, language: language),
+                        isSelected: filter == item,
+                        fontSize: usesCompactFilterMetrics
+                            ? FollowingCompactFilterMetrics.chipFontSize
+                            : DashboardFilterMetrics.chipFontSize,
+                        horizontalPadding: usesCompactFilterMetrics
+                            ? FollowingCompactFilterMetrics.chipHorizontalPadding
+                            : DashboardFilterMetrics.chipHorizontalPadding,
+                        verticalPadding: usesCompactFilterMetrics
+                            ? FollowingCompactFilterMetrics.chipVerticalPadding
+                            : DashboardFilterMetrics.chipVerticalPadding
+                    ) {
+                        withAnimation(reduceMotion ? nil : .easeOut(duration: 0.15)) {
+                            filter = item
+                        }
+                    }
                 }
 
                 accountFilterMenu(snapshot)
 
                 Spacer(minLength: 0)
 
-                Text(L10n.string("weibo.feed.filterCount", language: language, filteredPostCount(snapshot)))
-                    .font(.system(size: 9.5))
-                    .foregroundStyle(.secondary)
-                    .monospacedDigit()
+                DashboardFilterCountText(
+                    text: L10n.string(
+                        "weibo.feed.filterCount",
+                        language: language,
+                        filteredPostCount(snapshot)
+                    ),
+                    fontSize: usesCompactFilterMetrics
+                        ? FollowingCompactFilterMetrics.countFontSize
+                        : DashboardFilterMetrics.countFontSize
+                )
+                .monospacedDigit()
             }
+            .frame(
+                maxWidth: FollowingMasonryLayout.maxFeedWidth,
+                alignment: .leading
+            )
         }
     }
 
@@ -508,51 +515,6 @@ struct WeiboFollowingFeedView: View {
         }
     }
 
-    private func filterChip(
-        _ item: WeiboFollowingFilter,
-        snapshot: WeiboMonitorSnapshot
-    ) -> some View {
-        let selected = filter == item
-        return Button {
-            withAnimation(reduceMotion ? nil : .easeOut(duration: 0.15)) {
-                filter = item
-            }
-        } label: {
-            Text(L10n.string(item.titleKey, language: language))
-                .font(.system(size: 10.5, weight: .medium))
-                .padding(.horizontal, 10)
-                .padding(.vertical, 5)
-                .background {
-                    if settings.appTheme == .retroEditorial {
-                        Rectangle().fill(selected ? RetroEditorialTokens.brick : RetroEditorialTokens.raisedPaper)
-                    } else {
-                        Capsule().fill(
-                            selected
-                                ? accent.opacity(0.16)
-                                : Color(nsColor: .controlBackgroundColor)
-                        )
-                    }
-                }
-                .overlay {
-                    if settings.appTheme == .retroEditorial {
-                        Rectangle().strokeBorder(RetroEditorialTokens.ink, lineWidth: 1)
-                    } else {
-                        Capsule().strokeBorder(
-                            Color(nsColor: .separatorColor).opacity(0.35),
-                            lineWidth: 1
-                        )
-                    }
-                }
-                .foregroundStyle(
-                    selected
-                        ? (settings.appTheme == .retroEditorial ? RetroEditorialTokens.raisedPaper : accent)
-                        : .primary
-                )
-        }
-        .buttonStyle(.plain)
-        .accessibilityAddTraits(selected ? .isSelected : [])
-    }
-
     // MARK: - Feed
 
     @ViewBuilder
@@ -572,10 +534,14 @@ struct WeiboFollowingFeedView: View {
                 }
                 FollowingMasonryFeed(
                     entries: entries,
-                    width: min(max(1, availableWidth), 920),
+                    width: FollowingMasonryLayout.feedWidth(for: availableWidth),
                     onOpen: { monitor.openPost($0) }
                 )
             }
+            .frame(
+                maxWidth: FollowingMasonryLayout.maxFeedWidth,
+                alignment: .leading
+            )
         }
     }
 
@@ -731,319 +697,13 @@ struct WeiboFollowingFeedView: View {
         return reasons.joined(separator: " · ")
     }
 
-    /// All posts the model collapsed, filtered by the current feed tab and
-    /// search. Search intentionally looks through the collapsed section too,
-    /// so a remembered post never becomes unreachable.
-    private func collapsedPosts(_ snapshot: WeiboMonitorSnapshot) -> [WeiboPost] {
-        guard settings.weiboMonitorRelevanceEnabled else { return [] }
-        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard query.isEmpty else { return [] }
-        switch filter {
-        case .unread:
-            return []
-        case .p0:
-            let allowed = Set(snapshot.users.filter { $0.priority == .p0 }.map(\.uid))
-            return snapshot.postsByUID
-                .filter { allowed.contains($0.key) }
-                .flatMap(\.value)
-                .filter(\.isCollapsedByRelevance)
-                .sorted { $0.createdAt > $1.createdAt }
-        case .all:
-            return snapshot.postsByUID
-                .flatMap(\.value)
-                .filter(\.isCollapsedByRelevance)
-                .sorted { $0.createdAt > $1.createdAt }
-        }
-    }
-
-    private func filteredGroups(_ snapshot: WeiboMonitorSnapshot) -> [WeiboAccountFeedGroup] {
-        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        return snapshot.groups.compactMap { group in
-            if filter == .p0 && group.user.priority != .p0 { return nil }
-
-            var posts = group.posts
-            if filter == .unread {
-                posts = posts.filter { !$0.read && !$0.isCollapsedByRelevance }
-            }
-            if !query.isEmpty {
-                // Search is a full-text escape hatch: it sees collapsed posts
-                // as well, so a half-remembered post is never unreachable.
-                posts = posts.filter {
-                    $0.displayText.localizedCaseInsensitiveContains(query)
-                        || $0.screenName.localizedCaseInsensitiveContains(query)
-                }
-            } else if settings.weiboMonitorRelevanceEnabled {
-                posts = posts.filter { !$0.isCollapsedByRelevance }
-            }
-            guard !posts.isEmpty else { return nil }
-            let unread = posts.reduce(0) {
-                $0 + (($1.read || $1.isCollapsedByRelevance) ? 0 : 1)
-            }
-            return WeiboAccountFeedGroup(user: group.user, posts: posts, unreadCount: unread)
-        }
-    }
-
     private func filteredPostCount(_ snapshot: WeiboMonitorSnapshot) -> Int {
         FollowingFeedModel.entries(snapshot: snapshot, query: feedQuery()).count
-    }
-
-    private func accountGroup(
-        _ monitor: WeiboMonitorViewModel,
-        group: WeiboAccountFeedGroup
-    ) -> some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: 8) {
-                avatar(group.user)
-
-                VStack(alignment: .leading, spacing: 1) {
-                    HStack(spacing: 6) {
-                        Text(displayName(group.user))
-                            .font(.system(size: 12.5, weight: .semibold))
-                            .lineLimit(1)
-                        priorityTag(group.user.priority)
-                        if group.unreadCount > 0 {
-                            Text(
-                                L10n.string(
-                                    "weibo.feed.accountUnread",
-                                    language: language,
-                                    group.unreadCount
-                                )
-                            )
-                            .font(.system(size: 9, weight: .medium))
-                            .foregroundStyle(.secondary)
-                            .monospacedDigit()
-                        }
-                    }
-                    if group.user.gapSuspected {
-                        Text(L10n.string("weibo.feed.gap", language: language))
-                            .font(.system(size: 9))
-                            .foregroundStyle(.orange)
-                    }
-                }
-
-                Spacer(minLength: 6)
-
-                accountMenu(monitor, user: group.user)
-            }
-            .padding(.bottom, 4)
-
-            ForEach(Array(group.posts.enumerated()), id: \.element.id) { index, post in
-                postRow(monitor, post: post)
-                if index < group.posts.count - 1 {
-                    Divider().opacity(0.45)
-                }
-            }
-        }
-        .padding(12)
-        .newsCardSurface(cornerRadius: 15)
-    }
-
-    private func postRow(
-        _ monitor: WeiboMonitorViewModel,
-        post: WeiboPost
-    ) -> some View {
-        HoverRow { hovered in
-            Button {
-                monitor.openPost(post)
-            } label: {
-            VStack(alignment: .leading, spacing: 6) {
-                HStack(alignment: .top, spacing: 6) {
-                    if !post.read {
-                        Circle()
-                            .fill(accent)
-                            .frame(width: 5, height: 5)
-                            .padding(.top, 5)
-                            .accessibilityLabel(L10n.string("weibo.feed.unreadCount", language: language, 1))
-                    }
-                    Text(post.displayText)
-                        .font(.system(size: 12, weight: post.read ? .regular : .medium))
-                        .lineLimit(4)
-                        .multilineTextAlignment(.leading)
-                        .foregroundStyle(.primary)
-                    Spacer(minLength: 0)
-                }
-
-                if !post.imageURLs.isEmpty {
-                    HStack(spacing: 5) {
-                        ForEach(Array(post.imageURLs.prefix(3)), id: \.self) { url in
-                            thumbnail(url)
-                        }
-                    }
-                }
-
-                HStack(spacing: 7) {
-                    Text(relativeTime(post.createdAt))
-                        .font(.system(size: 9))
-                        .foregroundStyle(.secondary)
-                        .monospacedDigit()
-                    if post.isLongText {
-                        metaTag(L10n.string("weibo.feed.longText", language: language))
-                    }
-                    if post.isRetweet {
-                        metaTag(L10n.string("weibo.feed.retweet", language: language))
-                    }
-                    if !post.imageURLs.isEmpty {
-                        metaTag(L10n.string("weibo.feed.images", language: language, post.imageURLs.count))
-                    }
-                    Spacer(minLength: 0)
-                    if hovered {
-                        HStack(spacing: 3) {
-                            Text(L10n.string("weibo.feed.openPost", language: language))
-                            Image(systemName: "arrow.up.forward")
-                        }
-                        .font(.system(size: 9))
-                        .foregroundStyle(.secondary)
-                    }
-                }
-            }
-            .padding(.vertical, 7)
-            .padding(.horizontal, 3)
-            .contentShape(Rectangle())
-            .background(
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .fill(hovered ? accent.opacity(0.055) : Color.clear)
-            )
-        }
-        .buttonStyle(.plain)
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel(post.displayText)
-        .accessibilityValue(
-            post.read ? "" : L10n.string("weibo.feed.filter.unread", language: language)
-        )
-        }
-    }
-
-    private func thumbnail(_ raw: String) -> some View {
-        Group {
-            if let url = URL(string: raw) {
-                AsyncImage(url: url) { phase in
-                    switch phase {
-                    case .success(let image):
-                        image.resizable().scaledToFill()
-                    default:
-                        RoundedRectangle(cornerRadius: 6, style: .continuous)
-                            .fill(Color(nsColor: .quaternaryLabelColor).opacity(0.2))
-                    }
-                }
-            } else {
-                RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .fill(Color(nsColor: .quaternaryLabelColor).opacity(0.2))
-            }
-        }
-        .frame(width: 58, height: 58)
-        .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 6, style: .continuous)
-                .strokeBorder(Color(nsColor: .separatorColor).opacity(0.3), lineWidth: 0.5)
-        )
-    }
-
-    private func avatar(_ user: WeiboMonitorUser) -> some View {
-        Group {
-            if let raw = user.avatarURL, let url = URL(string: raw) {
-                AsyncImage(url: url) { phase in
-                    switch phase {
-                    case .success(let image):
-                        image.resizable().scaledToFill()
-                    default:
-                        avatarPlaceholder(user)
-                    }
-                }
-            } else {
-                avatarPlaceholder(user)
-            }
-        }
-        .frame(width: 26, height: 26)
-        .clipShape(Circle())
-        .overlay(Circle().strokeBorder(Color(nsColor: .separatorColor).opacity(0.4), lineWidth: 0.5))
-        .accessibilityHidden(true)
-    }
-
-    private func avatarPlaceholder(_ user: WeiboMonitorUser) -> some View {
-        ZStack {
-            Circle().fill(accent.opacity(0.12))
-            Text(String(displayName(user).prefix(1)))
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(accent)
-        }
     }
 
     private func displayName(_ user: WeiboMonitorUser) -> String {
         let name = user.screenName.trimmingCharacters(in: .whitespacesAndNewlines)
         return name.isEmpty ? "UID \(user.uid)" : name
-    }
-
-    private func accountMenu(
-        _ monitor: WeiboMonitorViewModel,
-        user: WeiboMonitorUser
-    ) -> some View {
-        Menu {
-            Button(L10n.string("weibo.feed.checkNow", language: language)) {
-                Task { await monitor.checkNow(user.uid) }
-            }
-            Button(L10n.string("weibo.feed.mute", language: language)) {
-                Task { await monitor.mute(user.uid) }
-            }
-            if user.needsManualResume || user.pausedUntil != nil || user.mutedUntil != nil {
-                Button(L10n.string("weibo.accounts.resume", language: language)) {
-                    Task { await monitor.resumeUser(user.uid) }
-                }
-            }
-            if user.gapSuspected {
-                Button(L10n.string("weibo.feed.gap", language: language)) {
-                    Task { await monitor.clearGap(uid: user.uid) }
-                }
-            }
-            Divider()
-            Toggle(
-                L10n.string("weibo.relevance.accountAlwaysShow", language: language),
-                isOn: Binding(
-                    get: { user.relevanceMode == .off },
-                    set: { alwaysShow in
-                        Task {
-                            await monitor.setRelevanceMode(
-                                user.uid,
-                                mode: alwaysShow ? .off : nil
-                            )
-                        }
-                    }
-                )
-            )
-        } label: {
-            Image(systemName: "ellipsis.circle")
-                .font(.system(size: 12))
-                .foregroundStyle(.secondary)
-        }
-        .menuStyle(.borderlessButton)
-        .fixedSize()
-        .disabled(monitor.isWorking)
-        .accessibilityLabel(L10n.string("weibo.feed.accountMenu", language: language))
-    }
-
-    private func priorityTag(_ priority: WeiboMonitorPriority) -> some View {
-        Text(L10n.string(priority.titleKey, language: language))
-            .font(.system(size: 8, weight: .bold))
-            .foregroundStyle(priorityColor(priority))
-            .padding(.horizontal, 4)
-            .padding(.vertical, 1)
-            .background(Capsule().fill(priorityColor(priority).opacity(0.12)))
-    }
-
-    private func priorityColor(_ priority: WeiboMonitorPriority) -> Color {
-        switch priority {
-        case .p0: return .red
-        case .p1: return .orange
-        case .p2: return .secondary
-        }
-    }
-
-    private func metaTag(_ text: String) -> some View {
-        Text(text)
-            .font(.system(size: 8.5, weight: .medium))
-            .foregroundStyle(.secondary)
-            .padding(.horizontal, 4)
-            .padding(.vertical, 1)
-            .background(Capsule().fill(Color(nsColor: .quaternaryLabelColor).opacity(0.18)))
     }
 
     private func loginPill(_ state: WeiboLoginState) -> some View {
@@ -1162,6 +822,10 @@ struct WeiboFollowingFeedView: View {
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
         .newsCardSurface(cornerRadius: 14)
+        .frame(
+            maxWidth: FollowingMasonryLayout.maxFeedWidth,
+            alignment: .leading
+        )
     }
 
     // MARK: - Time
@@ -1203,23 +867,4 @@ struct WeiboFollowingFeedView: View {
     }
 
     private static let formatterCache = NSCache<NSString, DateFormatter>()
-}
-
-/// Keeps hover state inside the row. A container-level `@State` re-evaluated
-/// every account group and every filtered post on each hover change.
-private struct HoverRow<Content: View>: View {
-    let content: (Bool) -> Content
-    @State private var hovered = false
-
-    init(@ViewBuilder content: @escaping (Bool) -> Content) {
-        self.content = content
-    }
-
-    var body: some View {
-        content(hovered)
-            .onHover { hovering in
-                guard hovered != hovering else { return }
-                hovered = hovering
-            }
-    }
 }

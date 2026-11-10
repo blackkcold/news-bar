@@ -197,8 +197,10 @@ struct RecommendationFeedView: View {
                 Label(english ? "Learning paused for this activity" : "当前活动不参与学习", systemImage: "hand.raised").font(.caption).foregroundStyle(.secondary)
             }
             if let snapshot = snapshotOverride ?? controller.recommendations {
-                recommendationsMasonry(snapshot)
                 let filteredCount = filteredRows(snapshot, limit: nil).count
+                if filteredCount > 0 {
+                    recommendationsMasonry(snapshot)
+                }
                 if filteredCount > visibleCount {
                     Button(english ? "Show more" : "加载更多") { visibleCount += 20 }
                         .frame(maxWidth: .infinity)

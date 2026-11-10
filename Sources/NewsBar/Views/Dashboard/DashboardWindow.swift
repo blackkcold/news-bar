@@ -361,7 +361,11 @@ struct DashboardWindow: View {
                 sourceBrowserRegion(
                     groups: rssGroups,
                     hotMatchCount: hotMatchCount,
-                    slotWidth: feedWidth
+                    slotWidth: feedWidth,
+                    index: DashboardSectionIndex.sourceBrowser(
+                        hasHotTrends: !hotGroups.isEmpty,
+                        hasFollowing: followingSidebarHasAccounts
+                    )
                 )
                     .frame(maxWidth: .infinity, alignment: .leading)
 
@@ -394,7 +398,11 @@ struct DashboardWindow: View {
                 sourceBrowserRegion(
                     groups: rssGroups,
                     hotMatchCount: hotMatchCount,
-                    slotWidth: availableWidth
+                    slotWidth: availableWidth,
+                    index: DashboardSectionIndex.sourceBrowser(
+                        hasHotTrends: !hotGroups.isEmpty,
+                        hasFollowing: followingSidebarHasAccounts
+                    )
                 )
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -404,12 +412,14 @@ struct DashboardWindow: View {
     private func sourceBrowserRegion(
         groups: [DashboardBrowseGroup],
         hotMatchCount: Int,
-        slotWidth: CGFloat
+        slotWidth: CGFloat,
+        index: String = "03"
     ) -> some View {
         DashboardSourceBrowserRegion(
             orchestrator: orchestrator,
             sourceFilter: sourceFilter,
             groups: groups,
+            index: index,
             hotMatchCount: hotMatchCount,
             searchQuery: normalizedSearchQuery,
             hasAnyFilter: hasAnyFilter,
@@ -615,7 +625,6 @@ private struct DashboardMasthead: View {
 // MARK: - Filter bar
 
 private struct DashboardFilterBar: View {
-    @Environment(AppSettings.self) private var settings
     @Binding var searchText: String
     @Binding var sourceFilter: DashboardSourceFilter
     @Binding var mode: DashboardBrowseMode
@@ -635,45 +644,10 @@ private struct DashboardFilterBar: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 10) {
-                Image(systemName: "magnifyingglass")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(.secondary)
-
-                TextField("dash.searchPlaceholder".localized, text: $searchText)
-                    .textFieldStyle(.plain)
-                    .font(.system(size: 13))
-
-                if isSearchActive {
-                    Button {
-                        searchText = ""
-                    } label: {
-                        Image(systemName: "xmark.circle.fill")
-                            .font(.system(size: 12))
-                            .foregroundStyle(.secondary)
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("dash.searchClear".localized)
-                }
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 9)
-            .background {
-                if settings.appTheme == .retroEditorial {
-                    Rectangle().fill(RetroEditorialTokens.raisedPaper)
-                } else {
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .fill(Color(nsColor: .controlBackgroundColor))
-                }
-            }
-            .overlay {
-                if settings.appTheme == .retroEditorial {
-                    Rectangle().strokeBorder(RetroEditorialTokens.ink, lineWidth: 1.4)
-                } else {
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .strokeBorder(Color(nsColor: .separatorColor).opacity(0.45), lineWidth: 1)
-                }
-            }
+            DashboardSearchField(
+                text: $searchText,
+                placeholder: "dash.searchPlaceholder".localized
+            )
 
             DashboardModeSegmentedControl(
                 mode: $mode,
@@ -683,7 +657,12 @@ private struct DashboardFilterBar: View {
 
             HStack(spacing: 6) {
                 ForEach(DashboardSourceFilter.allCases) { filter in
-                    filterChip(filter)
+                    DashboardFilterChip(
+                        title: filter.displayName,
+                        isSelected: sourceFilter == filter
+                    ) {
+                        sourceFilter = filter
+                    }
                 }
 
                 Spacer(minLength: 0)
@@ -698,45 +677,6 @@ private struct DashboardFilterBar: View {
                 }
             }
         }
-    }
-
-    private func filterChip(_ filter: DashboardSourceFilter) -> some View {
-        let isSelected = sourceFilter == filter
-        return Button {
-            sourceFilter = filter
-        } label: {
-            Text(filter.displayName)
-                .font(.system(size: 11, weight: .medium))
-                .padding(.horizontal, 12)
-                .padding(.vertical, 6)
-                .background {
-                    if settings.appTheme == .retroEditorial {
-                        Rectangle().fill(isSelected ? RetroEditorialTokens.brick : RetroEditorialTokens.raisedPaper)
-                    } else {
-                        Capsule().fill(
-                            isSelected
-                                ? Color.accentColor.opacity(0.16)
-                                : Color(nsColor: .controlBackgroundColor)
-                        )
-                    }
-                }
-                .overlay {
-                    if settings.appTheme == .retroEditorial {
-                        Rectangle().strokeBorder(RetroEditorialTokens.ink, lineWidth: 1)
-                    } else {
-                        Capsule().strokeBorder(
-                            Color(nsColor: .separatorColor).opacity(0.35),
-                            lineWidth: 1
-                        )
-                    }
-                }
-                .foregroundStyle(
-                    isSelected
-                        ? (settings.appTheme == .retroEditorial ? RetroEditorialTokens.raisedPaper : Color.accentColor)
-                        : .primary
-                )
-        }
-        .buttonStyle(.plain)
     }
 }
 
@@ -764,10 +704,7 @@ private struct DashboardFilterCountLabel: View {
     }
 
     var body: some View {
-        Text(L10n.string("dash.filterCount", count))
-            .font(.system(size: 10))
-            .foregroundStyle(.secondary)
-            .lineLimit(1)
+        DashboardFilterCountText(text: L10n.string("dash.filterCount", count))
     }
 }
 
@@ -898,6 +835,7 @@ private struct DashboardSourceBrowserRegion: View {
     let orchestrator: NewsOrchestrator
     let sourceFilter: DashboardSourceFilter
     let groups: [DashboardBrowseGroup]
+    let index: String
     let hotMatchCount: Int
     let searchQuery: String?
     let hasAnyFilter: Bool
@@ -917,7 +855,7 @@ private struct DashboardSourceBrowserRegion: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             EditorialSectionHeading(
-                index: "03",
+                index: index,
                 title: L10n.string("dash.browse.title"),
                 subtitle: subtitle
             )
@@ -1196,5 +1134,14 @@ private struct DashboardToolbarAction: View {
         .disabled(isDisabled)
         .help(title)
         .accessibilityLabel(title)
+    }
+}
+
+/// Section numbers shared by the sidebar and the source browser. The sidebar
+/// renders 01 (briefing) and optionally 02 (hot trends) and following; the
+/// source browser is always the last numbered section.
+enum DashboardSectionIndex {
+    static func sourceBrowser(hasHotTrends: Bool, hasFollowing: Bool) -> String {
+        String(format: "%02d", 2 + (hasHotTrends ? 1 : 0) + (hasFollowing ? 1 : 0))
     }
 }
