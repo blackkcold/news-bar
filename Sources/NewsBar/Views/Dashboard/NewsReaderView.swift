@@ -1866,7 +1866,10 @@ struct ReaderContentView: View {
             isPrivate: model.request.privateSession || InterestController.shared.privateReading,
             language: settings.appLanguage
         )
-        auxiliary.prepareOverview(context: context) { [model] in
+        auxiliary.prepareOverview(
+            context: context,
+            webSupplementDefault: settings.aiOverviewWebSupplement
+        ) { [model] in
             if let document = model.readerModeDocument {
                 return document.plainText
             }

@@ -116,6 +116,7 @@ final class ReaderAuxiliaryModel {
     /// to a provider until `generate` is called.
     func prepareOverview(
         context: ReaderOverviewContext,
+        webSupplementDefault: Bool = true,
         extract: @escaping @MainActor () async -> String?
     ) {
         if let existing = overviewContext,
@@ -140,6 +141,9 @@ final class ReaderAuxiliaryModel {
         overviewInput = nil
         preparationError = nil
         isPreparingOverview = true
+        // Private reading must never leave the external-search toggle on, even
+        // if the user enabled it on the previous page.
+        summary.webSupplementEnabled = webSupplementDefault && !context.isPrivate
 
         preparationTask = Task { @MainActor [weak self] in
             guard let self else { return }
@@ -148,9 +152,10 @@ final class ReaderAuxiliaryModel {
             self.isPreparingOverview = false
             guard let text,
                   !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-                self.preparationError = context.language == .en
-                    ? "No readable page text"
-                    : "没有可读页面正文"
+                self.preparationError = L10n.string(
+                    "reader.overview.noPageText",
+                    language: context.language
+                )
                 return
             }
             self.overviewInput = .article(
@@ -165,12 +170,29 @@ final class ReaderAuxiliaryModel {
 
     func retryPreparation() {
         guard let context = overviewContext, let extract else { return }
-        prepareOverview(context: context, extract: extract)
+        prepareOverview(
+            context: context,
+            webSupplementDefault: summary.webSupplementEnabled,
+            extract: extract
+        )
     }
 
-    func generate(settings: AppSettings) {
+    func generate(settings: AppSettings, forceRefresh: Bool = false) {
         guard let input = overviewInput, !summary.isBusy else { return }
         acknowledgeOverview()
+        summary.summarize(
+            input: input,
+            settings: settings,
+            forceRefresh: forceRefresh
+        )
+    }
+
+    /// One-off page-only generation. The per-run toggle stays off for the next
+    /// regenerate, so the user can turn external search back on explicitly.
+    func generatePageOnly(settings: AppSettings) {
+        guard let input = overviewInput, !summary.isBusy else { return }
+        acknowledgeOverview()
+        summary.webSupplementEnabled = false
         summary.summarize(input: input, settings: settings)
     }
 

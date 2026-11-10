@@ -24,6 +24,26 @@ struct AISummaryCard: View {
         settings.appTheme == .retroEditorial ? RetroEditorialTokens.brick : .purple
     }
 
+    private var thinkingCapability: AIThinkingCapability {
+        AIThinkingResolver.capability(
+            connection: settings.resolvedAIConnection,
+            model: settings.aiModel,
+            language: settings.appLanguage
+        )
+    }
+
+    private func thinkingPicker(showsLabel: Bool = true) -> some View {
+        AIThinkingPicker(
+            surface: .summary,
+            language: settings.appLanguage,
+            level: thinkingCapability.normalized(settings.aiSummaryThinking),
+            options: thinkingCapability.options,
+            isEnabled: !isRegenerating,
+            showsLabel: showsLabel,
+            onChange: { settings.aiSummaryThinking = $0 }
+        )
+    }
+
     private enum Metrics {
         static let cardPadding: CGFloat = 10
         static let headerSpacing: CGFloat = 8
@@ -240,6 +260,9 @@ struct AISummaryCard: View {
                         .font(.system(size: 10))
                         .foregroundStyle(.orange)
                     Spacer()
+                    if !thinkingCapability.options.isEmpty {
+                        thinkingPicker(showsLabel: false)
+                    }
                     if let onRegenerate {
                         regenerateButton(action: onRegenerate)
                     }
@@ -248,8 +271,15 @@ struct AISummaryCard: View {
 
             if case .done = state, let onRegenerate {
                 Divider().padding(.top, 4)
-                HStack {
-                    Spacer()
+                HStack(spacing: 6) {
+                    if !thinkingCapability.options.isEmpty {
+                        thinkingPicker()
+                        Text("ai.thinking.pendingRegenerate".localized)
+                            .font(.system(size: 9.5))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                    Spacer(minLength: 0)
                     regenerateButton(action: onRegenerate)
                 }
             }

@@ -165,18 +165,36 @@ struct ReaderAuxiliaryRail: View {
             summary: auxiliary.summary.summary,
             errorMessage: auxiliary.summary.errorMessage,
             providerName: settings.providerDisplayName(forID: settings.aiProvider),
-            onGenerate: { auxiliary.generate(settings: settings) },
+            onGenerate: { forceRefresh in
+                auxiliary.generate(settings: settings, forceRefresh: forceRefresh)
+            },
+            onGeneratePageOnly: { auxiliary.generatePageOnly(settings: settings) },
             onCancelDisclosure: onClose,
             onRetry: {
                 if auxiliary.overviewInput == nil {
                     auxiliary.retryPreparation()
                 } else {
-                    auxiliary.generate(settings: settings)
+                    auxiliary.generate(settings: settings, forceRefresh: true)
                 }
             },
             onOpenSettings: onConfigureAI,
             onOpenCitation: onOpenCitation,
-            onSwitchToReaderMode: onSwitchToReaderMode
+            onOpenSource: { source in
+                if let url = URL(string: source.url) {
+                    onOpenSource(url)
+                }
+            },
+            onSwitchToReaderMode: onSwitchToReaderMode,
+            thinking: overviewThinkingCapability.normalized(settings.aiOverviewThinking),
+            thinkingOptions: overviewThinkingCapability.options,
+            thinkingHint: auxiliary.summary.summary != nil
+                ? L10n.string("ai.thinking.pendingRegenerate", language: language)
+                : nil,
+            onThinkingChange: { settings.aiOverviewThinking = $0 },
+            webSupplement: auxiliary.summary.webSupplementEnabled,
+            onWebSupplementChange: { auxiliary.summary.webSupplementEnabled = $0 },
+            stage: auxiliary.summary.stage,
+            assessmentEnabled: settings.aiEvidenceAssessmentEnabled
         )
         .padding(.horizontal, 14)
         .padding(.vertical, 12)
@@ -198,6 +216,14 @@ struct ReaderAuxiliaryRail: View {
             url: context.url,
             isPrivate: context.isPrivate,
             language: context.language
+        )
+    }
+
+    private var overviewThinkingCapability: AIThinkingCapability {
+        AIThinkingResolver.capability(
+            connection: settings.resolvedAIConnection,
+            model: settings.aiModel,
+            language: language
         )
     }
 

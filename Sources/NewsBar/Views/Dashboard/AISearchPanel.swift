@@ -25,6 +25,9 @@ struct AISearchPanel: View {
     /// The rail measures the free space under its header and passes the cap
     /// down, so a long answer can never push the footer out of the rail.
     var answerMaxHeight: CGFloat = 360
+    var thinking: AIThinkingLevel = .providerDefault
+    var thinkingOptions: [AIThinkingLevel] = []
+    var onThinkingChange: (AIThinkingLevel) -> Void = { _ in }
 
     @FocusState private var questionFocused: Bool
 
@@ -54,7 +57,7 @@ struct AISearchPanel: View {
     private var panel: some View {
         VStack(alignment: .leading, spacing: 10) {
             header
-            scopePicker
+            scopeRow
             inputRow
             if !model.hasAcknowledgedPrivacy {
                 privacyNotice
@@ -116,6 +119,25 @@ struct AISearchPanel: View {
         .disabled(model.isRevealing)
         .help(L10n.string("answer.copy", language: language))
         .accessibilityLabel(L10n.string("answer.copy", language: language))
+    }
+
+    private var scopeRow: some View {
+        HStack(spacing: 8) {
+            scopePicker
+                .layoutPriority(1)
+            if !thinkingOptions.isEmpty {
+                AIThinkingPicker(
+                    surface: .search,
+                    language: language,
+                    level: thinking,
+                    options: thinkingOptions,
+                    isEnabled: !model.state.isBusy,
+                    showsLabel: false,
+                    onChange: onThinkingChange
+                )
+                .fixedSize()
+            }
+        }
     }
 
     private var scopePicker: some View {
@@ -209,9 +231,14 @@ struct AISearchPanel: View {
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
-        case .searching, .reading, .answering:
+        case .searching, .reading, .assessing, .answering:
             VStack(alignment: .leading, spacing: 9) {
-                AnswerStageRow(state: model.state, scope: model.scope, language: language)
+                AnswerStageRow(
+                    state: model.state,
+                    scope: model.scope,
+                    language: language,
+                    showsAssessment: model.showsAssessment
+                )
                 if let answer = model.answer {
                     answerSection(answer)
                 } else {
@@ -264,7 +291,7 @@ struct AISearchPanel: View {
                 language: language,
                 modelName,
                 model.answer?.thinking.title(language) ?? ""
-            ))
+            ) + thinkingHintSuffix)
             .font(.caption2)
             .foregroundStyle(.tertiary)
             .lineLimit(2)
@@ -274,6 +301,15 @@ struct AISearchPanel: View {
                 .lineLimit(2)
         }
         .accessibilityElement(children: .combine)
+    }
+
+    private var thinkingHintSuffix: String {
+        guard let answer = model.answer else { return "" }
+        // Compare the effective level, not the raw stored value: on a DeepSeek
+        // connection "medium" and "provider default" send the same request.
+        let answerLevel = AIThinkingLevel.normalized(answer.thinking, options: thinkingOptions)
+        guard answerLevel != thinking else { return "" }
+        return " · " + L10n.string("ai.thinking.pendingSearch", language: language)
     }
 
     private func submit() {

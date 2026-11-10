@@ -19,6 +19,10 @@ struct AIBuiltRequest: Sendable {
     /// Non-empty when the provider's thinking capability is not verified or the
     /// budget forced a larger max_tokens. Diagnostics only.
     let thinkingNote: String?
+    /// True when the request body actually contains a thinking field. The
+    /// transports use this to retry once without an experimental field after a
+    /// provider rejects it, instead of retrying every malformed request.
+    let sentThinkingField: Bool
 }
 
 /// Single request constructor shared by summaries, chat, research and search.
@@ -37,7 +41,8 @@ enum AIRequestBuilder {
         thinking: AIThinkingLevel,
         timeout: TimeInterval,
         userAgent: String? = nil,
-        stream: Bool = false
+        stream: Bool = false,
+        suppressThinking: Bool = false
     ) throws -> AIBuiltRequest {
         guard !messages.isEmpty else { throw AIRequestBuilderError.emptyMessages }
         guard let url = URL(string: connection.baseURL) else { throw AIRequestBuilderError.invalidURL }
@@ -96,12 +101,21 @@ enum AIRequestBuilder {
             if stream { body["stream"] = true }
         }
 
-        let applied = AIThinkingApplication.apply(
-            style: connection.thinkingStyle,
-            level: thinking,
-            body: &body,
-            maxTokens: requested
+        let effectiveStyle = AIThinkingResolver.effectiveStyle(
+            connection: connection,
+            model: model
         )
+        let applied: AIThinkingApplication.Result
+        if suppressThinking {
+            applied = AIThinkingApplication.Result(maxTokens: requested, note: nil)
+        } else {
+            applied = AIThinkingApplication.apply(
+                style: effectiveStyle,
+                level: thinking,
+                body: &body,
+                maxTokens: requested
+            )
+        }
         if applied.maxTokens != requested {
             body["max_tokens"] = applied.maxTokens
         }
@@ -109,23 +123,27 @@ enum AIRequestBuilder {
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
         var note = applied.note
-        if !connection.thinkingStyle.isVerified, thinking != .providerDefault, note == nil {
-            note = connection.thinkingStyle.capabilityNote(L10n.currentLanguage)
+        if !suppressThinking, !effectiveStyle.isVerified, thinking != .providerDefault, note == nil {
+            note = effectiveStyle.capabilityNote(L10n.currentLanguage)
         }
         return AIBuiltRequest(
             request: request,
             effectiveMaxTokens: applied.maxTokens,
-            thinkingStyle: connection.thinkingStyle,
-            thinkingNote: note
+            thinkingStyle: effectiveStyle,
+            thinkingNote: note,
+            sentThinkingField: applied.sentField
         )
     }
 
     /// The legacy DeepSeek preference is honoured only when the connection
-    /// actually declares a DeepSeek-style switch. A model id is never inspected.
+    /// declares a DeepSeek-style switch. A DeepSeek-model capability still gates
+    /// the field by model inside `build`; a non-DeepSeek model sends nothing.
     static func thinkingLevel(
         connection: ResolvedAIConnection,
         disableDeepSeekThinking: Bool
     ) -> AIThinkingLevel {
-        connection.thinkingStyle == .deepseekToggle && disableDeepSeekThinking ? .off : .providerDefault
+        let isDeepSeekCapability = connection.thinkingStyle == .deepseekToggle
+            || connection.thinkingStyle == .deepseekModelToggle
+        return isDeepSeekCapability && disableDeepSeekThinking ? .off : .providerDefault
     }
 }

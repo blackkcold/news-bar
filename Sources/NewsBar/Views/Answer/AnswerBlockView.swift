@@ -8,6 +8,8 @@ import SwiftUI
 struct AnswerRichText: View {
     let text: String
     let sourceCount: Int
+    /// A rejected source is never a chip, even when the model wrote its number.
+    var allowedCitations: Set<Int>? = nil
     let font: Font
     var lineSpacing: CGFloat = 3
     /// Off while the answer streams. Selectable text is drawn through a second
@@ -33,7 +35,11 @@ struct AnswerRichText: View {
 
     private var attributed: AttributedString {
         var result = AttributedString()
-        for segment in AnswerCitationScanner.segments(in: text, sourceCount: sourceCount) {
+        for segment in AnswerCitationScanner.segments(
+            in: text,
+            sourceCount: sourceCount,
+            allowed: allowedCitations
+        ) {
             switch segment {
             case .text(let value):
                 var run = AttributedString(value)
@@ -70,6 +76,7 @@ private extension View {
 struct AnswerBlockView: View {
     let block: AnswerBlock
     let sourceCount: Int
+    var allowedCitations: Set<Int>? = nil
     var selectable: Bool = true
     let onCite: (Int) -> Void
 
@@ -112,6 +119,7 @@ struct AnswerBlockView: View {
                                 AnswerRichText(
                                     text: row.value,
                                     sourceCount: sourceCount,
+                                    allowedCitations: allowedCitations,
                                     font: .callout,
                                     selectable: selectable,
                                     onCite: onCite
@@ -129,14 +137,14 @@ struct AnswerBlockView: View {
     private func lineView(_ line: AnswerLine) -> some View {
         switch line {
         case .paragraph(let text):
-            AnswerRichText(text: text, sourceCount: sourceCount, font: .callout, selectable: selectable, onCite: onCite)
+            AnswerRichText(text: text, sourceCount: sourceCount, allowedCitations: allowedCitations, font: .callout, selectable: selectable, onCite: onCite)
         case .bullet(let text):
             HStack(alignment: .firstTextBaseline, spacing: 7) {
                 Text("•")
                     .font(.callout)
                     .foregroundStyle(.tertiary)
                     .accessibilityHidden(true)
-                AnswerRichText(text: text, sourceCount: sourceCount, font: .callout, selectable: selectable, onCite: onCite)
+                AnswerRichText(text: text, sourceCount: sourceCount, allowedCitations: allowedCitations, font: .callout, selectable: selectable, onCite: onCite)
             }
         case .definition(let label, let value):
             // A lone definition still aligns like a row of the same block.
@@ -144,10 +152,10 @@ struct AnswerBlockView: View {
                 Text(label)
                     .font(.callout)
                     .foregroundStyle(.secondary)
-                AnswerRichText(text: value, sourceCount: sourceCount, font: .callout, selectable: selectable, onCite: onCite)
+                AnswerRichText(text: value, sourceCount: sourceCount, allowedCitations: allowedCitations, font: .callout, selectable: selectable, onCite: onCite)
             }
         case .quote(let text):
-            AnswerRichText(text: text, sourceCount: sourceCount, font: .callout, selectable: selectable, onCite: onCite)
+            AnswerRichText(text: text, sourceCount: sourceCount, allowedCitations: allowedCitations, font: .callout, selectable: selectable, onCite: onCite)
                 .foregroundStyle(.secondary)
                 .padding(.leading, 11)
                 // The rule is drawn over the text instead of beside it. A 2 pt

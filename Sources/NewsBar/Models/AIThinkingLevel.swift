@@ -64,10 +64,15 @@ enum AIThinkingLevel: String, Codable, Sendable, CaseIterable, Identifiable {
 }
 
 /// The wire shape a provider actually understands for reasoning control. This
-/// is declared per connection, never guessed from a model name: a custom
-/// endpoint can point at any model, and a model id is not a protocol.
+/// is declared per connection; a model id never chooses the protocol. The
+/// `deepseekModelToggle` case uses the model id only to decide whether a
+/// declared DeepSeek switch applies to this request.
 enum AIThinkingStyle: String, Codable, Sendable, CaseIterable, Identifiable {
     case deepseekToggle
+    /// Applies the DeepSeek switch only when the selected model belongs to the
+    /// DeepSeek family. The connection still declares the capability; the model
+    /// id only decides whether the field is relevant.
+    case deepseekModelToggle
     case anthropicBudget
     case openAIReasoningEffort
     case ollamaThink
@@ -79,6 +84,8 @@ enum AIThinkingStyle: String, Codable, Sendable, CaseIterable, Identifiable {
         let english = language == .en
         switch self {
         case .deepseekToggle: return english ? "DeepSeek thinking switch" : "DeepSeek 思考开关"
+        case .deepseekModelToggle:
+            return english ? "DeepSeek model thinking switch (experimental)" : "DeepSeek 模型思考开关（实验性）"
         case .anthropicBudget: return english ? "Anthropic thinking budget" : "Anthropic 思考预算"
         case .openAIReasoningEffort: return english ? "OpenAI reasoning effort" : "OpenAI 推理强度"
         case .ollamaThink: return english ? "Ollama think (unverified)" : "Ollama think（未验证）"
@@ -99,6 +106,10 @@ enum AIThinkingStyle: String, Codable, Sendable, CaseIterable, Identifiable {
             return english
                 ? "Implemented from the shipped DeepSeek behaviour: Off sends thinking.type=disabled; other levels send nothing. No live request was sent in this build."
                 : "按现有 DeepSeek 线上行为实现：关闭时发送 thinking.type=disabled，其他档位不发送。本次构建未发送真实请求。"
+        case .deepseekModelToggle:
+            return english
+                ? "Applies the DeepSeek switch only when the selected model is DeepSeek-family. If the provider rejects the field, the request is retried once without it."
+                : "仅当所选模型属于 DeepSeek 系列时发送 thinking 开关；若提供商拒绝该字段，会自动去掉字段重试一次。"
         case .anthropicBudget:
             return english
                 ? "Implemented from Anthropic's thinking format: type=enabled with budget_tokens, and max_tokens is raised above it. No live request was sent in this build."
@@ -123,6 +134,10 @@ enum AIThinkingApplication {
     struct Result: Equatable {
         var maxTokens: Int
         var note: String?
+        /// True only when a thinking field was actually written into the body.
+        /// The transport uses this to retry once without an experimental field
+        /// after a provider rejects it.
+        var sentField: Bool = false
     }
 
     static func apply(
@@ -132,11 +147,14 @@ enum AIThinkingApplication {
         maxTokens: Int
     ) -> Result {
         switch style {
-        case .deepseekToggle:
+        case .deepseekToggle, .deepseekModelToggle:
             // DeepSeek exposes a binary switch. Off is explicit; low/medium/high
             // are not representable and must not be faked with a guessed field.
+            // `.deepseekModelToggle` is resolved to this case only after the
+            // model-family gate has already matched.
             if level == .off {
                 body["thinking"] = ["type": "disabled"]
+                return Result(maxTokens: maxTokens, note: nil, sentField: true)
             }
             return Result(maxTokens: maxTokens, note: nil)
         case .anthropicBudget:
@@ -149,11 +167,13 @@ enum AIThinkingApplication {
             let raised = max(maxTokens, budget + 1_024)
             return Result(
                 maxTokens: raised,
-                note: raised > maxTokens ? "max_tokens raised to \(raised) for budget_tokens \(budget)" : nil
+                note: raised > maxTokens ? "max_tokens raised to \(raised) for budget_tokens \(budget)" : nil,
+                sentField: true
             )
         case .openAIReasoningEffort:
             if let effort = level.reasoningEffort {
                 body["reasoning_effort"] = effort
+                return Result(maxTokens: maxTokens, note: nil, sentField: true)
             }
             return Result(maxTokens: maxTokens, note: nil)
         case .ollamaThink:

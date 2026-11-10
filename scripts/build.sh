@@ -73,6 +73,7 @@ mkdir -p "${BUNDLE_DIR}/Contents/MacOS"
 mkdir -p "${BUNDLE_DIR}/Contents/Resources"
 
 cp .build/release/NewsBar "${BUNDLE_DIR}/Contents/MacOS/"
+cp .build/release/newsbarctl "${BUNDLE_DIR}/Contents/MacOS/"
 cp version.txt "${BUNDLE_DIR}/Contents/Resources/"
 cp Resources/AppIcon.icns "${BUNDLE_DIR}/Contents/Resources/"
 
@@ -130,6 +131,7 @@ echo ""
 # publishable build; --adhoc is the explicit local-only opt-out.
 if [ "$ADHOC" -eq 1 ]; then
     echo "⚠️  --adhoc: local-only signature. This build cannot be published."
+    codesign --force --sign - "${BUNDLE_DIR}/Contents/MacOS/newsbarctl"
     codesign --force --deep --sign - "${BUNDLE_DIR}"
 else
     if [ -z "${NEWSBAR_SIGN_IDENTITY:-}" ]; then
@@ -138,6 +140,12 @@ else
         exit 1
     fi
     echo "   Identity: ${NEWSBAR_SIGN_IDENTITY}"
+    # Sign the nested helper before the bundle; notarization checks every
+    # Mach-O, and --deep alone does not apply the hardened runtime to it.
+    codesign --force \
+        --sign "${NEWSBAR_SIGN_IDENTITY}" \
+        --options runtime --timestamp \
+        "${BUNDLE_DIR}/Contents/MacOS/newsbarctl"
     codesign --force --deep \
         --sign "${NEWSBAR_SIGN_IDENTITY}" \
         --options runtime --timestamp \

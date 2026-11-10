@@ -159,7 +159,11 @@ enum AnswerCitationSegment: Equatable {
 enum AnswerCitationScanner {
     private static let expression = try? NSRegularExpression(pattern: "\\[(\\d{1,3})\\]")
 
-    static func segments(in text: String, sourceCount: Int) -> [AnswerCitationSegment] {
+    static func segments(
+        in text: String,
+        sourceCount: Int,
+        allowed: Set<Int>? = nil
+    ) -> [AnswerCitationSegment] {
         guard !text.isEmpty, let expression else { return text.isEmpty ? [] : [.text(text)] }
         let matches = expression.matches(in: text, range: NSRange(text.startIndex..., in: text))
         guard !matches.isEmpty else { return [.text(text)] }
@@ -173,7 +177,9 @@ enum AnswerCitationScanner {
                   let numberRange = Range(match.range(at: 1), in: text),
                   let number = Int(text[numberRange]) else { continue }
             buffer += String(text[cursor..<range.lowerBound])
-            if number >= 1, number <= sourceCount {
+            let inRange = number >= 1 && number <= sourceCount
+            let permitted = allowed?.contains(number) ?? true
+            if inRange && permitted {
                 if !buffer.isEmpty {
                     result.append(.text(buffer))
                     buffer = ""

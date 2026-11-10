@@ -29,7 +29,7 @@ final class ProviderModelTests: XCTestCase {
         XCTAssertEqual(connection.authHeaderName, "Authorization")
         XCTAssertEqual(connection.authHeaderPrefix, "Bearer ")
         XCTAssertNil(connection.apiVersion)
-        XCTAssertEqual(connection.thinkingStyle, .none)
+        XCTAssertEqual(connection.thinkingStyle, .deepseekModelToggle)
     }
 
     func testOpenCodeZenUsesPayAsYouGoGatewayAndOpenAIProtocol() throws {
@@ -45,7 +45,7 @@ final class ProviderModelTests: XCTestCase {
         XCTAssertEqual(connection.authHeaderName, "Authorization")
         XCTAssertEqual(connection.authHeaderPrefix, "Bearer ")
         XCTAssertNil(connection.apiVersion)
-        XCTAssertEqual(connection.thinkingStyle, .none)
+        XCTAssertEqual(connection.thinkingStyle, .deepseekModelToggle)
         XCTAssertTrue(connection.additionalHeaders["x-opencode-session"]?.hasPrefix("newsbar-") ?? false)
     }
 

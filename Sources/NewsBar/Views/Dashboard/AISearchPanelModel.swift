@@ -13,13 +13,14 @@ final class AISearchPanelModel {
         case idle
         case searching
         case reading(index: Int, total: Int)
+        case assessing
         case answering
         case done
         case failed(String)
 
         var isBusy: Bool {
             switch self {
-            case .searching, .reading, .answering: return true
+            case .searching, .reading, .assessing, .answering: return true
             case .idle, .done, .failed: return false
             }
         }
@@ -28,6 +29,9 @@ final class AISearchPanelModel {
     var question = ""
     var scope: AISearchScope = .currentPage
     private(set) var state: State = .idle
+    /// True for this run when the user enabled source assessment. The stage row
+    /// uses it to decide whether the "assess sources" step exists at all.
+    private(set) var showsAssessment = false
     @ObservationIgnored private let reveal = AnswerReveal()
     var answer: AnswerDocument? { reveal.document }
     var isRevealing: Bool { reveal.isStreaming }
@@ -67,7 +71,10 @@ final class AISearchPanelModel {
         self.hasAcknowledgedPrivacy = privacyAcknowledged ?? TestIsolation.defaults.bool(forKey: Self.privacyKey)
     }
 
-    static let privacyKey = "aiSearchPrivacyAcknowledged"
+    /// v2: query variants are new, and the old acknowledgement did not mention
+    /// that several search queries can leave the device. Existing users see the
+    /// updated notice once.
+    static let privacyKey = "aiSearchPrivacyAcknowledged.v2"
 
     // MARK: - Presentation
 
@@ -106,7 +113,8 @@ final class AISearchPanelModel {
     func runInjected(
         question: String,
         scope: AISearchScope,
-        page: AISearchPageContext?
+        page: AISearchPageContext?,
+        assessmentEnabled: Bool = false
     ) {
         guard let runner else { return }
         let trimmed = question.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -114,6 +122,7 @@ final class AISearchPanelModel {
         task?.cancel()
         lastQuestion = trimmed
         lastScope = scope
+        showsAssessment = assessmentEnabled
         reveal.reset()
         reveal.begin()
         state = .searching
@@ -145,6 +154,7 @@ final class AISearchPanelModel {
         task?.cancel()
         lastQuestion = question
         lastScope = scope
+        showsAssessment = settings.aiEvidenceAssessmentEnabled
         reveal.reset()
         reveal.begin()
         state = .searching
@@ -177,7 +187,10 @@ final class AISearchPanelModel {
             progress = 0.15
         case .reading(let index, let total):
             state = .reading(index: index, total: total)
-            progress = 0.2 + 0.5 * Double(index) / Double(max(1, total))
+            progress = 0.2 + 0.4 * Double(index) / Double(max(1, total))
+        case .assessing:
+            state = .assessing
+            progress = 0.7
         case .answering:
             state = .answering
             progress = 0.8

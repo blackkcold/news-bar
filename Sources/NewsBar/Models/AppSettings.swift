@@ -413,6 +413,11 @@ final class AppSettings {
     var aiDisableDeepSeekThinking: Bool {
         didSet { TestIsolation.defaults.set(aiDisableDeepSeekThinking, forKey: "aiDisableDeepSeekThinking") }
     }
+    /// Thinking level for the AI news summary (menu bar card + dashboard).
+    /// Migrated from `aiDisableDeepSeekThinking` on first launch.
+    var aiSummaryThinking: AIThinkingLevel {
+        didSet { TestIsolation.defaults.set(aiSummaryThinking.rawValue, forKey: "aiSummaryThinking") }
+    }
     var aiPopupDailyCap: Int {
         didSet { TestIsolation.defaults.set(aiPopupDailyCap, forKey: "aiPopupDailyCap") }
     }
@@ -438,9 +443,35 @@ final class AppSettings {
     var aiSearchThinking: AIThinkingLevel {
         didSet { TestIsolation.defaults.set(aiSearchThinking.rawValue, forKey: "aiSearchThinking") }
     }
+    /// Thinking level for the reader's page overview. Independent from search
+    /// so changing one surface never silently changes the other.
+    var aiOverviewThinking: AIThinkingLevel {
+        didSet { TestIsolation.defaults.set(aiOverviewThinking.rawValue, forKey: "aiOverviewThinking") }
+    }
     /// 3 / 5 / 8 pages per web search.
     var aiSearchPageCount: Int {
         didSet { TestIsolation.defaults.set(aiSearchPageCount, forKey: "aiSearchPageCount") }
+    }
+    /// One extra AI call per search to verify that a source really supports the
+    /// answer. Off by default: it costs a call, and the readability heuristic is
+    /// still honest, just weaker.
+    var aiEvidenceAssessmentEnabled: Bool {
+        didSet {
+            TestIsolation.defaults.set(
+                aiEvidenceAssessmentEnabled,
+                forKey: "aiEvidenceAssessmentEnabled"
+            )
+        }
+    }
+    /// Page overview external supplement. Default on for normal reading;
+    /// private reading forces it off in the model and the panel.
+    var aiOverviewWebSupplement: Bool {
+        didSet {
+            TestIsolation.defaults.set(
+                aiOverviewWebSupplement,
+                forKey: "aiOverviewWebSupplement"
+            )
+        }
     }
     var aiDashboardDailyCap: Int {
         didSet { TestIsolation.defaults.set(aiDashboardDailyCap, forKey: "aiDashboardDailyCap") }
@@ -656,6 +687,11 @@ final class AppSettings {
     var rssUnifiedDisplayCount: Bool {
         didSet { TestIsolation.defaults.set(rssUnifiedDisplayCount, forKey: "rssUnifiedDisplayCount") }
     }
+    /// Local-only CLI bridge. Defaults to on because the queue is already
+    /// owner-only; the switch is an intent gate, not a security boundary.
+    var agentAccessEnabled: Bool {
+        didSet { TestIsolation.defaults.set(agentAccessEnabled, forKey: "agentAccessEnabled") }
+    }
     var rssDefaultTextCount: Int {
         didSet { TestIsolation.defaults.set(rssDefaultTextCount, forKey: "rssDefaultTextCount") }
     }
@@ -826,7 +862,16 @@ final class AppSettings {
             ?? Self.defaultAICostCapMicros
         let rawBudgetMode = defaults.stringIfPresent(forKey: "aiBudgetMode") ?? AISummaryBudgetMode.shared.rawValue
         self.aiBudgetMode = AISummaryBudgetMode(rawValue: rawBudgetMode) ?? .shared
-        self.aiDisableDeepSeekThinking = defaults.boolIfPresent(forKey: "aiDisableDeepSeekThinking") ?? true
+        let legacyDisableDeepSeekThinking = defaults.boolIfPresent(forKey: "aiDisableDeepSeekThinking") ?? true
+        self.aiDisableDeepSeekThinking = legacyDisableDeepSeekThinking
+        if let rawSummaryThinking = defaults.stringIfPresent(forKey: "aiSummaryThinking"),
+           let summaryThinking = AIThinkingLevel(rawValue: rawSummaryThinking) {
+            self.aiSummaryThinking = summaryThinking
+        } else {
+            // Preserve the old boolean's exact meaning: true disabled DeepSeek
+            // thinking, false left the provider default untouched.
+            self.aiSummaryThinking = legacyDisableDeepSeekThinking ? .off : .providerDefault
+        }
         let rawPopupCap = defaults.integerIfPresent(forKey: "aiPopupDailyCap") ?? 200
         self.aiPopupDailyCap = Self.validAICaps.contains(rawPopupCap) ? rawPopupCap : 200
         self.aiSearchEnabled = defaults.boolIfPresent(forKey: "aiSearchEnabled") ?? true
@@ -836,9 +881,22 @@ final class AppSettings {
         ) ?? .offline
         self.aiSearchModel = defaults.stringIfPresent(forKey: "aiSearchModel") ?? ""
         let rawSearchThinking = defaults.stringIfPresent(forKey: "aiSearchThinking") ?? AIThinkingLevel.medium.rawValue
-        self.aiSearchThinking = AIThinkingLevel(rawValue: rawSearchThinking) ?? .medium
+        let searchThinking = AIThinkingLevel(rawValue: rawSearchThinking) ?? .medium
+        self.aiSearchThinking = searchThinking
+        if let rawOverviewThinking = defaults.stringIfPresent(forKey: "aiOverviewThinking"),
+           let overviewThinking = AIThinkingLevel(rawValue: rawOverviewThinking) {
+            self.aiOverviewThinking = overviewThinking
+        } else {
+            // The overview used to borrow the search level; keep that behaviour
+            // for existing installs without writing the new key implicitly.
+            self.aiOverviewThinking = searchThinking
+        }
         let rawSearchPages = defaults.integerIfPresent(forKey: "aiSearchPageCount") ?? 3
         self.aiSearchPageCount = Self.validAISearchPageCounts.contains(rawSearchPages) ? rawSearchPages : 3
+        self.aiEvidenceAssessmentEnabled =
+            defaults.boolIfPresent(forKey: "aiEvidenceAssessmentEnabled") ?? false
+        self.aiOverviewWebSupplement =
+            defaults.boolIfPresent(forKey: "aiOverviewWebSupplement") ?? true
         let rawDashboardCap = defaults.integerIfPresent(forKey: "aiDashboardDailyCap") ?? 200
         self.aiDashboardDailyCap = Self.validAICaps.contains(rawDashboardCap) ? rawDashboardCap : 200
         if let legacyRef = defaults.stringIfPresent(forKey: "onePasswordRef"),
@@ -873,6 +931,7 @@ final class AppSettings {
         self.statsDayTimestamp = defaults.doubleIfPresent(forKey: "statsDayTimestamp") ?? todayStart
 
         self.rssUnifiedDisplayCount = defaults.boolIfPresent(forKey: "rssUnifiedDisplayCount") ?? true
+        self.agentAccessEnabled = defaults.boolIfPresent(forKey: "agentAccessEnabled") ?? true
         let rawTextCount = defaults.integerIfPresent(forKey: "rssDefaultTextCount") ?? 10
         self.rssDefaultTextCount = RSSSourceConfig.validTextCounts.contains(rawTextCount) ? rawTextCount : 10
         let rawImageCount = defaults.integerIfPresent(forKey: "rssDefaultImageCount") ?? 4
@@ -1006,6 +1065,21 @@ final class AppSettings {
         if let data = try? JSONEncoder().encode(rssSources) {
             TestIsolation.defaults.set(data, forKey: "rssSources")
         }
+    }
+
+    /// One write for batch import, CLI commands and onboarding picks. The
+    /// caller has already validated and deduplicated the URLs.
+    @discardableResult
+    func addRSSSources(_ sources: [RSSSourceConfig], select: Bool = true) -> [RSSSourceConfig] {
+        guard !sources.isEmpty else { return [] }
+        var existing = Set(rssSources.map(\.id))
+        let additions = sources.filter { existing.insert($0.id).inserted }
+        guard !additions.isEmpty else { return [] }
+        rssSources.append(contentsOf: additions)
+        if select {
+            selectedRSSSourceIDs.formUnion(additions.map(\.id))
+        }
+        return additions
     }
 
     static func normalizedRSSSources(_ sources: [RSSSourceConfig]) -> [RSSSourceConfig] {

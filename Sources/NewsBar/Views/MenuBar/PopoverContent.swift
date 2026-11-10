@@ -16,6 +16,7 @@ struct PopoverContent: View {
 
     var onOpenSettings: () -> Void
     var onOpenDashboard: () -> Void
+    var onOpenRSSSettings: () -> Void = {}
     var onOpenResearchCenter: () -> Void = {}
     var onConfigureKey: (() -> Void)?
     var weiboMonitor: WeiboMonitorViewModel? = nil
@@ -44,7 +45,8 @@ struct PopoverContent: View {
                 onConfigureKey: onConfigureKey,
                 onOpenResearchCenter: onOpenResearchCenter,
                 weiboMonitor: weiboMonitor,
-                onOpenDashboard: onOpenDashboard
+                onOpenDashboard: onOpenDashboard,
+                onOpenRSSSettings: onOpenRSSSettings
             )
 
             if !expandedRSSSourceIDs.isEmpty {
@@ -191,6 +193,7 @@ private struct PopoverFeedList: View {
     let onOpenResearchCenter: () -> Void
     let weiboMonitor: WeiboMonitorViewModel?
     let onOpenDashboard: () -> Void
+    let onOpenRSSSettings: () -> Void
 
     var body: some View {
         ScrollView(.vertical, showsIndicators: false) {
@@ -236,6 +239,10 @@ private struct PopoverFeedList: View {
 
                 PopoverHotTrendSection(orchestrator: orchestrator)
 
+                if settings.rssSources.isEmpty || settings.selectedRSSSourceIDs.isEmpty {
+                    PopoverRSSEmptyCard(onOpenSettings: onOpenRSSSettings)
+                }
+
                 ForEach(settings.activeSources.filter { !$0.isBuiltIn }, id: \.id) { source in
                     PopoverRSSSection(
                         source: source,
@@ -249,6 +256,52 @@ private struct PopoverFeedList: View {
             }
             .padding(.top, 10)
         }
+    }
+}
+
+private struct PopoverRSSEmptyCard: View {
+    @Environment(AppSettings.self) private var settings
+    let onOpenSettings: () -> Void
+
+    private var hasSources: Bool { !settings.rssSources.isEmpty }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            HStack(alignment: .top, spacing: 9) {
+                EditorialSymbolBadge(
+                    symbol: "antenna.radiowaves.left.and.right",
+                    fallbackTint: .blue,
+                    size: 26
+                )
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(hasSources ? "popover.rssEmpty.noneSelected.title".localized : "popover.rssEmpty.title".localized)
+                        .font(.system(size: 12, weight: .semibold))
+                    Text(hasSources ? "popover.rssEmpty.noneSelected.body".localized : "popover.rssEmpty.body".localized)
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                Spacer(minLength: 0)
+            }
+
+            Button {
+                onOpenSettings()
+            } label: {
+                Text(hasSources ? "popover.rssEmpty.noneSelected.action".localized : "popover.rssEmpty.action".localized)
+            }
+            .buttonStyle(EditorialActionButtonStyle(tone: .primary, compact: true))
+            .controlSize(.small)
+        }
+        .padding(11)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            Color.secondary.opacity(0.07),
+            in: RoundedRectangle(cornerRadius: 10, style: .continuous)
+        )
+        .padding(.horizontal, PopoverLayout.horizontalInset)
+        .padding(.bottom, PopoverLayout.sectionBottomSpacing)
     }
 }
 

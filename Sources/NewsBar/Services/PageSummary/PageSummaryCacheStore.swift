@@ -12,6 +12,9 @@ actor PageSummaryCacheStore {
     private struct Entry: Codable {
         var summary: PageSummary
         var lastUsedAt: Date
+        /// Absolute expiry for new entries. Old v2 entries have no key and fall
+        /// back to the sliding `lastUsedAt` retention.
+        var expiresAt: Date? = nil
     }
 
     private let fileURL: URL
@@ -48,11 +51,16 @@ actor PageSummaryCacheStore {
         _ summary: PageSummary,
         key: String,
         token: CacheWriteToken? = nil,
-        now: Date = Date()
+        now: Date = Date(),
+        ttl: TimeInterval = retention
     ) {
         guard token?.isCurrent != false else { return }
         ensureLoaded()
-        entries[key] = Entry(summary: summary, lastUsedAt: now)
+        entries[key] = Entry(
+            summary: summary,
+            lastUsedAt: now,
+            expiresAt: now.addingTimeInterval(max(1, ttl))
+        )
         prune(now: now)
         persist()
     }
@@ -78,7 +86,14 @@ actor PageSummaryCacheStore {
 
     private func prune(now: Date) {
         let cutoff = now.addingTimeInterval(-Self.retention)
-        entries = entries.filter { $0.value.lastUsedAt >= cutoff }
+        entries = entries.filter { _, entry in
+            if let expiresAt = entry.expiresAt {
+                return expiresAt > now
+            }
+            // Old entries have no absolute expiry; keep the historical sliding
+            // window so upgrading does not throw the whole cache away.
+            return entry.lastUsedAt >= cutoff
+        }
         guard entries.count > Self.maxEntries else { return }
         let kept = entries
             .sorted { $0.value.lastUsedAt > $1.value.lastUsedAt }

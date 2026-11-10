@@ -50,6 +50,7 @@ swift build -c release --arch arm64
 BIN_DIR="$(swift build -c release --arch arm64 --show-bin-path)"
 mkdir -p "$BUNDLE/Contents/MacOS" "$BUNDLE/Contents/Resources"
 cp "$BIN_DIR/NewsBar" "$BUNDLE/Contents/MacOS/NewsBar"
+cp "$BIN_DIR/newsbarctl" "$BUNDLE/Contents/MacOS/newsbarctl"
 cp version.txt "$BUNDLE/Contents/Resources/"
 for asset in AppIcon.icns MenuBarIcon.png MenuBarIcon@2x.png; do
     cp "Resources/$asset" "$BUNDLE/Contents/Resources/"
@@ -82,6 +83,7 @@ cat > "$BUNDLE/Contents/Info.plist" <<PLIST
 PLIST
 
 plutil -lint "$BUNDLE/Contents/Info.plist"
+codesign --force --sign - "$BUNDLE/Contents/MacOS/newsbarctl"
 codesign --force --deep --sign - "$BUNDLE"
 codesign --verify --strict --deep --verbose=2 "$BUNDLE"
 

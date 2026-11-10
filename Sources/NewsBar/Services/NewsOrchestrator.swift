@@ -2057,7 +2057,7 @@ final class NewsOrchestrator {
                                        model: model, provider: ContentIdentity.digest(connection.baseURL), language: summaryLanguage, maxWords: maxWords,
                                        asOf: now, coverageStart: max(now.addingTimeInterval(-24 * 3600), state.archiveStartedAt ?? now), trendHistoryHash: trendHistoryHash)
         let items = manifest.items
-        let frozenThinking = settings.aiDisableDeepSeekThinking
+        let frozenThinking = settings.aiSummaryThinking
         guard !items.isEmpty else {
             if !hasRenderableSummary { aiSummaryState = .idle }
             return 0
@@ -2092,7 +2092,7 @@ final class NewsOrchestrator {
                 trendTopicCount: trendRange, dailyTopicCount: dailyRange,
                 trendHistoryContext: trendHistoryContext,
                 summaryLanguage: summaryLanguage,
-                disableDeepSeekThinking: frozenThinking,
+                thinking: frozenThinking,
                 requestAllowed: { await MainActor.run {
                     self.isCurrentCacheWork(cacheToken)
                         && InterestController.shared.state.consentEpoch == epoch
@@ -2128,7 +2128,7 @@ final class NewsOrchestrator {
                         formatEnforcementSuffix: Self.formatEnforcementSuffix,
                         trendHistoryContext: trendHistoryContext,
                         summaryLanguage: summaryLanguage,
-                        disableDeepSeekThinking: frozenThinking,
+                        thinking: frozenThinking,
                         requestAllowed: { await MainActor.run {
                             self.isCurrentCacheWork(cacheToken)
                                 && InterestController.shared.state.consentEpoch == epoch

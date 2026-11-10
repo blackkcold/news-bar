@@ -26,6 +26,7 @@ enum RetroEditorialTokens {
 
 enum EditorialButtonTone {
     case primary
+    case prominent
     case secondary
     case destructive
     /// The chosen item in a segmented row. Filled in both themes so the
@@ -300,9 +301,9 @@ struct EditorialActionButtonStyle: ButtonStyle {
     }
 
     private var foregroundColor: Color {
-        guard retro else { return tone == .selected ? .white : .primary }
+        guard retro else { return tone == .selected || tone == .prominent ? .white : .primary }
         switch tone {
-        case .primary, .selected, .destructive: return RetroEditorialTokens.raisedPaper
+        case .primary, .prominent, .selected, .destructive: return RetroEditorialTokens.raisedPaper
         case .secondary: return RetroEditorialTokens.ink
         }
     }
@@ -311,7 +312,7 @@ struct EditorialActionButtonStyle: ButtonStyle {
     private var buttonBackground: some View {
         if retro {
             Rectangle().fill(retroFill)
-        } else if tone == .selected {
+        } else if tone == .selected || tone == .prominent {
             RoundedRectangle(cornerRadius: 7, style: .continuous)
                 .fill(Color.accentColor)
         } else {
@@ -324,7 +325,7 @@ struct EditorialActionButtonStyle: ButtonStyle {
     private var buttonBorder: some View {
         if retro {
             Rectangle().strokeBorder(RetroEditorialTokens.ink, lineWidth: 1.2)
-        } else if tone == .selected {
+        } else if tone == .selected || tone == .prominent {
             RoundedRectangle(cornerRadius: 7, style: .continuous)
                 .strokeBorder(Color.accentColor, lineWidth: 1)
         } else {
@@ -339,7 +340,7 @@ struct EditorialActionButtonStyle: ButtonStyle {
 
     private var retroFill: Color {
         switch tone {
-        case .primary, .selected: return RetroEditorialTokens.brick
+        case .primary, .prominent, .selected: return RetroEditorialTokens.brick
         case .secondary: return RetroEditorialTokens.raisedPaper
         case .destructive: return RetroEditorialTokens.ink
         }
