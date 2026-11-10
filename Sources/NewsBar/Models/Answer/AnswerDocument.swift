@@ -71,19 +71,53 @@ struct AnswerDocument: Equatable, Sendable {
     /// True when the provider stopped at the token ceiling. The canvas says so
     /// rather than letting a cut-off answer look complete.
     var truncated: Bool = false
+    /// App-verified retrieval counts and the basis of this answer. `nil` for
+    /// answers that never retrieve (offline selection explanation), so the
+    /// shared canvas does not draw a badge it cannot justify.
+    var retrieval: RetrievalEvidence? = nil
 
     var isOffline: Bool { mode.isOffline }
+
+    /// Source numbers the answer may render as citations. A rejected source is
+    /// never one, even when the model wrote its number. `nil` means "no
+    /// assessment information", which keeps legacy/offline documents working.
+    var allowedCitations: Set<Int>? {
+        guard sources.contains(where: { $0.assessment != nil }) else { return nil }
+        return Set(sources.filter { $0.assessment?.adoption != .rejected }.map(\.index))
+    }
 
     /// Distinct source numbers the answer actually points at, in reading order.
     var citationIndices: [Int] {
         Self.citedIndices(in: blocks, sourceCount: sources.count)
     }
 
+    /// Like `citationIndices`, but a citation to a rejected source does not
+    /// count. This is what the canvas highlights and what the basis uses.
+    var verifiedCitationIndices: [Int] {
+        Self.citedIndices(
+            in: blocks,
+            sourceCount: sources.count,
+            allowed: allowedCitations
+        )
+    }
+
     static func citedIndices(in blocks: [AnswerBlock], sourceCount: Int) -> [Int] {
+        citedIndices(in: blocks, sourceCount: sourceCount, allowed: nil)
+    }
+
+    static func citedIndices(
+        in blocks: [AnswerBlock],
+        sourceCount: Int,
+        allowed: Set<Int>?
+    ) -> [Int] {
         var seen: Set<Int> = []
         var ordered: [Int] = []
         for block in blocks {
-            for segment in AnswerCitationScanner.segments(in: block.body, sourceCount: sourceCount) {
+            for segment in AnswerCitationScanner.segments(
+                in: block.body,
+                sourceCount: sourceCount,
+                allowed: allowed
+            ) {
                 guard case .citation(let index) = segment else { continue }
                 guard seen.insert(index).inserted else { continue }
                 ordered.append(index)

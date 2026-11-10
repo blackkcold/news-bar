@@ -323,6 +323,11 @@ final class SelectionExplainModel {
             String(policy.countCap ?? -1),
             String(policy.costCapMicros ?? -1),
             language.rawValue,
+            // The client captures the legacy DeepSeek preference at build time;
+            // changing it must invalidate the cached service.
+            settings.aiDisableDeepSeekThinking
+                ? AIThinkingLevel.off.rawValue
+                : AIThinkingLevel.providerDefault.rawValue,
             ContentIdentity.digest(key)
         ].joined(separator: "\n")
         let service: SelectionExplainService

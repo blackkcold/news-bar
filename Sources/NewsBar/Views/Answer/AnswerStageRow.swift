@@ -6,6 +6,9 @@ struct AnswerStageRow: View {
     let state: AISearchPanelModel.State
     let scope: AISearchScope
     let language: AppLanguage
+    /// The assess step only exists for this run when the user enabled source
+    /// assessment; showing a step that will never run is worse than omitting it.
+    var showsAssessment: Bool = false
 
     private struct Step: Identifiable {
         let id: Int
@@ -41,6 +44,9 @@ struct AnswerStageRow: View {
             steps.append(Step(id: steps.count, title: L10n.string("reader.search.stage.search", language: language)))
         }
         steps.append(Step(id: steps.count, title: readingTitle))
+        if scope == .web, showsAssessment {
+            steps.append(Step(id: steps.count, title: L10n.string("reader.search.stage.assess", language: language)))
+        }
         steps.append(Step(id: steps.count, title: L10n.string("reader.search.stage.answer", language: language)))
         return steps
     }
@@ -54,9 +60,16 @@ struct AnswerStageRow: View {
 
     private var currentIndex: Int {
         switch state {
-        case .searching: return scope == .web ? 0 : 0
-        case .reading, .answering: return scope == .web ? 1 : 0
-        default: return -1
+        case .searching:
+            return scope == .web ? 0 : 0
+        case .reading:
+            return scope == .web ? 1 : 0
+        case .assessing:
+            return scope == .web ? 2 : 0
+        case .answering:
+            return max(0, steps.count - 1)
+        default:
+            return -1
         }
     }
 

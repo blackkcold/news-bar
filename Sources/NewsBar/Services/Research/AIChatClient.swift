@@ -201,9 +201,16 @@ struct HTTPAIChatClient: AIChatClienting {
     }
 
     /// One HTTP dispatch, one reservation. `build` runs before the reservation
-    /// so an invalid request never consumes budget.
-    private func perform(_ request: AIChatRequest, stream: Bool) async throws -> AIChatResponse {
-        let built = try build(request, stream: stream)
+    /// so an invalid request never consumes budget. If an experimental thinking
+    /// field is rejected with 400/422, retry exactly once without it; the first
+    /// dispatch is already settled as unknown and the retry reserves its own.
+    private func perform(
+        _ request: AIChatRequest,
+        stream: Bool,
+        suppressThinking: Bool = false,
+        allowThinkingFallback: Bool = true
+    ) async throws -> AIChatResponse {
+        let built = try build(request, stream: stream, suppressThinking: suppressThinking)
         let reservation = try reserveDispatch(request, outputTokens: built.effectiveMaxTokens)
         if Task.isCancelled {
             settleDispatch(reservation, .notDispatched)
@@ -223,6 +230,18 @@ struct HTTPAIChatClient: AIChatClienting {
             // The request left the device: the provider may bill it even when
             // it answered with an error, so the ceiling stays and is flagged.
             settleDispatch(reservation, .unknown)
+            if allowThinkingFallback,
+               built.sentThinkingField,
+               let chatError = error as? AIChatError,
+               case .server(let status) = chatError,
+               status == 400 || status == 422 {
+                return try await perform(
+                    request,
+                    stream: stream,
+                    suppressThinking: true,
+                    allowThinkingFallback: false
+                )
+            }
             throw error
         }
     }
@@ -273,7 +292,15 @@ struct HTTPAIChatClient: AIChatClienting {
                         // reserved dispatch.
                         settleDispatch(reservation, .unknown)
                         guard Self.allowsNonStreamingFallback(error) else { throw error }
-                        let whole = try await perform(request, stream: false)
+                        // If the streamed request carried an experimental
+                        // thinking field, the non-streaming fallback skips it
+                        // directly; retrying it first would buy a third dispatch.
+                        let whole = try await perform(
+                            request,
+                            stream: false,
+                            suppressThinking: built.sentThinkingField,
+                            allowThinkingFallback: false
+                        )
                         if let usage = whole.usage { continuation.yield(.usage(usage)) }
                         continuation.yield(.text(whole.text))
                         continuation.yield(.finished(truncated: whole.truncated))
@@ -335,7 +362,11 @@ struct HTTPAIChatClient: AIChatClienting {
         }
     }
 
-    private func build(_ request: AIChatRequest, stream: Bool) throws -> AIBuiltRequest {
+    private func build(
+        _ request: AIChatRequest,
+        stream: Bool,
+        suppressThinking: Bool = false
+    ) throws -> AIBuiltRequest {
         do {
             return try AIRequestBuilder.build(
                 connection: connection,
@@ -350,7 +381,8 @@ struct HTTPAIChatClient: AIChatClienting {
                 ),
                 timeout: timeout,
                 userAgent: "NewsBar/1.0 (macOS; Chat)",
-                stream: stream
+                stream: stream,
+                suppressThinking: suppressThinking
             )
         } catch AIRequestBuilderError.invalidURL {
             throw AIChatError.invalidURL

@@ -38,12 +38,44 @@ enum AISearchServiceFactory {
         try Task.checkCancellation()
         guard settings.isCurrentAIKey(bound) else { throw AISearchError.configurationChanged }
         let searchConfiguration = SearchRouterConfiguration(enabled: providerIDs, keys: searchKeys)
-        let router = SearchRouter()
+        // AI search is a first-class search consumer: it must obey the same
+        // local per-provider rate guards as research, not only the AI quota.
+        let router = SearchRouter(quota: .shared)
         let firecrawlKey = searchKeys[.firecrawl] ?? ""
         let pageReader = PageReader(isScrapeEnabled: !firecrawlKey.isEmpty)
 
         let price = connection.customPrice
             ?? AIPriceCatalog.price(for: connection.providerID, model: model)
+
+        let chatQuota = AIChatQuota(
+            reserve: { request, outputTokens in
+                let system = request.messages.filter { $0.role == .system }.map(\.content).joined(separator: "\n")
+                let user = request.messages.filter { $0.role != .system }.map(\.content).joined(separator: "\n")
+                let reserved = price.map {
+                    AICostEstimator.reserveMicros(
+                        inputTokens: AICostEstimator.estimateInputTokens(system: system, user: user),
+                        maxOutputTokens: outputTokens,
+                        price: $0
+                    )
+                } ?? 0
+                return AIQuotaStore.shared.reserveTracked(
+                    .aiSearch, policy: policy, reservedCostMicros: reserved
+                )
+            },
+            settle: { reservation, outcome in
+                switch outcome {
+                case let .completed(usage, price):
+                    AIQuotaStore.shared.settle(reservation, usage: usage, price: price)
+                case .unknown:
+                    AIQuotaStore.shared.settle(reservation, usage: nil, price: nil)
+                case .notDispatched:
+                    AIQuotaStore.shared.settle(
+                        reservation, actualCostMicros: 0,
+                        inputTokens: 0, outputTokens: 0, priced: true
+                    )
+                }
+            }
+        )
 
         let client = HTTPAIChatClient(
             connection: connection,
@@ -51,43 +83,28 @@ enum AISearchServiceFactory {
             model: model,
             thinking: thinking,
             timeout: 45,
-            quota: AIChatQuota(
-                reserve: { request, outputTokens in
-                    let system = request.messages.filter { $0.role == .system }.map(\.content).joined(separator: "\n")
-                    let user = request.messages.filter { $0.role != .system }.map(\.content).joined(separator: "\n")
-                    let reserved = price.map {
-                        AICostEstimator.reserveMicros(
-                            inputTokens: AICostEstimator.estimateInputTokens(system: system, user: user),
-                            maxOutputTokens: outputTokens,
-                            price: $0
-                        )
-                    } ?? 0
-                    return AIQuotaStore.shared.reserveTracked(
-                        .aiSearch, policy: policy, reservedCostMicros: reserved
-                    )
-                },
-                settle: { reservation, outcome in
-                    switch outcome {
-                    case let .completed(usage, price):
-                        AIQuotaStore.shared.settle(reservation, usage: usage, price: price)
-                    case .unknown:
-                        AIQuotaStore.shared.settle(reservation, usage: nil, price: nil)
-                    case .notDispatched:
-                        AIQuotaStore.shared.settle(
-                            reservation, actualCostMicros: 0,
-                            inputTokens: 0, outputTokens: 0, priced: true
-                        )
-                    }
-                }
-            )
+            quota: chatQuota
         )
+        // The assessor is a separate call with its own output ceiling. It does
+        // not carry the answer's thinking level: auditing quotations is a
+        // short, factual task, and reasoning tokens would only add cost.
+        let assessClient: HTTPAIChatClient? = settings.aiEvidenceAssessmentEnabled
+            ? HTTPAIChatClient(
+                connection: connection,
+                apiKey: key,
+                model: model,
+                thinking: nil,
+                timeout: 45,
+                quota: chatQuota
+            )
+            : nil
 
         let estimatedSourceCharacters = min(
             max(1, profile.maxTotalCharacters),
             max(1, pageCount) * max(1, profile.maxSourceCharacters)
         )
         let preflightOutputTokens = effectiveOutputTokens(
-            connection: connection, thinking: thinking, requested: AISearchService.answerTokens
+            connection: connection, model: model, thinking: thinking, requested: AISearchService.answerTokens
         )
         let preflightReservation = price.map {
             AICostEstimator.reserveMicros(
@@ -98,35 +115,57 @@ enum AISearchServiceFactory {
                 price: $0
             )
         } ?? 0
+        // Assessment is one extra call. The preflight must not let a run start
+        // when that call cannot be paid for; the assessor still degrades to the
+        // heuristic if the budget runs out mid-run.
+        let assessmentReservation = settings.aiEvidenceAssessmentEnabled
+            ? (price.map {
+                AICostEstimator.reserveMicros(
+                    inputTokens: EvidencePrompts.maxTotalCharacters + 2_048,
+                    maxOutputTokens: 1_200,
+                    price: $0
+                )
+            } ?? 0)
+            : 0
+
+        var assessHandler: AISearchService.AssessHandler? = nil
+        if let assessClient {
+            assessHandler = { question, pageTitle, sources in
+                await EvidenceAssessor.assess(
+                    question: question,
+                    pageTitle: pageTitle,
+                    sources: sources,
+                    client: assessClient,
+                    language: language
+                )
+            }
+        }
 
         return AISearchService(
-            search: { query, limit in
+            search: { query, ticket in
                 let key = [
-                    query,
-                    SearchRecency.month.rawValue,
+                    query.text,
+                    query.recency.rawValue,
+                    query.language ?? "",
+                    String(query.maxResults),
                     providerIDs.map(\.rawValue).sorted().joined(separator: ","),
                 ].joined(separator: "|")
                 if let cached = await SearchHitCache.shared.hits(for: key) {
                     return cached
                 }
                 let batch = try await router.search(
-                    SearchQuery(
-                        text: query,
-                        recency: .month,
-                        language: language.bcp47,
-                        maxResults: limit
-                    ),
+                    query,
                     configuration: searchConfiguration,
-                    maxAttempts: 6,
-                    maxProviderAttempts: 3,
+                    maxAttempts: EvidenceRetriever.maxAttemptsPerQuery,
+                    maxProviderAttempts: EvidenceRetriever.maxProviderAttemptsPerQuery,
                     useCache: false,
-                    ticket: SearchAttemptTicket(limit: 6)
+                    ticket: ticket
                 )
                 await SearchHitCache.shared.store(batch.hits, for: key)
                 return batch.hits
             },
             read: { hit in
-                try await pageReader.read(hit, apiKey: firecrawlKey)
+                try await pageReader.readOutcome(hit, apiKey: firecrawlKey)
             },
             answer: { system, user, maxTokens in
                 try await client.complete(AIChatRequest(
@@ -143,7 +182,7 @@ enum AISearchServiceFactory {
                 guard snapshot.isUsable else { return false }
                 return !policy.blocks(
                     count: snapshot.count,
-                    costMicros: snapshot.costMicros + preflightReservation
+                    costMicros: snapshot.costMicros + preflightReservation + assessmentReservation
                 )
             },
             streamAnswer: { system, user, maxTokens in
@@ -156,6 +195,7 @@ enum AISearchServiceFactory {
                     temperature: 0.2
                 ))
             },
+            assess: assessHandler,
             onPartial: onPartial,
             now: { Date() },
             pageCount: pageCount,
@@ -168,11 +208,14 @@ enum AISearchServiceFactory {
     }
 
     nonisolated private static func effectiveOutputTokens(
-        connection: ResolvedAIConnection, thinking: AIThinkingLevel, requested: Int
+        connection: ResolvedAIConnection, model: String, thinking: AIThinkingLevel, requested: Int
     ) -> Int {
         var body: [String: Any] = [:]
+        // Must mirror AIRequestBuilder.build exactly, including the model-family
+        // gate; otherwise the preflight reservation can under-count tokens.
+        let style = AIThinkingResolver.effectiveStyle(connection: connection, model: model)
         return AIThinkingApplication.apply(
-            style: connection.thinkingStyle, level: thinking, body: &body, maxTokens: max(1, requested)
+            style: style, level: thinking, body: &body, maxTokens: max(1, requested)
         ).maxTokens
     }
 }

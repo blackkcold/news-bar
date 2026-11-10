@@ -27,7 +27,7 @@ final class AISummaryDispatchAccountingTests: XCTestCase {
             _ = try await AISummaryService.makeRequest(
                 connection: pricedConnection(baseURL: "https://["), apiKey: "fictional-key", model: "fixture",
                 systemPrompt: "system", userPrompt: "user", maxTokens: 100,
-                disableDeepSeekThinking: false, target: .popup, budgetMode: .independent,
+                thinking: .providerDefault, target: .popup, budgetMode: .independent,
                 ledger: ledger, transport: { _ in
                     await dispatches.record()
                     throw URLError(.timedOut)
@@ -52,7 +52,7 @@ final class AISummaryDispatchAccountingTests: XCTestCase {
             _ = try await AISummaryService.makeRequest(
                 connection: pricedConnection(baseURL: "https://provider.example.com/v1/chat"),
                 apiKey: "fictional-key", model: "fixture", systemPrompt: "system", userPrompt: "user",
-                maxTokens: 100, disableDeepSeekThinking: false, target: .popup, budgetMode: .independent,
+                maxTokens: 100, thinking: .providerDefault, target: .popup, budgetMode: .independent,
                 ledger: ledger, transport: { _ in throw URLError(.timedOut) }
             )
             XCTFail("The fixture transport must fail")
@@ -75,7 +75,7 @@ final class AISummaryDispatchAccountingTests: XCTestCase {
             _ = try await AISummaryService.makeRequest(
                 connection: pricedConnection(baseURL: "https://provider.example.com/v1/chat"),
                 apiKey: "fictional-key", model: "fixture", systemPrompt: "system", userPrompt: "user",
-                maxTokens: 100, disableDeepSeekThinking: false, target: .popup, budgetMode: .independent,
+                maxTokens: 100, thinking: .providerDefault, target: .popup, budgetMode: .independent,
                 ledger: ledger, transport: { _ in
                     guard ledger.resetToday(),
                           ledger.reserveTracked(.research, policy: .unlimited, reservedCostMicros: 500) != nil else {

@@ -10,6 +10,7 @@ private let notificationLog = Logger(subsystem: "com.newsbar.app", category: "no
 extension Notification.Name {
     static let rssSourceAdded = Notification.Name("rssSourceAdded")
     static let switchToAITab = Notification.Name("switchToAITab")
+    static let switchToRSSTab = Notification.Name("switchToRSSTab")
     static let apiKeyConfigured = Notification.Name("apiKeyConfigured")
     static let fireFakeBurstPush = Notification.Name("fireFakeBurstPush")
     static let burstDetailRequest = Notification.Name("burstDetailRequest")
@@ -55,6 +56,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private var lastWeiboUnread = -1
     private var orchestrator: NewsOrchestrator?
     private var updateChecker: UpdateChecker?
+    private var agentCommandService: AgentCommandService?
     private var autoRefreshTimer: Timer?
     private var researchMaintenanceTimer: Timer?
     private var researchMaintenanceTask: Task<Void, Never>?
@@ -83,6 +85,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         Task { await InterestController.shared.prepare() }
         Task { await ReaderRuleListCache.prewarm() }
         setupWorkspaceObservers()
+
+        let agentService = AgentCommandService(settings: settings) { [weak self] in
+            guard let self, let orchestrator = self.orchestrator else { return }
+            Task { await orchestrator.manualRefresh(settings: self.settings) }
+        }
+        agentCommandService = agentService
+        agentService.start()
 
         preloadCachedNews()
         loadAPIKeyFromFile()
@@ -651,7 +660,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         return popover
     }
 
-    func openSettings(toAITab: Bool = false, toWeiboMonitor: Bool = false) {
+    func openSettings(toAITab: Bool = false, toWeiboMonitor: Bool = false, toRSS: Bool = false) {
         popover?.performClose(nil)
 
         if let existing = settingsWindow {
@@ -661,11 +670,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 NotificationCenter.default.post(name: .switchToWeiboMonitor, object: nil)
             } else if toAITab {
                 NotificationCenter.default.post(name: .switchToAITab, object: nil)
+            } else if toRSS {
+                NotificationCenter.default.post(name: .switchToRSSTab, object: nil)
             }
             return
         }
 
-        let initialPane: SettingsPane = toWeiboMonitor ? .weiboMonitor : (toAITab ? .ai : .general)
+        let initialPane: SettingsPane = toWeiboMonitor ? .weiboMonitor : (toAITab ? .ai : (toRSS ? .reading : .general))
 
         let window = NSWindow(
             contentRect: NSRect(origin: .zero, size: Self.settingsSize),
@@ -852,6 +863,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         autoRefreshTimer?.invalidate()
         researchMaintenanceTimer?.invalidate()
         weiboMonitor?.stop()
+        agentCommandService?.stop()
+        agentCommandService = nil
         appearanceObservation?.invalidate()
         appearanceObservation = nil
         let workspaceCenter = NSWorkspace.shared.notificationCenter

@@ -1,6 +1,7 @@
 import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
+import NewsBarAgentProtocol
 
 struct RSSTab: View {
     @Environment(AppSettings.self) private var settings
@@ -27,15 +28,23 @@ struct RSSTab: View {
     @State private var draggedSubscribedRSSSourceID: String?
     @State private var dropTargetRSSSourceID: String?
     @State private var pendingRSSDeletion: RSSSourceConfig?
-    @State private var opmlPreview: [OPMLSubscription] = []
-    @State private var opmlSkippedCount = 0
-    @State private var opmlError: String?
-    @State private var showOPMLPreview = false
+    @State private var importSheet: ImportSheetRequest?
+    @State private var importError: String?
     @State private var rssHealth: [RSSSourceHealth] = []
 
     private let reorderAnimation = Animation.spring(response: 0.26, dampingFraction: 0.88, blendDuration: 0.08)
     private let textCountCandidates = [5, 10]
     private let imageCountCandidates = [4, 6, 8]
+
+    private struct ImportSheetRequest: Identifiable {
+        let id = UUID()
+        let mode: RSSImportSheet.Mode
+    }
+
+    private enum ExportScope {
+        case selected
+        case all
+    }
 
     private struct RecommendationValidationBadge {
         let symbol: String
@@ -132,40 +141,19 @@ struct RSSTab: View {
 
     var body: some View {
         Form {
-            Section {
-                Toggle("rss.unifiedCount".localized, isOn: Binding(
-                    get: { settings.rssUnifiedDisplayCount },
-                    set: { settings.rssUnifiedDisplayCount = $0 }
-                ))
-
-                if settings.rssUnifiedDisplayCount {
-                    rssDisplayCountRow(
-                        title: "rss.textFlow".localized,
-                        selection: Binding(
-                            get: { settings.rssDefaultTextCount },
-                            set: { settings.rssDefaultTextCount = $0 }
-                        ),
-                        candidates: textCountCandidates
-                    )
-
-                    rssDisplayCountRow(
-                        title: "rss.imageFlow".localized,
-                        selection: Binding(
-                            get: { settings.rssDefaultImageCount },
-                            set: { settings.rssDefaultImageCount = $0 }
-                        ),
-                        candidates: imageCountCandidates
-                    )
-                }
-            } header: {
-                Text("rss.displayCount".localized)
-            } footer: {
-                Text(settings.rssUnifiedDisplayCount ? "rss.displayCount.footer.unified".localized : "rss.displayCount.footer.perSource".localized)
+            if !settings.rssSources.isEmpty {
+                displayCountSection
             }
 
             Section {
                 if settings.rssSources.isEmpty {
-                    emptySourcesView
+                    RSSOnboardingCard(
+                        picks: RSSStarterPicks.recommendations,
+                        showsAllRecommendations: showRecommendations,
+                        onAdd: addRecommended,
+                        onToggleAll: { withAnimation { showRecommendations.toggle() } },
+                        onImportOPML: importFile
+                    )
                 } else if subscribedRSSSources.isEmpty {
                     emptySubscribedView
                 } else {
@@ -176,13 +164,19 @@ struct RSSTab: View {
                 }
             } header: {
                 HStack {
-                    Text(L10n.string("rss.subscribed", subscribedRSSSources.count))
+                    Text(
+                        settings.rssSources.isEmpty
+                            ? "rss.onboarding.header".localized
+                            : L10n.string("rss.subscribed", subscribedRSSSources.count)
+                    )
                     Spacer()
-                    Button {
-                        withAnimation { showRecommendations.toggle() }
-                    } label: {
-                        Text(showRecommendations ? "rss.hideRecommendations".localized : "rss.showRecommendations".localized)
-                            .font(.caption)
+                    if !settings.rssSources.isEmpty {
+                        Button {
+                            withAnimation { showRecommendations.toggle() }
+                        } label: {
+                            Text(showRecommendations ? "rss.hideRecommendations".localized : "rss.showRecommendations".localized)
+                                .font(.caption)
+                        }
                     }
                 }
             } footer: {
@@ -199,6 +193,10 @@ struct RSSTab: View {
                 } header: {
                     Text(L10n.string("rss.unsubscribed", unsubscribedRSSSources.count))
                 }
+            }
+
+            if !settings.rssSources.isEmpty && subscribedRSSSources.isEmpty {
+                noneSelectedSection
             }
 
             if showRecommendations {
@@ -227,70 +225,88 @@ struct RSSTab: View {
                 Text("rss.addSource".localized)
             }
 
-            Section {
-                if rssHealth.isEmpty {
-                    Text("rss.health.empty".localized)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                } else {
-                    ForEach(rssHealth) { row in
-                        HStack(spacing: 8) {
-                            Image(systemName: row.status.symbol)
-                                .foregroundStyle(row.status.tint)
-                                .font(.caption)
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(row.name)
-                                    .font(.callout)
-                                if let detail = row.detail {
-                                    Text(detail)
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                        .lineLimit(1)
-                                }
-                            }
-                            Spacer()
-                            if let last = row.lastAttempt {
-                                Text(last, style: .relative)
-                                    .font(.caption2)
-                                    .foregroundStyle(.tertiary)
-                            }
-                        }
-                    }
-                }
-                Button {
-                    refreshHealth()
-                } label: {
-                    Label("rss.health.refresh".localized, systemImage: "arrow.clockwise")
-                }
-            } header: {
-                Text("rss.health".localized)
-            } footer: {
-                Text("rss.health.footer".localized)
+            if !settings.rssSources.isEmpty {
+                healthSection
             }
 
             Section {
                 HStack(spacing: 10) {
                     Button {
-                        importOPML()
+                        importFile()
                     } label: {
-                        Label("rss.opml.import".localized, systemImage: "square.and.arrow.down")
+                        Label("rss.import.file".localized, systemImage: "square.and.arrow.down")
                     }
+                    .buttonStyle(EditorialActionButtonStyle(compact: true))
+                    .controlSize(.small)
+
                     Button {
-                        exportOPML()
+                        importSheet = ImportSheetRequest(mode: .googleNews)
                     } label: {
-                        Label("rss.opml.export".localized, systemImage: "square.and.arrow.up")
+                        Label("rss.import.googleNews".localized, systemImage: "globe")
                     }
+                    .buttonStyle(EditorialActionButtonStyle(compact: true))
+                    .controlSize(.small)
                 }
-                if let opmlError {
-                    Text(opmlError)
+
+                HStack(spacing: 10) {
+                    Menu {
+                        Button("rss.export.selected".localized) {
+                            exportOPML(scope: .selected)
+                        }
+                        Button("rss.export.all".localized) {
+                            exportOPML(scope: .all)
+                        }
+                    } label: {
+                        Label("rss.export.opml".localized, systemImage: "square.and.arrow.up")
+                    }
+
+                    Button {
+                        exportJSON()
+                    } label: {
+                        Label("rss.export.json".localized, systemImage: "curlybraces")
+                    }
+                    .buttonStyle(EditorialActionButtonStyle(compact: true))
+                    .controlSize(.small)
+                }
+
+                if let importError {
+                    Text(importError)
                         .font(.caption)
                         .foregroundStyle(.red)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             } header: {
-                Text("rss.opml".localized)
+                Text("rss.importExport".localized)
             } footer: {
-                Text("rss.opml.footer".localized)
+                Text("rss.importExport.footer".localized)
+            }
+
+            Section {
+                Toggle("rss.agent.enabled".localized, isOn: Binding(
+                    get: { settings.agentAccessEnabled },
+                    set: { settings.agentAccessEnabled = $0 }
+                ))
+
+                HStack(spacing: 8) {
+                    Image(systemName: "terminal")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                    Text(AgentPaths.root.path)
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Spacer(minLength: 8)
+                    Button("rss.agent.openFolder".localized) {
+                        NSWorkspace.shared.open(AgentPaths.root)
+                    }
+                    .buttonStyle(EditorialActionButtonStyle(compact: true))
+                    .controlSize(.small)
+                }
+            } header: {
+                Text("rss.agent".localized)
+            } footer: {
+                Text("rss.agent.footer".localized)
             }
         }
         .formStyle(.grouped)
@@ -318,135 +334,212 @@ struct RSSTab: View {
         } message: { rss in
             Text(L10n.string("rss.delete.message", rss.name))
         }
-        .sheet(isPresented: $showOPMLPreview) {
-            opmlPreviewSheet
+        .sheet(item: $importSheet) { request in
+            RSSImportSheet(
+                mode: request.mode,
+                existingSources: settings.rssSources
+            ) { candidates in
+                applyImport(candidates)
+            }
+            .environment(settings)
         }
-    }
-
-    private var opmlPreviewSheet: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack(spacing: 8) {
-                Image(systemName: "list.bullet.rectangle.portrait")
-                    .foregroundStyle(.tint)
-                Text("rss.opml.previewTitle".localized)
-                    .font(.headline)
-            }
-            Text(L10n.string("rss.opml.previewSummary", opmlPreview.count, opmlSkippedCount))
-                .font(.callout)
-                .foregroundStyle(.secondary)
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 8) {
-                    ForEach(opmlPreview) { subscription in
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(subscription.title)
-                                .font(.callout.weight(.medium))
-                                .lineLimit(1)
-                            Text(subscription.url)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .lineLimit(1)
-                        }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(10)
-                        .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 8))
-                    }
-                }
-            }
-            .frame(maxHeight: 300)
-            HStack {
-                Spacer()
-                Button("rss.opml.cancel".localized, role: .cancel) {
-                    showOPMLPreview = false
-                }
-                Button("rss.opml.confirm".localized) {
-                    applyOPMLPreview()
-                }
-                .keyboardShortcut(.defaultAction)
-            }
-        }
-        .padding(20)
-        .frame(minWidth: 480, minHeight: 320)
     }
 
     private func refreshHealth() {
         rssHealth = rssHealthAction?(settings) ?? []
     }
 
-    private func importOPML() {
+    private func importFile() {
         let panel = NSOpenPanel()
         panel.allowsMultipleSelection = false
         panel.canChooseDirectories = false
-        panel.allowedContentTypes = [UTType(filenameExtension: "opml") ?? .xml, .xml]
+        panel.allowedContentTypes = [
+            UTType(filenameExtension: "opml") ?? .xml,
+            .xml,
+            .json,
+            .commaSeparatedText,
+            .plainText,
+        ]
         guard panel.runModal() == .OK, let panelURL = panel.url else { return }
         do {
             let attributes = try FileManager.default.attributesOfItem(atPath: panelURL.path)
             let size = attributes[.size] as? Int64 ?? 0
-            guard size <= Int64(OPMLService.maxBytes) else {
-                opmlError = "rss.opml.tooLarge".localized
+            guard size <= Int64(RSSImportService.maxBytes) else {
+                importError = "rss.import.tooLarge".localized
                 return
             }
             let data = try Data(contentsOf: panelURL)
-            let subscriptions = try OPMLService.parse(data)
-            let existing = Set(settings.rssSources.map { SecurityPolicies.canonicalRSSURL($0.url) })
-            var seen = existing
-            let accepted = subscriptions.filter { subscription in
-                guard seen.insert(subscription.url).inserted else { return false }
-                if case .blocked = SecurityPolicies.validateRSSURL(subscription.url) { return false }
-                return true
+            let format = RSSImportService.detectFormat(for: panelURL, data: data)
+            let candidates = try RSSImportService.parse(data: data, format: format)
+            let plan = RSSImportService.plan(candidates: candidates, existing: settings.rssSources)
+            guard !plan.accepted.isEmpty else {
+                importError = "rss.import.none".localized
+                return
             }
-            opmlPreview = accepted
-            opmlSkippedCount = subscriptions.count - accepted.count
-            opmlError = accepted.isEmpty ? "rss.opml.none".localized : nil
-            showOPMLPreview = !accepted.isEmpty
+            importError = nil
+            importSheet = ImportSheetRequest(mode: .file(format: format, plan: plan))
         } catch {
-            opmlError = "rss.opml.invalid".localized
+            importError = "rss.import.invalidFile".localized
         }
     }
 
-    private func applyOPMLPreview() {
-        guard !opmlPreview.isEmpty else { return }
-        var sources = settings.rssSources
-        var selected = settings.selectedRSSSourceIDs
-        for subscription in opmlPreview {
-            let source = RSSSourceConfig(
-                name: SecurityPolicies.sanitizeUserInput(subscription.title),
-                url: subscription.url,
-                displayMode: .text
-            )
-            sources.append(source)
-            selected.insert(source.id)
+    private func applyImport(_ candidates: [RSSImportCandidate]) {
+        let sources = candidates.map {
+            RSSSourceConfig(name: $0.name, url: $0.url, displayMode: $0.displayMode)
         }
-        settings.rssSources = sources
-        settings.selectedRSSSourceIDs = selected
-        opmlPreview = []
-        opmlSkippedCount = 0
-        showOPMLPreview = false
-        opmlError = nil
+        let added = settings.addRSSSources(sources, select: true)
+        importError = nil
         refreshHealth()
+
+        // A large OPML should not stampede the network. The first 20 sources
+        // load immediately; the rest join the normal refresh cycle.
+        for source in added.prefix(20) {
+            NotificationCenter.default.post(
+                name: .rssSourceAdded,
+                object: nil,
+                userInfo: ["url": source.url, "name": source.name]
+            )
+        }
     }
 
-    private func exportOPML() {
+    private func exportOPML(scope: ExportScope) {
+        let sources = scope == .selected ? subscribedRSSSources : settings.rssSources
+        guard !sources.isEmpty else {
+            importError = "rss.export.empty".localized
+            return
+        }
         let panel = NSSavePanel()
         panel.nameFieldStringValue = "NewsBar Subscriptions.opml"
         panel.allowedContentTypes = [UTType(filenameExtension: "opml") ?? .xml]
         guard panel.runModal() == .OK, let destination = panel.url else { return }
-        let subscriptions = subscribedRSSSources.map {
+        let subscriptions = sources.map {
             OPMLSubscription(title: $0.name, url: $0.url)
         }
-        try? OPMLService.export(subscriptions).write(to: destination, options: .atomic)
+        do {
+            try OPMLService.export(subscriptions).write(to: destination, options: .atomic)
+            importError = nil
+        } catch {
+            importError = "rss.export.failed".localized
+        }
     }
 
-    private var emptySourcesView: some View {
-        HStack {
-            Spacer()
-            VStack(spacing: 6) {
-                EditorialSourceBadge(mark: .rss, fallbackTint: .secondary, size: 28)
-                Text("rss.empty".localized)
+    private func exportJSON() {
+        guard !settings.rssSources.isEmpty else {
+            importError = "rss.export.empty".localized
+            return
+        }
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = "NewsBar Subscriptions.json"
+        panel.allowedContentTypes = [.json]
+        guard panel.runModal() == .OK, let destination = panel.url else { return }
+        do {
+            try RSSImportService.exportJSON(sources: settings.rssSources)
+                .write(to: destination, options: .atomic)
+            importError = nil
+        } catch {
+            importError = "rss.export.failed".localized
+        }
+    }
+
+    private var displayCountSection: some View {
+        Section {
+            Toggle("rss.unifiedCount".localized, isOn: Binding(
+                get: { settings.rssUnifiedDisplayCount },
+                set: { settings.rssUnifiedDisplayCount = $0 }
+            ))
+
+            if settings.rssUnifiedDisplayCount {
+                rssDisplayCountRow(
+                    title: "rss.textFlow".localized,
+                    selection: Binding(
+                        get: { settings.rssDefaultTextCount },
+                        set: { settings.rssDefaultTextCount = $0 }
+                    ),
+                    candidates: textCountCandidates
+                )
+
+                rssDisplayCountRow(
+                    title: "rss.imageFlow".localized,
+                    selection: Binding(
+                        get: { settings.rssDefaultImageCount },
+                        set: { settings.rssDefaultImageCount = $0 }
+                    ),
+                    candidates: imageCountCandidates
+                )
+            }
+        } header: {
+            Text("rss.displayCount".localized)
+        } footer: {
+            Text(settings.rssUnifiedDisplayCount ? "rss.displayCount.footer.unified".localized : "rss.displayCount.footer.perSource".localized)
+        }
+    }
+
+    private var healthSection: some View {
+        Section {
+            if rssHealth.isEmpty {
+                Text("rss.health.empty".localized)
                     .font(.caption)
                     .foregroundStyle(.secondary)
+            } else {
+                ForEach(rssHealth) { row in
+                    HStack(spacing: 8) {
+                        Image(systemName: row.status.symbol)
+                            .foregroundStyle(row.status.tint)
+                            .font(.caption)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(row.name)
+                                .font(.callout)
+                            if let detail = row.detail {
+                                Text(detail)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                            }
+                        }
+                        Spacer()
+                        if let last = row.lastAttempt {
+                            Text(last, style: .relative)
+                                .font(.caption2)
+                                .foregroundStyle(.tertiary)
+                        }
+                    }
+                }
             }
-            .padding(.vertical, 12)
-            Spacer()
+            Button {
+                refreshHealth()
+            } label: {
+                Label("rss.health.refresh".localized, systemImage: "arrow.clockwise")
+            }
+        } header: {
+            Text("rss.health".localized)
+        } footer: {
+            Text("rss.health.footer".localized)
+        }
+    }
+
+    private var noneSelectedSection: some View {
+        Section {
+            HStack(spacing: 10) {
+                Image(systemName: "exclamationmark.circle.fill")
+                    .font(.system(size: 13))
+                    .foregroundStyle(.orange)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(L10n.string("rss.onboarding.noneSelected.title", settings.rssSources.count))
+                        .font(.system(size: 12, weight: .medium))
+                    Text("rss.onboarding.noneSelected.body".localized)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer(minLength: 8)
+
+                Button("rss.onboarding.selectAll".localized) {
+                    settings.selectedRSSSourceIDs = Set(settings.rssSources.map(\.id))
+                }
+                .buttonStyle(EditorialActionButtonStyle(compact: true))
+                .controlSize(.small)
+            }
         }
     }
 

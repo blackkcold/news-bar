@@ -100,6 +100,9 @@ struct SettingsWindow: View {
         .onReceive(NotificationCenter.default.publisher(for: .switchToWeiboMonitor)) { _ in
             pane = .weiboMonitor
         }
+        .onReceive(NotificationCenter.default.publisher(for: .switchToRSSTab)) { _ in
+            pane = .reading
+        }
     }
 
     /// The retro paper theme keeps its existing two-column shell: the paper

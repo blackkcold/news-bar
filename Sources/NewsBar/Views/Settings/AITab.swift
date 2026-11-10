@@ -637,11 +637,10 @@ struct AITab: View {
         }
 
         Section {
-            // The legacy switch is only meaningful for a connection that
-            // actually exposes a DeepSeek-style binary toggle. Other
-            // providers get a capability note instead of a misleading knob.
-            if settings.resolvedAIConnection.thinkingStyle == .deepseekToggle {
-                Toggle("ai.disableThinking".localized, isOn: Binding(
+            // This legacy switch now only drives research, triage and selected-text
+            // explanation. The three user-facing surfaces have their own levels.
+            if supportsLegacyDeepSeekThinking {
+                Toggle("ai.disableThinking.background".localized, isOn: Binding(
                     get: { settings.aiDisableDeepSeekThinking },
                     set: { settings.aiDisableDeepSeekThinking = $0 }
                 ))
@@ -653,9 +652,16 @@ struct AITab: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
         } footer: {
-            if settings.resolvedAIConnection.thinkingStyle == .deepseekToggle {
-                Text("ai.disableThinking.footer".localized)
+            if supportsLegacyDeepSeekThinking {
+                Text("ai.disableThinking.background.footer".localized)
             }
+        }
+    }
+
+    private var supportsLegacyDeepSeekThinking: Bool {
+        switch settings.resolvedAIConnection.thinkingStyle {
+        case .deepseekToggle, .deepseekModelToggle: return true
+        default: return false
         }
     }
 
@@ -852,6 +858,16 @@ struct AITab: View {
                         Text("\(value)").tag(value)
                     }
                 }
+                VStack(alignment: .leading, spacing: 2) {
+                    Toggle("ai.search.assess".localized, isOn: Binding(
+                        get: { settings.aiEvidenceAssessmentEnabled },
+                        set: { settings.aiEvidenceAssessmentEnabled = $0 }
+                    ))
+                    Text("ai.search.assess.footer".localized)
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
                 Picker("ai.search.model".localized, selection: Binding(
                     get: { settings.aiSearchModel },
                     set: { settings.aiSearchModel = $0 }
@@ -869,22 +885,36 @@ struct AITab: View {
                     }
                 }
                 .disabled(settings.isLoadingModelCatalog)
-                if settings.resolvedAIConnection.thinkingStyle != .none {
-                    Picker("ai.search.thinking".localized, selection: Binding(
-                        get: { settings.aiSearchThinking },
-                        set: { settings.aiSearchThinking = $0 }
-                    )) {
-                        Text(AIThinkingLevel.off.title(settings.appLanguage)).tag(AIThinkingLevel.off)
-                        Text(AIThinkingLevel.low.title(settings.appLanguage)).tag(AIThinkingLevel.low)
-                        Text(AIThinkingLevel.medium.title(settings.appLanguage)).tag(AIThinkingLevel.medium)
-                        Text(AIThinkingLevel.high.title(settings.appLanguage)).tag(AIThinkingLevel.high)
-                    }
-                }
             }
         } header: {
             Text("ai.search.section".localized)
         } footer: {
             Text("ai.search.footer".localized)
+        }
+
+        Section {
+            VStack(alignment: .leading, spacing: 2) {
+                Toggle("ai.overview.webSupplement".localized, isOn: Binding(
+                    get: { settings.aiOverviewWebSupplement },
+                    set: { settings.aiOverviewWebSupplement = $0 }
+                ))
+                Text("ai.overview.webSupplement.footer".localized)
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        } header: {
+            Text("ai.overview.section".localized)
+        }
+
+        Section {
+            thinkingRow(.overview, showsNote: shouldShowThinkingNote(for: .overview, after: []))
+            thinkingRow(.search, showsNote: shouldShowThinkingNote(for: .search, after: [.overview]))
+            thinkingRow(.summary, showsNote: shouldShowThinkingNote(for: .summary, after: [.overview, .search]))
+        } header: {
+            Text("ai.thinking.section".localized)
+        } footer: {
+            Text("ai.thinking.footer".localized)
         }
 
         Section {
@@ -935,6 +965,82 @@ struct AITab: View {
             }
         } header: {
             Text("ai.privacy".localized)
+        }
+    }
+
+    private func surfaceTitle(_ surface: AIThinkingSurface) -> String {
+        switch surface {
+        case .overview: return "ai.thinking.overview".localized
+        case .search: return "ai.thinking.search".localized
+        case .summary: return "ai.thinking.summary".localized
+        }
+    }
+
+    private func thinkingCapability(for surface: AIThinkingSurface) -> AIThinkingCapability {
+        let model: String
+        switch surface {
+        case .overview, .summary: model = settings.aiModel
+        case .search: model = settings.effectiveAISearchModel
+        }
+        return AIThinkingResolver.capability(
+            connection: settings.resolvedAIConnection,
+            model: model,
+            language: settings.appLanguage
+        )
+    }
+
+    private func thinkingLevel(for surface: AIThinkingSurface) -> AIThinkingLevel {
+        switch surface {
+        case .overview: return settings.aiOverviewThinking
+        case .search: return settings.aiSearchThinking
+        case .summary: return settings.aiSummaryThinking
+        }
+    }
+
+    private func setThinkingLevel(_ level: AIThinkingLevel, for surface: AIThinkingSurface) {
+        switch surface {
+        case .overview: settings.aiOverviewThinking = level
+        case .search: settings.aiSearchThinking = level
+        case .summary: settings.aiSummaryThinking = level
+        }
+    }
+
+    private func shouldShowThinkingNote(
+        for surface: AIThinkingSurface,
+        after previous: [AIThinkingSurface]
+    ) -> Bool {
+        guard let note = thinkingCapability(for: surface).note else { return false }
+        return !previous.contains { thinkingCapability(for: $0).note == note }
+    }
+
+    @ViewBuilder
+    private func thinkingRow(_ surface: AIThinkingSurface, showsNote: Bool = true) -> some View {
+        let capability = thinkingCapability(for: surface)
+        if capability.options.isEmpty {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(surfaceTitle(surface))
+                if showsNote, let note = capability.note {
+                    Text(note)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        } else {
+            Picker(surfaceTitle(surface), selection: Binding(
+                get: { capability.normalized(thinkingLevel(for: surface)) },
+                set: { setThinkingLevel($0, for: surface) }
+            )) {
+                ForEach(capability.options) { option in
+                    Text(option.title(settings.appLanguage)).tag(option)
+                }
+            }
+            if showsNote, let note = capability.note {
+                Text(note)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
     }
 

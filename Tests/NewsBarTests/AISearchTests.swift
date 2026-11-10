@@ -46,16 +46,17 @@ final class AISearchTests: XCTestCase {
     private func service(
         pageCount: Int = 3,
         search: @escaping AISearchService.SearchHandler = { _, _ in [] },
-        read: @escaping AISearchService.ReadHandler = { _ in nil },
+        read: @escaping AISearchService.ReadHandler = { _ in .failed(.unknown) },
         answer: @escaping AISearchService.AnswerHandler = { _, _, _ in
             AIChatResponse(
                 text: "@@ {\"kind\":\"event\",\"oneLine\":\"ok\"}\n## 概览\nok[1]",
                 truncated: false
             )
         },
-        preflight: @escaping @Sendable () async -> Bool = { true }
+        preflight: @escaping @Sendable () async -> Bool = { true },
+        assess: AISearchService.AssessHandler? = nil
     ) -> AISearchService {
-        AISearchService(
+        var service = AISearchService(
             search: search,
             read: read,
             answer: answer,
@@ -66,6 +67,8 @@ final class AISearchTests: XCTestCase {
             model: "test-model",
             language: .zh
         )
+        service.assess = assess
+        return service
     }
 
     // MARK: - Prompt envelope
@@ -86,24 +89,26 @@ final class AISearchTests: XCTestCase {
 
     // MARK: - Citation rule at the service level
 
-    func testAnswerWithoutAnyResolvableCitationIsReplaced() async throws {
+    func testAnswerWithoutAnyResolvableCitationIsPreservedWithWarning() async throws {
         let service = self.service(
             search: { _, _ in [self.hit(1)] },
-            read: { hit in self.document(hit) },
+            read: { hit in .document(self.document(hit)) },
             answer: { _, _, _ in
                 AIChatResponse(text: "## 概览\n这是一段没有任何引用的回答。", truncated: false)
             }
         )
         let answer = try await service.run(question: "q", scope: .web, page: nil)
-        XCTAssertTrue(answer.blocks.isEmpty)
-        XCTAssertEqual(answer.oneLine, L10n.string("reader.search.noCitations", language: .zh))
+        XCTAssertFalse(answer.blocks.isEmpty)
+        XCTAssertEqual(answer.blocks.first?.body, "这是一段没有任何引用的回答。")
+        XCTAssertEqual(answer.retrieval?.basis, .noVerifiedCitations)
         XCTAssertEqual(answer.sources.count, 1)
+        XCTAssertEqual(answer.sources.first?.assessment?.adoption, .supporting)
     }
 
     func testCitationThatDoesNotResolveStaysInTheProseButIsNotEvidence() async throws {
         let service = self.service(
             search: { _, _ in [self.hit(1)] },
-            read: { hit in self.document(hit) },
+            read: { hit in .document(self.document(hit)) },
             answer: { _, _, _ in
                 AIChatResponse(
                     text: "@@ {\"kind\":\"event\",\"oneLine\":\"一句\"}\n## 概览\n甲[1]，乙[9]。",
@@ -119,13 +124,140 @@ final class AISearchTests: XCTestCase {
     func testTruncatedAnswerIsMarkedInTheDocument() async throws {
         let service = self.service(
             search: { _, _ in [self.hit(1)] },
-            read: { hit in self.document(hit) },
+            read: { hit in .document(self.document(hit)) },
             answer: { _, _, _ in
                 AIChatResponse(text: self.answerText("a"), truncated: true)
             }
         )
         let answer = try await service.run(question: "q", scope: .web, page: nil)
         XCTAssertTrue(answer.truncated)
+    }
+
+    // MARK: - Evidence metadata and basis
+
+    func testSourceKeepsPublishedDateAndOrigin() async throws {
+        let date = Date(timeIntervalSince1970: 1_700_000_000)
+        let service = self.service(
+            search: { _, _ in
+                [SearchHit(
+                    url: "https://source.example/a",
+                    title: "A",
+                    snippet: "",
+                    publishedAt: date,
+                    provider: .tavily,
+                    providerRank: 1
+                )]
+            },
+            read: { hit in
+                .document(ResearchDocument(
+                    url: hit.url,
+                    title: hit.title,
+                    text: String(repeating: "正文", count: 300),
+                    publishedAt: date,
+                    fetchedAt: date.addingTimeInterval(60),
+                    source: .direct
+                ))
+            }
+        )
+        let answer = try await service.run(question: "q", scope: .web, page: nil)
+        XCTAssertEqual(answer.sources.first?.publishedAt, date)
+        XCTAssertEqual(answer.sources.first?.fetchedAt, date.addingTimeInterval(60))
+        XCTAssertEqual(answer.sources.first?.origin, .web)
+        XCTAssertEqual(answer.sources.first?.provider, .tavily)
+    }
+
+    func testCurrentPageZeroCitationIsPreserved() async throws {
+        let service = self.service(answer: { _, _, _ in
+            AIChatResponse(
+                text: "@@ {\"kind\":\"event\",\"oneLine\":\"一句\"}\n## 概览\n没有引用。",
+                truncated: false
+            )
+        })
+        let page = AISearchPageContext(
+            url: "https://page.example/a",
+            title: "Page",
+            text: String(repeating: "正文", count: 300)
+        )
+        let answer = try await service.run(question: "q", scope: .currentPage, page: page)
+        XCTAssertFalse(answer.blocks.isEmpty)
+        XCTAssertEqual(answer.retrieval?.basis, .noVerifiedCitations)
+        XCTAssertEqual(answer.sources.first?.origin, .currentPage)
+    }
+
+    func testAssessmentStageIsEmittedOnlyWhenEnabled() async throws {
+        let stages = Counter()
+        let service = self.service(
+            search: { _, _ in [self.hit(1)] },
+            read: { hit in .document(self.document(hit)) },
+            assess: { _, _, sources in
+                EvidenceAssessor.heuristic(question: "q", sources: sources)
+            }
+        )
+        _ = try await service.run(question: "q", scope: .web, page: nil) { stage in
+            stages.record(stage)
+        }
+        XCTAssertEqual(stages.recordedStages, [
+            .searching,
+            .reading(index: 1, total: 1),
+            .assessing,
+            .answering,
+        ])
+    }
+
+    func testEvidenceCountsExposeFoundReadAdoptedAndCited() async throws {
+        let service = self.service(
+            search: { _, _ in [self.hit(1)] },
+            read: { hit in .document(self.document(hit)) },
+            answer: { _, _, _ in
+                AIChatResponse(
+                    text: self.answerText("a", citations: [1]),
+                    truncated: false
+                )
+            }
+        )
+        let answer = try await service.run(question: "q", scope: .web, page: nil)
+        XCTAssertEqual(answer.retrieval?.foundCount, 1)
+        XCTAssertEqual(answer.retrieval?.readCount, 1)
+        XCTAssertEqual(answer.retrieval?.adoptedCount, 1)
+        XCTAssertEqual(answer.retrieval?.rejectedCount, 0)
+        XCTAssertEqual(answer.retrieval?.queryCount, 1)
+        XCTAssertEqual(answer.verifiedCitationIndices, [1])
+        XCTAssertEqual(answer.retrieval?.basis, .externalLimited)
+    }
+
+    func testRejectedSourceCitationStaysPlainText() async throws {
+        let service = self.service(
+            search: { _, _ in [self.hit(1)] },
+            read: { hit in .document(self.document(hit)) },
+            answer: { _, _, _ in
+                AIChatResponse(
+                    text: self.answerText("a", citations: [1]),
+                    truncated: false
+                )
+            },
+            assess: { _, _, sources in
+                var result = sources
+                result[0].assessment = SourceAssessment(
+                    adoption: .rejected,
+                    reason: .modelRejected
+                )
+                return AssessmentResult(sources: result, conflicts: [], notes: [])
+            }
+        )
+        let answer = try await service.run(question: "q", scope: .web, page: nil)
+        XCTAssertEqual(answer.allowedCitations, Set<Int>())
+        XCTAssertEqual(answer.verifiedCitationIndices, [])
+        XCTAssertEqual(answer.retrieval?.invalidCitationCount, 1)
+        XCTAssertEqual(answer.retrieval?.basis, .insufficientMaterial)
+        let body = answer.blocks.first?.body ?? ""
+        XCTAssertEqual(
+            AnswerCitationScanner.segments(
+                in: body,
+                sourceCount: 1,
+                allowed: answer.allowedCitations
+            ),
+            [.text(body)]
+        )
     }
 
     // MARK: - Service behaviour
@@ -164,41 +296,49 @@ final class AISearchTests: XCTestCase {
         }
     }
 
-    func testWebScopeReadsAtMostPageCountAndSkipsFailures() async throws {
+    func testWebScopeFillsReadSlotsAndSkipsFailures() async throws {
         let reads = Counter()
         let limits = Counter()
         let service = self.service(
             pageCount: 3,
-            search: { _, limit in
-                limits.record(limit: limit)
+            search: { query, _ in
+                limits.record(limit: query.maxResults)
                 return (1...6).map { self.hit($0) }
             },
             read: { hit in
                 reads.increment()
                 if hit.url.contains("source2") { throw PageReadError.http(500) }
-                return self.document(hit)
+                return .document(self.document(hit))
             },
             answer: { _, user, _ in
-                // Only the two readable pages are numbered.
+                // The failed second page must not leave the answer one short:
+                // source4 fills the third read slot.
                 XCTAssertTrue(user.contains("source1"))
                 XCTAssertTrue(user.contains("source3"))
-                XCTAssertFalse(user.contains("source4"))
-                return AIChatResponse(text: self.answerText("a", citations: [1, 2]), truncated: false)
+                XCTAssertTrue(user.contains("source4"))
+                XCTAssertFalse(user.contains("source5"))
+                return AIChatResponse(
+                    text: self.answerText("a", citations: [1, 2, 3]),
+                    truncated: false
+                )
             }
         )
         let answer = try await service.run(question: "q", scope: .web, page: nil)
-        XCTAssertEqual(limits.recordedLimits, [3])
-        XCTAssertEqual(reads.count, 3)
-        XCTAssertEqual(answer.sources.count, 2)
-        XCTAssertEqual(answer.sources.map(\.url), [hit(1).url, hit(3).url])
-        XCTAssertEqual(answer.citationIndices, [1, 2])
+        XCTAssertEqual(limits.recordedLimits, [6])
+        XCTAssertEqual(reads.count, 4)
+        XCTAssertEqual(answer.sources.count, 3)
+        XCTAssertEqual(
+            answer.sources.map(\.url),
+            [hit(1).url, hit(3).url, hit(4).url]
+        )
+        XCTAssertEqual(answer.citationIndices, [1, 2, 3])
     }
 
     func testQuotaIsCheckedBeforeAnswering() async {
         let answered = Counter()
         let service = self.service(
             search: { _, _ in [self.hit(1)] },
-            read: { hit in self.document(hit) },
+            read: { hit in .document(self.document(hit)) },
             answer: { _, _, _ in
                 answered.increment()
                 return AIChatResponse(text: self.answerText("a"), truncated: false)
@@ -241,17 +381,19 @@ final class AISearchTests: XCTestCase {
         }
     }
 
-    func testNoReadablePageFailsInsteadOfAnsweringFromSnippets() async {
+    func testNoReadablePageReturnsAnEvidenceAnswerInsteadOfBlanking() async throws {
         let service = self.service(
             search: { _, _ in [self.hit(1), self.hit(2)] },
-            read: { _ in nil }
+            read: { _ in .failed(.unknown) }
         )
-        do {
-            _ = try await service.run(question: "q", scope: .web, page: nil)
-            XCTFail("expected noSourcesReadable")
-        } catch {
-            XCTAssertEqual(error as? AISearchError, .noSourcesReadable)
-        }
+        let answer = try await service.run(question: "q", scope: .web, page: nil)
+        XCTAssertTrue(answer.blocks.isEmpty)
+        XCTAssertEqual(answer.retrieval?.basis, .insufficientMaterial)
+        XCTAssertTrue(answer.retrieval?.notes.contains(.noSourcesReadable) ?? false)
+        XCTAssertEqual(
+            answer.oneLine,
+            L10n.string("answer.note.noSourcesReadable", language: .zh)
+        )
     }
 
     func testStagesAreReportedInOrder() async throws {
@@ -259,7 +401,7 @@ final class AISearchTests: XCTestCase {
         let service = self.service(
             pageCount: 2,
             search: { _, _ in [self.hit(1), self.hit(2)] },
-            read: { hit in self.document(hit) }
+            read: { hit in .document(self.document(hit)) }
         )
         _ = try await service.run(question: "q", scope: .web, page: nil) { stage in
             counter.record(stage)

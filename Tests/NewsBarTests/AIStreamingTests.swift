@@ -165,6 +165,31 @@ final class AIStreamingTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(partials.count, 1)
     }
 
+    func testPartialWithoutCitationIsWithheldWhenSourcesAreAdopted() async throws {
+        final class Box: @unchecked Sendable {
+            var documents: [AnswerDocument] = []
+        }
+        let box = Box()
+        var service = self.service()
+        service.streamAnswer = { _, _, _ in
+            AsyncThrowingStream { continuation in
+                continuation.yield(.text(
+                    "@@ {\"kind\":\"event\",\"oneLine\":\"一句\"}\n## 概览\n"
+                        + String(repeating: "没有引用的长句子。", count: 4)
+                ))
+                continuation.yield(.text("\n有引用的句子[1]。"))
+                continuation.yield(.finished(truncated: false))
+                continuation.finish()
+            }
+        }
+        service.onPartial = { document in box.documents.append(document) }
+
+        let answer = try await service.run(question: "q", scope: .web, page: nil)
+        XCTAssertFalse(box.documents.isEmpty)
+        XCTAssertTrue(box.documents.allSatisfy { $0.verifiedCitationIndices.contains(1) })
+        XCTAssertTrue(answer.verifiedCitationIndices.contains(1))
+    }
+
     // MARK: - Helpers
 
     private final class Counter: @unchecked Sendable {
@@ -187,12 +212,12 @@ final class AIStreamingTests: XCTestCase {
                 )]
             },
             read: { hit in
-                ResearchDocument(
+                .document(ResearchDocument(
                     url: hit.url,
                     title: hit.title,
                     text: String(repeating: "正文", count: 400),
                     source: .direct
-                )
+                ))
             },
             answer: { _, _, _ in
                 AIChatResponse(text: "@@ {\"kind\":\"event\",\"oneLine\":\"ok\"}\n## 概览\nok[1]", truncated: false)

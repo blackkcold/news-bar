@@ -310,7 +310,7 @@ enum AISummaryService {
         formatEnforcementSuffix: String? = nil,
         trendHistoryContext: String = "",
         summaryLanguage: AppLanguage = .zh,
-        disableDeepSeekThinking: Bool = false,
+        thinking: AIThinkingLevel = .providerDefault,
         requestAllowed: @escaping @Sendable () async -> Bool = { true }
     ) async throws -> SummaryResult {
         let titles = items.enumerated().map { index, item in
@@ -430,7 +430,7 @@ enum AISummaryService {
                 systemPrompt: systemPrompt(language: summaryLanguage),
                 userPrompt: prompt,
                 maxTokens: initialMaxTokens(for: maxWords),
-                disableDeepSeekThinking: disableDeepSeekThinking,
+                thinking: thinking,
                 target: target,
                 budgetMode: budgetMode
             )
@@ -451,7 +451,7 @@ enum AISummaryService {
                 systemPrompt: systemPrompt(language: summaryLanguage),
                 userPrompt: prompt,
                 maxTokens: retryMaxTokens(for: maxWords),
-                disableDeepSeekThinking: disableDeepSeekThinking,
+                thinking: thinking,
                 target: target,
                 budgetMode: budgetMode
             )
@@ -470,7 +470,7 @@ enum AISummaryService {
         systemPrompt: String,
         userPrompt: String,
         maxTokens: Int,
-        disableDeepSeekThinking: Bool,
+        thinking: AIThinkingLevel,
         target: SummaryTarget,
         budgetMode: AISummaryBudgetMode,
         ledger: AIQuotaStore? = nil,
@@ -478,64 +478,79 @@ enum AISummaryService {
             try await URLSession.shared.data(for: $0)
         }
     ) async throws -> SummaryResult {
-        let built: AIBuiltRequest
-        do {
-            built = try AIRequestBuilder.build(
-                connection: connection,
-                apiKey: apiKey,
-                model: model,
-                messages: [
-                    AIChatMessage(role: .system, content: systemPrompt),
-                    AIChatMessage(role: .user, content: userPrompt),
-                ],
-                maxTokens: maxTokens,
-                temperature: 0.3,
-                thinking: AIRequestBuilder.thinkingLevel(
+        var suppressThinking = false
+        var didThinkingFallback = false
+
+        // At most two dispatches: the original request, then one retry with the
+        // experimental thinking field removed when the provider rejects it.
+        // Each dispatch reserves once, so the budget stays honest.
+        while true {
+            let built: AIBuiltRequest
+            do {
+                built = try AIRequestBuilder.build(
                     connection: connection,
-                    disableDeepSeekThinking: disableDeepSeekThinking
-                ),
-                timeout: timeout,
-                userAgent: "NewsBar/1.0 (macOS; Summary)"
-            )
-        } catch {
-            throw NewsBarError.invalidURL
-        }
-
-        let price = connection.customPrice
-            ?? AIPriceCatalog.price(for: connection.providerID, model: model)
-        let estimatedInput = AICostEstimator.estimateInputTokens(system: systemPrompt, user: userPrompt)
-        let reserved = price.map {
-            AICostEstimator.reserveMicros(
-                inputTokens: estimatedInput,
-                maxOutputTokens: built.effectiveMaxTokens,
-                price: $0
-            )
-        } ?? 0
-        try Task.checkCancellation()
-        let activeLedger = ledger ?? quotaStore
-        let reservation = try consumeAttemptBudget(
-            target: target, mode: budgetMode, reservedCostMicros: reserved, ledger: activeLedger
-        )
-        if Task.isCancelled {
-            activeLedger.settle(
-                reservation, actualCostMicros: 0, inputTokens: 0, outputTokens: 0, priced: true
-            )
-            budgetStateLock(for: target, mode: budgetMode).withLock {
-                $0.attempts = max(0, $0.attempts - 1)
+                    apiKey: apiKey,
+                    model: model,
+                    messages: [
+                        AIChatMessage(role: .system, content: systemPrompt),
+                        AIChatMessage(role: .user, content: userPrompt),
+                    ],
+                    maxTokens: maxTokens,
+                    temperature: 0.3,
+                    thinking: thinking,
+                    timeout: timeout,
+                    userAgent: "NewsBar/1.0 (macOS; Summary)",
+                    suppressThinking: suppressThinking
+                )
+            } catch {
+                throw NewsBarError.invalidURL
             }
-            throw CancellationError()
-        }
 
-        do {
-            let (data, response) = try await transport(built.request)
-            let result = try parseSummary(data: data, response: response, format: connection.responseFormat)
-            activeLedger.settle(reservation, usage: result.usage, price: price)
-            return result
-        } catch {
-            // A dispatched request may have been billed even when it fails or
-            // is cancelled. Keep its ceiling and disclose that the cost is unknown.
-            activeLedger.settle(reservation, usage: nil, price: price)
-            throw error
+            let price = connection.customPrice
+                ?? AIPriceCatalog.price(for: connection.providerID, model: model)
+            let estimatedInput = AICostEstimator.estimateInputTokens(system: systemPrompt, user: userPrompt)
+            let reserved = price.map {
+                AICostEstimator.reserveMicros(
+                    inputTokens: estimatedInput,
+                    maxOutputTokens: built.effectiveMaxTokens,
+                    price: $0
+                )
+            } ?? 0
+            try Task.checkCancellation()
+            let activeLedger = ledger ?? quotaStore
+            let reservation = try consumeAttemptBudget(
+                target: target, mode: budgetMode, reservedCostMicros: reserved, ledger: activeLedger
+            )
+            if Task.isCancelled {
+                activeLedger.settle(
+                    reservation, actualCostMicros: 0, inputTokens: 0, outputTokens: 0, priced: true
+                )
+                budgetStateLock(for: target, mode: budgetMode).withLock {
+                    $0.attempts = max(0, $0.attempts - 1)
+                }
+                throw CancellationError()
+            }
+
+            do {
+                let (data, response) = try await transport(built.request)
+                if !didThinkingFallback,
+                   built.sentThinkingField,
+                   let http = response as? HTTPURLResponse,
+                   http.statusCode == 400 || http.statusCode == 422 {
+                    activeLedger.settle(reservation, usage: nil, price: price)
+                    didThinkingFallback = true
+                    suppressThinking = true
+                    continue
+                }
+                let result = try parseSummary(data: data, response: response, format: connection.responseFormat)
+                activeLedger.settle(reservation, usage: result.usage, price: price)
+                return result
+            } catch {
+                // A dispatched request may have been billed even when it fails or
+                // is cancelled. Keep its ceiling and disclose that the cost is unknown.
+                activeLedger.settle(reservation, usage: nil, price: price)
+                throw error
+            }
         }
     }
 

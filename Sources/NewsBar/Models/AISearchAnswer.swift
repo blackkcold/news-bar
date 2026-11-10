@@ -25,8 +25,31 @@ struct AISearchSource: Identifiable, Equatable, Sendable {
     /// Prompt-sized text, capped when the source is created.
     let text: String
     let excerpt: String
+    /// Publication date from the search hit or the fetched document. The app
+    /// never invents one; a missing date stays missing.
+    let publishedAt: Date?
+    let fetchedAt: Date?
+    let origin: EvidenceOrigin
+    let provider: SearchProviderID?
+    /// Set by the assessor. `nil` means the source was never assessed (the
+    /// current page) or assessment was disabled and the heuristic did not run.
+    var assessment: SourceAssessment?
+    /// Id of the earlier source this one duplicates (same URL, title, or body).
+    var duplicateOf: String?
 
-    init(index: Int, url: String, title: String, text: String, textLimit: Int = 8_000) {
+    init(
+        index: Int,
+        url: String,
+        title: String,
+        text: String,
+        textLimit: Int = 8_000,
+        publishedAt: Date? = nil,
+        fetchedAt: Date? = nil,
+        origin: EvidenceOrigin = .web,
+        provider: SearchProviderID? = nil,
+        assessment: SourceAssessment? = nil,
+        duplicateOf: String? = nil
+    ) {
         let capped = String(text.prefix(max(1, textLimit)))
         self.id = ContentIdentity.canonicalURL(url)
         self.index = index
@@ -35,12 +58,28 @@ struct AISearchSource: Identifiable, Equatable, Sendable {
         self.host = URL(string: url)?.host ?? ""
         self.text = capped
         self.excerpt = String(capped.prefix(280))
+        self.publishedAt = publishedAt
+        self.fetchedAt = fetchedAt
+        self.origin = origin
+        self.provider = provider
+        self.assessment = assessment
+        self.duplicateOf = duplicateOf
+    }
+
+    /// Keeps the page in the list — a silently dropped duplicate looks like a
+    /// provider failure — while making sure it cannot count as corroboration.
+    func markingDuplicate(of id: String) -> AISearchSource {
+        var copy = self
+        copy.duplicateOf = id
+        return copy
     }
 }
 
 enum AISearchStage: Equatable, Sendable {
     case searching
     case reading(index: Int, total: Int)
+    /// Only emitted when source assessment is enabled.
+    case assessing
     case answering
 }
 

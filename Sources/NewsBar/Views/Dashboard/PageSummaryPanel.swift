@@ -32,15 +32,38 @@ struct PageSummaryPanel: View {
     let errorMessage: String?
     let providerName: String
     var showsCloseButton = false
-    var onGenerate: () -> Void = {}
+    var onGenerate: (Bool) -> Void = { _ in }
+    var onGeneratePageOnly: () -> Void = {}
     var onCancelDisclosure: () -> Void = {}
     var onRetry: () -> Void = {}
     var onOpenSettings: () -> Void = {}
     var onClose: () -> Void = {}
     var onOpenCitation: (PageSummaryCitation) -> Void = { _ in }
+    var onOpenSource: (PageSummarySource) -> Void = { _ in }
     var onSwitchToReaderMode: (() -> Void)? = nil
+    var thinking: AIThinkingLevel = .providerDefault
+    var thinkingOptions: [AIThinkingLevel] = []
+    var thinkingHint: String? = nil
+    var onThinkingChange: (AIThinkingLevel) -> Void = { _ in }
+    var webSupplement: Bool = true
+    var onWebSupplementChange: (Bool) -> Void = { _ in }
+    var stage: PageSummaryModel.Stage = .idle
+    var assessmentEnabled: Bool = false
 
-    private var english: Bool { context.language == .en }
+    private var isPrivate: Bool {
+        context.isPrivate || input?.isPrivate == true
+    }
+
+    private var effectiveWebSupplement: Bool {
+        webSupplement && !isPrivate
+    }
+
+    private var showsThinkingControl: Bool {
+        switch phase {
+        case .preparing, .unavailable: return false
+        default: return true
+        }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -62,6 +85,8 @@ struct PageSummaryPanel: View {
         .accessibilityElement(children: .contain)
     }
 
+    // MARK: - Header
+
     private var header: some View {
         HStack(alignment: .top, spacing: 10) {
             ZStack {
@@ -75,7 +100,7 @@ struct PageSummaryPanel: View {
             .accessibilityHidden(true)
 
             VStack(alignment: .leading, spacing: 2) {
-                Text(english ? "Page overview" : "页面概览")
+                Text(L10n.string("reader.overview.title", language: context.language))
                     .font(.headline)
                 if !context.title.isEmpty {
                     Text(context.title)
@@ -94,11 +119,14 @@ struct PageSummaryPanel: View {
             Spacer(minLength: 0)
 
             if context.isPrivate {
-                Label(english ? "Private" : "隐私阅读", systemImage: "hand.raised.fill")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .labelStyle(.titleAndIcon)
-                    .fixedSize()
+                Label(
+                    L10n.string("reader.overview.private", language: context.language),
+                    systemImage: "hand.raised.fill"
+                )
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .labelStyle(.titleAndIcon)
+                .fixedSize()
             }
 
             if showsCloseButton {
@@ -108,41 +136,121 @@ struct PageSummaryPanel: View {
                         .frame(width: 24, height: 24)
                 }
                 .buttonStyle(.borderless)
-                .accessibilityLabel(english ? "Close" : "关闭")
-                .help(english ? "Close" : "关闭")
+                .accessibilityLabel(L10n.string("reader.overview.close", language: context.language))
+                .help(L10n.string("reader.overview.close", language: context.language))
             }
         }
     }
 
+    // MARK: - Basis
+
     private func basisLine(_ input: PageSummaryInput) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 6) {
-            Image(systemName: input.scope == .article ? "doc.text" : "list.bullet")
-                .font(.system(size: 10, weight: .semibold))
-                .accessibilityHidden(true)
-            Text(basisText(input))
-                .font(.caption)
-                .fixedSize(horizontal: false, vertical: true)
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Image(systemName: basisIcon(input))
+                    .font(.system(size: 10, weight: .semibold))
+                    .accessibilityHidden(true)
+                Text(basisText(input))
+                    .font(.caption)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .foregroundStyle(.secondary)
+
+            let notes = (summary?.retrieval?.notes ?? []).filter { note in
+                if summary?.basis == .searchUnavailable, note == .searchUnavailable {
+                    // The basis line already says the web check failed.
+                    return false
+                }
+                return true
+            }
+            if !notes.isEmpty {
+                ForEach(notes.indices, id: \.self) { index in
+                    Label(notes[index].message(context.language), systemImage: "info.circle")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
         }
-        .foregroundStyle(.secondary)
+    }
+
+    private func basisIcon(_ input: PageSummaryInput) -> String {
+        guard let basis = summary?.basis else {
+            return input.scope == .article ? "doc.text" : "list.bullet"
+        }
+        switch basis {
+        case .externalSupported, .externalLimited, .searchUnavailable:
+            return "globe"
+        case .pageOnly:
+            return "doc.text"
+        case .insufficientMaterial:
+            return "tray"
+        }
     }
 
     private func basisText(_ input: PageSummaryInput) -> String {
+        if let basis = summary?.basis {
+            let externalCount = adoptedExternalCount
+            switch basis {
+            case .externalSupported:
+                return L10n.string(
+                    "reader.overview.basis.external",
+                    language: context.language,
+                    externalCount
+                )
+            case .externalLimited:
+                return L10n.string(
+                    "reader.overview.basis.externalLimited",
+                    language: context.language,
+                    externalCount
+                )
+            case .pageOnly:
+                return L10n.string("reader.overview.basis.pageOnly", language: context.language)
+            case .searchUnavailable:
+                return L10n.string(
+                    "reader.overview.basis.searchUnavailable",
+                    language: context.language
+                )
+            case .insufficientMaterial:
+                return L10n.string(
+                    "reader.overview.basis.insufficient",
+                    language: context.language
+                )
+            }
+        }
+
         if input.scope == .article {
             let characters = input.articleText?.count ?? 0
             let cap = PageSummaryService.maxArticleCharacters
             if characters > cap {
-                return english
-                    ? "Based on the page open in this reader · first \(cap) characters of \(characters)"
-                    : "基于当前阅读器打开的页面正文 · 已截断到 \(cap) 字（原文 \(characters) 字）"
+                return L10n.string(
+                    "reader.overview.basis.truncated",
+                    language: context.language,
+                    cap,
+                    characters
+                )
             }
-            return english
-                ? "Based on the page open in this reader · up to \(cap) characters"
-                : "基于当前阅读器打开的页面正文 · 最多 \(cap) 字"
+            return L10n.string(
+                "reader.overview.basis.article",
+                language: context.language,
+                cap
+            )
         }
-        return english
-            ? "Based on \(input.listRows.count) loaded headlines · titles only"
-            : "基于当前已加载的 \(input.listRows.count) 条标题 · 仅标题"
+        return L10n.string(
+            "reader.overview.basis.list",
+            language: context.language,
+            input.listRows.count
+        )
     }
+
+    private var adoptedExternalCount: Int {
+        if let sources = summary?.sources {
+            return sources.filter { $0.kind == .external && $0.adopted }.count
+        }
+        return summary?.retrieval?.adoptedCount ?? 0
+    }
+
+    // MARK: - Content
 
     @ViewBuilder
     private var content: some View {
@@ -156,13 +264,16 @@ struct PageSummaryPanel: View {
         case .readyToGenerate:
             readyToGenerate
         case .generating:
-            if let summary {
-                VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 12) {
+                if effectiveWebSupplement, stage != .idle {
+                    stageRow
+                }
+                if let summary {
                     busyBanner
                     summaryContent(summary)
+                } else {
+                    loading
                 }
-            } else {
-                loading
             }
         case .ready:
             if let summary {
@@ -186,7 +297,7 @@ struct PageSummaryPanel: View {
         VStack(spacing: 12) {
             ProgressView()
                 .controlSize(.regular)
-            Text(english ? "Reading this page's text…" : "正在读取当前页面正文…")
+            Text(L10n.string("reader.overview.preparing", language: context.language))
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
@@ -198,16 +309,20 @@ struct PageSummaryPanel: View {
         stateCard(
             symbol: "doc.text.magnifyingglass",
             message: message,
-            detail: english
-                ? "Wait for the page to finish loading, or switch to reader mode, then try again."
-                : "可以等页面加载完成，或切换到阅读模式后再试。"
+            detail: L10n.string("reader.overview.unavailable.detail", language: context.language)
         ) {
             HStack(spacing: 10) {
-                Button(english ? "Try again" : "重试", action: onRetry)
-                    .buttonStyle(.borderedProminent)
+                Button(
+                    L10n.string("reader.overview.retry", language: context.language),
+                    action: onRetry
+                )
+                .buttonStyle(.borderedProminent)
                 if let onSwitchToReaderMode {
-                    Button(english ? "Reader mode" : "切换到阅读模式", action: onSwitchToReaderMode)
-                        .buttonStyle(.borderless)
+                    Button(
+                        L10n.string("reader.overview.readerMode", language: context.language),
+                        action: onSwitchToReaderMode
+                    )
+                    .buttonStyle(.borderless)
                 }
             }
         }
@@ -216,39 +331,64 @@ struct PageSummaryPanel: View {
     private var disclosure: some View {
         VStack(alignment: .leading, spacing: 12) {
             Label(
-                english ? "This sends page text to your AI provider" : "此操作会把页面正文发送给你的 AI 提供商",
+                L10n.string("reader.overview.disclosure.title", language: context.language),
                 systemImage: "lock.shield"
             )
             .font(.callout.weight(.semibold))
 
-            Text(english
-                ? "The overview reads only the page open in this reader, up to \(PageSummaryService.maxArticleCharacters) characters. The text is sent to \(providerName) for this request; the app does not save the body. The provider's own privacy policy applies."
-                : "概览只读取当前阅读器打开的页面，最多 \(PageSummaryService.maxArticleCharacters) 字；本次请求会把正文发送给 \(providerName)。应用不会保存正文，提供商仍受其隐私政策约束。")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+            Text(L10n.string(
+                "reader.overview.disclosure.body",
+                language: context.language,
+                PageSummaryService.maxArticleCharacters,
+                providerName
+            ))
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
 
-            Text(english
-                ? "Outside private reading, the overview and citation metadata are cached locally for 7 days (max 50 entries). The page body is never saved."
-                : "非隐私阅读时，概览与引用元数据会在本地缓存 7 天、最多 50 条；不会保存页面正文。")
+            Text(L10n.string("reader.overview.disclosure.cache", language: context.language))
                 .font(.caption2)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
-            if context.isPrivate || input?.isPrivate == true {
-                Text(english
-                    ? "Private reading is on: this overview stays in this session and is not cached."
-                    : "隐私阅读已开启：概览只保留在本次会话，不会写入缓存。")
+            if isPrivate {
+                Text(L10n.string("reader.overview.disclosure.private", language: context.language))
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
+            } else {
+                webSupplementToggle
+                Text(L10n.string(
+                    "reader.overview.disclosure.external",
+                    language: context.language,
+                    providerName
+                ))
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
             }
 
             HStack(spacing: 10) {
-                Button(english ? "Generate overview" : "生成概览", action: onGenerate)
-                    .buttonStyle(.borderedProminent)
-                Button(english ? "Cancel" : "取消", action: onCancelDisclosure)
+                Button(
+                    L10n.string("reader.overview.generate", language: context.language)
+                ) {
+                    onGenerate(false)
+                }
+                .buttonStyle(.borderedProminent)
+
+                if !isPrivate {
+                    Button(
+                        L10n.string("reader.overview.generatePageOnly", language: context.language),
+                        action: onGeneratePageOnly
+                    )
                     .buttonStyle(.borderless)
+                }
+
+                Button(
+                    L10n.string("reader.overview.cancel", language: context.language),
+                    action: onCancelDisclosure
+                )
+                .buttonStyle(.borderless)
             }
         }
         .padding(14)
@@ -266,26 +406,68 @@ struct PageSummaryPanel: View {
                 Image(systemName: "lock.shield")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                Text(english
-                    ? "Sends this page's text to \(providerName), up to \(PageSummaryService.maxArticleCharacters) characters."
-                    : "会把当前页正文发送给 \(providerName)，最多 \(PageSummaryService.maxArticleCharacters) 字。")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                Text(L10n.string(
+                    "reader.overview.ready.body",
+                    language: context.language,
+                    providerName,
+                    PageSummaryService.maxArticleCharacters
+                ))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
             }
-            Button(english ? "Generate overview" : "生成概览", action: onGenerate)
+
+            webSupplementToggle
+
+            HStack(spacing: 10) {
+                Button(
+                    L10n.string("reader.overview.generate", language: context.language)
+                ) {
+                    onGenerate(false)
+                }
                 .buttonStyle(.borderedProminent)
+
+                if !isPrivate {
+                    Button(
+                        L10n.string("reader.overview.generatePageOnly", language: context.language),
+                        action: onGeneratePageOnly
+                    )
+                    .buttonStyle(.borderless)
+                }
+            }
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(.quaternary.opacity(0.28), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
     }
 
+    @ViewBuilder
+    private var webSupplementToggle: some View {
+        if isPrivate {
+            Label(
+                L10n.string("reader.overview.external.private", language: context.language),
+                systemImage: "hand.raised"
+            )
+            .font(.caption)
+            .foregroundStyle(.secondary)
+        } else {
+            Toggle(
+                L10n.string("reader.overview.external.toggle", language: context.language),
+                isOn: Binding(
+                    get: { webSupplement },
+                    set: { onWebSupplementChange($0) }
+                )
+            )
+            .toggleStyle(.switch)
+            .controlSize(.small)
+        }
+    }
+
     private var loading: some View {
         VStack(spacing: 12) {
             ProgressView()
                 .controlSize(.regular)
-            Text(english ? "Reading this page and writing an overview…" : "正在阅读当前页面并生成概览…")
+            Text(L10n.string("reader.overview.loading", language: context.language))
                 .font(.callout)
                 .foregroundStyle(.secondary)
         }
@@ -295,15 +477,104 @@ struct PageSummaryPanel: View {
     private var busyBanner: some View {
         HStack(spacing: 7) {
             ProgressView().controlSize(.mini)
-            Text(english ? "Updating the overview…" : "正在更新概览…")
+            Text(L10n.string("reader.overview.busy", language: context.language))
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
     }
 
+    // MARK: - Stage row
+
+    private struct StageStep: Identifiable {
+        let id: Int
+        let title: String
+    }
+
+    private var stageSteps: [StageStep] {
+        var steps: [StageStep] = []
+        steps.append(StageStep(
+            id: steps.count,
+            title: L10n.string("reader.overview.stage.search", language: context.language)
+        ))
+        steps.append(StageStep(id: steps.count, title: stageReadTitle))
+        if assessmentEnabled {
+            steps.append(StageStep(
+                id: steps.count,
+                title: L10n.string("reader.overview.stage.assess", language: context.language)
+            ))
+        }
+        steps.append(StageStep(
+            id: steps.count,
+            title: L10n.string("reader.overview.stage.summarize", language: context.language)
+        ))
+        return steps
+    }
+
+    private var stageReadTitle: String {
+        if case .reading(let index, let total) = stage {
+            return L10n.string(
+                "reader.overview.stage.read",
+                language: context.language,
+                index,
+                total
+            )
+        }
+        return L10n.string("reader.overview.stage.readShort", language: context.language)
+    }
+
+    private var stageCurrentIndex: Int {
+        switch stage {
+        case .idle:
+            return -1
+        case .searchingExternal:
+            return 0
+        case .reading:
+            return 1
+        case .assessingExternal:
+            return assessmentEnabled ? 2 : 1
+        case .summarizing:
+            return max(0, stageSteps.count - 1)
+        }
+    }
+
+    private var stageRow: some View {
+        HStack(spacing: 6) {
+            ForEach(stageSteps) { step in
+                HStack(spacing: 4) {
+                    Circle()
+                        .fill(stageColor(for: step.id))
+                        .frame(width: 5, height: 5)
+                    Text(step.title)
+                        .font(.caption2)
+                        .foregroundStyle(step.id == stageCurrentIndex ? Color.primary : Color.secondary)
+                }
+                if step.id != stageSteps.last?.id {
+                    Text("›")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                        .accessibilityHidden(true)
+                }
+            }
+            Spacer(minLength: 0)
+        }
+        .accessibilityElement(children: .combine)
+    }
+
+    private func stageColor(for index: Int) -> Color {
+        if index == stageCurrentIndex { return .accentColor }
+        if index < stageCurrentIndex { return .secondary }
+        return Color.secondary.opacity(0.3)
+    }
+
+    // MARK: - Errors
+
     private func errorBanner(_ message: String) -> some View {
         Label(
-            english ? "Generation failed; showing the previous overview. \(message)" : "生成失败，正在显示上次结果。\(message)",
+            L10n.string(
+                "reader.overview.error.previous",
+                language: context.language,
+                message
+            ),
             systemImage: "exclamationmark.triangle"
         )
         .font(.caption)
@@ -315,15 +586,19 @@ struct PageSummaryPanel: View {
         stateCard(
             symbol: "exclamationmark.triangle.fill",
             message: message,
-            detail: english
-                ? "The page is still open; you can retry without losing your place."
-                : "页面仍保持打开，可以重试且不会丢失阅读位置。"
+            detail: L10n.string("reader.overview.failure.detail", language: context.language)
         ) {
             HStack(spacing: 10) {
-                Button(english ? "Try again" : "重试", action: onRetry)
-                    .buttonStyle(.borderedProminent)
-                Button(english ? "AI settings" : "AI 设置", action: onOpenSettings)
-                    .buttonStyle(.borderless)
+                Button(
+                    L10n.string("reader.overview.retry", language: context.language),
+                    action: onRetry
+                )
+                .buttonStyle(.borderedProminent)
+                Button(
+                    L10n.string("reader.overview.aiSettings", language: context.language),
+                    action: onOpenSettings
+                )
+                .buttonStyle(.borderless)
             }
         }
     }
@@ -352,16 +627,12 @@ struct PageSummaryPanel: View {
         .background(.orange.opacity(0.08), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 
+    // MARK: - Summary
+
     private func summaryContent(_ summary: PageSummary) -> some View {
         VStack(alignment: .leading, spacing: 14) {
             if let errorMessage, phase != .generating {
-                Label(
-                    english ? "Generation failed; showing the previous overview. \(errorMessage)" : "生成失败，正在显示上次结果。\(errorMessage)",
-                    systemImage: "exclamationmark.triangle"
-                )
-                .font(.caption)
-                .foregroundStyle(.orange)
-                .fixedSize(horizontal: false, vertical: true)
+                errorBanner(errorMessage)
             }
 
             Text(summary.oneLine)
@@ -390,39 +661,182 @@ struct PageSummaryPanel: View {
                                 .foregroundStyle(Color.accentColor)
                                 .help(source.item.displayTitle)
                         }
+                        ForEach(point.resolvedCitationIndices, id: \.self) { number in
+                            if let source = summary.sources?.first(where: { $0.index == number }) {
+                                citationChip(source)
+                            }
+                        }
                     }
                 }
             }
 
-            if !summary.citations.isEmpty {
-                Divider()
-                VStack(alignment: .leading, spacing: 6) {
-                    Text(english ? "Cited sources" : "引用来源")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                    ForEach(summary.citations) { citation in
-                        Button {
-                            onOpenCitation(citation)
-                        } label: {
-                            HStack(spacing: 6) {
-                                Text("#\(citation.index)")
-                                    .font(.caption2.monospacedDigit().weight(.semibold))
-                                    .foregroundStyle(Color.accentColor)
-                                Text(citation.item.displayTitle)
-                                    .font(.caption)
-                                    .lineLimit(1)
-                                Spacer(minLength: 0)
-                                Image(systemName: "arrow.up.forward")
-                                    .font(.system(size: 8, weight: .semibold))
-                                    .foregroundStyle(.tertiary)
-                            }
-                            .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
+            if let sources = summary.sources, !sources.isEmpty {
+                sourceSection(sources)
+            } else if !summary.citations.isEmpty {
+                citationSection(summary.citations)
             }
         }
+    }
+
+    @ViewBuilder
+    private func citationChip(_ source: PageSummarySource) -> some View {
+        if source.kind == .currentPage {
+            Text("[\(source.index)]")
+                .font(.caption2.monospacedDigit().weight(.semibold))
+                .foregroundStyle(.secondary)
+                .help(L10n.string("reader.overview.sources.currentPage", language: context.language))
+        } else {
+            Button("[\(source.index)]") {
+                onOpenSource(source)
+            }
+            .font(.caption2.monospacedDigit().weight(.semibold))
+            .buttonStyle(.borderless)
+            .foregroundStyle(Color.accentColor)
+            .help(source.title)
+        }
+    }
+
+    private func sourceSection(_ sources: [PageSummarySource]) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Divider()
+            Text(L10n.string("reader.overview.sources.all", language: context.language))
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+            ForEach(sources) { source in
+                sourceRow(source)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func sourceRow(_ source: PageSummarySource) -> some View {
+        let clickable = source.kind == .external && !source.url.isEmpty
+        if clickable {
+            Button {
+                onOpenSource(source)
+            } label: {
+                sourceRowContent(source, clickable: true)
+            }
+            .buttonStyle(.plain)
+            .help(sourceHelp(source))
+        } else {
+            sourceRowContent(source, clickable: false)
+                .help(sourceHelp(source))
+        }
+    }
+
+    private func sourceRowContent(
+        _ source: PageSummarySource,
+        clickable: Bool
+    ) -> some View {
+        HStack(spacing: 6) {
+            Text("[\(source.index)]")
+                .font(.caption2.monospacedDigit().weight(.semibold))
+                .foregroundStyle(source.adopted ? Color.accentColor : Color.secondary)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(source.title.isEmpty ? source.host : source.title)
+                    .font(.caption)
+                    .lineLimit(1)
+                if let metadata = sourceMetadata(source) {
+                    Text(metadata)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+            }
+            Spacer(minLength: 0)
+            if clickable {
+                Image(systemName: "arrow.up.forward")
+                    .font(.system(size: 8, weight: .semibold))
+                    .foregroundStyle(.tertiary)
+            }
+        }
+        .contentShape(Rectangle())
+        .opacity(source.adopted ? 1 : 0.55)
+    }
+
+    private func sourceMetadata(_ source: PageSummarySource) -> String? {
+        var parts: [String] = []
+        if source.kind == .currentPage {
+            parts.append(
+                L10n.string("reader.overview.sources.currentPage", language: context.language)
+            )
+        } else {
+            if !source.host.isEmpty { parts.append(source.host) }
+            if let date = source.publishedAt {
+                parts.append(date.formatted(.dateTime.year().month().day()))
+            }
+            if let type = source.type, type != .unknown {
+                parts.append(L10n.string(
+                    "answer.source.type.\(type.rawValue)",
+                    language: context.language
+                ))
+            }
+            if let adoption = source.adoption {
+                parts.append(L10n.string(
+                    "answer.source.adoption.\(adoption.rawValue)",
+                    language: context.language
+                ))
+            }
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+
+    private func sourceHelp(_ source: PageSummarySource) -> String {
+        var parts: [String] = []
+        if !source.url.isEmpty { parts.append(source.url) }
+        if let reason = source.reason {
+            parts.append(L10n.string(
+                "answer.source.reason.\(reason.rawValue)",
+                language: context.language
+            ))
+        }
+        return parts.joined(separator: "\n")
+    }
+
+    private func citationSection(_ citations: [PageSummaryCitation]) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Divider()
+            Text(L10n.string("reader.overview.sources", language: context.language))
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+            ForEach(citations) { citation in
+                Button {
+                    onOpenCitation(citation)
+                } label: {
+                    HStack(spacing: 6) {
+                        Text("#\(citation.index)")
+                            .font(.caption2.monospacedDigit().weight(.semibold))
+                            .foregroundStyle(Color.accentColor)
+                        Text(citation.item.displayTitle)
+                            .font(.caption)
+                            .lineLimit(1)
+                        Spacer(minLength: 0)
+                        Image(systemName: "arrow.up.forward")
+                            .font(.system(size: 8, weight: .semibold))
+                            .foregroundStyle(.tertiary)
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+        }
+    }
+
+    // MARK: - Footer
+
+    private func retrievalLine(_ summary: PageSummary) -> String {
+        if summary.basis == .searchUnavailable {
+            return L10n.string("reader.overview.searchFailed", language: context.language)
+        }
+        if summary.sources?.contains(where: { $0.kind == .external }) == true {
+            return L10n.string(
+                "reader.overview.retrievedAt",
+                language: context.language,
+                summary.generatedAt.formatted(.dateTime.hour().minute())
+            )
+        }
+        return L10n.string("reader.overview.notSearched", language: context.language)
     }
 
     private var footer: some View {
@@ -430,37 +844,92 @@ struct PageSummaryPanel: View {
             Divider()
             HStack(spacing: 8) {
                 if let summary {
-                    Text(english
-                        ? "\(summary.providerName) · \(summary.model) · \(summary.inputCharacters) characters"
-                        : "\(summary.providerName) · \(summary.model) · 输入 \(summary.inputCharacters) 字")
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                        .lineLimit(1)
+                    Text(L10n.string(
+                        "reader.overview.footer.meta",
+                        language: context.language,
+                        summary.providerName,
+                        summary.model,
+                        summary.inputCharacters
+                    ))
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
                     if summary.wasTruncated {
-                        Text(english ? "truncated" : "已截断")
+                        Text(L10n.string("reader.overview.footer.truncated", language: context.language))
                             .font(.caption2)
                             .foregroundStyle(.tertiary)
                     }
                 } else {
-                    Text(english ? "Nothing is sent until you generate." : "生成前不会发送页面内容。")
+                    Text(L10n.string("reader.overview.footer.nothingSent", language: context.language))
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
                 }
 
                 Spacer(minLength: 0)
 
+                if let summary,
+                   phase != .generating,
+                   summary.sources?.contains(where: { $0.kind == .external }) == true {
+                    Button(action: onGeneratePageOnly) {
+                        Image(systemName: "doc.text")
+                            .font(.caption)
+                    }
+                    .buttonStyle(.borderless)
+                    .help(L10n.string(
+                        "reader.overview.generatePageOnly",
+                        language: context.language
+                    ))
+                    .accessibilityLabel(L10n.string(
+                        "reader.overview.generatePageOnly",
+                        language: context.language
+                    ))
+                }
+
                 if summary != nil {
-                    Button(action: onGenerate) {
+                    Button {
+                        onGenerate(true)
+                    } label: {
                         Label(
                             phase == .generating
-                                ? (english ? "Generating…" : "生成中…")
-                                : (english ? "Regenerate" : "重新生成"),
+                                ? L10n.string("reader.overview.generating", language: context.language)
+                                : L10n.string("reader.overview.regenerate", language: context.language),
                             systemImage: "arrow.clockwise"
                         )
                         .font(.caption)
                     }
                     .buttonStyle(.borderless)
                     .disabled(phase == .generating)
+                }
+            }
+
+            if let summary, phase != .generating {
+                Text(retrievalLine(summary))
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+
+            if !thinkingOptions.isEmpty, showsThinkingControl {
+                HStack(spacing: 8) {
+                    Text(L10n.string("reader.overview.thinking", language: context.language))
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                    AIThinkingPicker(
+                        surface: .overview,
+                        language: context.language,
+                        level: thinking,
+                        options: thinkingOptions,
+                        isEnabled: phase != .generating,
+                        onChange: onThinkingChange
+                    )
+                    Spacer(minLength: 0)
+                }
+                if let thinkingHint, !thinkingHint.isEmpty {
+                    Text(thinkingHint)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
         }

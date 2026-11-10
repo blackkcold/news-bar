@@ -1,3 +1,40 @@
+## [v2.18.0] - 2026-11-10
+
+### ✨ 新增
+
+- **证据支撑的 AI 搜索**：问题最多扩展为 3 条查询，共享 6 次搜索尝试；候选上限与读取上限拆分，读取失败会继续填槽。来源保留发布日期、类型与采用状态；可选批量来源评估（默认关）逐字核对引文，拒绝无法验证的引用；零引用回答保留原文并标注“未通过引用校验”，不再整份清空。
+- **页面概览外部佐证**：阅读器概览可选择同时检索外部资料（最多 2 条查询、3 个网页）。当前页面固定为来源 1，外部来源从 2 开始；外部检索失败、无结果、全部不可读或全部未采用时，仍总结当前页；私密阅读强制不检索外部资料。
+- **AI 思考强度**：概览、AI 搜索、新闻总结三个入口可独立选择思考档位；按连接与模型能力收窄选项，DeepSeek 系列模型才发送思考开关；实验字段被 400/422 拒绝时自动去掉字段重试一次。
+- **RSS 批量导入 / 导出与首启引导**：支持 OPML、JSON、TXT、CSV 预览导入，区分可添加、已存在、无效、被安全策略拒绝与超限；支持 OPML/JSON 导出；首次使用显示 3 个推荐源与导入入口。
+- **本地 Agent CLI**：新增 `newsbarctl`，支持 `status`、`rss list/add/remove/select/deselect/import/export`、`refresh`；通过本机 0600 文件队列与 App 通信，不开放网络端口。
+
+### 🛠 修复
+
+- 页面概览在外部检索失败时不再空白：保留当前页概览并在依据行说明“联网核验失败 / 未检索到可靠外部资料”。
+- 旧版页面概览缓存仍可解码；新增来源、依据与检索计数均为可选字段，不会因 schema 变化清空整份缓存。
+- AI 搜索引用到被拒来源时不再渲染成引用芯片；越界编号保持纯文本。
+- RSS 推荐源重新验证，补充量子位、InfoQ、阮一峰、掘金、FT 中文网、BBC World、The Guardian 等源；BBC 中文标注为繁体实际源。
+
+### 🔧 改进
+
+- AI 搜索隐私提示升级 v2：明确最多 3 条检索词会发给搜索服务；页面概览披露卡明确页面标题/首句/检索词与外部网页正文的发送范围。
+- 页面概览缓存按结果分级：纯当前页 7 天、外部成功 24 小时、外部失败 1 小时；“重新生成”绕过缓存。
+- 页面概览面板整块中英文本地化；来源列表显示当前页面、日期、类型、采用/仅佐证/未采用。
+- SearchRouter 接入本地搜索配额限流；AI 搜索与页面概览共享同一套 provider 冷却/配额。
+- 新增构建产物 `newsbarctl` 的打包、签名与安装脚本。
+
+### ✅ 测试
+
+- 新增 `QueryPlannerTests`、`EvidenceRetrieverTests`、`EvidenceReaderTests`、`EvidenceAssessorTests`、`AnswerValidatorTests`、`PageReaderOutcomeTests`、`PageSummaryEvidenceTests`、`PageSummaryExternalTests`。
+- 新增 `AIThinkingCapabilityTests`、`AgentProtocolTests`、`AgentCommandServiceTests`、`RSSImportServiceTests`、`RSSImportSheetRenderingTests`。
+- 更新 `AISearchTests`、`AIStreamingTests`、`PageSummaryTests`、`PageSummaryPanelRenderingTests`、`QueryPlannerTests`。
+- `swift test`：1910 项，6 项跳过，0 失败。
+- `swift build -c release`：通过。
+
+### ⚠️ 签名说明
+
+- 本版为 adhoc 签名，未经过 Apple 公证。首次打开如被 Gatekeeper 拦截，请在 Finder 中右键 NewsBar.app → 打开。
+
 ## [v2.17.5] - 2026-11-09
 
 ### 🛠 修复

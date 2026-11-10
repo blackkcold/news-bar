@@ -2,6 +2,41 @@ import XCTest
 @testable import NewsBar
 
 final class PageSummaryTests: XCTestCase {
+    private actor SummaryTestClient: AIChatClienting {
+        private(set) var requests: [AIChatRequest] = []
+        private let text: String
+
+        init(text: String) {
+            self.text = text
+        }
+
+        func complete(_ request: AIChatRequest) async throws -> AIChatResponse {
+            requests.append(request)
+            return AIChatResponse(text: text, truncated: false)
+        }
+    }
+
+    func testSummarizeUsesInjectedClient() async throws {
+        let client = SummaryTestClient(text: "【概览】一句话\n【要点】\n- 要点一")
+        let summary = try await PageSummaryService.summarize(
+            input: .article(
+                title: "T",
+                url: "https://example.com/a",
+                text: String(repeating: "正文", count: 300),
+                language: .zh,
+                isPrivate: false
+            ),
+            configuration: makeConfiguration(),
+            providerName: "Test",
+            quotaPolicy: .unlimited,
+            thinking: nil,
+            client: client
+        )
+        XCTAssertEqual(summary.oneLine, "一句话")
+        let requestCount = await client.requests.count
+        XCTAssertEqual(requestCount, 1)
+    }
+
     func testArticleInputIsTruncatedAndMarked() throws {
         let text = String(repeating: "a", count: PageSummaryService.maxArticleCharacters + 250)
         let input = PageSummaryInput.article(
@@ -140,7 +175,7 @@ final class PageSummaryTests: XCTestCase {
         XCTAssertNil(summary)
     }
 
-    func testCacheKeySeparatesContentModelAndLanguage() {
+    func testCacheKeySeparatesContentModelLanguageAndThinking() {
         let first = PageSummaryInput.article(
             title: "A",
             url: "https://example.com/a",
@@ -155,10 +190,30 @@ final class PageSummaryTests: XCTestCase {
             language: .zh,
             isPrivate: false
         )
-        let firstKey = first.cacheKey(model: "m1", providerID: "p", promptVersion: "v1")
-        XCTAssertNotEqual(firstKey, second.cacheKey(model: "m1", providerID: "p", promptVersion: "v1"))
-        XCTAssertNotEqual(firstKey, first.cacheKey(model: "m2", providerID: "p", promptVersion: "v1"))
-        XCTAssertNotEqual(firstKey, first.cacheKey(model: "m1", providerID: "p", promptVersion: "v2"))
+        let firstKey = first.cacheKey(
+            model: "m1", providerID: "p", promptVersion: "v1",
+            thinking: .medium, thinkingStyle: .deepseekToggle
+        )
+        XCTAssertNotEqual(firstKey, second.cacheKey(
+            model: "m1", providerID: "p", promptVersion: "v1",
+            thinking: .medium, thinkingStyle: .deepseekToggle
+        ))
+        XCTAssertNotEqual(firstKey, first.cacheKey(
+            model: "m2", providerID: "p", promptVersion: "v1",
+            thinking: .medium, thinkingStyle: .deepseekToggle
+        ))
+        XCTAssertNotEqual(firstKey, first.cacheKey(
+            model: "m1", providerID: "p", promptVersion: "v2",
+            thinking: .medium, thinkingStyle: .deepseekToggle
+        ))
+        XCTAssertNotEqual(firstKey, first.cacheKey(
+            model: "m1", providerID: "p", promptVersion: "v1",
+            thinking: .high, thinkingStyle: .deepseekToggle
+        ))
+        XCTAssertNotEqual(firstKey, first.cacheKey(
+            model: "m1", providerID: "p", promptVersion: "v1",
+            thinking: .medium, thinkingStyle: .anthropicBudget
+        ))
     }
 
     func testCacheStoreRoundTripsAndClears() async throws {

@@ -23,7 +23,7 @@ struct AnswerDocumentView: View {
     @State private var highlightedSource: Int?
     @State private var contentHeight: CGFloat = 0
 
-    private var citedIndices: Set<Int> { Set(document.citationIndices) }
+    private var citedIndices: Set<Int> { Set(document.verifiedCitationIndices) }
 
     private static let sourcesAnchor = "answer-sources"
 
@@ -36,6 +36,7 @@ struct AnswerDocumentView: View {
                         AnswerBlockView(
                             block: block,
                             sourceCount: document.sources.count,
+                            allowedCitations: document.allowedCitations,
                             selectable: !isStreaming
                         ) { index in
                             reveal(index, proxy: proxy)
@@ -100,11 +101,15 @@ struct AnswerDocumentView: View {
                     .textSelection(.enabled)
                     .accessibilityAddTraits(.isHeader)
             }
+            if let retrieval = document.retrieval {
+                basisBadge(retrieval.basis)
+            }
             provenance {
                 withAnimation(.easeInOut(duration: 0.22)) {
                     proxy.scrollTo(Self.sourcesAnchor, anchor: .top)
                 }
             }
+            retrievalNotes
             if let notice {
                 Label(notice, systemImage: "info.circle")
                     .font(.caption2)
@@ -116,6 +121,132 @@ struct AnswerDocumentView: View {
                     .font(.caption2)
                     .foregroundStyle(.orange)
             }
+        }
+    }
+
+    // MARK: - Evidence basis
+
+    @ViewBuilder
+    private func basisBadge(_ basis: AnswerBasis) -> some View {
+        switch basis {
+        case .externalSupported:
+            badge(
+                icon: "checkmark.seal.fill",
+                text: L10n.string(
+                    "answer.basis.supported",
+                    language: language,
+                    document.verifiedCitationIndices.count
+                ),
+                tone: .green
+            )
+        case .externalLimited:
+            HStack(spacing: 6) {
+                badge(
+                    icon: "circle.lefthalf.filled",
+                    text: L10n.string("answer.basis.limited", language: language),
+                    tone: .orange
+                )
+                Text(limitedDetail)
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        case .currentPageOnly:
+            badge(
+                icon: "doc.text",
+                text: L10n.string("answer.basis.currentPage", language: language),
+                tone: .secondary
+            )
+        case .noVerifiedCitations:
+            Label(
+                L10n.string("answer.basis.noCitations", language: language),
+                systemImage: "exclamationmark.triangle"
+            )
+            .font(.caption2)
+            .foregroundStyle(.orange)
+            .fixedSize(horizontal: false, vertical: true)
+        case .insufficientMaterial:
+            badge(
+                icon: "tray",
+                text: L10n.string("answer.basis.insufficient", language: language),
+                tone: .secondary
+            )
+        }
+    }
+
+    private func badge(icon: String, text: String, tone: Color) -> some View {
+        HStack(spacing: 4) {
+            Image(systemName: icon)
+                .font(.system(size: 9, weight: .semibold))
+            Text(text)
+                .font(.caption2.weight(.medium))
+        }
+        .foregroundStyle(tone)
+        .padding(.horizontal, 7)
+        .padding(.vertical, 3)
+        .background(tone.opacity(0.10), in: Capsule())
+        .accessibilityElement(children: .combine)
+    }
+
+    private var limitedDetail: String {
+        let notes = document.retrieval?.notes ?? []
+        if notes.contains(.assessmentSkipped) || notes.contains(.assessmentFailed) {
+            return L10n.string("answer.basis.limited.unassessed", language: language)
+        }
+        if assessmentWasOff {
+            return L10n.string("answer.basis.limited.heuristic", language: language)
+        }
+        let adopted = document.retrieval?.adoptedCount ?? 0
+        return adopted <= 1
+            ? L10n.string("answer.basis.limited.single", language: language)
+            : L10n.string("answer.basis.limited.secondary", language: language)
+    }
+
+    /// With assessment off, every readable non-duplicate source is marked
+    /// `heuristic`. Saying "mostly secondary" in that state would be a claim
+    /// the app never checked.
+    private var assessmentWasOff: Bool {
+        let webSources = document.sources.filter {
+            $0.origin == .web && $0.duplicateOf == nil
+        }
+        guard !webSources.isEmpty else { return false }
+        return webSources.allSatisfy { $0.assessment?.reason == .heuristic }
+    }
+
+    @ViewBuilder
+    private var retrievalNotes: some View {
+        let notes = visibleNotes
+        if !notes.isEmpty {
+            VStack(alignment: .leading, spacing: 2) {
+                ForEach(notes.indices, id: \.self) { index in
+                    Label(notes[index].message(language), systemImage: "info.circle")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+    }
+
+    private var visibleNotes: [RetrievalNote] {
+        guard let retrieval = document.retrieval else { return [] }
+        let notes = retrieval.notes.filter { note in
+            if retrieval.basis == .externalLimited,
+               note == .assessmentSkipped || note == .assessmentFailed {
+                // The badge already explains why evidence is limited.
+                return false
+            }
+            return true
+        }
+        guard document.blocks.isEmpty else { return notes }
+        // The headline already states these; repeating them under it would be
+        // noise. The remaining notes explain a partial run.
+        return notes.filter {
+            $0 == .partialProviders
+                || $0 == .assessmentSkipped
+                || $0 == .assessmentFailed
+                || $0 == .conflictingSources
+                || $0 == .partialCitations
         }
     }
 
@@ -142,7 +273,43 @@ struct AnswerDocumentView: View {
                 .foregroundStyle(Color.accentColor)
                 .help(L10n.string("answer.lookUp", language: language))
             }
-            if document.evidence.sourceCount > 0 {
+            if let retrieval = document.retrieval, document.mode == .web {
+                if modeLabel != nil {
+                    Text("·").accessibilityHidden(true)
+                }
+                Button(action: onShowSources) {
+                    HStack(spacing: 2) {
+                        Text(L10n.string(
+                            "answer.evidence.found",
+                            language: language,
+                            retrieval.foundCount
+                        ))
+                        Image(systemName: "chevron.down")
+                            .font(.system(size: 7, weight: .bold))
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help(L10n.string("answer.sources", language: language))
+                Text("·").accessibilityHidden(true)
+                Text(L10n.string(
+                    "answer.evidence.read",
+                    language: language,
+                    retrieval.readCount
+                ))
+                Text("·").accessibilityHidden(true)
+                Text(L10n.string(
+                    "answer.evidence.adopted",
+                    language: language,
+                    retrieval.adoptedCount
+                ))
+                Text("·").accessibilityHidden(true)
+                Text(L10n.string(
+                    "answer.evidence.cited",
+                    language: language,
+                    document.verifiedCitationIndices.count
+                ))
+            } else if document.evidence.sourceCount > 0 {
                 if modeLabel != nil {
                     Text("·").accessibilityHidden(true)
                 }
@@ -164,7 +331,7 @@ struct AnswerDocumentView: View {
                 Text(L10n.string(
                     "answer.evidence.cited",
                     language: language,
-                    document.evidence.citedCount
+                    document.verifiedCitationIndices.count
                 ))
             }
         }
@@ -239,15 +406,12 @@ private struct AnswerSourceRow: View {
                         .font(.callout)
                         .lineLimit(2)
                         .multilineTextAlignment(.leading)
-                    HStack(spacing: 4) {
-                        Text(source.host)
+                    if let metadataLine {
+                        Text(metadataLine)
                             .font(.caption2)
-                        if cited {
-                            Text("·")
-                            Text(L10n.string("answer.citedSource", language: language))
-                        }
+                            .lineLimit(2)
+                            .foregroundStyle(.secondary)
                     }
-                    .foregroundStyle(.secondary)
                 }
                 Spacer(minLength: 0)
                 Image(systemName: "arrow.up.right")
@@ -258,6 +422,7 @@ private struct AnswerSourceRow: View {
             .padding(.vertical, 4)
             .padding(.horizontal, 4)
             .contentShape(Rectangle())
+            .opacity(isRejected ? 0.55 : 1)
         }
         .buttonStyle(.plain)
         .background(
@@ -267,11 +432,56 @@ private struct AnswerSourceRow: View {
             in: RoundedRectangle(cornerRadius: 6, style: .continuous)
         )
         .onHover { hovering = $0 }
-        .help(source.url)
+        .help(helpText)
         .accessibilityLabel(
             L10n.string("answer.cite", language: language, source.index) + ", " + source.title
         )
-        .accessibilityHint(source.host)
+        .accessibilityHint(metadataLine ?? source.host)
+    }
+
+    private var isRejected: Bool {
+        source.assessment?.adoption == .rejected
+    }
+
+    private var metadataLine: String? {
+        var parts: [String] = []
+        if source.origin == .currentPage {
+            parts.append(L10n.string("answer.currentPage", language: language))
+        } else if !source.host.isEmpty {
+            parts.append(source.host)
+        }
+        if let date = source.publishedAt {
+            parts.append(date.formatted(.dateTime.year().month().day()))
+        }
+        if let type = source.assessment?.type, type != .unknown {
+            parts.append(L10n.string("answer.source.type.\(type.rawValue)", language: language))
+        }
+        if let assessment = source.assessment {
+            parts.append(L10n.string(
+                "answer.source.adoption.\(assessment.adoption.rawValue)",
+                language: language
+            ))
+        }
+        if cited {
+            parts.append(L10n.string("answer.citedSource", language: language))
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+
+    private var reasonText: String? {
+        guard let assessment = source.assessment else { return nil }
+        let key = "answer.source.reason.\(assessment.reason.rawValue)"
+        let localized = L10n.string(key, language: language)
+        if localized != key { return localized }
+        let detail = assessment.detail?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return detail.isEmpty ? nil : detail
+    }
+
+    private var helpText: String {
+        [source.url, reasonText]
+            .compactMap { $0 }
+            .filter { !$0.isEmpty }
+            .joined(separator: "\n")
     }
 }
 

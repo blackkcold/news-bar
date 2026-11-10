@@ -142,4 +142,34 @@ final class RSSRecommendationsTests: XCTestCase {
             }
         }
     }
+
+    // MARK: - Starter picks and refreshed catalog
+
+    func test_starterPicks_resolveToCatalogAndCoverThreeCategories() {
+        let picks = RSSStarterPicks.recommendations
+        XCTAssertEqual(picks.count, 3)
+        XCTAssertEqual(picks.map(\.name), RSSStarterPicks.names)
+        XCTAssertEqual(Set(picks.map(\.category)).count, 3)
+        for pick in picks {
+            XCTAssertTrue(pick.url.hasPrefix("https://"), "\(pick.name) must be HTTPS")
+        }
+    }
+
+    func test_catalog_hasDesignAndLifestyleSources() {
+        XCTAssertTrue(RSSRecommendations.all.contains { $0.category == .design })
+        XCTAssertTrue(RSSRecommendations.all.contains { $0.category == .lifestyle })
+        XCTAssertTrue(RSSRecommendations.all.contains { $0.name == "FT 中文网" })
+    }
+
+    func test_catalog_doesNotContainDiscontinuedCaixin() {
+        XCTAssertFalse(RSSRecommendations.all.contains { $0.name.contains("财新") })
+        XCTAssertFalse(RSSRecommendations.all.contains { $0.url.contains("caixin") })
+    }
+
+    func test_bbcChineseName_mentionsTraditionalChinese() {
+        let bbc = RSSRecommendations.all.first {
+            $0.url.contains("bbci.co.uk/zhongwen")
+        }
+        XCTAssertEqual(bbc?.name, "BBC 中文（繁体）")
+    }
 }

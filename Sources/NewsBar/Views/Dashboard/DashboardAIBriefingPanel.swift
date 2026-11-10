@@ -44,6 +44,14 @@ struct DashboardAIBriefingPanel: View {
         }
     }
 
+    private var thinkingCapability: AIThinkingCapability {
+        AIThinkingResolver.capability(
+            connection: settings.resolvedAIConnection,
+            model: settings.aiModel,
+            language: settings.appLanguage
+        )
+    }
+
     private var parsedSummary: ParsedSummary? {
         guard hasCitationSnapshot else { return nil }
 
@@ -119,6 +127,28 @@ struct DashboardAIBriefingPanel: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             header
+            if settings.aiSummaryEnabled, !thinkingCapability.options.isEmpty {
+                HStack(spacing: 6) {
+                    Text("ai.thinking.summary".localized)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    Spacer(minLength: 0)
+                    AIThinkingPicker(
+                        surface: .summary,
+                        language: settings.appLanguage,
+                        level: thinkingCapability.normalized(settings.aiSummaryThinking),
+                        options: thinkingCapability.options,
+                        isEnabled: !isSummaryRefreshing && !orchestrator.aiSummaryUpdating,
+                        onChange: { settings.aiSummaryThinking = $0 }
+                    )
+                }
+                if resolvedSummaryText != nil {
+                    Text("ai.thinking.pendingRegenerate".localized)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
             if settings.aiSummaryEnabled, let manifest = orchestrator.aiSummaryManifest {
                 Text(settings.appLanguage == .en
                      ? "Based on collected titles · \(manifest.coverageStart.formatted(date: .omitted, time: .shortened))–\(manifest.asOf.formatted(date: .omitted, time: .shortened)) · not a complete daily archive"

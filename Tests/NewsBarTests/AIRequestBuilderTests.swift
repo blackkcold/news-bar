@@ -246,10 +246,10 @@ final class AIRequestBuilderTests: XCTestCase {
         XCTAssertEqual(AIProvider.deepseek.thinkingStyle, .deepseekToggle)
         XCTAssertEqual(AIProvider.minimaxAPI.thinkingStyle, .anthropicBudget)
         XCTAssertEqual(AIProvider.minimaxTokenPlan.thinkingStyle, .anthropicBudget)
-        XCTAssertEqual(AIProvider.opencodeGo.thinkingStyle, .none)
-        XCTAssertEqual(AIProvider.opencodeZen.thinkingStyle, .none)
+        XCTAssertEqual(AIProvider.opencodeGo.thinkingStyle, .deepseekModelToggle)
+        XCTAssertEqual(AIProvider.opencodeZen.thinkingStyle, .deepseekModelToggle)
         XCTAssertEqual(AIProvider.googleAIStudio.thinkingStyle, .openAIReasoningEffort)
-        XCTAssertEqual(AIProvider.ollamaCloud.thinkingStyle, .ollamaThink)
+        XCTAssertEqual(AIProvider.ollamaCloud.thinkingStyle, .deepseekModelToggle)
     }
 
     func testCustomProviderDeclaresItsOwnThinkingStyleAndSurvivesDecoding() throws {

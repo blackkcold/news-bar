@@ -7,9 +7,13 @@ let package = Package(
     dependencies: [],
     targets: [
         .systemLibrary(name: "CSQLite", path: "Sources/CSQLite"),
+        .target(
+            name: "NewsBarAgentProtocol",
+            path: "Sources/NewsBarAgentProtocol"
+        ),
         .executableTarget(
             name: "NewsBar",
-            dependencies: ["CSQLite"],
+            dependencies: ["CSQLite", "NewsBarAgentProtocol"],
             path: "Sources/NewsBar",
             resources: [.process("Resources")]
         ),
@@ -17,9 +21,14 @@ let package = Package(
             name: "WeiboLabelCLI",
             path: "Sources/WeiboLabelCLI"
         ),
+        .executableTarget(
+            name: "newsbarctl",
+            dependencies: ["NewsBarAgentProtocol"],
+            path: "Sources/newsbarctl"
+        ),
         .testTarget(
             name: "NewsBarTests",
-            dependencies: ["NewsBar"],
+            dependencies: ["NewsBar", "NewsBarAgentProtocol"],
             path: "Tests/NewsBarTests",
             // Tests read these from #filePath; excluding them from the bundle
             // keeps the build free of "unhandled resource" warnings.

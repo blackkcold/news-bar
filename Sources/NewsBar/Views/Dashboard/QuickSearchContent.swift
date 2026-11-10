@@ -368,7 +368,18 @@ struct QuickSearchContent: View {
             onOpenArchive: { selectSurface(.archive) },
             embedded: true,
             isActive: isActive && surface == .ai,
-            answerMaxHeight: answerMaxHeight
+            answerMaxHeight: answerMaxHeight,
+            thinking: searchThinkingCapability.normalized(settings.aiSearchThinking),
+            thinkingOptions: searchThinkingCapability.options,
+            onThinkingChange: { settings.aiSearchThinking = $0 }
+        )
+    }
+
+    private var searchThinkingCapability: AIThinkingCapability {
+        AIThinkingResolver.capability(
+            connection: settings.resolvedAIConnection,
+            model: settings.effectiveAISearchModel,
+            language: language
         )
     }
 

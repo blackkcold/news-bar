@@ -5,6 +5,77 @@ enum PageSummaryScope: String, Codable, Sendable {
     case list
 }
 
+/// What the overview is allowed to claim. A page overview has no answer-style
+/// "citation validation"; it either used adopted external sources or it did not.
+enum PageSummaryBasis: String, Codable, Sendable, Equatable {
+    /// No external search ran (private reading, toggle off, or list scope).
+    case pageOnly
+    /// At least one primary source, or two independent supporting sources.
+    case externalSupported
+    /// External sources exist but are single, secondary, or unassessed.
+    case externalLimited
+    /// External search was attempted but failed or returned nothing readable.
+    case searchUnavailable
+    /// No readable page text and no external material.
+    case insufficientMaterial
+}
+
+enum PageSummarySourceKind: String, Codable, Sendable, Equatable {
+    case currentPage
+    case external
+}
+
+struct PageSummarySource: Codable, Equatable, Identifiable, Sendable {
+    /// 1 is always the current page; external sources start at 2.
+    let index: Int
+    let url: String
+    let title: String
+    let host: String
+    let publishedAt: Date?
+    let kind: PageSummarySourceKind
+    let type: SourceType?
+    /// The exact adoption level, so the row can say 采用 / 仅佐证 / 未采用.
+    /// `nil` for the current page, which is never scored as an external source.
+    let adoption: SourceAdoption?
+    let reason: SourceReason?
+
+    var id: Int { index }
+    var adopted: Bool { adoption != .rejected }
+}
+
+/// Counts the app can verify without trusting the model. Separate from
+/// `RetrievalEvidence`, whose basis is answer-shaped; an overview never has
+/// answer citation numbers.
+struct PageSummaryRetrieval: Codable, Equatable, Sendable {
+    var foundCount: Int = 0
+    var readCount: Int = 0
+    var adoptedCount: Int = 0
+    var rejectedCount: Int = 0
+    var queryCount: Int = 0
+    var httpAttempts: Int = 0
+    var notes: [RetrievalNote] = []
+
+    static let empty = PageSummaryRetrieval()
+
+    mutating func add(_ note: RetrievalNote) {
+        guard !notes.contains(note) else { return }
+        notes.append(note)
+    }
+}
+
+/// Input to the summary service after the optional evidence pass. External
+/// sources are already renumbered 2...n+1 and assessed.
+struct PageSummaryEvidence: Equatable, Sendable {
+    var sources: [AISearchSource] = []
+    var conflicts: [EvidenceConflict] = []
+    var basis: PageSummaryBasis = .pageOnly
+    var retrieval: PageSummaryRetrieval? = nil
+    var searchAttempted: Bool = false
+
+    static let pageOnly = PageSummaryEvidence()
+}
+
+
 /// One numbered row from the list that was actually sent to the provider.
 /// `position` is the original recommendation position, not the visual cell.
 struct PageSummaryListRow: Sendable, Equatable {
@@ -64,9 +135,19 @@ struct PageSummaryInput: Identifiable, Sendable {
     }
 
     /// Stable across view rebuilds. Includes the actual content digest, the
-    /// scope, the language, the model and the prompt version, so a different
-    /// article can never be served from another page's cache.
-    func cacheKey(model: String, providerID: String, promptVersion: String) -> String {
+    /// scope, the language, the model, the effective thinking style and the
+    /// prompt version, so a different page or thinking level can never be
+    /// served from another request's cache.
+    func cacheKey(
+        model: String,
+        providerID: String,
+        promptVersion: String,
+        thinking: AIThinkingLevel,
+        thinkingStyle: AIThinkingStyle,
+        webSupplement: Bool = false,
+        searchProviderIDs: [String] = [],
+        evidenceAssessmentEnabled: Bool = false
+    ) -> String {
         let content: String
         switch scope {
         case .article:
@@ -84,6 +165,16 @@ struct PageSummaryInput: Identifiable, Sendable {
                 language.rawValue,
                 providerID,
                 model,
+                thinking.rawValue,
+                thinkingStyle.rawValue,
+                // The summary differs depending on whether external search ran
+                // and which providers were enabled. The evidence fingerprint is
+                // not part of the lookup key: computing it would require the
+                // search we are trying to avoid.
+                webSupplement ? "web-supplement" : "page-only",
+                evidenceAssessmentEnabled ? "assessed" : "heuristic",
+                searchProviderIDs.sorted().joined(separator: ","),
+                ContentIdentity.digest(title),
                 ContentIdentity.digest(content),
             ].joined(separator: "\n")
         )
@@ -92,9 +183,22 @@ struct PageSummaryInput: Identifiable, Sendable {
 
 struct PageSummaryPoint: Codable, Equatable, Identifiable, Sendable {
     let text: String
+    /// List-scope citation, kept for cache compatibility and the legacy list
+    /// parser. Article overviews use `citationIndices`.
     let citationIndex: Int?
+    /// Article-scope citations. `nil` for old entries and list scope.
+    var citationIndices: [Int]? = nil
 
-    var id: String { "\(citationIndex ?? 0)-\(text)" }
+    var resolvedCitationIndices: [Int] {
+        if let citationIndices, !citationIndices.isEmpty {
+            return citationIndices
+        }
+        return citationIndex.map { [$0] } ?? []
+    }
+
+    var id: String {
+        "\(resolvedCitationIndices.map(String.init).joined(separator: ","))-\(text)"
+    }
 }
 
 struct PageSummaryCitation: Codable, Equatable, Identifiable, Sendable {
@@ -117,6 +221,11 @@ struct PageSummary: Codable, Equatable, Sendable {
     let providerName: String
     let inputCharacters: Int
     let wasTruncated: Bool
+    /// Optional so old v2 cache entries keep decoding. New article overviews
+    /// always set this; list scope keeps using `citations`.
+    var sources: [PageSummarySource]? = nil
+    var basis: PageSummaryBasis? = nil
+    var retrieval: PageSummaryRetrieval? = nil
 }
 
 enum PageSummaryError: Error, Equatable, LocalizedError {
@@ -143,24 +252,23 @@ enum PageSummaryError: Error, Equatable, LocalizedError {
     }
 
     func message(_ language: AppLanguage) -> String {
-        let english = language == .en
         switch self {
         case .noReadableContent:
-            return english ? "This page has no readable text to summarize." : "当前页面没有可概括的正文。"
+            return L10n.string("reader.overview.error.noReadableContent", language: language)
         case .noModel:
-            return english ? "Choose an AI model in Settings → AI first." : "请先在设置 → AI 中选择模型。"
+            return L10n.string("reader.overview.error.noModel", language: language)
         case .noKey:
-            return english ? "Add an API key in Settings → AI first." : "请先在设置 → AI 中配置 API Key。"
+            return L10n.string("reader.overview.error.noKey", language: language)
         case .unauthorized:
-            return english ? "The AI provider rejected the API key. Check Settings → AI." : "AI 提供商拒绝了当前 API Key，请检查设置 → AI。"
+            return L10n.string("reader.overview.error.unauthorized", language: language)
         case .quotaUnavailable:
-            return english ? "Today's AI limit is reached. It resets tomorrow." : "今日 AI 用量已用完，明天重置。"
+            return L10n.string("reader.overview.error.quotaUnavailable", language: language)
         case .configurationChanged:
-            return english ? "AI settings changed. Please try again." : "AI 设置已更改，请重试。"
+            return L10n.string("reader.overview.error.configurationChanged", language: language)
         case .malformedResponse:
-            return english ? "The provider returned an overview in an unexpected format. Try again." : "提供商返回的概览格式异常，请重试。"
+            return L10n.string("reader.overview.error.malformedResponse", language: language)
         case .modelFailed:
-            return english ? "The AI provider did not answer. Try again." : "AI 提供商未返回结果，请重试。"
+            return L10n.string("reader.overview.error.modelFailed", language: language)
         }
     }
 }

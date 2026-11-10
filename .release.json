@@ -13,7 +13,7 @@
   "release_branch": true,
   "auto_merge": false,
   "release_note_style": "structured-cn",
-  "summary": "关注瀑布流卡片硬裁切，修复宽图/长文跨列；移除首页推荐流重复的“关注动态”，只保留右栏关注最近消息",
-  "summary_en": "Clamp following masonry cards to their columns, fixing wide images and long text overflow; remove the duplicate following highlights block from the recommendation feed",
-  "validation": "swift test 1798 项（6 项跳过，0 失败）+ adhoc release build + 本机安装验收"
+  "summary": "证据支撑的 AI 搜索、页面概览外部佐证、独立思考强度、RSS 批量导入/导出与本地 Agent CLI",
+  "summary_en": "Evidence-grounded AI search, external corroboration for page overviews, per-surface thinking levels, RSS batch import/export, and a local agent CLI",
+  "validation": "swift test 1910 项（6 项跳过，0 失败）+ adhoc release build + 本机安装验收"
 }

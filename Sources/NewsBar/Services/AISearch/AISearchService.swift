@@ -1,7 +1,7 @@
 import Foundation
 
-/// Orchestrates one reader AI search: optional web search → page reading →
-/// one model answer → citation validation.
+/// Orchestrates one reader AI search: query plan → shared-budget retrieval →
+/// page reads → optional assessment → one model answer → citation validation.
 ///
 /// All I/O is injected so the state machine, reading order, page limit and
 /// citation rule can be tested without a network or an AI provider.
@@ -26,12 +26,22 @@ struct SearchProfile: Sendable, Equatable {
 }
 
 struct AISearchService: Sendable {
-    typealias SearchHandler = @Sendable (_ query: String, _ limit: Int) async throws -> [SearchHit]
-    typealias ReadHandler = @Sendable (SearchHit) async throws -> ResearchDocument?
+    typealias SearchHandler = @Sendable (
+        _ query: SearchQuery,
+        _ ticket: SearchAttemptTicket
+    ) async throws -> [SearchHit]
+    typealias ReadHandler = @Sendable (SearchHit) async throws -> PageReadOutcome
     typealias AnswerHandler = @Sendable (_ system: String, _ user: String, _ maxTokens: Int) async throws -> AIChatResponse
     typealias StreamAnswerHandler = @Sendable (_ system: String, _ user: String, _ maxTokens: Int) -> AsyncThrowingStream<AIChatStreamEvent, Error>
+    typealias AssessHandler = @Sendable (
+        _ question: String,
+        _ pageTitle: String?,
+        _ sources: [AISearchSource]
+    ) async -> AssessmentResult
 
     static let answerTokens = 1_600
+    /// One run, all query variants. Three variants × two attempts fills it.
+    static let maxSearchAttempts = 6
 
     let search: SearchHandler
     let read: ReadHandler
@@ -43,8 +53,12 @@ struct AISearchService: Sendable {
     /// Production path: the answer arrives in pieces. `answer` remains the
     /// single-shot path used by tests and by any caller without a stream.
     var streamAnswer: StreamAnswerHandler? = nil
-    /// Called with a parsed snapshot while text is still arriving. Never called
-    /// for a snapshot that would be degraded on the final check.
+    /// Optional evidence assessment. `nil` means the user turned it off; the
+    /// run then uses the readability heuristic and never claims verification.
+    var assess: AssessHandler? = nil
+    /// Called with a parsed snapshot while text is still arriving. A snapshot
+    /// with no valid citation is withheld when adopted external sources exist,
+    /// so the canvas never shows prose the final check will mark unverified.
     var onPartial: @Sendable (AnswerDocument) -> Void = { _ in }
     let now: @Sendable () -> Date
     let pageCount: Int
@@ -64,6 +78,9 @@ struct AISearchService: Sendable {
         guard await preflight() else { throw AISearchError.quotaUnavailable }
 
         var sources: [AISearchSource] = []
+        var retrieval = RetrievalEvidence()
+        var conflicts: [EvidenceConflict] = []
+        let mode: AnswerMode = scope == .currentPage ? .currentPage : .web
 
         switch scope {
         case .currentPage:
@@ -72,66 +89,90 @@ struct AISearchService: Sendable {
                   !page.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                 throw AISearchError.noPageText
             }
-            sources = [AISearchSource(index: 1, url: page.url, title: page.title, text: page.text)]
+            sources = [
+                AISearchSource(
+                    index: 1,
+                    url: page.url,
+                    title: page.title,
+                    text: page.text,
+                    origin: .currentPage
+                )
+            ]
+            retrieval.readCount = 1
 
         case .web:
             await onStage(.searching)
-            let hits: [SearchHit]
-            do {
-                hits = try await search(cleanedQuestion, pageCount)
-            } catch is CancellationError {
-                throw CancellationError()
-            } catch {
-                throw AISearchError.searchFailed(error.localizedDescription)
+            let plan = QueryPlanner.plan(
+                question: cleanedQuestion,
+                scope: scope,
+                page: page,
+                language: language
+            )
+            retrieval.queryCount = plan.queries.count
+            let ticket = SearchAttemptTicket(limit: Self.maxSearchAttempts)
+            let result = await EvidenceRetriever.retrieve(
+                plan: plan,
+                search: search,
+                ticket: ticket,
+                // Read slots and candidate slots are not the same number: a
+                // failed read must not leave the answer one source short.
+                candidateCap: max(1, pageCount) + 3,
+                language: language
+            )
+            retrieval.foundCount = result.foundCount
+            retrieval.httpAttempts = result.attemptsUsed
+
+            if result.searchUnavailable {
+                throw AISearchError.searchFailed(result.failureDetail ?? "")
+            }
+            guard !result.candidates.isEmpty else {
+                retrieval.add(.noResults)
+                return emptyAnswer(
+                    question: cleanedQuestion,
+                    note: .noResults,
+                    retrieval: retrieval,
+                    mode: mode
+                )
             }
 
-            var seen: Set<String> = []
-            let selected = hits
-                .filter { seen.insert($0.canonicalURL).inserted }
-                .prefix(max(1, pageCount))
-            guard !selected.isEmpty else { throw AISearchError.noSourcesReadable }
-
-            var collected: [(offset: Int, url: String, title: String, text: String)] = []
-            var started = 0
-            let slots = Array(selected.enumerated())
-            while started < slots.count {
-                try Task.checkCancellation()
-                let batch = Array(slots[started..<min(started + max(1, profile.readConcurrency), slots.count)])
-                await onStage(.reading(index: started + 1, total: slots.count))
-                let reads = await withTaskGroup(of: (Int, ResearchDocument?).self) { group in
-                    for (offset, hit) in batch {
-                        group.addTask { [read] in
-                            let document = try? await read(hit)
-                            return (offset, document)
-                        }
-                    }
-                    var results: [(Int, ResearchDocument?)] = []
-                    for await item in group { results.append(item) }
-                    return results
-                }
-                for (offset, document) in reads.sorted(by: { $0.0 < $1.0 }) {
-                    guard let document else { continue }
-                    let text = document.text.trimmingCharacters(in: .whitespacesAndNewlines)
-                    guard text.count >= 200 else { continue }
-                    collected.append((
-                        offset,
-                        document.url,
-                        document.title.isEmpty ? selected[offset].title : document.title,
-                        text
-                    ))
-                    if collected.count >= profile.stopAfterSuccesses { break }
-                }
-                started += batch.count
-                if collected.count >= profile.stopAfterSuccesses { break }
+            let readResult = try await EvidenceReader.read(
+                candidates: result.candidates,
+                read: read,
+                readLimit: max(1, pageCount)
+            ) { index, total in
+                await onStage(.reading(index: index, total: total))
             }
-            try Task.checkCancellation()
-            sources = collected
-                .sorted { $0.offset < $1.offset }
-                .enumerated()
-                .map { index, item in
-                    AISearchSource(index: index + 1, url: item.url, title: item.title, text: item.text)
-                }
-            guard !sources.isEmpty else { throw AISearchError.noSourcesReadable }
+            retrieval.readCount = readResult.readCount
+            guard !readResult.sources.isEmpty else {
+                retrieval.add(.noSourcesReadable)
+                return emptyAnswer(
+                    question: cleanedQuestion,
+                    note: .noSourcesReadable,
+                    retrieval: retrieval,
+                    mode: mode
+                )
+            }
+            sources = readResult.sources
+
+            let assessment: AssessmentResult
+            if let assess {
+                await onStage(.assessing)
+                assessment = await assess(cleanedQuestion, page?.title, sources)
+            } else {
+                assessment = EvidenceAssessor.heuristic(
+                    question: cleanedQuestion,
+                    sources: sources
+                )
+            }
+            sources = assessment.sources
+            conflicts = assessment.conflicts
+            for note in assessment.notes { retrieval.add(note) }
+            retrieval.adoptedCount = sources.filter {
+                $0.origin == .web && $0.assessment?.adoption != .rejected
+            }.count
+            retrieval.rejectedCount = sources.filter {
+                $0.origin == .web && $0.assessment?.adoption == .rejected
+            }.count
         }
 
         let system = AnswerPrompt.search(language)
@@ -141,9 +182,13 @@ struct AISearchService: Sendable {
             sources: sources,
             language: language,
             maxSourceCharacters: profile.maxSourceCharacters,
-            maxTotalCharacters: profile.maxTotalCharacters
+            maxTotalCharacters: profile.maxTotalCharacters,
+            conflicts: conflicts
         )
-        let mode: AnswerMode = scope == .currentPage ? .currentPage : .web
+        let allowed = AnswerValidator.allowedIndices(sources)
+        let hasAdoptedExternal = sources.contains {
+            $0.origin == .web && $0.assessment?.adoption != .rejected
+        }
 
         try Task.checkCancellation()
         await onStage(.answering)
@@ -164,6 +209,14 @@ struct AISearchService: Sendable {
                         guard text.count - lastEmitted >= 24 else { continue }
                         let snapshot = AnswerParser.parse(text, fallbackKind: .term)
                         guard !snapshot.blocks.isEmpty else { continue }
+                        if hasAdoptedExternal {
+                            let valid = AnswerDocument.citedIndices(
+                                in: snapshot.blocks,
+                                sourceCount: sources.count,
+                                allowed: allowed
+                            )
+                            guard !valid.isEmpty else { continue }
+                        }
                         lastEmitted = text.count
                         onPartial(
                             document(
@@ -194,13 +247,47 @@ struct AISearchService: Sendable {
             throw AISearchError.modelFailed(error.localizedDescription)
         }
 
-        let parsed = AnswerParser.parse(text, fallbackKind: .term)
-        // An answer built from fetched pages that points at none of them is
-        // unsupported prose. Replace it instead of showing it next to a source
-        // list the model never used.
-        let cited = AnswerDocument.citedIndices(in: parsed.blocks, sourceCount: sources.count)
-        let unsupported = parsed.blocks.isEmpty || (!sources.isEmpty && cited.isEmpty)
-        guard !unsupported else {
+        var parsed = AnswerParser.parse(text, fallbackKind: .term)
+        var validation = AnswerValidator.validate(blocks: parsed.blocks, sources: sources)
+
+        // One repair call. A zero-citation answer next to adopted sources is
+        // worth one retry; after that the prose is preserved with an explicit
+        // warning instead of being blanked.
+        if !parsed.blocks.isEmpty,
+           validation.validCitations.isEmpty,
+           hasAdoptedExternal,
+           await preflight() {
+            let repairUser = user + "\n\n" + AnswerPrompt.searchRepair(language)
+            do {
+                let response = try await answer(system, repairUser, Self.answerTokens)
+                let repaired = AnswerParser.parse(response.text, fallbackKind: parsed.kind)
+                let repairedValidation = AnswerValidator.validate(
+                    blocks: repaired.blocks,
+                    sources: sources
+                )
+                if !repaired.blocks.isEmpty, !repairedValidation.validCitations.isEmpty {
+                    parsed = repaired
+                    validation = repairedValidation
+                    truncated = truncated || response.truncated
+                }
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                // Keep the original answer; the basis will say it is unverified.
+            }
+        }
+
+        retrieval.invalidCitationCount = validation.invalidCitations
+        retrieval.uncitedFactualSentences = validation.uncitedFactualSentences
+        if validation.invalidCitations > 0 { retrieval.add(.partialCitations) }
+        let basis = AnswerValidator.basis(
+            sources: sources,
+            blocks: parsed.blocks,
+            validation: validation
+        )
+        retrieval.basis = basis
+
+        if parsed.blocks.isEmpty {
             return AnswerDocument(
                 kind: parsed.kind,
                 oneLine: L10n.string("reader.search.noCitations", language: language),
@@ -210,15 +297,47 @@ struct AISearchService: Sendable {
                 model: model,
                 thinking: thinking,
                 generatedAt: now(),
-                question: cleanedQuestion
+                question: cleanedQuestion,
+                truncated: truncated,
+                retrieval: retrieval
             )
         }
-        return document(
-            from: parsed,
+
+        return AnswerDocument(
+            kind: parsed.kind,
+            oneLine: parsed.oneLine,
+            blocks: parsed.blocks,
             sources: sources,
             mode: mode,
+            model: model,
+            thinking: thinking,
+            generatedAt: now(),
             question: cleanedQuestion,
-            truncated: truncated
+            truncated: truncated,
+            retrieval: retrieval
+        )
+    }
+
+    private func emptyAnswer(
+        question: String,
+        note: RetrievalNote,
+        retrieval: RetrievalEvidence,
+        mode: AnswerMode
+    ) -> AnswerDocument {
+        var evidence = retrieval
+        evidence.basis = .insufficientMaterial
+        evidence.add(note)
+        return AnswerDocument(
+            kind: .term,
+            oneLine: note.message(language),
+            blocks: [],
+            sources: [],
+            mode: mode,
+            model: model,
+            thinking: thinking,
+            generatedAt: now(),
+            question: question,
+            retrieval: evidence
         )
     }
 
