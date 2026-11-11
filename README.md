@@ -46,6 +46,8 @@ Zero dependencies. Pure Swift. Free & open source (MIT).
 
 Download the latest DMG from [Releases](../../releases) and drag it to **Applications**.
 
+NewsBar is signed with a fixed self-signed certificate (no Apple Developer ID, not notarized). If Gatekeeper blocks the first launch, choose **System Settings → Privacy & Security → Open Anyway**. Every later version updates in place through Sparkle.
+
 > Requires **macOS 15.0+**
 
 ## 🚀 Usage
@@ -132,10 +134,10 @@ Sources/NewsBar/
 │   ├── NewsSource.swift        # Source enum (Weibo/Bilibili/RSS)
 │   ├── AppSettings.swift       # User settings (Observable)
 │   ├── CacheEntry.swift        # Cache entry
-│   └── UpdateInfo.swift        # Release/version models
+│   └── AppVersion.swift        # App version resolution
 ├── Services/
 │   ├── NewsOrchestrator.swift  # Core coordinator: refresh, cache, shared AI state machine
-│   ├── UpdateChecker.swift     # GitHub update check + DMG download
+│   ├── Update/SparkleUpdater.swift # Sparkle in-place updates (EdDSA)
 │   ├── WeiboHotService.swift   # Weibo trending fetcher
 │   ├── BilibiliHotService.swift# Bilibili trending fetcher
 │   ├── RSSService.swift        # RSS/Atom parser
