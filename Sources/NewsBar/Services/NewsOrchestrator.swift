@@ -78,6 +78,10 @@ final class NewsOrchestrator {
     /// Set when the visible result came from disk. The UI labels it as the
     /// previous result instead of pretending it is fresh.
     var aiSummaryRestoredAt: Date?
+    /// When the visible result finished generating. `manifest.asOf` is the
+    /// collection cutoff captured before the request, so it can predate this
+    /// by the model's response time.
+    var aiSummaryGeneratedAt: Date? { lastSummaryGeneratedAt }
     /// A refresh is running while a previous result stays on screen.
     var aiSummaryUpdating = false
     /// A failed refresh that kept the previous result visible.

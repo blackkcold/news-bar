@@ -10,39 +10,15 @@ struct AISummaryCard: View {
     var onRegenerate: (() -> Void)?
     var onConfigureKey: (() -> Void)?
     var contextID: String? = nil
-    var restoredAt: Date? = nil
+    var generatedAt: Date? = nil
     var updateError: String? = nil
 
     @State private var renderModel: SummaryRenderModel?
     @State private var revealedSectionCount = 0
+    @State private var selectedCategory = 0
     @State private var revealTask: Task<Void, Never>?
     @State private var regenerationCooldownRemaining: TimeInterval = 0
-    @Environment(AppSettings.self) private var settings
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-    private var groupRuleColor: Color {
-        settings.appTheme == .retroEditorial ? RetroEditorialTokens.brick : .purple
-    }
-
-    private var thinkingCapability: AIThinkingCapability {
-        AIThinkingResolver.capability(
-            connection: settings.resolvedAIConnection,
-            model: settings.aiModel,
-            language: settings.appLanguage
-        )
-    }
-
-    private func thinkingPicker(showsLabel: Bool = true) -> some View {
-        AIThinkingPicker(
-            surface: .summary,
-            language: settings.appLanguage,
-            level: thinkingCapability.normalized(settings.aiSummaryThinking),
-            options: thinkingCapability.options,
-            isEnabled: !isRegenerating,
-            showsLabel: showsLabel,
-            onChange: { settings.aiSummaryThinking = $0 }
-        )
-    }
 
     private enum Metrics {
         static let cardPadding: CGFloat = 10
@@ -50,7 +26,7 @@ struct AISummaryCard: View {
         static let headerIconSize: CGFloat = 24
         static let headerIconCornerRadius: CGFloat = 9
         static let headerTitleSize: CGFloat = 13
-        static let helperTextSize: CGFloat = 10
+        static let timeTextSize: CGFloat = 9
         static let contentHorizontalPadding: CGFloat = 10
         static let contentVerticalPadding: CGFloat = 3
         static let rowVerticalPadding: CGFloat = 7
@@ -106,23 +82,25 @@ struct AISummaryCard: View {
                     rotation: 1.5
                 )
 
-                VStack(alignment: .leading, spacing: 2) {
-                    HStack(spacing: 6) {
-                        Text("aiCard.title".localized)
-                            .editorialHeading(size: Metrics.headerTitleSize)
-                            .foregroundStyle(.primary)
+                HStack(spacing: 6) {
+                    Text("aiCard.title".localized)
+                        .editorialHeading(size: Metrics.headerTitleSize)
+                        .foregroundStyle(.primary)
 
+                    if showsStateBadge {
                         stateHeaderBadge
                     }
-
-                    Text("aiCard.subtitle".localized)
-                        .font(.system(size: Metrics.helperTextSize))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
                 }
 
                 Spacer(minLength: 8)
+
+                if let generatedText {
+                    Text(generatedText)
+                        .font(.system(size: Metrics.timeTextSize))
+                        .monospacedDigit()
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
 
                 Image(systemName: "chevron.down")
                     .font(.system(size: Metrics.chevronSize, weight: .medium))
@@ -132,6 +110,18 @@ struct AISummaryCard: View {
         }
         .buttonStyle(.plain)
         .accessibilityHint(isExpanded ? "aiCard.collapseHint".localized : "aiCard.expandHint".localized)
+    }
+
+    /// `done` already proves there is content; the time is more useful than
+    /// repeating "已完成". Truncated keeps its warning badge.
+    private var showsStateBadge: Bool {
+        if case .done = state { return false }
+        return true
+    }
+
+    private var generatedText: String? {
+        guard case .done = state, let generatedAt else { return nil }
+        return generatedAt.formatted(date: .omitted, time: .shortened)
     }
 
     @ViewBuilder
@@ -219,18 +209,6 @@ struct AISummaryCard: View {
     @ViewBuilder
     private var summaryContent: some View {
         VStack(alignment: .leading, spacing: 6) {
-            if let restoredAt {
-                HStack(spacing: 4) {
-                    Image(systemName: "clock.arrow.circlepath")
-                        .font(.system(size: 9))
-                    Text(String(
-                        format: "aiCard.lastGenerated".localized,
-                        restoredAt.formatted(date: .omitted, time: .shortened)
-                    ))
-                        .font(.system(size: 10))
-                }
-                .foregroundStyle(.secondary)
-            }
             if let updateError {
                 HStack(spacing: 4) {
                     Image(systemName: "exclamationmark.triangle.fill")
@@ -247,6 +225,18 @@ struct AISummaryCard: View {
                         .foregroundStyle(.primary)
                         .lineSpacing(3)
                 } else {
+                    if model.groups.count > 1 {
+                        Picker("aiCard.title".localized, selection: $selectedCategory) {
+                            ForEach(Array(model.groups.enumerated()), id: \.offset) { index, group in
+                                Text(group.title).tag(index)
+                            }
+                        }
+                        .pickerStyle(.segmented)
+                        .labelsHidden()
+                        .padding(.top, 2)
+                        .padding(.bottom, 2)
+                    }
+
                     sectionList(model)
                 }
             }
@@ -260,9 +250,6 @@ struct AISummaryCard: View {
                         .font(.system(size: 10))
                         .foregroundStyle(.orange)
                     Spacer()
-                    if !thinkingCapability.options.isEmpty {
-                        thinkingPicker(showsLabel: false)
-                    }
                     if let onRegenerate {
                         regenerateButton(action: onRegenerate)
                     }
@@ -272,13 +259,6 @@ struct AISummaryCard: View {
             if case .done = state, let onRegenerate {
                 Divider().padding(.top, 4)
                 HStack(spacing: 6) {
-                    if !thinkingCapability.options.isEmpty {
-                        thinkingPicker()
-                        Text("ai.thinking.pendingRegenerate".localized)
-                            .font(.system(size: 9.5))
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                    }
                     Spacer(minLength: 0)
                     regenerateButton(action: onRegenerate)
                 }
@@ -290,47 +270,31 @@ struct AISummaryCard: View {
 
     @ViewBuilder
     private func sectionList(_ model: SummaryRenderModel) -> some View {
-        ForEach(Array(model.groups.enumerated()), id: \.offset) { groupIndex, group in
-            if !group.sections.isEmpty {
-                if !group.title.isEmpty,
-                   let firstSection = group.sections.first,
-                   firstSection.order < revealedSectionCount {
-                    VStack(alignment: .leading, spacing: 4) {
-                        if groupIndex > 0 {
-                            Rectangle()
-                                .fill(groupRuleColor.opacity(0.3))
-                                .frame(height: 1)
-                        }
-                        Text(group.title)
-                            .font(.system(size: 10, weight: .semibold))
-                            .tracking(0.35)
-                            .foregroundStyle(.secondary)
-                    }
-                    .padding(.top, groupIndex == 0 ? 2 : 6)
-                    .padding(.bottom, 2)
+        let index = min(selectedCategory, max(0, model.groups.count - 1))
+
+        if model.groups.indices.contains(index) {
+            let group = model.groups[index]
+
+            ForEach(group.sections) { section in
+                if section.order < revealedSectionCount {
+                    SectionRow(
+                        title: section.title,
+                        content: section.body,
+                        attributedContent: section.attributedBody,
+                        accessibilityText: section.accessibilityText,
+                        matchedItem: section.primaryIndex.flatMap {
+                            allItems.indices.contains($0) ? allItems[$0] : nil
+                        },
+                        contextID: contextID
+                    )
+                    .transition(.opacity.combined(with: .offset(y: 4)))
                 }
 
-                ForEach(group.sections) { section in
-                    if section.order < revealedSectionCount {
-                        SectionRow(
-                            title: section.title,
-                            content: section.body,
-                            attributedContent: section.attributedBody,
-                            accessibilityText: section.accessibilityText,
-                            matchedItem: section.primaryIndex.flatMap {
-                                allItems.indices.contains($0) ? allItems[$0] : nil
-                            },
-                            contextID: contextID
-                        )
-                        .transition(.opacity.combined(with: .offset(y: 4)))
-                    }
-
-                    // Reveal the rule with its section. Drawing it up front
-                    // left bare dividers floating before any text arrived.
-                    if section.order < revealedSectionCount,
-                       section.order < (group.sections.last?.order ?? 0) {
-                        Divider().opacity(0.3)
-                    }
+                // Reveal the rule with its section. Drawing it up front left
+                // bare dividers floating before any text arrived.
+                if section.order < revealedSectionCount,
+                   section.order < (group.sections.last?.order ?? 0) {
+                    Divider().opacity(0.3)
                 }
             }
         }
@@ -369,6 +333,9 @@ struct AISummaryCard: View {
         case .done(let text), .truncated(let text):
             let model = makeRenderModel(for: text)
             renderModel = model
+            if selectedCategory >= model.groups.count {
+                selectedCategory = 0
+            }
             revealTask?.cancel()
             revealTask = nil
 
@@ -450,8 +417,8 @@ struct AISummaryCard: View {
                 maxSectionsPerCategory: maxSectionsPerCategory
             )
             return [
-                (title: "aiCard.trendOverview".localized, sections: visibleSummary.trendOverview),
-                (title: "aiCard.dailyEssentials".localized, sections: visibleSummary.dailyEssentials)
+                (title: L10n.string("dash.trendOverview", visibleSummary.trendOverview.count), sections: visibleSummary.trendOverview),
+                (title: L10n.string("dash.dailyEssentials", visibleSummary.dailyEssentials.count), sections: visibleSummary.dailyEssentials)
             ].filter { !$0.sections.isEmpty }
         }
 

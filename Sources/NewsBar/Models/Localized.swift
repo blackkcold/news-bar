@@ -1217,10 +1217,9 @@ enum L10n {
 
         // Popover
         "popover.trending": "即时热榜",
-        "popover.trending.subtitle": "微博与 B 站正在发生的头条",
         "popover.weibo": "微博热搜",
         "popover.bilibili": "B站热搜",
-        "popover.rss.subtitle": "订阅源 · 编辑精选",
+        "popover.rss.sourceCount": "%ld 个源",
         "popover.rssEmpty.title": "还没有 RSS 源",
         "popover.rssEmpty.body": "添加一个源，就能在这里看到文章。",
         "popover.rssEmpty.action": "去添加",
@@ -1234,8 +1233,8 @@ enum L10n {
         "popover.quit.confirm": "退出 NewsBar",
         "popover.quit.cancel": "取消",
         "popover.quit.help": "退出 NewsBar",
-        "popover.issueDate": "上海版",
-        "popover.issueNumber": "NO. %@",
+        "brand.desk": "新闻编辑台",
+        "brand.edition": "上海版",
 
         // News section
         "news.clickToOpen": "点击在阅读器中打开",
@@ -1254,8 +1253,7 @@ enum L10n {
         "news.rankAccessibility": "第%ld位，%@，%@",
 
         // AI summary card
-        "aiCard.title": "AI 总结",
-        "aiCard.subtitle": "趋势概览 / 每日精选 · 有引用显示来源徽章，点击打开原文",
+        "aiCard.title": "AI Briefing",
         "aiCard.expandHint": "展开AI总结",
         "aiCard.collapseHint": "收起AI总结",
         "aiCard.noKey": "未配置",
@@ -1271,12 +1269,9 @@ enum L10n {
         "aiCard.fetchingData": "获取新闻数据...",
         "aiCard.thinking": "AI 思考中...",
         "aiCard.maybeIncomplete": "摘要可能不完整",
-        "aiCard.trendOverview": "趋势概览",
-        "aiCard.dailyEssentials": "每日精选",
         "aiCard.regenerating": "生成中...",
         "aiCard.cooldown": "冷却中 %ld秒",
         "aiCard.regenerate": "重新生成",
-        "aiCard.lastGenerated": "上次生成 · %@",
         "aiCard.updateFailed": "更新失败，仍显示上次内容：%@",
         "aiCard.regenerateHint": "重新生成 Popup 与 Dashboard 共用的 AI 总结。",
         "aiCard.cooldownHint": "请等待冷却结束后再重新生成。",
@@ -1288,9 +1283,14 @@ enum L10n {
 
         // Dashboard
         "dash.briefing": "AI Briefing",
-        "dash.briefing.subtitle": "趋势概览 / 每日精选 · 有引用显示来源徽章，点击打开原文",
         "dash.refresh": "独立刷新 AI 简报",
-        "dash.lastGenerated": "上次生成 · %@",
+        "dash.meta.generated": "%@ 生成",
+        "dash.meta.coverageHours": "覆盖 %ld 小时",
+        "dash.meta.coverageMinutes": "覆盖 %ld 分钟",
+        "dash.meta.partial": "不完整",
+        "dash.meta.yesterday": "昨天 %@",
+        "dash.meta.restored": "来自上次生成。",
+        "dash.meta.help": "基于已采集标题生成；覆盖窗口受本地档案起始时间限制，并非完整全天报道。来源徽章可点击打开原文。",
         "dash.trendOverview": "趋势概览 %ld",
         "dash.dailyEssentials": "每日精选 %ld",
         "dash.trendCardSubtitle": "原生热点卡片 · 点击打开浏览器",
@@ -2852,10 +2852,9 @@ enum L10n {
 
         // Popover
         "popover.trending": "Trending Now",
-        "popover.trending.subtitle": "What's happening on Weibo & Bilibili",
         "popover.weibo": "Weibo Trending",
         "popover.bilibili": "Bilibili Trending",
-        "popover.rss.subtitle": "Subscriptions · Editor's Picks",
+        "popover.rss.sourceCount": "%ld sources",
         "popover.rssEmpty.title": "No RSS sources yet",
         "popover.rssEmpty.body": "Add one source and its articles will appear here.",
         "popover.rssEmpty.action": "Add a source",
@@ -2869,8 +2868,8 @@ enum L10n {
         "popover.quit.confirm": "Quit NewsBar",
         "popover.quit.cancel": "Cancel",
         "popover.quit.help": "Quit NewsBar",
-        "popover.issueDate": "SHANGHAI EDITION",
-        "popover.issueNumber": "NO. %@",
+        "brand.desk": "THE DAILY SIGNAL",
+        "brand.edition": "SHANGHAI EDITION",
 
         // News section
         "news.clickToOpen": "Click to open in the reader",
@@ -2889,8 +2888,7 @@ enum L10n {
         "news.rankAccessibility": "Rank %ld, %@, %@",
 
         // AI summary card
-        "aiCard.title": "AI Summary",
-        "aiCard.subtitle": "Trend Overview / Daily Essentials · citations show a source badge, click to open",
+        "aiCard.title": "AI Briefing",
         "aiCard.expandHint": "Expand AI summary",
         "aiCard.collapseHint": "Collapse AI summary",
         "aiCard.noKey": "Not Configured",
@@ -2906,12 +2904,9 @@ enum L10n {
         "aiCard.fetchingData": "Fetching news data...",
         "aiCard.thinking": "AI thinking...",
         "aiCard.maybeIncomplete": "Summary may be incomplete",
-        "aiCard.trendOverview": "Trend Overview",
-        "aiCard.dailyEssentials": "Daily Essentials",
         "aiCard.regenerating": "Generating...",
         "aiCard.cooldown": "Cooldown %lds",
         "aiCard.regenerate": "Regenerate",
-        "aiCard.lastGenerated": "Last generated · %@",
         "aiCard.updateFailed": "Update failed; showing the last result: %@",
         "aiCard.regenerateHint": "Regenerate the AI summary shared by Popup and Dashboard.",
         "aiCard.cooldownHint": "Wait for the cooldown to finish before regenerating.",
@@ -2923,9 +2918,14 @@ enum L10n {
 
         // Dashboard
         "dash.briefing": "AI Briefing",
-        "dash.briefing.subtitle": "Trend Overview / Daily Essentials · citations show a source badge, click to open",
         "dash.refresh": "Refresh AI Briefing",
-        "dash.lastGenerated": "Last generated · %@",
+        "dash.meta.generated": "Generated %@",
+        "dash.meta.coverageHours": "covering %ld h",
+        "dash.meta.coverageMinutes": "covering %ld min",
+        "dash.meta.partial": "partial",
+        "dash.meta.yesterday": "Yesterday %@",
+        "dash.meta.restored": "Restored from the last saved result.",
+        "dash.meta.help": "Generated from collected titles; coverage is limited by when the local archive started and is not a complete daily archive. Source badges open the original.",
         "dash.trendOverview": "Trend Overview %ld",
         "dash.dailyEssentials": "Daily Essentials %ld",
         "dash.trendCardSubtitle": "Native hot-trend card · click to open in browser",

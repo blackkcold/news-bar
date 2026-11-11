@@ -1,3 +1,29 @@
+## [v3.0.0] - 2026-11-11
+
+### ✨ 新功能
+
+- **Dashboard Newsroom Bar**：品牌、浏览模式、窗口操作收进一条 46pt 栏。模式 tab 76pt 等宽居中，22pt 下划线；文章标签条只在打开文章时出现；原生工具栏与 180pt 报头卡片移除，内容起点提前约 190pt。
+- **Popover 紧凑 header 与 AI 简报分类**：header 85 → 48pt，保留 wordmark、日期、更新与退出；AI 卡只显示当前分类 2 段，时间移到卡头；热门趋势保持微博 / B 站两列；RSS 改为紧凑分组 + 源卡片；研究 / 关注 chip 并排。
+- **思考模式入口收进设置**：Dashboard 与 popover 不再显示思考模式开关，设置页三个入口独立保留。
+
+### 🔧 改进
+
+- Dashboard：搜索与筛选合并一行，计数进 chip；22pt dateline 取代大报头；bar、dateline、内容共用 20pt 网格。
+- Popover：删除 01 / 02 重复大标题；AI 卡去掉副标题与“上次生成”行；热门趋势两列各 5 条；复古 header 恢复纸张底。
+- 无障碍：模式 tab 等宽居中、badge 垂直居中；AI 分类 Picker 有名称；状态胶囊只在异常状态显示。
+- 兼容：窄分栏（reader 打开）筛选行退回两行 + chip 横向滚动；关注 chip 进入 dashboard 时清除 reader。
+
+### ✅ 测试
+
+- `swift test`：1927 项，6 项跳过，0 失败。
+- 新增 `DashboardNewsroomBarRenderingTests`（960/1180、现代/复古、中英）与 `PopoverNewsroomRenderingTests`（真实 PopoverContent）。
+- `swift build` / `swift build -c release` 通过。
+
+### 📦 说明
+
+- 本版为 adhoc 签名，未经 Apple 公证。首次打开如被 Gatekeeper 拦截，请在 Finder 中右键 App → 打开。
+- 安装包：`NewsBar-3.0.0.dmg`。
+
 ## [v2.19.1] - 2026-11-11
 
 ### ⚡ 体验与性能
