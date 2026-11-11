@@ -12,6 +12,7 @@ struct FollowingPostCard: View {
 
     @Environment(AppSettings.self) private var settings
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.displayScale) private var displayScale
     @State private var hovering = false
 
     private var isRetro: Bool { settings.appTheme == .retroEditorial }
@@ -154,18 +155,20 @@ struct FollowingPostCard: View {
         if let imageOverride {
             imageOverride.resizable().scaledToFill()
         } else {
-            AsyncImage(url: url) { phase in
-                switch phase {
-                case .success(let image):
-                    image.resizable().scaledToFill()
-                default:
-                    ZStack {
-                        RoundedRectangle(cornerRadius: 8, style: .continuous)
-                            .fill(Color.primary.opacity(0.06))
-                        Image(systemName: "photo")
-                            .font(.system(size: 18, weight: .light))
-                            .foregroundStyle(.tertiary)
-                    }
+            CachedRemoteImage(
+                url: url,
+                maxPixelSize: ImageCache.pixelSize(
+                    forPoints: contentWidth,
+                    displayScale: displayScale
+                )
+            ) {
+                // Same box, same symbol: the load never changes the height.
+                ZStack {
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(Color.primary.opacity(0.06))
+                    Image(systemName: "photo")
+                        .font(.system(size: 18, weight: .light))
+                        .foregroundStyle(.tertiary)
                 }
             }
         }
@@ -233,6 +236,7 @@ struct FollowingAvatar: View {
     let size: CGFloat
 
     @Environment(AppSettings.self) private var settings
+    @Environment(\.displayScale) private var displayScale
 
     private var accent: Color {
         settings.appTheme == .retroEditorial ? RetroEditorialTokens.brick : Color.accentColor
@@ -241,13 +245,15 @@ struct FollowingAvatar: View {
     var body: some View {
         Group {
             if let raw = user.avatarURL, let url = URL(string: raw) {
-                AsyncImage(url: url) { phase in
-                    switch phase {
-                    case .success(let image):
-                        image.resizable().scaledToFill()
-                    default:
-                        placeholder
-                    }
+                CachedRemoteImage(
+                    url: url,
+                    maxPixelSize: ImageCache.pixelSize(
+                        forPoints: size,
+                        displayScale: displayScale,
+                        step: 64
+                    )
+                ) {
+                    placeholder
                 }
             } else {
                 placeholder

@@ -77,15 +77,25 @@ enum RecommendationMasonryLayout {
         columnCount: Int,
         columnWidth: CGFloat
     ) -> [[Int]] {
-        WaterfallLayout.distribute(
-            entryHeights: entries.map {
-                estimatedHeight(
-                    title: $0.title,
-                    hasImage: $0.hasImage,
-                    columnWidth: columnWidth
-                )
+        let key = WaterfallPlanKey(
+            model: .recommendation,
+            entries: entries.map {
+                WaterfallPlanKey.Entry(id: $0.id, title: $0.title, hasImage: $0.hasImage)
             },
-            columnCount: columnCount
+            columnCount: columnCount,
+            columnWidth: columnWidth
         )
+        return WaterfallPlanCache.shared.plan(for: key) {
+            WaterfallLayout.distribute(
+                entryHeights: entries.map {
+                    estimatedHeight(
+                        title: $0.title,
+                        hasImage: $0.hasImage,
+                        columnWidth: key.columnWidth
+                    )
+                },
+                columnCount: columnCount
+            )
+        }
     }
 }

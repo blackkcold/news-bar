@@ -202,6 +202,101 @@ final class WeiboMonitorRenderingTests: XCTestCase {
             name: "following-compact-zh-light",
             to: output
         )
+
+        let minimumFeed = WeiboFollowingFeedView(
+            monitor: viewModel,
+            filter: .constant(.all),
+            searchText: .constant(""),
+            mode: .constant(.following),
+            accountUID: .constant(nil),
+            followingUnread: 0,
+            badgeEnabled: true,
+            availableWidth: 280,
+            onOpenSettings: {}
+        )
+        .frame(width: 280, height: 640)
+        .background(Color(nsColor: .windowBackgroundColor))
+        .adaptiveColorScheme()
+        .environment(settings)
+        try await snapshot(
+            minimumFeed,
+            size: CGSize(width: 280, height: 640),
+            name: "following-280-minimum",
+            to: output
+        )
+
+        let relevanceWasEnabled = settings.weiboMonitorRelevanceEnabled
+        settings.weiboMonitorRelevanceEnabled = false
+
+        let wideFeed = WeiboFollowingFeedView(
+            monitor: viewModel,
+            filter: .constant(.all),
+            searchText: .constant(""),
+            mode: .constant(.following),
+            accountUID: .constant(nil),
+            followingUnread: 0,
+            badgeEnabled: true,
+            availableWidth: 1140,
+            onOpenSettings: {}
+        )
+        .padding(20)
+        .frame(width: 1180, height: 760)
+        .background(Color(nsColor: .windowBackgroundColor))
+        .adaptiveColorScheme()
+        .environment(settings)
+        try await snapshot(
+            wideFeed,
+            size: CGSize(width: 1180, height: 760),
+            name: "following-1180-window",
+            to: output
+        )
+
+        let ultraWideFeed = WeiboFollowingFeedView(
+            monitor: viewModel,
+            filter: .constant(.all),
+            searchText: .constant(""),
+            mode: .constant(.following),
+            accountUID: .constant(nil),
+            followingUnread: 0,
+            badgeEnabled: true,
+            availableWidth: 1400,
+            onOpenSettings: {}
+        )
+        .padding(20)
+        .frame(width: 1440, height: 760)
+        .background(Color(nsColor: .windowBackgroundColor))
+        .adaptiveColorScheme()
+        .environment(settings)
+        try await snapshot(
+            ultraWideFeed,
+            size: CGSize(width: 1440, height: 760),
+            name: "following-1440-window",
+            to: output
+        )
+
+        let noMatchFeed = WeiboFollowingFeedView(
+            monitor: viewModel,
+            filter: .constant(.all),
+            searchText: .constant("zzzz-no-match"),
+            mode: .constant(.following),
+            accountUID: .constant(nil),
+            followingUnread: 0,
+            badgeEnabled: true,
+            availableWidth: 1400,
+            onOpenSettings: {}
+        )
+        .padding(20)
+        .frame(width: 1440, height: 760)
+        .background(Color(nsColor: .windowBackgroundColor))
+        .adaptiveColorScheme()
+        .environment(settings)
+        try await snapshot(
+            noMatchFeed,
+            size: CGSize(width: 1440, height: 760),
+            name: "following-1440-no-match",
+            to: output
+        )
+        settings.weiboMonitorRelevanceEnabled = relevanceWasEnabled
     }
 
     private func post(

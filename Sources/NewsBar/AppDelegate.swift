@@ -567,9 +567,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
     private func setupStatusBar() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        // Local UI verification hook: `open -a NewsBar --args --open-dashboard`
-        // shows the dashboard without hunting for the menu bar icon.
-        if ProcessInfo.processInfo.arguments.contains("--open-dashboard") {
+        // Local UI verification hooks:
+        //   --open-dashboard-window  opens the Dashboard window directly. The
+        //        window calls DockPresence.show(), so it also gets a Dock tile
+        //        and can be driven without hunting the menu-bar icon.
+        //   --open-dashboard         shows the menu-bar popover.
+        if ProcessInfo.processInfo.arguments.contains("--open-dashboard-window") {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
+                self?.openDashboard()
+            }
+        } else if ProcessInfo.processInfo.arguments.contains("--open-dashboard") {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
                 self?.togglePopover()
             }

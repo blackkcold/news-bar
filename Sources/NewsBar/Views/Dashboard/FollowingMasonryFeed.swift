@@ -16,6 +16,14 @@ struct FollowingMasonryFeed: View {
     @Environment(AppSettings.self) private var settings
     @Environment(\.accessibilityVoiceOverEnabled) private var voiceOverEnabled
     @State private var visibleCount: Int
+    /// One automatic page per approach to the end; reset when the "load more"
+    /// control leaves the viewport.
+    @State private var prefetch = MasonryPrefetchLatch()
+
+    private func loadNextPage() {
+        guard entries.count > visibleCount else { return }
+        visibleCount = min(entries.count, visibleCount + initialVisibleCount)
+    }
 
     init(
         entries: [FollowingPostEntry],
@@ -46,20 +54,22 @@ struct FollowingMasonryFeed: View {
         FollowingMasonryLayout.columnWidth(for: max(1, width), columns: columnCount)
     }
 
-    private var columns: [[Int]] {
-        FollowingMasonryLayout.columns(
-            for: visibleEntries,
+    var body: some View {
+        // Resolve the page slice and the column plan once per render. Both were
+        // computed properties read from inside the `ForEach`, so the slice was
+        // rebuilt and the height estimates re-run once per column.
+        let visible = visibleEntries
+        let columns = FollowingMasonryLayout.columns(
+            for: visible,
             columnCount: columnCount,
             columnWidth: columnWidth
         )
-    }
 
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        return VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .top, spacing: WaterfallLayout.columnSpacing) {
                 ForEach(Array(columns.enumerated()), id: \.offset) { _, indexes in
                     LazyVStack(spacing: WaterfallLayout.cardSpacing) {
-                        ForEach(indexes.map { visibleEntries[$0] }) { entry in
+                        ForEach(indexes.map { visible[$0] }) { entry in
                             FollowingPostCard(
                                 entry: entry,
                                 columnWidth: columnWidth,
@@ -75,17 +85,26 @@ struct FollowingMasonryFeed: View {
 
             if showsLoadMore, entries.count > visibleCount {
                 Button {
-                    visibleCount += initialVisibleCount
+                    loadNextPage()
                 } label: {
                     Text(L10n.string("weibo.feed.loadMore", language: settings.appLanguage))
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(EditorialActionButtonStyle(compact: true))
                 .controlSize(.small)
+                // Prefetch the next page once when the end of the feed comes
+                // into view; the latch re-arms when the control leaves the
+                // viewport. The button stays as the keyboard/VoiceOver path.
+                .onScrollVisibilityChange(threshold: 0.01) { visible in
+                    guard prefetch.visibilityChanged(visible) else { return }
+                    loadNextPage()
+                }
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .onChange(of: entries.map(\.id)) { _, _ in
+        // Only the number of entries feeds the clamp; comparing every id built
+        // an id array on each render for no extra safety.
+        .onChange(of: entries.count) { _, _ in
             visibleCount = max(initialVisibleCount, min(visibleCount, entries.count))
         }
     }

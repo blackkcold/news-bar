@@ -105,6 +105,126 @@ final class FollowingMasonryRenderingTests: XCTestCase {
         }
     }
 
+    /// A plan must be a pure function of its key: two widths in the same
+    /// half-point bucket produce the same assignment in either arrival order,
+    /// and evicting the cache cannot change the answer.
+    func testColumnPlanIsDeterministicAcrossEquivalentWidthsAndEviction() {
+        let sample = entries(count: 12)
+        let count = 3
+        let widthA: CGFloat = 399.9
+        let widthB: CGFloat = 400.1
+
+        let fromA = FollowingMasonryLayout.columns(
+            for: sample,
+            columnCount: count,
+            columnWidth: widthA
+        )
+        WaterfallPlanCache.shared.removeAll()
+        let fromB = FollowingMasonryLayout.columns(
+            for: sample,
+            columnCount: count,
+            columnWidth: widthB
+        )
+        XCTAssertEqual(fromA, fromB, "same half-point bucket must give the same plan")
+
+        let cached = FollowingMasonryLayout.columns(
+            for: sample,
+            columnCount: count,
+            columnWidth: widthA
+        )
+        XCTAssertEqual(fromB, cached)
+
+        WaterfallPlanCache.shared.removeAll()
+        let rebuilt = FollowingMasonryLayout.columns(
+            for: sample,
+            columnCount: count,
+            columnWidth: widthA
+        )
+        XCTAssertEqual(fromA, rebuilt, "eviction must not change the plan")
+    }
+
+    /// The key carries the full text: an edited card with the same id and the
+    /// same number of entries must not reuse the plan built from the old text.
+    func testColumnPlanInvalidatesWhenOnlyTheTextChanges() {
+        let sample = entries(count: 12)
+        let count = FollowingMasonryLayout.columnCount(for: 900)
+        let columnWidth = FollowingMasonryLayout.columnWidth(for: 900, columns: count)
+        let original = FollowingMasonryLayout.columns(
+            for: sample,
+            columnCount: count,
+            columnWidth: columnWidth
+        )
+
+        var edited = sample
+        edited[0] = FollowingPostEntry(
+            post: WeiboMonitorTestSupport.post(
+                mid: sample[0].post.mid,
+                uid: "1",
+                name: "数码闲聊站",
+                text: String(repeating: "这是一条很长的正文，用来改变高度估算。", count: 40),
+                createdAt: sample[0].post.createdAt
+            ),
+            user: sample[0].user
+        )
+        let changed = FollowingMasonryLayout.columns(
+            for: edited,
+            columnCount: count,
+            columnWidth: columnWidth
+        )
+        XCTAssertNotEqual(original, changed)
+    }
+
+    func testPlanKeySeparatesModelsAndQuantisesWidth() {
+        let entries = [WaterfallPlanKey.Entry(id: "a", title: "标题", hasImage: true)]
+        let following = WaterfallPlanKey(
+            model: .following,
+            entries: entries,
+            columnCount: 2,
+            columnWidth: 400.0
+        )
+        XCTAssertNotEqual(
+            following,
+            WaterfallPlanKey(
+                model: .recommendation,
+                entries: entries,
+                columnCount: 2,
+                columnWidth: 400.0
+            )
+        )
+        XCTAssertEqual(
+            following,
+            WaterfallPlanKey(
+                model: .following,
+                entries: entries,
+                columnCount: 2,
+                columnWidth: 400.2
+            )
+        )
+        XCTAssertNotEqual(
+            following,
+            WaterfallPlanKey(
+                model: .following,
+                entries: entries,
+                columnCount: 2,
+                columnWidth: 400.5
+            )
+        )
+        XCTAssertEqual(following.columnWidth, 400.0, accuracy: 0.001)
+    }
+
+    /// One page per approach: staying visible must not chain pages, and leaving
+    /// the viewport must re-arm the next approach.
+    func testPrefetchLatchAllowsOnePagePerApproach() {
+        var latch = MasonryPrefetchLatch()
+        XCTAssertFalse(latch.visibilityChanged(false))
+        XCTAssertTrue(latch.visibilityChanged(true))
+        XCTAssertTrue(latch.isLatched)
+        XCTAssertFalse(latch.visibilityChanged(true))
+        XCTAssertFalse(latch.visibilityChanged(false))
+        XCTAssertFalse(latch.isLatched)
+        XCTAssertTrue(latch.visibilityChanged(true))
+    }
+
     private static func render<Content: View>(_ view: Content, size: CGSize) throws -> Data {
         let host = NSHostingView(rootView: ZStack {
             Color(nsColor: .windowBackgroundColor)

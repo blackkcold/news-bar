@@ -84,6 +84,38 @@ final class ImageCacheTests: XCTestCase {
         XCTAssertEqual(ImageCache.maxCacheCount, 120)
     }
 
+    // MARK: - Pixel buckets
+
+    func testPixelSizeRoundsUpToTheBucketAndNeverBelowIt() {
+        XCTAssertEqual(ImageCache.pixelSize(forPoints: 20, displayScale: 2, step: 64), 64)
+        XCTAssertEqual(ImageCache.pixelSize(forPoints: 65, displayScale: 1, step: 64), 128)
+        XCTAssertEqual(ImageCache.pixelSize(forPoints: 348, displayScale: 2), 768)
+        XCTAssertEqual(ImageCache.pixelSize(forPoints: 348, displayScale: 1), 512)
+
+        // An exact multiple of the step must not be pushed into the next bucket.
+        XCTAssertEqual(ImageCache.pixelSize(forPoints: 128, displayScale: 1, step: 64), 128)
+
+        // For normal sizes the decode is never smaller than the screen needs.
+        for (points, scale) in [(320.0, 2.0), (348.0, 1.0), (180.0, 3.0)] {
+            let size = ImageCache.pixelSize(forPoints: points, displayScale: scale)
+            XCTAssertGreaterThanOrEqual(size, Int(points * scale))
+        }
+    }
+
+    func testPixelSizeIgnoresInvalidInputAndCapsTheResult() {
+        XCTAssertEqual(ImageCache.pixelSize(forPoints: .nan, displayScale: 2), 256)
+        XCTAssertEqual(ImageCache.pixelSize(forPoints: .infinity, displayScale: 2), 256)
+        XCTAssertEqual(ImageCache.pixelSize(forPoints: 0, displayScale: 2), 256)
+        XCTAssertEqual(ImageCache.pixelSize(forPoints: -10, displayScale: 2), 256)
+        XCTAssertEqual(ImageCache.pixelSize(forPoints: 348, displayScale: .nan), 768)
+        XCTAssertEqual(ImageCache.pixelSize(forPoints: 348, displayScale: 0), 768)
+        XCTAssertEqual(ImageCache.pixelSize(forPoints: 348, displayScale: -2), 768)
+        XCTAssertEqual(ImageCache.pixelSize(forPoints: 348, displayScale: .infinity), 768)
+        XCTAssertEqual(ImageCache.pixelSize(forPoints: 10_000, displayScale: 2), 2_048)
+        // step is clamped to at least 64.
+        XCTAssertEqual(ImageCache.pixelSize(forPoints: 20, displayScale: 1, step: 10), 64)
+    }
+
     func testThumbnailMaxPixelSize_IsBoundedForCardRendering() {
         XCTAssertEqual(ImageCache.thumbnailMaxPixelSize, 480)
     }

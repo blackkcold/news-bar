@@ -77,6 +77,54 @@ final class RecommendationFeedLayoutRenderingTests: XCTestCase {
         }
     }
 
+    func testEmptyStateRendersWithoutMasonryGap() throws {
+        let settings = AppSettings()
+        settings.appLanguage = .zh
+        settings.appTheme = .modern
+        let snapshot = makeSnapshot()
+        let output = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+            .appendingPathComponent(".build/recommendation-empty-validation")
+        try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+
+        let view = RecommendationFeedView(
+            matches: { _ in false },
+            width: 804,
+            snapshotOverride: snapshot,
+            hasFilter: true
+        )
+        .environment(settings)
+        .frame(width: 804, height: 600)
+
+        let image = try Self.render(view, size: CGSize(width: 804, height: 600))
+        XCTAssertGreaterThan(image.count, 1_000)
+        try image.write(to: output.appendingPathComponent("recommendation-empty.png"))
+    }
+
+    private static func render<Content: View>(_ view: Content, size: CGSize) throws -> Data {
+        let host = NSHostingView(rootView: ZStack {
+            Color(nsColor: .windowBackgroundColor)
+            view
+        })
+        let window = NSWindow(
+            contentRect: NSRect(origin: .zero, size: size),
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
+        )
+        window.appearance = NSAppearance(named: .aqua)
+        window.backgroundColor = .windowBackgroundColor
+        window.contentView = host
+        host.frame = NSRect(origin: .zero, size: size)
+        host.layoutSubtreeIfNeeded()
+        host.displayIfNeeded()
+
+        let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+        host.cacheDisplay(in: host.bounds, to: bitmap)
+        let data = try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
+        window.contentView = nil
+        return data
+    }
+
     private func makeSnapshot() -> RecommendationSnapshot {
         let items = (0..<6).map { index in
             NewsItem(
