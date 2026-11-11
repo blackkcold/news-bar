@@ -15,5 +15,5 @@
   "release_note_style": "structured-cn",
   "summary": "证据支撑的 AI 搜索、页面概览外部佐证、独立思考强度、RSS 批量导入/导出与本地 Agent CLI",
   "summary_en": "Evidence-grounded AI search, external corroboration for page overviews, per-surface thinking levels, RSS batch import/export, and a local agent CLI",
-  "validation": "swift test 1917 项（6 项跳过，0 失败）+ adhoc release build + 本机安装验收"
+  "validation": "swift test 1886 项（5 项跳过，0 失败）+ 固定自签证书 release build + appcast EdDSA/签名 feed 校验 + delta 应用验证"
 }

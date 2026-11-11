@@ -5,23 +5,32 @@ set -euo pipefail
 #   release/<version>/NewsBar.app
 #
 # This helper intentionally does NOT create a DMG and does NOT update
-# release/latest, release/versions.json or any published release artifact.
+# release/latest or any published release artifact.
 # Do not add an output/ directory: ad-hoc package paths are deprecated.
 
 PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$PROJECT_DIR"
 
+# shellcheck source=lib/app-config.sh
+source "${PROJECT_DIR}/scripts/lib/app-config.sh"
+# shellcheck source=lib/signing.sh
+source "${PROJECT_DIR}/scripts/lib/signing.sh"
+
 VERSION="$(tr -d '[:space:]' < version.txt)"
 RELEASE_DIR="${PROJECT_DIR}/release/${VERSION}"
-BUNDLE="${RELEASE_DIR}/NewsBar.app"
+BUNDLE="${RELEASE_DIR}/${APP_NAME}.app"
 FORCE=0
+FORCE_ADHOC=0
 
 for arg in "$@"; do
     case "$arg" in
         --force) FORCE=1 ;;
+        --adhoc) FORCE_ADHOC=1 ;;
         -h|--help)
-            echo "Usage: bash scripts/package-local.sh [--force]"
+            echo "Usage: bash scripts/package-local.sh [--force] [--adhoc]"
             echo "Output: release/${VERSION}/NewsBar.app"
+            echo "  --force  Replace an existing local bundle."
+            echo "  --adhoc  Sign ad-hoc even when the fixed identity is available."
             exit 0
             ;;
         *)
@@ -45,7 +54,6 @@ fi
 
 mkdir -p "$RELEASE_DIR"
 
-# No release cleanup, version bump, remote signing, DMG mounting or publication.
 swift build -c release --arch arm64
 BIN_DIR="$(swift build -c release --arch arm64 --show-bin-path)"
 mkdir -p "$BUNDLE/Contents/MacOS" "$BUNDLE/Contents/Resources"
@@ -61,16 +69,18 @@ if [ ! -d "$RESOURCE_BUNDLE" ]; then
     echo "Missing SwiftPM resource bundle: $RESOURCE_BUNDLE" >&2
     exit 1
 fi
-cp -R "$RESOURCE_BUNDLE" "$BUNDLE/Contents/Resources/"
+ditto "$RESOURCE_BUNDLE" "$BUNDLE/Contents/Resources/NewsBar_NewsBar.bundle"
+
+newsbar_embed_sparkle "$BIN_DIR" "$BUNDLE"
 
 cat > "$BUNDLE/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
     <key>CFBundleExecutable</key><string>NewsBar</string>
-    <key>CFBundleIdentifier</key><string>com.newsbar.app</string>
-    <key>CFBundleName</key><string>NewsBar</string>
-    <key>CFBundleDisplayName</key><string>NewsBar</string>
+    <key>CFBundleIdentifier</key><string>${BUNDLE_ID}</string>
+    <key>CFBundleName</key><string>${APP_NAME}</string>
+    <key>CFBundleDisplayName</key><string>${APP_NAME}</string>
     <key>CFBundleVersion</key><string>${VERSION}</string>
     <key>CFBundleShortVersionString</key><string>${VERSION}</string>
     <key>CFBundlePackageType</key><string>APPL</string>
@@ -79,13 +89,28 @@ cat > "$BUNDLE/Contents/Info.plist" <<PLIST
     <key>LSUIElement</key><true/>
     <key>CFBundleIconFile</key><string>AppIcon</string>
     <key>NSHighResolutionCapable</key><true/>
+    <key>SUFeedURL</key><string>${SU_FEED_URL}</string>
+    <key>SUPublicEDKey</key><string>${SU_PUBLIC_ED_KEY}</string>
+    <key>SUEnableAutomaticChecks</key><true/>
+    <key>SUAutomaticallyUpdate</key><true/>
+    <key>SUScheduledCheckInterval</key><integer>86400</integer>
+    <key>SUVerifyUpdateBeforeExtraction</key><true/>
+    <key>SURequireSignedFeed</key><true/>
 </dict></plist>
 PLIST
 
-plutil -lint "$BUNDLE/Contents/Info.plist"
-codesign --force --sign - "$BUNDLE/Contents/MacOS/newsbarctl"
-codesign --force --deep --sign - "$BUNDLE"
-codesign --verify --strict --deep --verbose=2 "$BUNDLE"
+plutil -lint "$BUNDLE/Contents/Info.plist" >/dev/null
+
+if [ "$FORCE_ADHOC" -eq 0 ] && newsbar_signing_material_available; then
+    trap newsbar_close_signing_keychain EXIT
+    newsbar_open_signing_keychain
+    newsbar_sign_app "$BUNDLE"
+else
+    echo "⚠️  Signing ad-hoc; the fixed identity is unavailable or disabled."
+    codesign --force --sign - "$BUNDLE/Contents/MacOS/newsbarctl"
+    codesign --force --sign - "$BUNDLE"
+    codesign --verify --strict --deep --verbose=2 "$BUNDLE"
+fi
 
 # Relative path so `shasum -a 256 -c` works from the project root.
 (

@@ -4,6 +4,11 @@ set -euo pipefail
 PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$PROJECT_DIR"
 
+# shellcheck source=lib/app-config.sh
+source "${PROJECT_DIR}/scripts/lib/app-config.sh"
+# shellcheck source=lib/signing.sh
+source "${PROJECT_DIR}/scripts/lib/signing.sh"
+
 ALLOW_ADHOC=0
 for arg in "$@"; do
     case "$arg" in
@@ -12,8 +17,9 @@ for arg in "$@"; do
             ;;
         -h|--help)
             echo "Usage: scripts/release.sh [--allow-adhoc]"
-            echo "  --allow-adhoc  Publish a local ad-hoc build. Gatekeeper will require"
-            echo "                 right-click → Open on first launch; never notarized."
+            echo "  --allow-adhoc  Publish a local ad-hoc build. Unsupported: updates still"
+            echo "                 verify with EdDSA, but the install is not signed with the"
+            echo "                 fixed identity and bypasses every signing guarantee."
             exit 0
             ;;
         *)
@@ -24,7 +30,9 @@ for arg in "$@"; do
 done
 
 VERSION=$(cat version.txt | tr -d '[:space:]')
-DMG_FILE="release/${VERSION}/NewsBar-${VERSION}.dmg"
+DMG_FILE="release/${VERSION}/${APP_NAME}-${VERSION}.dmg"
+APPCAST_FILE="release/${VERSION}/appcast.xml"
+ARCHIVE_DIR="${NEWSBAR_APPCAST_DIR:-release/appcast}"
 
 if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
     echo "❌ version.txt must contain a semantic version (got '${VERSION}')" >&2
@@ -69,6 +77,12 @@ if [ ! -f "${DMG_FILE}.sha256" ]; then
     exit 1
 fi
 
+if [ ! -f "$APPCAST_FILE" ]; then
+    echo "❌ appcast not found: $APPCAST_FILE"
+    echo "   Run scripts/appcast.sh after scripts/build.sh"
+    exit 1
+fi
+
 EXPECTED_SHA=$(cat "${DMG_FILE}.sha256")
 ACTUAL_SHA=$(shasum -a 256 "$DMG_FILE" | awk '{print $1}')
 if [ "$EXPECTED_SHA" != "$ACTUAL_SHA" ]; then
@@ -76,25 +90,27 @@ if [ "$EXPECTED_SHA" != "$ACTUAL_SHA" ]; then
     exit 1
 fi
 
-APP_BUNDLE="release/${VERSION}/NewsBar.app"
+python3 "scripts/verify-appcast.py" "$APPCAST_FILE" "$VERSION"
+
+APP_BUNDLE="release/${VERSION}/${APP_NAME}.app"
 if [ -d "$APP_BUNDLE" ]; then
-    codesign --verify --deep --strict --verbose=2 "$APP_BUNDLE"
     if codesign -dv --verbose=4 "$APP_BUNDLE" 2>&1 | grep -q "Signature=adhoc"; then
         if [ "$ALLOW_ADHOC" -ne 1 ]; then
             echo "❌ The app is ad-hoc signed and cannot be published." >&2
-            echo "   Pass --allow-adhoc only when you explicitly accept an unnotarized build." >&2
+            echo "   Build with the fixed identity, or pass --allow-adhoc explicitly." >&2
             exit 1
         fi
-        echo "⚠️  Publishing an ad-hoc signed, unnotarized build (explicit override)."
+        echo "⚠️  Publishing an ad-hoc signed build (explicit override)."
+    else
+        SIGN_AUTHORITY=$(codesign -dv --verbose=4 "$APP_BUNDLE" 2>&1 | sed -n 's/^Authority=//p' | head -1)
+        if [ "$SIGN_AUTHORITY" != "$SIGN_IDENTITY" ]; then
+            echo "❌ App is signed by '${SIGN_AUTHORITY:-unknown}', expected '${SIGN_IDENTITY}'." >&2
+            exit 1
+        fi
+        codesign --verify --deep --strict "$APP_BUNDLE"
     fi
 fi
 
-if [ "$ALLOW_ADHOC" -eq 1 ]; then
-    echo "⚠️  Skipping Gatekeeper and stapler checks for the ad-hoc build."
-else
-    spctl -a -vv -t open --context context:primary-signature "$DMG_FILE"
-    xcrun stapler validate "$DMG_FILE"
-fi
 hdiutil verify "$DMG_FILE"
 
 TEMP_NOTES=$(mktemp "${TMPDIR:-/tmp}/newsbar-release-notes.XXXXXX")
@@ -188,16 +204,48 @@ fi
 
 rm -rf "$SEC_DIR"
 
+# RELEASE_NOTES.md is the documented single source for the release body and
+# for the in-app update window. Prefer its section for this version; the
+# commit-derived notes above stay as a fallback for versions without one.
+NOTES_SECTION=$(mktemp "${TMPDIR:-/tmp}/newsbar-release-section.XXXXXX")
+awk -v version="v$VERSION" '
+    /^## \[v/ {
+        if (printing) exit
+        if (index($0, "[" version "]") > 0) { printing = 1; next }
+    }
+    printing && /^---$/ { exit }
+    printing { print }
+' RELEASE_NOTES.md > "$NOTES_SECTION"
+
+if [ -s "$NOTES_SECTION" ]; then
+    {
+        echo "# NewsBar v$VERSION"
+        echo ""
+        cat "$NOTES_SECTION"
+        if [ -n "$PREV_TAG" ] && [ "$PREV_TAG" != "v$VERSION" ]; then
+            echo ""
+            echo "**Full Changelog**: https://github.com/${REPO_SLUG}/compare/${PREV_TAG}...v${VERSION}"
+        fi
+    } > "$TEMP_NOTES"
+fi
+
 if [ "$ALLOW_ADHOC" -eq 1 ]; then
     {
         echo ""
         echo "---"
         echo ""
-        echo "⚠️ **签名说明**：本版为 adhoc 签名，未经过 Apple 公证。首次打开如被 Gatekeeper 拦截，请在 Finder 中右键 App → 打开。"
+        echo "⚠️ **签名说明**：本版为 adhoc 签名，未经过公证。首次打开如被 Gatekeeper 拦截，请到「系统设置 → 隐私与安全性 → 仍要打开」。"
         echo ""
-        echo "⚠️ **Signing note**: This build is ad-hoc signed and not notarized. If Gatekeeper blocks the first launch, right-click the app in Finder → Open."
+        echo "⚠️ **Signing note**: This build is ad-hoc signed and not notarized. If Gatekeeper blocks the first launch, use System Settings → Privacy & Security → Open Anyway."
     } >> "$TEMP_NOTES"
 fi
+
+# Upload the feed and its deltas next to the DMG so
+# /releases/latest/download/appcast.xml always resolves to the newest feed.
+UPLOAD_FILES=("$DMG_FILE" "${DMG_FILE}.sha256" "$APPCAST_FILE")
+while IFS= read -r delta; do
+    [ -n "$delta" ] && UPLOAD_FILES+=("$delta")
+done < <(find "$ARCHIVE_DIR" -maxdepth 1 -name "*.delta" 2>/dev/null | sort)
 
 if command -v gh &> /dev/null; then
     echo "📦 Creating GitHub Release v$VERSION..."
@@ -205,11 +253,21 @@ if command -v gh &> /dev/null; then
         --verify-tag \
         --title "NewsBar v$VERSION" \
         --notes-file "$TEMP_NOTES" \
-        "$DMG_FILE" \
-        "${DMG_FILE}.sha256"
+        "${UPLOAD_FILES[@]}"
+
+    echo "🔎 Verifying the published feed..."
+    PINNED_FEED="https://github.com/${REPO_SLUG}/releases/download/v${VERSION}/appcast.xml"
+    if curl -fsSL "$PINNED_FEED" -o ${TMPDIR:-/tmp}/newsbar-published-appcast.xml; then
+        python3 scripts/verify-appcast.py ${TMPDIR:-/tmp}/newsbar-published-appcast.xml "$VERSION"
+    else
+        echo "⚠️  Could not fetch ${PINNED_FEED}; check the release assets manually."
+    fi
+
     echo "✅ Release created: v$VERSION"
 else
     echo "⚠️  gh CLI not installed. Install it with: brew install gh"
     echo "   Release notes saved to: $TEMP_NOTES"
     echo "   DMG ready at: $DMG_FILE"
+    echo "   Assets to upload manually:"
+    printf '     %s\n' "${UPLOAD_FILES[@]}"
 fi

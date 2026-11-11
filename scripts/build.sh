@@ -4,15 +4,27 @@ set -euo pipefail
 PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$PROJECT_DIR"
 
+# shellcheck source=lib/app-config.sh
+source "${PROJECT_DIR}/scripts/lib/app-config.sh"
+# shellcheck source=lib/signing.sh
+source "${PROJECT_DIR}/scripts/lib/signing.sh"
+
 ADHOC=0
+LOCAL_SIGNED=0
 for arg in "$@"; do
     case "$arg" in
         --adhoc)
             ADHOC=1
             ;;
+        --local-signed)
+            LOCAL_SIGNED=1
+            ;;
         -h|--help)
-            echo "Usage: scripts/build.sh [--adhoc]"
-            echo "  --adhoc  Local-only build with an ad-hoc signature; never publishable."
+            echo "Usage: scripts/build.sh [--adhoc | --local-signed]"
+            echo "  --adhoc         Local-only build with an ad-hoc signature; never publishable."
+            echo "  --local-signed  Local build signed with the fixed identity; no tag or"
+            echo "                  branch gate and no release upload. Used to test the"
+            echo "                  Sparkle update chain between two local versions."
             exit 0
             ;;
         *)
@@ -27,18 +39,16 @@ if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
     echo "❌ version.txt must contain a semantic version (got '${VERSION}')" >&2
     exit 1
 fi
-APP_NAME="NewsBar"
-BUNDLE_ID="com.newsbar.app"
 RELEASE_DIR="release/${VERSION}"
 BUNDLE_DIR="${RELEASE_DIR}/${APP_NAME}.app"
 
-if [ "$ADHOC" -eq 0 ]; then
+if [ "$ADHOC" -eq 0 ] && [ "$LOCAL_SIGNED" -eq 0 ]; then
     BRANCH=$(git rev-parse --abbrev-ref HEAD)
     case "$BRANCH" in
         release/*) ;;
         *)
             echo "❌ A publishable build must run from release/* (current: ${BRANCH})" >&2
-            echo "   Use --adhoc for a local-only build." >&2
+            echo "   Use --adhoc for a local-only build or --local-signed to test signing." >&2
             exit 1
             ;;
     esac
@@ -59,6 +69,12 @@ if [ "$ADHOC" -eq 0 ]; then
     fi
 fi
 
+if [ "$ADHOC" -eq 0 ] && ! newsbar_signing_material_available; then
+    echo "❌ Signing material missing: ${SIGNING_DIR}/NewsBar.p12" >&2
+    echo "   Import it from 1Password, or use --adhoc for a local-only build." >&2
+    exit 1
+fi
+
 echo "🔨 Building NewsBar v${VERSION}..."
 
 rm -rf .build/release
@@ -67,23 +83,26 @@ rm -rf "${BUNDLE_DIR}"
 
 swift build -c release --arch arm64 2>&1
 
+BIN_DIR="$(swift build -c release --arch arm64 --show-bin-path)"
+
 echo "📦 Creating app bundle..."
 
 mkdir -p "${BUNDLE_DIR}/Contents/MacOS"
 mkdir -p "${BUNDLE_DIR}/Contents/Resources"
 
-cp .build/release/NewsBar "${BUNDLE_DIR}/Contents/MacOS/"
-cp .build/release/newsbarctl "${BUNDLE_DIR}/Contents/MacOS/"
+cp "${BIN_DIR}/NewsBar" "${BUNDLE_DIR}/Contents/MacOS/"
+cp "${BIN_DIR}/newsbarctl" "${BUNDLE_DIR}/Contents/MacOS/"
 cp version.txt "${BUNDLE_DIR}/Contents/Resources/"
 cp Resources/AppIcon.icns "${BUNDLE_DIR}/Contents/Resources/"
 
-BIN_DIR="$(swift build -c release --arch arm64 --show-bin-path)"
 RESOURCE_BUNDLE="${BIN_DIR}/NewsBar_NewsBar.bundle"  # keep in sync with RecommendationGuide.resourceBundleName
 if [ ! -d "${RESOURCE_BUNDLE}" ]; then
     echo "Missing SwiftPM resource bundle: ${RESOURCE_BUNDLE}" >&2
     exit 1
 fi
-cp -R "${RESOURCE_BUNDLE}" "${BUNDLE_DIR}/Contents/Resources/"
+ditto "${RESOURCE_BUNDLE}" "${BUNDLE_DIR}/Contents/Resources/$(basename "${RESOURCE_BUNDLE}")"
+
+newsbar_embed_sparkle "${BIN_DIR}" "${BUNDLE_DIR}"
 
 cat > "${BUNDLE_DIR}/Contents/Info.plist" << PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -114,45 +133,47 @@ cat > "${BUNDLE_DIR}/Contents/Info.plist" << PLIST
     <string>AppIcon</string>
     <key>NSHighResolutionCapable</key>
     <true/>
+    <key>SUFeedURL</key>
+    <string>${SU_FEED_URL}</string>
+    <key>SUPublicEDKey</key>
+    <string>${SU_PUBLIC_ED_KEY}</string>
+    <key>SUEnableAutomaticChecks</key>
+    <true/>
+    <key>SUAutomaticallyUpdate</key>
+    <true/>
+    <key>SUScheduledCheckInterval</key>
+    <integer>86400</integer>
+    <key>SUVerifyUpdateBeforeExtraction</key>
+    <true/>
+    <key>SURequireSignedFeed</key>
+    <true/>
 </dict>
 </plist>
 PLIST
 
+plutil -lint "${BUNDLE_DIR}/Contents/Info.plist" >/dev/null
 PLIST_VERSION=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "${BUNDLE_DIR}/Contents/Info.plist")
 if [ "$PLIST_VERSION" != "$VERSION" ]; then
     echo "❌ Info.plist version ${PLIST_VERSION} does not match version.txt ${VERSION}" >&2
     exit 1
 fi
+PLIST_BUNDLE_ID=$(/usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "${BUNDLE_DIR}/Contents/Info.plist")
+if [ "$PLIST_BUNDLE_ID" != "$BUNDLE_ID" ]; then
+    echo "❌ Info.plist bundle id ${PLIST_BUNDLE_ID} does not match ${BUNDLE_ID}" >&2
+    exit 1
+fi
 
 echo "🔏 Signing..."
-echo ""
-
-# NEWSBAR_SIGN_IDENTITY — Developer ID Application identity. Required for a
-# publishable build; --adhoc is the explicit local-only opt-out.
 if [ "$ADHOC" -eq 1 ]; then
     echo "⚠️  --adhoc: local-only signature. This build cannot be published."
     codesign --force --sign - "${BUNDLE_DIR}/Contents/MacOS/newsbarctl"
-    codesign --force --deep --sign - "${BUNDLE_DIR}"
+    codesign --force --sign - "${BUNDLE_DIR}"
 else
-    if [ -z "${NEWSBAR_SIGN_IDENTITY:-}" ]; then
-        echo "❌ NEWSBAR_SIGN_IDENTITY is required for a publishable build." >&2
-        echo "   Use --adhoc only for a local build." >&2
-        exit 1
-    fi
-    echo "   Identity: ${NEWSBAR_SIGN_IDENTITY}"
-    # Sign the nested helper before the bundle; notarization checks every
-    # Mach-O, and --deep alone does not apply the hardened runtime to it.
-    codesign --force \
-        --sign "${NEWSBAR_SIGN_IDENTITY}" \
-        --options runtime --timestamp \
-        "${BUNDLE_DIR}/Contents/MacOS/newsbarctl"
-    codesign --force --deep \
-        --sign "${NEWSBAR_SIGN_IDENTITY}" \
-        --options runtime --timestamp \
-        "${BUNDLE_DIR}"
-    codesign --verify --deep --strict --verbose=2 "${BUNDLE_DIR}"
+    echo "   Identity: ${SIGN_IDENTITY}"
+    trap newsbar_close_signing_keychain EXIT
+    newsbar_open_signing_keychain
+    newsbar_sign_app "${BUNDLE_DIR}"
 fi
-
 
 echo "📦 Creating DMG..."
 
@@ -165,10 +186,10 @@ cleanup_dmg_artifacts() {
     hdiutil detach "${DMG_MOUNT}" -quiet 2>/dev/null || true
     rm -rf "${DMG_STAGING}" "${DMG_RW}"
 }
-trap cleanup_dmg_artifacts EXIT
+trap 'cleanup_dmg_artifacts; newsbar_close_signing_keychain' EXIT
 
 mkdir -p "${DMG_STAGING}/.background"
-cp -R "${BUNDLE_DIR}" "${DMG_STAGING}/"
+ditto "${BUNDLE_DIR}" "${DMG_STAGING}/${APP_NAME}.app"
 ln -s /Applications "${DMG_STAGING}/Applications"
 cp Resources/DMGBackground.png "${DMG_STAGING}/.background/DMGBackground.png"
 
@@ -227,44 +248,11 @@ sleep 1
 hdiutil detach "${DMG_MOUNT}" -quiet
 hdiutil convert "${DMG_RW}" -format UDZO -imagekey zlib-level=9 -ov -o "${DMG_PATH}" -quiet
 rm -rf "${DMG_STAGING}" "${DMG_RW}"
-trap - EXIT
+trap 'newsbar_close_signing_keychain' EXIT
 echo "   Custom layout: NewsBar.app → Applications"
-
-if [ "$ADHOC" -eq 0 ]; then
-    echo "🧾 Notarizing..."
-    codesign --force --timestamp --sign "${NEWSBAR_SIGN_IDENTITY}" "${DMG_PATH}"
-    NOTARY_ARGS=(--wait)
-    if [ -n "${NEWSBAR_NOTARY_PROFILE:-}" ]; then
-        NOTARY_ARGS+=(--keychain-profile "${NEWSBAR_NOTARY_PROFILE}")
-    elif [ -n "${NEWSBAR_NOTARY_APPLE_ID:-}" ] \
-        && [ -n "${NEWSBAR_NOTARY_TEAM_ID:-}" ] \
-        && [ -n "${NEWSBAR_NOTARY_PASSWORD:-}" ]; then
-        NOTARY_ARGS+=(
-            --apple-id "${NEWSBAR_NOTARY_APPLE_ID}"
-            --team-id "${NEWSBAR_NOTARY_TEAM_ID}"
-            --password "@env:NEWSBAR_NOTARY_PASSWORD"
-        )
-    else
-        echo "❌ Notarization credentials missing." >&2
-        echo "   Set NEWSBAR_NOTARY_PROFILE (notarytool keychain profile) or" >&2
-        echo "   NEWSBAR_NOTARY_APPLE_ID / NEWSBAR_NOTARY_TEAM_ID / NEWSBAR_NOTARY_PASSWORD." >&2
-        exit 1
-    fi
-    xcrun notarytool submit "${DMG_PATH}" "${NOTARY_ARGS[@]}"
-    xcrun stapler staple "${DMG_PATH}"
-    xcrun stapler validate "${DMG_PATH}"
-    spctl -a -vv -t open --context context:primary-signature "${DMG_PATH}"
-    hdiutil verify "${DMG_PATH}"
-fi
 
 rm -rf release/latest
 ln -sfn "${VERSION}" release/latest
-
-cat > release/versions.json << VJSON
-[
-    {"version": "${VERSION}", "date": "$(date -u +%Y-%m-%d)", "file": "${APP_NAME}-${VERSION}.dmg"}
-]
-VJSON
 
 echo ""
 echo "✅ Build complete!"
@@ -274,4 +262,4 @@ ls -lh "${DMG_PATH}"
 
 echo "🔐 Generating SHA256..."
 shasum -a 256 "${DMG_PATH}" | awk '{print $1}' > "${DMG_PATH}.sha256"
-echo "   SHA256: $(cat ${DMG_PATH}.sha256)"
+echo "   SHA256: $(cat "${DMG_PATH}.sha256")"

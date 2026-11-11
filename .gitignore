@@ -22,7 +22,8 @@ xcuserdata/
 Thumbs.db
 
 # Package
-Package.resolved
+# Package.resolved is committed on purpose: this is an app, not a library,
+# and Sparkle's binary artifact must stay pinned across machines.
 
 # Secrets
 *.env
@@ -32,3 +33,11 @@ secrets.*
 credentials.*
 *.local
 *.xcconfig
+
+# Signing material and local appcast staging (never commit)
+*.p12
+*.p12.password
+sparkle_ed_key*
+sparkle_ed_pub
+NewsBar.pem
+release/appcast/
