@@ -76,3 +76,103 @@ enum WaterfallLayout {
         return min(max(1, maxLines), max(1, lines))
     }
 }
+
+/// The exact inputs a masonry plan depends on.
+///
+/// Hashing the titles is cheaper than re-estimating every card's wrapped lines,
+/// and the key carries the full text (not a length) so an edited card can never
+/// reuse a stale plan.
+struct WaterfallPlanKey: Hashable {
+    enum Model: String, Hashable {
+        case following
+        case recommendation
+        case rss
+    }
+
+    struct Entry: Hashable {
+        let id: String
+        let title: String
+        let hasImage: Bool
+    }
+
+    let model: Model
+    let entries: [Entry]
+    let columnCount: Int
+    /// Half-points. Continuous window resizing produces a stream of widths whose
+    /// difference cannot move a card visibly; quantising keeps the plan stable
+    /// through that stream while still changing at every real breakpoint.
+    let columnWidthHalfPoints: Int
+
+    init(model: Model, entries: [Entry], columnCount: Int, columnWidth: CGFloat) {
+        self.model = model
+        self.entries = entries
+        self.columnCount = columnCount
+        self.columnWidthHalfPoints = Self.halfPoints(for: columnWidth)
+    }
+
+    /// The width the plan is built with. It is the quantised value, not the raw
+    /// one, so a key always maps to exactly one plan — building with the raw
+    /// width let two widths in the same half-point bucket produce different
+    /// column assignments depending on which one populated the cache first.
+    var columnWidth: CGFloat {
+        CGFloat(columnWidthHalfPoints) / 2
+    }
+
+    private static func halfPoints(for width: CGFloat) -> Int {
+        guard width.isFinite else { return 0 }
+        // Clamp before converting: a huge finite width would trap in Int().
+        let clamped = min(max(width, 0), 100_000)
+        return Int((clamped * 2).rounded())
+    }
+}
+
+/// Bounded memo for masonry plans. A plan is a pure function of its key, so a
+/// hit is always equal to what a rebuild would produce. Thread-safe: the plan
+/// functions are also called from tests and from non-main contexts.
+final class WaterfallPlanCache: @unchecked Sendable {
+    static let shared = WaterfallPlanCache()
+
+    private let lock = NSLock()
+    private var storage: [WaterfallPlanKey: [[Int]]] = [:]
+    private var order: [WaterfallPlanKey] = []
+    private let capacity: Int
+
+    init(capacity: Int = 8) {
+        self.capacity = max(1, capacity)
+    }
+
+    func plan(for key: WaterfallPlanKey, build: () -> [[Int]]) -> [[Int]] {
+        lock.lock()
+        if let hit = storage[key] {
+            order.removeAll { $0 == key }
+            order.append(key)
+            lock.unlock()
+            return hit
+        }
+        lock.unlock()
+
+        let built = build()
+
+        lock.lock()
+        // Another thread may have built the same plan while this one worked.
+        if let hit = storage[key] {
+            lock.unlock()
+            return hit
+        }
+        storage[key] = built
+        order.append(key)
+        while order.count > capacity {
+            let oldest = order.removeFirst()
+            storage.removeValue(forKey: oldest)
+        }
+        lock.unlock()
+        return built
+    }
+
+    func removeAll() {
+        lock.lock()
+        storage.removeAll()
+        order.removeAll()
+        lock.unlock()
+    }
+}

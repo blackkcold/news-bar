@@ -55,11 +55,25 @@ enum FollowingMasonryLayout {
         columnCount: Int,
         columnWidth: CGFloat
     ) -> [[Int]] {
-        WaterfallLayout.distribute(
-            entryHeights: entries.map {
-                estimatedHeight(entry: $0, columnWidth: columnWidth)
+        let key = WaterfallPlanKey(
+            model: .following,
+            entries: entries.map {
+                WaterfallPlanKey.Entry(
+                    id: $0.id,
+                    title: $0.post.displayText,
+                    hasImage: !$0.post.imageURLs.isEmpty
+                )
             },
-            columnCount: columnCount
+            columnCount: columnCount,
+            columnWidth: columnWidth
         )
+        return WaterfallPlanCache.shared.plan(for: key) {
+            WaterfallLayout.distribute(
+                entryHeights: entries.map {
+                    estimatedHeight(entry: $0, columnWidth: key.columnWidth)
+                },
+                columnCount: columnCount
+            )
+        }
     }
 }

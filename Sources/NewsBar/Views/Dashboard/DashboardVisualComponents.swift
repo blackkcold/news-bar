@@ -502,12 +502,25 @@ struct DashboardAdaptiveRSSMasonryFeed: View {
             : WaterfallLayout.columnCount(for: slotWidth)
         let cardWidth = max(1, slotWidth - contentInset)
         let columnWidth = WaterfallLayout.columnWidth(for: cardWidth, columns: count)
-        let heights = items.map { estimatedHeight(for: $0, columnWidth: columnWidth) }
-        return RSSMasonryPlan(
+        let key = WaterfallPlanKey(
+            model: .rss,
+            entries: items.map { item in
+                WaterfallPlanKey.Entry(
+                    id: item.id,
+                    title: item.displayTitle,
+                    hasImage: item.imageURL.flatMap(URL.init(string:)) != nil
+                )
+            },
             columnCount: count,
-            columnWidth: columnWidth,
-            columns: WaterfallLayout.distribute(entryHeights: heights, columnCount: count)
+            columnWidth: columnWidth
         )
+        let columns = WaterfallPlanCache.shared.plan(for: key) {
+            let heights = items.map {
+                estimatedHeight(for: $0, columnWidth: key.columnWidth)
+            }
+            return WaterfallLayout.distribute(entryHeights: heights, columnCount: count)
+        }
+        return RSSMasonryPlan(columnCount: count, columnWidth: columnWidth, columns: columns)
     }
 
     /// Rough card height for column balancing. Exact heights are measured by
@@ -525,15 +538,18 @@ struct DashboardAdaptiveRSSMasonryFeed: View {
     }
 
     private var masonry: some View {
+        // One slice for the plan and every column; `renderedItems` used to be
+        // rebuilt once per column and again for the plan.
+        let items = renderedItems
         let plan = Self.plan(
-            for: renderedItems,
+            for: items,
             width: effectiveLayoutWidth,
             prefersSingleColumn: voiceOverEnabled
         )
         return HStack(alignment: .top, spacing: WaterfallLayout.columnSpacing) {
             ForEach(Array(plan.columns.enumerated()), id: \.offset) { _, indexes in
                 LazyVStack(spacing: WaterfallLayout.cardSpacing) {
-                    ForEach(indexes.map { renderedItems[$0] }) { item in
+                    ForEach(indexes.map { items[$0] }) { item in
                         DashboardRSSMasonryCard(item: item, reduceMotion: reduceMotion)
                             .frame(width: plan.columnWidth, alignment: .top)
                     }
@@ -562,7 +578,9 @@ struct DashboardAdaptiveRSSMasonryFeed: View {
     }
 
     private var remainingItemCount: Int {
-        max(0, items.count - renderedItems.count)
+        guard let maxRenderedItems else { return 0 }
+        let limit = revealedLimit ?? maxRenderedItems
+        return max(0, items.count - limit)
     }
 
     private var statusMessage: String? {

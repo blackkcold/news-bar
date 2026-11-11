@@ -30,10 +30,6 @@ struct DashboardWindow: View {
         DashboardSearch.normalized(debouncedSearchText)
     }
 
-    private func matchesSearch(_ item: NewsItem, query: String? = nil) -> Bool {
-        DashboardSearch.matches(item, query: query ?? normalizedSearchQuery)
-    }
-
     private var hasAnyFilter: Bool {
         isSearchActive || sourceFilter != .all
     }
@@ -172,6 +168,10 @@ struct DashboardWindow: View {
         GeometryReader { proxy in
             let isWideLayout = proxy.size.width >= layoutBreakpoint
             let contentWidth = max(0, proxy.size.width - 40)
+            // Only the by-source browser reads the source catalog. Building it
+            // in recommendation mode ran a whole-project search pass whose
+            // result was discarded, and the following page never uses it.
+            let sourceGroups = browseMode == .bySource ? browseGroups : []
 
             ScrollViewReader { scrollProxy in
                 VStack(spacing: 0) {
@@ -186,6 +186,16 @@ struct DashboardWindow: View {
                                 .id("browse-top")
 
                             VStack(alignment: .leading, spacing: 18) {
+                                // One switch for all three modes, at one position.
+                                // Keeping it outside the per-mode header means it is
+                                // never recreated and never slides out from under the
+                                // pointer that just clicked it.
+                                DashboardModeSegmentedControl(
+                                    mode: $browseMode,
+                                    followingUnread: weiboMonitor?.snapshot.unreadCount ?? 0,
+                                    badgeEnabled: settings.weiboMonitorDashboardBadgeEnabled
+                                )
+
                                 if browseMode == .following {
                                     WeiboFollowingFeedView(
                                         monitor: weiboMonitor,
@@ -195,6 +205,7 @@ struct DashboardWindow: View {
                                         accountUID: $followingAccountUID,
                                         followingUnread: weiboMonitor?.snapshot.unreadCount ?? 0,
                                         badgeEnabled: settings.weiboMonitorDashboardBadgeEnabled,
+                                        showsModeControl: false,
                                         availableWidth: contentWidth,
                                         onOpenSettings: onOpenWeiboMonitorSettings ?? onOpenSettings
                                     )
@@ -204,15 +215,13 @@ struct DashboardWindow: View {
                                     DashboardFilterBar(
                                         searchText: $searchText,
                                         sourceFilter: $sourceFilter,
-                                        mode: $browseMode,
-                                        followingUnread: weiboMonitor?.snapshot.unreadCount ?? 0,
-                                        badgeEnabled: settings.weiboMonitorDashboardBadgeEnabled,
+                                        groups: sourceGroups,
                                         forYou: browseMode == .forYou,
-                                        orchestrator: orchestrator,
                                         debouncedQuery: normalizedSearchQuery
                                     )
 
                                     contentLayout(
+                                        groups: sourceGroups,
                                         isWideLayout: isWideLayout,
                                         isReaderCompact: isReaderCompact,
                                         availableWidth: contentWidth
@@ -269,8 +278,11 @@ struct DashboardWindow: View {
     }
 
     private func recommendationsView(width: CGFloat) -> some View {
-        RecommendationFeedView(
-            matches: { sourceFilter.matches($0.source) && matchesSearch($0) },
+        // Normalize once per render instead of once per item inside the
+        // feed's predicate (`folding` per item was repeated for every pass).
+        let query = normalizedSearchQuery
+        return RecommendationFeedView(
+            matches: { sourceFilter.matches($0.source) && DashboardSearch.matches($0, query: query) },
             width: width,
             hasFilter: hasAnyFilter,
             onOpenSettings: openInterestSettings,
@@ -304,21 +316,35 @@ struct DashboardWindow: View {
         )
     }
 
+    /// Built-in trend counters for the recommendation sidebar. Filtering the
+    /// sources first keeps the RSS half of the catalog out of a mode that never
+    /// renders it.
+    private var hotBrowseGroups: [DashboardBrowseGroup] {
+        DashboardBrowseCatalog.groups(
+            sources: settings.activeSources.filter(\.isBuiltIn),
+            weiboItems: orchestrator.weiboItems,
+            bilibiliItems: orchestrator.bilibiliItems,
+            rssItems: orchestrator.rssItemsMap,
+            filter: sourceFilter,
+            query: normalizedSearchQuery
+        )
+    }
+
     @ViewBuilder
     private func contentLayout(
+        groups: [DashboardBrowseGroup],
         isWideLayout: Bool,
         isReaderCompact: Bool,
         availableWidth: CGFloat
     ) -> some View {
-        let groups = browseGroups
-        let hotGroups = groups.filter { $0.source.isBuiltIn }
-        let rssGroups = groups.filter { !$0.source.isBuiltIn }
-        let matchedHotGroups = hotGroups.filter { $0.matchCount > 0 }
-        let hotMatchCount = hotGroups.reduce(0) { $0 + $1.matchCount }
         let feedWidth = max(0, availableWidth - sidebarWidth - DashboardLayoutMetrics.sidebarGap)
 
         if browseMode == .forYou {
             if isWideLayout && !isReaderCompact {
+                // Only the wide recommendation layout renders the sidebar, and
+                // only the sidebar needs the built-in trend counters. Narrow
+                // layouts never pay for this catalog build.
+                let hotGroups = hotBrowseGroups
                 HStack(alignment: .top, spacing: 20) {
                     recommendationsView(width: feedWidth)
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -338,7 +364,32 @@ struct DashboardWindow: View {
             } else {
                 recommendationsView(width: availableWidth)
             }
-        } else if isReaderCompact {
+        } else {
+            sourceLayout(
+                groups: groups,
+                isWideLayout: isWideLayout,
+                isReaderCompact: isReaderCompact,
+                availableWidth: availableWidth
+            )
+        }
+    }
+
+    /// By-source layout. Every group and counter here comes from the one
+    /// catalog build done for this mode; the filter label reads the same array.
+    @ViewBuilder
+    private func sourceLayout(
+        groups: [DashboardBrowseGroup],
+        isWideLayout: Bool,
+        isReaderCompact: Bool,
+        availableWidth: CGFloat
+    ) -> some View {
+        let hotGroups = groups.filter { $0.source.isBuiltIn }
+        let rssGroups = groups.filter { !$0.source.isBuiltIn }
+        let matchedHotGroups = hotGroups.filter { $0.matchCount > 0 }
+        let hotMatchCount = hotGroups.reduce(0) { $0 + $1.matchCount }
+        let feedWidth = max(0, availableWidth - sidebarWidth - DashboardLayoutMetrics.sidebarGap)
+
+        if isReaderCompact {
             // The reader squeezes the list to 320–480pt. Keep 02 reachable
             // without two full trend cards pushing 03 out of the first screen.
             VStack(alignment: .leading, spacing: 20) {
@@ -627,11 +678,10 @@ private struct DashboardMasthead: View {
 private struct DashboardFilterBar: View {
     @Binding var searchText: String
     @Binding var sourceFilter: DashboardSourceFilter
-    @Binding var mode: DashboardBrowseMode
-    let followingUnread: Int
-    let badgeEnabled: Bool
+    /// The catalog already built for this mode. Recommendation mode passes an
+    /// empty array — its feed filters its own snapshot.
+    let groups: [DashboardBrowseGroup]
     let forYou: Bool
-    let orchestrator: NewsOrchestrator
     let debouncedQuery: String?
 
     private var isSearchActive: Bool {
@@ -642,17 +692,22 @@ private struct DashboardFilterBar: View {
         isSearchActive || sourceFilter != .all
     }
 
+    /// One count for the chip row. By source, every group was counted while the
+    /// catalog was built; recommendation mode reads the feed's own snapshot.
+    private var filterCount: Int {
+        if forYou {
+            return InterestController.shared.recommendations?.items.filter {
+                sourceFilter.matches($0.item.source) && DashboardSearch.matches($0.item, query: debouncedQuery)
+            }.count ?? 0
+        }
+        return groups.reduce(0) { $0 + $1.matchCount }
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             DashboardSearchField(
                 text: $searchText,
                 placeholder: "dash.searchPlaceholder".localized
-            )
-
-            DashboardModeSegmentedControl(
-                mode: $mode,
-                followingUnread: followingUnread,
-                badgeEnabled: badgeEnabled
             )
 
             HStack(spacing: 6) {
@@ -668,43 +723,10 @@ private struct DashboardFilterBar: View {
                 Spacer(minLength: 0)
 
                 if hasAnyFilter {
-                    DashboardFilterCountLabel(
-                        orchestrator: orchestrator,
-                        sourceFilter: sourceFilter,
-                        query: debouncedQuery,
-                        forYou: forYou
-                    )
+                    DashboardFilterCountText(text: L10n.string("dash.filterCount", filterCount))
                 }
             }
         }
-    }
-}
-
-private struct DashboardFilterCountLabel: View {
-    @Environment(AppSettings.self) private var settings
-    let orchestrator: NewsOrchestrator
-    let sourceFilter: DashboardSourceFilter
-    let query: String?
-    let forYou: Bool
-
-    private var count: Int {
-        if forYou {
-            return InterestController.shared.recommendations?.items.filter {
-                sourceFilter.matches($0.item.source) && DashboardSearch.matches($0.item, query: query)
-            }.count ?? 0
-        }
-        return DashboardBrowseCatalog.groups(
-            sources: settings.activeSources,
-            weiboItems: orchestrator.weiboItems,
-            bilibiliItems: orchestrator.bilibiliItems,
-            rssItems: orchestrator.rssItemsMap,
-            filter: sourceFilter,
-            query: query
-        ).reduce(0) { $0 + $1.matchCount }
-    }
-
-    var body: some View {
-        DashboardFilterCountText(text: L10n.string("dash.filterCount", count))
     }
 }
 

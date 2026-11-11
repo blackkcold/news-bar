@@ -21,19 +21,36 @@ struct FollowingFeedQuery: Equatable, Sendable {
     var includeCollapsed: Bool = false
 }
 
+/// Everything one `snapshot + query` pass produces for the following page.
+///
+/// The page used to call `entries` for the waterfall, `entries` again for the
+/// count text and `collapsedPosts` for the escape hatch — three full scans,
+/// three account dictionaries and three sorts on every render. They are now
+/// one scan; the parts share the account join and the per-post filters.
+struct FollowingFeedContents: Equatable, Sendable {
+    var entries: [FollowingPostEntry] = []
+    var collapsedPosts: [WeiboPost] = []
+}
+
 /// Pure filtering/selection for every following surface: the standalone
 /// waterfall, the "关注动态" recommendation block and the sidebar card.
 enum FollowingFeedModel {
-    static func entries(
+    static func contents(
         snapshot: WeiboMonitorSnapshot,
         query: FollowingFeedQuery
-    ) -> [FollowingPostEntry] {
+    ) -> FollowingFeedContents {
         let users = Dictionary(uniqueKeysWithValues: snapshot.users.map { ($0.uid, $0) })
         let search = normalized(query.searchText)
         let includesCollapsed = query.filter != .unread
             && (query.includeCollapsed || !search.isEmpty)
+        // The collapsed block is built whenever the query is not narrowed to
+        // unread and no search is active. With `includeCollapsed == true` the
+        // same post is also part of the waterfall (pre-existing behaviour);
+        // search deliberately looks through collapsed posts instead of listing
+        // them in the block.
+        let wantsCollapsedSection = query.filter != .unread && search.isEmpty
 
-        var result: [FollowingPostEntry] = []
+        var result = FollowingFeedContents()
         for (uid, posts) in snapshot.postsByUID {
             guard let user = users[uid] else { continue }
             if query.filter == .p0, user.priority != .p0 { continue }
@@ -42,17 +59,32 @@ enum FollowingFeedModel {
             for post in posts {
                 if query.filter == .unread {
                     guard !post.read, !post.isCollapsedByRelevance else { continue }
-                } else if post.isCollapsedByRelevance, !includesCollapsed {
-                    continue
+                } else if post.isCollapsedByRelevance {
+                    if wantsCollapsedSection {
+                        result.collapsedPosts.append(post)
+                    }
+                    guard includesCollapsed else { continue }
                 }
                 if !search.isEmpty, !matches(post, user: user, search: search) {
                     continue
                 }
-                result.append(FollowingPostEntry(post: post, user: user))
+                result.entries.append(FollowingPostEntry(post: post, user: user))
             }
         }
 
-        return result.sorted(by: newestFirst)
+        result.entries.sort(by: newestFirst)
+        result.collapsedPosts.sort { lhs, rhs in
+            if lhs.createdAt != rhs.createdAt { return lhs.createdAt > rhs.createdAt }
+            return lhs.mid > rhs.mid
+        }
+        return result
+    }
+
+    static func entries(
+        snapshot: WeiboMonitorSnapshot,
+        query: FollowingFeedQuery
+    ) -> [FollowingPostEntry] {
+        contents(snapshot: snapshot, query: query).entries
     }
 
     static func recentEntries(
@@ -89,19 +121,7 @@ enum FollowingFeedModel {
         snapshot: WeiboMonitorSnapshot,
         query: FollowingFeedQuery
     ) -> [WeiboPost] {
-        guard query.filter != .unread, normalized(query.searchText).isEmpty else { return [] }
-        let users = Dictionary(uniqueKeysWithValues: snapshot.users.map { ($0.uid, $0) })
-        var result: [WeiboPost] = []
-        for (uid, posts) in snapshot.postsByUID {
-            guard let user = users[uid] else { continue }
-            if query.filter == .p0, user.priority != .p0 { continue }
-            if let accountUID = query.accountUID, accountUID != uid { continue }
-            result.append(contentsOf: posts.filter(\.isCollapsedByRelevance))
-        }
-        return result.sorted { lhs, rhs in
-            if lhs.createdAt != rhs.createdAt { return lhs.createdAt > rhs.createdAt }
-            return lhs.mid > rhs.mid
-        }
+        contents(snapshot: snapshot, query: query).collapsedPosts
     }
 
     private static func matches(

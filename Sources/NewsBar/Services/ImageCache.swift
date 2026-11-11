@@ -143,6 +143,27 @@ actor ImageCache {
         "\(url.absoluteString)|px-\(maxPixelSize)" as NSString
     }
 
+    /// Coarse pixel bucket for a point size at a given display scale.
+    ///
+    /// A live resize produces a continuous stream of widths; an exact pixel
+    /// request would create one cache entry per width. Rounding up to the next
+    /// step keeps the requested detail at normal sizes while bounding the number
+    /// of cache identities. The 2 048 cap bounds decoded memory.
+    static func pixelSize(
+        forPoints points: CGFloat,
+        displayScale: CGFloat,
+        step: Int = 256
+    ) -> Int {
+        let safeStep = max(64, step)
+        let scale = (displayScale.isFinite && displayScale > 0)
+            ? min(displayScale, 8)
+            : 2
+        guard points.isFinite, points > 0 else { return safeStep }
+        let requested = min(points, 4_096) * scale
+        let bucketed = Int((requested / CGFloat(safeStep)).rounded(.up)) * safeStep
+        return min(2_048, max(safeStep, bucketed))
+    }
+
     private func imageCost(_ image: NSImage) -> Int {
         guard let representation = image.representations.first else { return 0 }
         return representation.pixelsWide * representation.pixelsHigh * 4

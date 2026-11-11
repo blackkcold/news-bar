@@ -168,6 +168,8 @@ struct RecommendationFeedView: View {
     @Environment(\.accessibilityVoiceOverEnabled) private var voiceOverEnabled
     @State private var controller = InterestController.shared
     @State private var visibleCount = 20
+    /// One automatic page per approach to the end of the feed.
+    @State private var prefetch = MasonryPrefetchLatch()
     /// Width the masonry actually received. The dashboard hands us a width it
     /// computed from its own arithmetic; a scroll view scroller, safe-area
     /// inset or a mid-transition pane can make the real slot a few points
@@ -197,21 +199,33 @@ struct RecommendationFeedView: View {
                 Label(english ? "Learning paused for this activity" : "当前活动不参与学习", systemImage: "hand.raised").font(.caption).foregroundStyle(.secondary)
             }
             if let snapshot = snapshotOverride ?? controller.recommendations {
-                let filteredCount = filteredRows(snapshot, limit: nil).count
-                if filteredCount > 0 {
-                    recommendationsMasonry(snapshot)
+                // One filter pass per render: the count, the page slice and the
+                // masonry all read this array. Previously `filteredRows` walked
+                // the whole snapshot once for the count and again for layout.
+                let rows = filteredRows(snapshot)
+                if !rows.isEmpty {
+                    recommendationsMasonry(snapshot: snapshot, rows: rows)
                 }
-                if filteredCount > visibleCount {
-                    Button(english ? "Show more" : "加载更多") { visibleCount += 20 }
-                        .frame(maxWidth: .infinity)
-                } else if filteredCount > 0 {
+                if rows.count > visibleCount {
+                    Button(english ? "Show more" : "加载更多") {
+                        loadNextPage(rowCount: rows.count)
+                    }
+                    .frame(maxWidth: .infinity)
+                    // Prefetch one page each time the control enters the
+                    // viewport; the button stays for keyboard/VoiceOver and for
+                    // every further page.
+                    .onScrollVisibilityChange(threshold: 0.01) { visible in
+                        guard prefetch.visibilityChanged(visible) else { return }
+                        loadNextPage(rowCount: rows.count)
+                    }
+                } else if !rows.isEmpty {
                     Text(english ? "You're all caught up for this batch" : "本批推荐已展示完")
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
                         .frame(maxWidth: .infinity)
                         .padding(.top, 2)
                 }
-                if filteredCount == 0 {
+                if rows.isEmpty {
                     emptyState
                 }
             } else {
@@ -242,15 +256,20 @@ struct RecommendationFeedView: View {
     }
 
     private func filteredRows(
-        _ snapshot: RecommendationSnapshot,
-        limit: Int?
+        _ snapshot: RecommendationSnapshot
     ) -> [RankedRecommendation] {
         var result: [RankedRecommendation] = []
         for (position, row) in snapshot.items.enumerated() where matches(row.item) {
             result.append(RankedRecommendation(position: position, row: row))
-            if let limit, result.count >= limit { break }
         }
         return result
+    }
+
+    /// Reads the live page count rather than the render's capture: a delayed
+    /// visibility callback must never step the page back.
+    private func loadNextPage(rowCount: Int) {
+        guard rowCount > visibleCount else { return }
+        visibleCount = min(rowCount, visibleCount + 20)
     }
 
     private var layoutWidth: CGFloat {
@@ -266,14 +285,17 @@ struct RecommendationFeedView: View {
         voiceOverEnabled ? 1 : RecommendationMasonryLayout.columnCount(for: layoutWidth)
     }
 
-    private func recommendationsMasonry(_ snapshot: RecommendationSnapshot) -> some View {
-        let rows = filteredRows(snapshot, limit: visibleCount)
+    private func recommendationsMasonry(
+        snapshot: RecommendationSnapshot,
+        rows: [RankedRecommendation]
+    ) -> some View {
+        let visibleRows = Array(rows.prefix(visibleCount))
         let columnCount = effectiveColumnCount
         let columnWidth = RecommendationMasonryLayout.columnWidth(
             for: layoutWidth,
             columns: columnCount
         )
-        let entries = rows.map { ranked in
+        let entries = visibleRows.map { ranked in
             RecommendationMasonryEntry(
                 id: ranked.row.item.id,
                 title: ranked.row.item.displayTitle,
@@ -293,7 +315,7 @@ struct RecommendationFeedView: View {
                     // Filtering or a ranking refresh can put a different article
                     // at the same index; an index identity would then reuse the
                     // old card state (and its already-loaded cover) for a new row.
-                    ForEach(indexes.map { rows[$0] }, id: \.row.item.id) { ranked in
+                    ForEach(indexes.map { visibleRows[$0] }, id: \.row.item.id) { ranked in
                         RecommendationCardView(
                             row: ranked.row,
                             contextID: snapshot.id.uuidString,

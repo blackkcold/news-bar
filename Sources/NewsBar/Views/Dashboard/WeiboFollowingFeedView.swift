@@ -34,6 +34,10 @@ struct WeiboFollowingFeedView: View {
     @Binding var accountUID: String?
     let followingUnread: Int
     var badgeEnabled = true
+    /// The dashboard renders the mode switch once at the top of the scroll
+    /// content so it keeps one identity across all three modes. Standalone
+    /// callers (rendering tests, previews) keep the self-contained control.
+    var showsModeControl = true
     var availableWidth: CGFloat = FollowingMasonryLayout.maxFeedWidth
     let onOpenSettings: () -> Void
 
@@ -51,7 +55,7 @@ struct WeiboFollowingFeedView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            if showsFallbackModeControl {
+            if showsModeControl {
                 DashboardModeSegmentedControl(
                     mode: $mode,
                     followingUnread: followingUnread,
@@ -70,24 +74,15 @@ struct WeiboFollowingFeedView: View {
         .onAppear {
             WeiboFeedPresence.setVisible(true)
             guard let monitor else { return }
-            Task {
-                await monitor.start()
-                await monitor.refresh()
-            }
+            // `start()` already refreshes on the path that actually loads the
+            // store; afterwards the change notification keeps `snapshot` live.
+            // The extra `refresh()` here ran a full snapshot reduce on every
+            // re-entry into the page.
+            Task { await monitor.start() }
         }
         .onDisappear {
             WeiboFeedPresence.setVisible(false)
         }
-    }
-
-    /// The filter bar owns the mode control while the feed is usable. When the
-    /// monitor is off, has no accounts, or is unavailable, the filter bar is
-    /// not rendered; keep a fallback switch so the user can always leave the
-    /// following page.
-    private var showsFallbackModeControl: Bool {
-        guard let monitor else { return true }
-        let snapshot = monitor.snapshot
-        return !snapshot.isEnabled || snapshot.users.isEmpty
     }
 
     // MARK: - Content
@@ -130,8 +125,7 @@ struct WeiboFollowingFeedView: View {
             } else if snapshot.users.isEmpty {
                 emptyState
             } else {
-                filterBar(snapshot: snapshot)
-                feed(monitor, snapshot: snapshot)
+                feedSection(monitor, snapshot: snapshot)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -140,6 +134,23 @@ struct WeiboFollowingFeedView: View {
                 self.accountUID = nil
             }
         }
+    }
+
+    /// One `snapshot + query` pass feeds the counter and the waterfall. It used
+    /// to run `FollowingFeedModel.entries` twice plus `collapsedPosts` on every
+    /// render — the counter alone re-filtered and re-sorted the whole snapshot.
+    @ViewBuilder
+    private func feedSection(
+        _ monitor: WeiboMonitorViewModel,
+        snapshot: WeiboMonitorSnapshot
+    ) -> some View {
+        let contents = FollowingFeedModel.contents(snapshot: snapshot, query: feedQuery())
+        filterBar(snapshot: snapshot, matchCount: contents.entries.count)
+        feed(
+            monitor,
+            entries: contents.entries,
+            collapsed: contents.collapsedPosts
+        )
     }
 
     private func header(
@@ -371,21 +382,11 @@ struct WeiboFollowingFeedView: View {
 
     // MARK: - Filter
 
-    private func filterBar(snapshot: WeiboMonitorSnapshot) -> some View {
+    private func filterBar(snapshot: WeiboMonitorSnapshot, matchCount: Int) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             DashboardSearchField(
                 text: $searchText,
                 placeholder: L10n.string("weibo.feed.searchPlaceholder", language: language)
-            )
-
-            DashboardModeSegmentedControl(
-                mode: $mode,
-                followingUnread: followingUnread,
-                badgeEnabled: badgeEnabled
-            )
-            .frame(
-                maxWidth: FollowingMasonryLayout.maxFeedWidth,
-                alignment: .leading
             )
 
             HStack(spacing: 6) {
@@ -417,7 +418,7 @@ struct WeiboFollowingFeedView: View {
                     text: L10n.string(
                         "weibo.feed.filterCount",
                         language: language,
-                        filteredPostCount(snapshot)
+                        matchCount
                     ),
                     fontSize: usesCompactFilterMetrics
                         ? FollowingCompactFilterMetrics.countFontSize
@@ -520,11 +521,9 @@ struct WeiboFollowingFeedView: View {
     @ViewBuilder
     private func feed(
         _ monitor: WeiboMonitorViewModel,
-        snapshot: WeiboMonitorSnapshot
+        entries: [FollowingPostEntry],
+        collapsed: [WeiboPost]
     ) -> some View {
-        let query = feedQuery()
-        let entries = FollowingFeedModel.entries(snapshot: snapshot, query: query)
-        let collapsed = FollowingFeedModel.collapsedPosts(snapshot: snapshot, query: query)
         if entries.isEmpty && collapsed.isEmpty {
             noMatchState
         } else {
@@ -695,10 +694,6 @@ struct WeiboFollowingFeedView: View {
             return L10n.string("weibo.relevance.reason.\(code)", language: language)
         }
         return reasons.joined(separator: " · ")
-    }
-
-    private func filteredPostCount(_ snapshot: WeiboMonitorSnapshot) -> Int {
-        FollowingFeedModel.entries(snapshot: snapshot, query: feedQuery()).count
     }
 
     private func displayName(_ user: WeiboMonitorUser) -> String {
