@@ -13,7 +13,7 @@
   "release_branch": true,
   "auto_merge": false,
   "release_note_style": "structured-cn",
-  "summary": "页签滚动位置记忆、回到顶部按钮与推荐流手动刷新",
-  "summary_en": "Per-tab scroll memory, a back-to-top control, and in-feed refresh for recommendations",
-  "validation": "swift test 1890 项（5 项跳过，0 失败）+ 固定自签证书 release build + appcast EdDSA/签名 feed 校验 + delta 应用验证"
+  "summary": "更新窗口与系统弹窗跟随应用语言，中文默认全中文",
+  "summary_en": "The update window and system dialogs follow the in-app language, Chinese by default",
+  "validation": "swift test 1896 项（5 项跳过，0 失败）+ 固定自签证书 release build + appcast EdDSA/签名 feed 校验 + delta 应用验证 + 进程语言端到端取证"
 }

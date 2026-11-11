@@ -138,6 +138,7 @@ enum L10n {
         // Language
         "settings.language": "语言",
         "settings.language.footer": "切换界面语言。选择 English 后，可开启 RSS 标题翻译，AI 总结将以英文输出。",
+        "settings.language.restartHint": "更新窗口与系统弹窗的语言会在下次启动 NewsBar 后跟随此设置。",
         "settings.rssTranslation": "RSS 标题翻译",
         "settings.rssTranslation.footer": "开启后，RSS 标题将自动翻译为所选语言（使用免费 MyMemory 翻译服务）。微博与 B 站热搜保持原文。",
 
@@ -1762,6 +1763,7 @@ enum L10n {
         // Language
         "settings.language": "Language",
         "settings.language.footer": "Switch the interface language. When English is selected, you can enable RSS title translation and AI summaries will be generated in English.",
+        "settings.language.restartHint": "The update window and system dialogs follow this setting after NewsBar restarts.",
         "settings.rssTranslation": "RSS Title Translation",
         "settings.rssTranslation.footer": "When enabled, RSS titles are automatically translated to the selected language (free MyMemory translation service). Weibo and Bilibili trending stay in their original language.",
 

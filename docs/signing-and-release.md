@@ -125,6 +125,29 @@ XPCServices/Downloader.xpc → Installer.xpc → Updater.app → Autoupdate
 不启用 Hardened Runtime。自签证书没有 Team ID，开启后 library validation 会拒绝
 加载 Sparkle；而 Hardened Runtime 的唯一作用是公证，自签方案本来就不公证。
 
+## 界面语言与 Sparkle 更新窗口
+
+Sparkle 的更新窗、AppKit 的标准按钮不走应用的 `L10n`，而是走进程语言。进程语言由
+`Info.plist` 的本地化声明和 `AppleLanguages` 偏好共同决定，两者缺一就会退回英文。
+
+- `build.sh` 与 `package-local.sh` 都写入 `CFBundleDevelopmentRegion = zh_CN` 和
+  `CFBundleLocalizations = [zh_CN, en]`；`build.sh` 会校验 `zh_CN`，删掉门禁直接失败。
+- `main.swift` 在创建 `NSApplication` 之前调用 `ProcessLanguage.sync`，把应用内的
+  `appLanguage`（`zh` → `zh-CN`，`en` → `en`）写进本 App 的 `AppleLanguages`。
+  这一步必须发生在任何 bundle 本地化查询之前：`NSBundle` 会缓存解析结果，之后再写
+  不生效。
+- 结果是应用内语言设置说了算，而不是系统语言。代价是覆盖「系统设置 → 语言与地区 →
+  应用程序」里的按 App 语言选项。
+- 切换语言时，应用文案立即生效；更新窗口与系统弹窗要等下一次启动，设置页会就地提示。
+- 安装进度窗跑在 Sparkle 自己的 `Updater.app` 进程里，读不到本 App 的偏好，仍跟随
+  系统语言。中文系统上本来就是中文。
+
+验收一行日志就够：
+
+```bash
+log stream --predicate 'subsystem == "com.newsbar.app"' | grep "Sparkle UI localization"
+```
+
 ## 发版
 
 ```bash

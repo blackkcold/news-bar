@@ -73,6 +73,11 @@ final class SparkleUpdater: NSObject, ObservableObject {
         }
         guard !started else { return }
         started = true
+        // The update window speaks whatever the process resolved at launch.
+        // This line is the fastest way to confirm a shipped build picked the
+        // language the person chose (see ProcessLanguage).
+        let localization = Bundle(for: SPUStandardUserDriver.self).preferredLocalizations.first ?? "unknown"
+        Self.log.info("Sparkle UI localization: \(localization, privacy: .public)")
         controller.startUpdater()
         observeUpdater()
         refreshSettingsMirror()
