@@ -101,6 +101,18 @@ final class NewsOrchestrator {
     var manualRefreshWarning: String?
     var batchProgress = BatchProgress.zero
 
+    /// Newest successful fetch across every source the recommendation feed
+    /// draws from. The dashboard's refresh control shows it as "updated N
+    /// minutes ago"; the scheduler keeps its own private bookkeeping.
+    var lastFeedRefreshAt: Date? {
+        var latest = lastHotRefresh
+        for date in lastSourceRefresh.values {
+            if let current = latest, current >= date { continue }
+            latest = date
+        }
+        return latest
+    }
+
     // MARK: - Private State
 
     private let cacheManager = CacheManager()

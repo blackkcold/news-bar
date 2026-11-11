@@ -285,6 +285,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 NewsNavigationRouter.shared.close()
                 NewsNavigationRouter.shared.dismissDigest()
                 InterestController.shared.endListSession()
+                // The dashboard keeps its follow pane alive while the window
+                // exists; closing the window must release the notification
+                // suppression that pane holds.
+                WeiboMonitorViewModel.setFeedVisible(false)
                 DockPresence.hide()
             }
         }

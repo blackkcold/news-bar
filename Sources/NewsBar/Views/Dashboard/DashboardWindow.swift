@@ -12,6 +12,13 @@ struct DashboardWindow: View {
     @State private var debouncedSearchText = ""
     @State private var sourceFilter: DashboardSourceFilter = .all
     @State private var browseMode: DashboardBrowseMode = .forYou
+    /// Panes visited at least once. Only these are mounted, so the dashboard
+    /// never builds the by-source catalog or the follow feed for a tab the
+    /// user has not opened.
+    @State private var mountedModes: Set<DashboardBrowseMode> = [.forYou]
+    /// Panes scrolled past roughly one screen; drives their "back to top"
+    /// button. One entry per browse mode.
+    @State private var scrolledPanes: Set<DashboardBrowseMode> = []
     @State private var followingFilter: WeiboFollowingFilter = .all
     @State private var followingSearch = ""
     @State private var followingAccountUID: String?
@@ -104,6 +111,15 @@ struct DashboardWindow: View {
             router.selection = nil
             browseMode = .following
         }
+        .onChange(of: browseMode) { _, newMode in
+            // The first visit mounts the pane; every later visit reuses the
+            // same view (and its scroll view), which is what keeps the offset.
+            mountedModes.insert(newMode)
+            // A hidden TextField keeps the field editor alive. Without this,
+            // typing after a tab switch lands in an invisible filter box.
+            clearTextFocus()
+            WeiboMonitorViewModel.setFeedVisible(newMode == .following)
+        }
         .task(id: searchText) {
             let trimmed = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmed.isEmpty else {
@@ -173,86 +189,30 @@ struct DashboardWindow: View {
         GeometryReader { proxy in
             let isWideLayout = proxy.size.width >= layoutBreakpoint
             let contentWidth = max(0, proxy.size.width - 40)
-            // Only the by-source browser reads the source catalog. Building it
-            // in recommendation mode ran a whole-project search pass whose
-            // result was discarded, and the following page never uses it.
-            let sourceGroups = browseMode == .bySource ? browseGroups : []
+            // A mounted by-source pane keeps rendering its catalog, so the
+            // build is only skippable until that pane has been opened once.
+            let needsSourceGroups = browseMode == .bySource || mountedModes.contains(.bySource)
+            let sourceGroups = needsSourceGroups ? browseGroups : []
 
-            ScrollViewReader { scrollProxy in
-                VStack(spacing: 0) {
-                    ScrollView(.vertical, showsIndicators: true) {
-                        VStack(spacing: 0) {
-                            // A stable top anchor lets the reader hand-off reset the
-                            // list without keeping a scroll-position binding in this
-                            // view, which would invalidate the whole dashboard on
-                            // every scroll tick.
-                            Color.clear
-                                .frame(height: 0)
-                                .id("browse-top")
-
-                            VStack(alignment: .leading, spacing: 18) {
-                                if browseMode == .following {
-                                    WeiboFollowingFeedView(
-                                        monitor: weiboMonitor,
-                                        filter: $followingFilter,
-                                        searchText: $followingSearch,
-                                        mode: $browseMode,
-                                        accountUID: $followingAccountUID,
-                                        followingUnread: weiboMonitor?.snapshot.unreadCount ?? 0,
-                                        badgeEnabled: settings.weiboMonitorDashboardBadgeEnabled,
-                                        showsModeControl: false,
-                                        availableWidth: contentWidth,
-                                        onOpenSettings: onOpenWeiboMonitorSettings ?? onOpenSettings
-                                    )
-                                } else {
-                                    DashboardDateline()
-
-                                    DashboardFilterBar(
-                                        searchText: $searchText,
-                                        sourceFilter: $sourceFilter,
-                                        groups: sourceGroups,
-                                        forYou: browseMode == .forYou,
-                                        debouncedQuery: normalizedSearchQuery,
-                                        availableWidth: contentWidth,
-                                        weiboCount: orchestrator.weiboItems.count,
-                                        bilibiliCount: orchestrator.bilibiliItems.count,
-                                        rssCount: rssItemCount
-                                    )
-
-                                    contentLayout(
-                                        groups: sourceGroups,
-                                        isWideLayout: isWideLayout,
-                                        isReaderCompact: isReaderCompact,
-                                        availableWidth: contentWidth
-                                    )
-                                }
-                            }
-                            .padding(20)
-                            .frame(maxWidth: .infinity, alignment: .topLeading)
-                        }
-                    }
-                    .onChange(of: phase) { _, newPhase in
-                        // The list narrows and gains the compact 02 block when the
-                        // reader opens; a preserved offset would point past the
-                        // reflowed content. The content subtree is replaced in this
-                        // same update, so resolve the anchor after the new layout
-                        // has been committed.
-                        guard newPhase == .presented else { return }
-                        Task { @MainActor in
-                            scrollProxy.scrollTo("browse-top", anchor: .top)
-                        }
-                    }
-                }
-                .onChange(of: browseMode) { _, _ in
-                    Task { @MainActor in
-                        scrollProxy.scrollTo("browse-top", anchor: .top)
+            ZStack {
+                ForEach(DashboardBrowseMode.allCases) { mode in
+                    if mountedModes.contains(mode) {
+                        browsePaneLayer(
+                            mode: mode,
+                            phase: phase,
+                            isWideLayout: isWideLayout,
+                            isReaderCompact: isReaderCompact,
+                            contentWidth: contentWidth,
+                            sourceGroups: sourceGroups
+                        )
                     }
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .overlay(alignment: .top) {
                 // Floating status keeps the feed from shifting down 40pt every
-                // time a refresh starts or a warning appears.
+                // time a refresh starts or a warning appears. One overlay for
+                // every pane: it reads the shared orchestrator.
                 DashboardStatusOverlay(orchestrator: orchestrator)
                     .padding(.top, 12)
                     .allowsHitTesting(false)
@@ -272,6 +232,170 @@ struct DashboardWindow: View {
         }
     }
 
+    /// One mounted browse mode. It stays in the tree after its first visit, so
+    /// its scroll offset and every `@State` page count survive a tab switch.
+    @ViewBuilder
+    private func browsePaneLayer(
+        mode: DashboardBrowseMode,
+        phase: ReaderPresentationPhase,
+        isWideLayout: Bool,
+        isReaderCompact: Bool,
+        contentWidth: CGFloat,
+        sourceGroups: [DashboardBrowseGroup]
+    ) -> some View {
+        let isActive = mode == browseMode
+        BrowsePaneAccess(isActive: isActive) {
+            browseScroll(
+                mode: mode,
+                isActive: isActive,
+                phase: phase,
+                isWideLayout: isWideLayout,
+                isReaderCompact: isReaderCompact,
+                contentWidth: contentWidth,
+                sourceGroups: sourceGroups
+            )
+        }
+        .opacity(isActive ? 1 : 0)
+        .allowsHitTesting(isActive)
+        .accessibilityHidden(!isActive)
+        .zIndex(isActive ? 1 : 0)
+    }
+
+    private func browseScroll(
+        mode: DashboardBrowseMode,
+        isActive: Bool,
+        phase: ReaderPresentationPhase,
+        isWideLayout: Bool,
+        isReaderCompact: Bool,
+        contentWidth: CGFloat,
+        sourceGroups: [DashboardBrowseGroup]
+    ) -> some View {
+        let anchorID = "browse-top-\(mode.rawValue)"
+        return ScrollViewReader { scrollProxy in
+            ScrollView(.vertical, showsIndicators: true) {
+                VStack(spacing: 0) {
+                    // A stable top anchor per pane: the reader hand-off resets
+                    // the active list and the back-to-top button scrolls this
+                    // pane only. No scroll-position binding is kept in the
+                    // view, which would invalidate the dashboard on every tick.
+                    Color.clear
+                        .frame(height: 0)
+                        .id(anchorID)
+
+                    browsePaneContent(
+                        mode: mode,
+                        isActive: isActive,
+                        isWideLayout: isWideLayout,
+                        isReaderCompact: isReaderCompact,
+                        contentWidth: contentWidth,
+                        sourceGroups: sourceGroups
+                    )
+                }
+            }
+            .onChange(of: phase) { _, newPhase in
+                // The list narrows and gains the compact 02 block when the
+                // reader opens; a preserved offset would point past the
+                // reflowed content. Only the pane the reader was opened from
+                // gives up its offset — the other panes keep theirs.
+                guard newPhase == .presented, isActive else { return }
+                Task { @MainActor in
+                    scrollProxy.scrollTo(anchorID, anchor: .top)
+                }
+            }
+            .onScrollGeometryChange(for: Bool.self) { geometry in
+                geometry.contentOffset.y > max(120, geometry.containerSize.height * 0.9)
+            } action: { _, isPastTop in
+                // Fires only when the threshold flips, so scrolling never
+                // re-evaluates the dashboard body on every tick.
+                withAnimation(reduceMotion ? nil : .easeOut(duration: 0.18)) {
+                    if isPastTop {
+                        scrolledPanes.insert(mode)
+                    } else {
+                        scrolledPanes.remove(mode)
+                    }
+                }
+            }
+            .overlay(alignment: .bottomTrailing) {
+                if isActive, scrolledPanes.contains(mode) {
+                    BrowseBackToTopButton {
+                        if reduceMotion {
+                            scrollProxy.scrollTo(anchorID, anchor: .top)
+                        } else {
+                            withAnimation(.easeOut(duration: 0.26)) {
+                                scrollProxy.scrollTo(anchorID, anchor: .top)
+                            }
+                        }
+                    }
+                    .padding(.trailing, 18)
+                    // Step over the undo capsule that shares this corner.
+                    .padding(.bottom, actionToasts.toast == nil ? 18 : 64)
+                    .transition(.opacity.combined(with: .scale(scale: 0.92)))
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func browsePaneContent(
+        mode: DashboardBrowseMode,
+        isActive: Bool,
+        isWideLayout: Bool,
+        isReaderCompact: Bool,
+        contentWidth: CGFloat,
+        sourceGroups: [DashboardBrowseGroup]
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 18) {
+            if mode == .following {
+                WeiboFollowingFeedView(
+                    monitor: weiboMonitor,
+                    filter: $followingFilter,
+                    searchText: $followingSearch,
+                    mode: $browseMode,
+                    accountUID: $followingAccountUID,
+                    followingUnread: weiboMonitor?.snapshot.unreadCount ?? 0,
+                    badgeEnabled: settings.weiboMonitorDashboardBadgeEnabled,
+                    showsModeControl: false,
+                    availableWidth: contentWidth,
+                    isActive: isActive,
+                    onOpenSettings: onOpenWeiboMonitorSettings ?? onOpenSettings
+                )
+            } else {
+                DashboardDateline()
+
+                DashboardFilterBar(
+                    searchText: $searchText,
+                    sourceFilter: $sourceFilter,
+                    groups: sourceGroups,
+                    forYou: mode == .forYou,
+                    debouncedQuery: normalizedSearchQuery,
+                    availableWidth: contentWidth,
+                    weiboCount: orchestrator.weiboItems.count,
+                    bilibiliCount: orchestrator.bilibiliItems.count,
+                    rssCount: rssItemCount
+                )
+
+                contentLayout(
+                    mode: mode,
+                    groups: sourceGroups,
+                    isWideLayout: isWideLayout,
+                    isReaderCompact: isReaderCompact,
+                    availableWidth: contentWidth
+                )
+            }
+        }
+        .padding(20)
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+    }
+
+    private func clearTextFocus() {
+        guard let window = NSApp.keyWindow, let responder = window.firstResponder else { return }
+        // The field editor is an NSTextView; leaving it first responder keeps
+        // keystrokes going to a pane that is no longer visible.
+        if responder is NSTextView {
+            window.makeFirstResponder(nil)
+        }
+    }
+
     private func openInterestSettings() {
         NotificationCenter.default.post(name: .interestSettingsRequested, object: nil)
     }
@@ -287,7 +411,9 @@ struct DashboardWindow: View {
             onOpenSettings: openInterestSettings,
             onResetFilters: { searchText = ""; sourceFilter = .all },
             onRefresh: { Task { await orchestrator.manualRefresh(settings: settings) } },
-            onShowSources: { browseMode = .bySource }
+            onShowSources: { browseMode = .bySource },
+            isRefreshing: orchestrator.isRefreshing,
+            lastRefreshAt: orchestrator.lastFeedRefreshAt
         )
     }
 
@@ -331,6 +457,7 @@ struct DashboardWindow: View {
 
     @ViewBuilder
     private func contentLayout(
+        mode: DashboardBrowseMode,
         groups: [DashboardBrowseGroup],
         isWideLayout: Bool,
         isReaderCompact: Bool,
@@ -338,7 +465,7 @@ struct DashboardWindow: View {
     ) -> some View {
         let feedWidth = max(0, availableWidth - sidebarWidth - DashboardLayoutMetrics.sidebarGap)
 
-        if browseMode == .forYou {
+        if mode == .forYou {
             if isWideLayout && !isReaderCompact {
                 // Only the wide recommendation layout renders the sidebar, and
                 // only the sidebar needs the built-in trend counters. Narrow
@@ -482,6 +609,41 @@ struct DashboardWindow: View {
             onOpenSettings: onOpenSettings,
             onResetFilters: { searchText = ""; sourceFilter = .all }
         )
+    }
+}
+
+// MARK: - Pane gating
+
+/// Gates the panes the dashboard keeps alive. The reader already tells the feed
+/// when it covers the list; a pane that is merely hidden behind the active tab
+/// has to say the same thing, or its cards keep counting as impressions —
+/// `onScrollVisibilityChange` is geometric, not visual.
+private struct BrowsePaneAccess<Content: View>: View {
+    @Environment(\.dashboardListObscured) private var parentObscured
+    let isActive: Bool
+    private let content: () -> Content
+
+    init(isActive: Bool, @ViewBuilder content: @escaping () -> Content) {
+        self.isActive = isActive
+        self.content = content
+    }
+
+    var body: some View {
+        content()
+            .environment(
+                \.dashboardListObscured,
+                DashboardPaneGatingRules.obscuresExposure(
+                    parentObscured: parentObscured,
+                    isActive: isActive
+                )
+            )
+    }
+}
+
+/// Pure rule behind `BrowsePaneAccess`, unit-testable without rendering.
+enum DashboardPaneGatingRules {
+    static func obscuresExposure(parentObscured: Bool, isActive: Bool) -> Bool {
+        parentObscured || !isActive
     }
 }
 
