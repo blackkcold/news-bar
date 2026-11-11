@@ -797,7 +797,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         window.titleVisibility = .hidden
         window.minSize = Self.dashboardMinimumSize
         window.titlebarAppearsTransparent = true
-        window.toolbarStyle = .unifiedCompact
         window.center()
         window.contentViewController = NSHostingController(
             rootView: DashboardWindow(

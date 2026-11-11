@@ -44,14 +44,6 @@ struct DashboardAIBriefingPanel: View {
         }
     }
 
-    private var thinkingCapability: AIThinkingCapability {
-        AIThinkingResolver.capability(
-            connection: settings.resolvedAIConnection,
-            model: settings.aiModel,
-            language: settings.appLanguage
-        )
-    }
-
     private var parsedSummary: ParsedSummary? {
         guard hasCitationSnapshot else { return nil }
 
@@ -125,47 +117,9 @@ struct DashboardAIBriefingPanel: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: 12) {
             header
-            if settings.aiSummaryEnabled, !thinkingCapability.options.isEmpty {
-                HStack(spacing: 6) {
-                    Text("ai.thinking.summary".localized)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                    Spacer(minLength: 0)
-                    AIThinkingPicker(
-                        surface: .summary,
-                        language: settings.appLanguage,
-                        level: thinkingCapability.normalized(settings.aiSummaryThinking),
-                        options: thinkingCapability.options,
-                        isEnabled: !isSummaryRefreshing && !orchestrator.aiSummaryUpdating,
-                        onChange: { settings.aiSummaryThinking = $0 }
-                    )
-                }
-                if resolvedSummaryText != nil {
-                    Text("ai.thinking.pendingRegenerate".localized)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-            }
-            if settings.aiSummaryEnabled, let manifest = orchestrator.aiSummaryManifest {
-                Text(settings.appLanguage == .en
-                     ? "Based on collected titles · \(manifest.coverageStart.formatted(date: .omitted, time: .shortened))–\(manifest.asOf.formatted(date: .omitted, time: .shortened)) · not a complete daily archive"
-                     : "基于已采集标题 · \(manifest.coverageStart.formatted(date: .omitted, time: .shortened))–\(manifest.asOf.formatted(date: .omitted, time: .shortened)) · 非完整全天报道")
-                    .font(.caption2).foregroundStyle(.secondary)
-            }
-            if settings.aiSummaryEnabled, let restoredAt = orchestrator.aiSummaryRestoredAt {
-                Label(
-                    String(
-                        format: "dash.lastGenerated".localized,
-                        restoredAt.formatted(date: .omitted, time: .shortened)
-                    ),
-                    systemImage: "clock.arrow.circlepath"
-                )
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-            }
+            metaRow
 
             if !settings.aiSummaryEnabled {
                 emptyState(message: cardStateText, systemImage: "sparkles", actionTitle: "dash.openSettings".localized) {
@@ -289,7 +243,6 @@ struct DashboardAIBriefingPanel: View {
                 ViewThatFits(in: .horizontal) {
                     HStack(spacing: 6) {
                         briefingTitle
-                        EditorialTag(text: cardStateText, fallbackTint: stateTint)
                         if parsedSummary?.isLegacyFallback == true {
                             EditorialTag(text: "dash.compatFormat".localized, fallbackTint: .secondary)
                         }
@@ -297,20 +250,11 @@ struct DashboardAIBriefingPanel: View {
 
                     VStack(alignment: .leading, spacing: 4) {
                         briefingTitle
-                        HStack(spacing: 5) {
-                            EditorialTag(text: cardStateText, fallbackTint: stateTint)
-                            if parsedSummary?.isLegacyFallback == true {
-                                EditorialTag(text: "dash.compatFormat".localized, fallbackTint: .secondary)
-                            }
+                        if parsedSummary?.isLegacyFallback == true {
+                            EditorialTag(text: "dash.compatFormat".localized, fallbackTint: .secondary)
                         }
                     }
                 }
-
-                Text("dash.briefing.subtitle".localized)
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
             }
 
             Spacer(minLength: 0)
@@ -336,6 +280,88 @@ struct DashboardAIBriefingPanel: View {
         }
     }
 
+    /// The single status line that replaced three separate rows: when this
+    /// result was generated and how much local history it covers. The full
+    /// qualification lives in the help text and the accessibility hint.
+    @ViewBuilder
+    private var metaRow: some View {
+        if settings.aiSummaryEnabled, resolvedSummaryText != nil, let text = summaryMetaText {
+            HStack(spacing: 5) {
+                Image(systemName: "clock")
+                    .font(.system(size: 9, weight: .medium))
+                    .accessibilityHidden(true)
+                Text(text)
+                    .font(.system(size: 10.5))
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                Spacer(minLength: 0)
+            }
+            .foregroundStyle(.secondary)
+            .help(metaHelpText)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(cardStateText)
+            .accessibilityValue(text)
+            .accessibilityHint(metaHelpText)
+        }
+    }
+
+    private var summaryMetaText: String? {
+        guard let generatedAt = orchestrator.aiSummaryGeneratedAt ?? orchestrator.aiSummaryManifest?.asOf else {
+            return nil
+        }
+        let language = settings.appLanguage
+        var parts = [
+            L10n.string(
+                "dash.meta.generated",
+                language: language,
+                Self.metaTimeText(generatedAt, language: language)
+            )
+        ]
+        if let manifest = orchestrator.aiSummaryManifest {
+            let span = manifest.asOf.timeIntervalSince(manifest.coverageStart)
+            // A fresh archive has almost no history: "covering 0 minutes" is
+            // noise, and calling it incremental would overstate the collection.
+            if span >= 5 * 60 {
+                if span < 3600 {
+                    parts.append(L10n.string(
+                        "dash.meta.coverageMinutes",
+                        language: language,
+                        max(1, Int((span / 60).rounded()))
+                    ))
+                } else {
+                    parts.append(L10n.string(
+                        "dash.meta.coverageHours",
+                        language: language,
+                        max(1, Int((span / 3600).rounded()))
+                    ))
+                }
+            }
+        }
+        // The truncation warning lives at the bottom of the card; repeat it
+        // here so the state is visible without scrolling.
+        if case .truncated = summaryState {
+            parts.append(L10n.string("dash.meta.partial", language: language))
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    private var metaHelpText: String {
+        let language = settings.appLanguage
+        let base = L10n.string("dash.meta.help", language: language)
+        guard orchestrator.aiSummaryRestoredAt != nil else { return base }
+        return L10n.string("dash.meta.restored", language: language) + " " + base
+    }
+
+    private static func metaTimeText(_ date: Date, language: AppLanguage) -> String {
+        let locale = Locale(identifier: language.bcp47)
+        let time = date.formatted(.dateTime.hour().minute().locale(locale))
+        if Calendar.current.isDateInToday(date) { return time }
+        if Calendar.current.isDateInYesterday(date) {
+            return L10n.string("dash.meta.yesterday", language: language, time)
+        }
+        return date.formatted(.dateTime.month(.abbreviated).day().hour().minute().locale(locale))
+    }
+
     private var briefingTitle: some View {
         Text("dash.briefing".localized)
             .editorialHeading(size: 14)
@@ -347,13 +373,14 @@ struct DashboardAIBriefingPanel: View {
     @ViewBuilder
     private func briefingContent(parsedSummary: ParsedSummary) -> some View {
         VStack(alignment: .leading, spacing: 12) {
-            Picker("AI Briefing 主题", selection: $selectedCategory) {
+            Picker(L10n.string("dash.briefing", language: settings.appLanguage), selection: $selectedCategory) {
                 Text(L10n.string("dash.trendOverview", trendSections.count))
                     .tag(DashboardBriefingCategory.trendOverview)
                 Text(L10n.string("dash.dailyEssentials", dailySections.count))
                     .tag(DashboardBriefingCategory.dailyEssentials)
             }
             .pickerStyle(.segmented)
+            .labelsHidden()
 
             if selectedSections.isEmpty {
                 emptyCategoryState
@@ -481,19 +508,6 @@ struct DashboardAIBriefingPanel: View {
             Spacer()
         }
         .padding(.vertical, 8)
-    }
-
-    private var stateTint: Color {
-        guard settings.aiSummaryEnabled else { return .secondary }
-        switch summaryState {
-        case .idle: return .secondary
-        case .noKey: return .orange
-        case .fetching: return .blue
-        case .summarizing: return .purple
-        case .done: return .green
-        case .truncated: return .orange
-        case .error: return .red
-        }
     }
 
     private var sharedSummaryNeedsGeneration: Bool {

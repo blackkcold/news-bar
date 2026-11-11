@@ -27,13 +27,6 @@ struct PopoverContent: View {
 
     private var isRetro: Bool { settings.appTheme == .retroEditorial }
 
-    private static let issueDateFormatter: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "zh_CN")
-        formatter.dateFormat = "yyyy年M月d日 EEEE"
-        return formatter
-    }()
-
     var body: some View {
         VStack(spacing: 0) {
             headerView
@@ -92,73 +85,41 @@ struct PopoverContent: View {
 
     private var publicationHeaderView: some View {
         VStack(spacing: 0) {
-            HStack(alignment: .center, spacing: 10) {
-                EditorialSymbolBadge(
-                    symbol: "newspaper.fill",
-                    fallbackTint: .secondary,
-                    size: 34,
-                    rotation: -2
-                )
-
-                VStack(alignment: .leading, spacing: -2) {
-                    HStack(alignment: .firstTextBaseline, spacing: 3) {
-                        Text("NEWS")
-                            .font(.system(size: 22, weight: .black, design: isRetro ? .serif : .default))
-                        Text("BAR")
-                            .font(.system(size: 22, weight: .black, design: isRetro ? .serif : .default))
-                            .foregroundStyle(isRetro ? RetroEditorialTokens.brick : .accentColor)
-                    }
-
-                    Text("THE DAILY SIGNAL")
-                        .font(.system(size: 8, weight: .bold, design: isRetro ? .monospaced : .default))
-                        .tracking(isRetro ? 1.5 : 0.4)
-                        .foregroundStyle(isRetro ? RetroEditorialTokens.fadedInk : .secondary)
+            HStack(alignment: .center, spacing: 8) {
+                HStack(alignment: .firstTextBaseline, spacing: 2) {
+                    Text("NEWS")
+                    Text("BAR")
+                        .foregroundStyle(isRetro ? RetroEditorialTokens.brick : .accentColor)
                 }
+                .font(.system(size: 15, weight: .black, design: isRetro ? .serif : .default))
+                .tracking(isRetro ? 0.4 : -0.5)
 
-                Spacer(minLength: 4)
+                Text(shortIssueDate)
+                    .font(.system(size: 8.5, weight: .medium, design: isRetro ? .serif : .default))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
 
-                VStack(alignment: .trailing, spacing: 4) {
-                    EditorialTag(text: issueNumber, fallbackTint: .secondary, filled: true)
-                    UpdateBadge(checker: updateChecker)
-                }
+                Spacer(minLength: 6)
+
+                UpdateBadge(checker: updateChecker)
 
                 Button {
                     showQuitConfirmation = true
                 } label: {
-                    Image(systemName: "xmark")
-                        .font(.system(size: 10, weight: .black))
+                    Image(systemName: "power")
+                        .font(.system(size: 10.5, weight: .semibold))
+                        .frame(width: 24, height: 22)
+                        .contentShape(Rectangle())
                 }
-                .buttonStyle(EditorialActionButtonStyle(tone: .destructive, compact: true))
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
                 .help("popover.quit.help".localized)
                 .accessibilityLabel("popover.quit.help".localized)
             }
             .padding(.horizontal, PopoverLayout.horizontalInset)
-            .padding(.top, 9)
-            .padding(.bottom, 7)
-
-            HStack(spacing: 8) {
-                Text(issueDate)
-                    .font(.system(size: 9, weight: .bold, design: isRetro ? .serif : .default))
-                Rectangle()
-                    .fill(isRetro ? RetroEditorialTokens.ink : Color(nsColor: .separatorColor))
-                    .frame(height: 1)
-                Text("popover.issueDate".localized)
-                    .font(.system(size: 8, weight: .black, design: isRetro ? .monospaced : .default))
-                    .tracking(isRetro ? 0.7 : 0.25)
-                    .foregroundStyle(isRetro ? RetroEditorialTokens.brick : .secondary)
-            }
-            .padding(.horizontal, PopoverLayout.horizontalInset)
+            .padding(.top, 7)
             .padding(.bottom, 6)
-        }
-        // The native popover already supplies the material. Only the retro
-        // theme paints a paper header; the modern header stays clear so the
-        // system material is visible.
-        .background {
-            if isRetro {
-                RetroEditorialTokens.raisedPaper
-            }
-        }
-        .overlay(alignment: .bottom) {
+
             VStack(spacing: 2) {
                 Rectangle()
                     .fill(isRetro ? RetroEditorialTokens.ink : Color(nsColor: .separatorColor))
@@ -168,15 +129,18 @@ struct PopoverContent: View {
                     .frame(height: isRetro ? 3 : 1)
             }
         }
+        .background {
+            if isRetro {
+                RetroEditorialTokens.raisedPaper
+            }
+        }
     }
 
-    private var issueNumber: String {
-        let day = Calendar.current.component(.day, from: Date())
-        return L10n.string("popover.issueNumber", String(format: "%02d", day))
-    }
-
-    private var issueDate: String {
-        Self.issueDateFormatter.string(from: Date())
+    private var shortIssueDate: String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: settings.appLanguage.bcp47)
+        formatter.dateFormat = settings.appLanguage == .en ? "EEE, MMM d" : "M月d日 EEE"
+        return formatter.string(from: Date())
     }
 }
 
@@ -195,6 +159,19 @@ private struct PopoverFeedList: View {
     let onOpenDashboard: () -> Void
     let onOpenRSSSettings: () -> Void
 
+    private var showsResearchChip: Bool {
+        settings.researchShowPopoverChip && orchestrator.researchSummary.burstCount > 0
+    }
+
+    private var showsFollowChip: Bool {
+        settings.weiboMonitorShowPopoverChip
+            && (weiboMonitor?.snapshot.unreadCount ?? 0) > 0
+    }
+
+    private var rssSources: [NewsSource] {
+        settings.activeSources.filter { !$0.isBuiltIn }
+    }
+
     var body: some View {
         ScrollView(.vertical, showsIndicators: false) {
             LazyVStack(spacing: 0) {
@@ -206,44 +183,49 @@ private struct PopoverFeedList: View {
                     onConfigureKey: onConfigureKey
                 )
 
-                if settings.researchShowPopoverChip {
-                    PopoverResearchChip(
-                        summary: orchestrator.researchSummary,
-                        onOpen: onOpenResearchCenter
-                    )
-                }
-
-                if settings.weiboMonitorShowPopoverChip,
-                   let weiboMonitor,
-                   weiboMonitor.snapshot.unreadCount > 0 {
-                    PopoverWeiboFollowChip(
-                        unreadCount: weiboMonitor.snapshot.unreadCount,
-                        onOpen: {
-                            onOpenDashboard()
-                            NotificationCenter.default.post(
-                                name: .openWeiboFollowFeed,
-                                object: nil
+                if showsResearchChip || showsFollowChip {
+                    HStack(spacing: 6) {
+                        if showsResearchChip {
+                            PopoverResearchChip(
+                                summary: orchestrator.researchSummary,
+                                onOpen: onOpenResearchCenter,
+                                compact: true
                             )
                         }
-                    )
+
+                        if showsFollowChip, let weiboMonitor {
+                            PopoverWeiboFollowChip(
+                                unreadCount: weiboMonitor.snapshot.unreadCount,
+                                onOpen: {
+                                    onOpenDashboard()
+                                    NotificationCenter.default.post(
+                                        name: .openWeiboFollowFeed,
+                                        object: nil
+                                    )
+                                },
+                                compact: true
+                            )
+                        }
+                    }
+                    .padding(.horizontal, PopoverLayout.horizontalInset)
+                    .padding(.bottom, 6)
                 }
 
-                EditorialSectionHeading(
-                    index: "01",
-                    title: "popover.trending".localized,
-                    subtitle: "popover.trending.subtitle".localized
-                )
-                .padding(.horizontal, PopoverLayout.horizontalInset)
-                .padding(.top, PopoverLayout.sectionTopSpacing)
-                .padding(.bottom, PopoverLayout.sectionBottomSpacing)
-
+                PopoverGroupLabel(title: "popover.trending".localized)
                 PopoverHotTrendSection(orchestrator: orchestrator)
+
+                if !rssSources.isEmpty {
+                    PopoverGroupLabel(
+                        title: "RSS",
+                        detail: L10n.string("popover.rss.sourceCount", rssSources.count)
+                    )
+                }
 
                 if settings.rssSources.isEmpty || settings.selectedRSSSourceIDs.isEmpty {
                     PopoverRSSEmptyCard(onOpenSettings: onOpenRSSSettings)
                 }
 
-                ForEach(settings.activeSources.filter { !$0.isBuiltIn }, id: \.id) { source in
+                ForEach(rssSources, id: \.id) { source in
                     PopoverRSSSection(
                         source: source,
                         orchestrator: orchestrator,
@@ -256,6 +238,38 @@ private struct PopoverFeedList: View {
             }
             .padding(.top, 10)
         }
+    }
+}
+
+/// Compact group label for the popover. The dashboard keeps the numbered
+/// editorial headings; at 400pt the popover only needs a small section cue.
+private struct PopoverGroupLabel: View {
+    @Environment(AppSettings.self) private var settings
+
+    let title: String
+    var detail: String? = nil
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text(title)
+                .font(.system(
+                    size: 10,
+                    weight: .semibold,
+                    design: settings.appTheme == .retroEditorial ? .serif : .default
+                ))
+                .foregroundStyle(.primary)
+
+            Spacer(minLength: 0)
+
+            if let detail {
+                Text(detail)
+                    .font(.system(size: 9))
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(.horizontal, PopoverLayout.horizontalInset)
+        .padding(.top, 10)
+        .padding(.bottom, 4)
     }
 }
 
@@ -402,7 +416,7 @@ private struct PopoverHotTrendSection: View {
                 items: orchestrator.bilibiliItems,
                 showRank: true,
                 state: orchestrator.sourceStates[NewsSource.bilibili.id] ?? .idle,
-                maxVisible: 3,
+                maxVisible: 5,
                 presentation: .compactTrend
             )
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -449,15 +463,6 @@ private struct PopoverRSSSection: View {
     }
 
     var body: some View {
-        EditorialSectionHeading(
-            index: "02",
-            title: source.displayName,
-            subtitle: "popover.rss.subtitle".localized
-        )
-        .padding(.horizontal, PopoverLayout.horizontalInset)
-        .padding(.top, PopoverLayout.sectionTopSpacing)
-        .padding(.bottom, PopoverLayout.sectionBottomSpacing)
-
         RSSWaterfallView(
             items: sourceItems,
             sourceName: source.displayName,
@@ -560,7 +565,7 @@ private struct PopoverAISummarySection: View {
                 },
                 onConfigureKey: onConfigureKey,
                 contextID: orchestrator.aiSummaryManifest?.id.uuidString,
-                restoredAt: orchestrator.aiSummaryRestoredAt,
+                generatedAt: orchestrator.aiSummaryGeneratedAt ?? orchestrator.aiSummaryManifest?.asOf,
                 updateError: orchestrator.aiSummaryUpdateError
             )
             .padding(.horizontal, PopoverLayout.horizontalInset)

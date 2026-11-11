@@ -28,7 +28,7 @@ struct WorkspaceTabStrip: View {
             }
             Spacer(minLength: 0)
         }
-        .padding(.horizontal, 10)
+        .padding(.horizontal, 20)
         .frame(height: 36)
         .background(.bar)
         .overlay(alignment: .bottom) { Divider() }

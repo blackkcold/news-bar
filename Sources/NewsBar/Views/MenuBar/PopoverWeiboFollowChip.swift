@@ -7,6 +7,7 @@ struct PopoverWeiboFollowChip: View {
     @Environment(AppSettings.self) private var settings
     let unreadCount: Int
     let onOpen: () -> Void
+    var compact = false
 
     private var isRetro: Bool { settings.appTheme == .retroEditorial }
     private var tint: Color { isRetro ? RetroEditorialTokens.brick : .accentColor }
@@ -43,6 +44,7 @@ struct PopoverWeiboFollowChip: View {
                 }
                 .padding(.horizontal, 10)
                 .frame(height: 28)
+                .frame(maxWidth: compact ? .infinity : nil, alignment: .leading)
                 .background(
                     isRetro
                         ? AnyShapeStyle(RetroEditorialTokens.raisedPaper)
@@ -61,8 +63,8 @@ struct PopoverWeiboFollowChip: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .padding(.horizontal, PopoverLayout.horizontalInset)
-            .padding(.bottom, 6)
+            .padding(.horizontal, compact ? 0 : PopoverLayout.horizontalInset)
+            .padding(.bottom, compact ? 0 : 6)
             .accessibilityLabel(
                 L10n.string(
                     "weibo.popover.chip",

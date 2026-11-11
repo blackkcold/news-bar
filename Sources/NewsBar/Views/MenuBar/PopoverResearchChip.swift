@@ -6,6 +6,7 @@ struct PopoverResearchChip: View {
     @Environment(AppSettings.self) private var settings
     let summary: ResearchSummary
     let onOpen: () -> Void
+    var compact = false
 
     private var isRetro: Bool { settings.appTheme == .retroEditorial }
 
@@ -37,6 +38,7 @@ struct PopoverResearchChip: View {
                 }
                 .padding(.horizontal, 10)
                 .frame(height: 28)
+                .frame(maxWidth: compact ? .infinity : nil, alignment: .leading)
                 .background(isRetro ? AnyShapeStyle(RetroEditorialTokens.raisedPaper) : AnyShapeStyle(Color.orange.opacity(0.08)))
                 .overlay {
                     RoundedRectangle(cornerRadius: 8, style: .continuous)
@@ -49,8 +51,8 @@ struct PopoverResearchChip: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .padding(.horizontal, PopoverLayout.horizontalInset)
-            .padding(.bottom, 6)
+            .padding(.horizontal, compact ? 0 : PopoverLayout.horizontalInset)
+            .padding(.bottom, compact ? 0 : 6)
             .accessibilityLabel(title)
             .help("research.chip.help".localized)
         }

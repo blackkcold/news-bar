@@ -34,6 +34,14 @@ struct DashboardWindow: View {
         isSearchActive || sourceFilter != .all
     }
 
+    private var rssItemCount: Int {
+        settings.activeSources
+            .filter { !$0.isBuiltIn }
+            .reduce(0) { total, source in
+                total + (orchestrator.rssItemsMap[source.id]?.count ?? 0)
+            }
+    }
+
     private var isSearchActive: Bool {
         !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
@@ -53,16 +61,28 @@ struct DashboardWindow: View {
     var body: some View {
         @Bindable var router = NewsNavigationRouter.shared
         VStack(spacing: 0) {
-            WorkspaceTabStrip(
+            DashboardNewsroomBar(
+                mode: browseMode,
+                followingUnread: weiboMonitor?.snapshot.unreadCount ?? 0,
+                badgeEnabled: settings.weiboMonitorDashboardBadgeEnabled,
                 tabs: tabs.tabs,
                 activeID: tabs.activeID,
+                isRefreshing: orchestrator.isRefreshing,
+                showsRefresh: browseMode != .following,
+                onSelectMode: { newMode in
+                    router.selection = nil
+                    browseMode = newMode
+                },
                 onSelectBrowse: { router.selection = nil },
-                onSelect: { id in
+                onSelectTab: { id in
                     if let request = tabs.request(for: id) {
                         router.selection = request
                     }
                 },
-                onClose: { id in closeTab(id, router: router) }
+                onCloseTab: { id in closeTab(id, router: router) },
+                onRefresh: { Task { await orchestrator.manualRefresh(settings: settings) } },
+                onOpenResearch: { onOpenResearchCenter(nil) },
+                onOpenSettings: onOpenSettings
             )
             DashboardReaderPresentation(
                 selection: $router.selection,
@@ -81,6 +101,7 @@ struct DashboardWindow: View {
             syncTabs(with: router.selection)
         }
         .onReceive(NotificationCenter.default.publisher(for: .openWeiboFollowFeed)) { _ in
+            router.selection = nil
             browseMode = .following
         }
         .task(id: searchText) {
@@ -99,22 +120,6 @@ struct DashboardWindow: View {
         // Rebuild the surface when the process-wide language changes so every
         // `.localized` label, not only the ones reading `settings`, refreshes.
         .id(settings.appLanguage)
-        .toolbar {
-            ToolbarItem(placement: .principal) { toolbarTitle }
-            ToolbarItemGroup(placement: .primaryAction) {
-                if browseMode != .following {
-                    DashboardRefreshToolbarItem(orchestrator: orchestrator) {
-                        Task { await orchestrator.manualRefresh(settings: settings) }
-                    }
-                }
-                DashboardToolbarAction(
-                    title: L10n.string("research.center.title", language: settings.appLanguage),
-                    symbol: "sparkles",
-                    action: { onOpenResearchCenter(nil) }
-                )
-                DashboardToolbarAction(title: settings.appLanguage == .en ? "Settings" : "设置", symbol: "gearshape", action: onOpenSettings)
-            }
-        }
         .sheet(item: $router.digest) { request in
             NewsDigestSheet(request: request)
                 .environment(settings)
@@ -186,16 +191,6 @@ struct DashboardWindow: View {
                                 .id("browse-top")
 
                             VStack(alignment: .leading, spacing: 18) {
-                                // One switch for all three modes, at one position.
-                                // Keeping it outside the per-mode header means it is
-                                // never recreated and never slides out from under the
-                                // pointer that just clicked it.
-                                DashboardModeSegmentedControl(
-                                    mode: $browseMode,
-                                    followingUnread: weiboMonitor?.snapshot.unreadCount ?? 0,
-                                    badgeEnabled: settings.weiboMonitorDashboardBadgeEnabled
-                                )
-
                                 if browseMode == .following {
                                     WeiboFollowingFeedView(
                                         monitor: weiboMonitor,
@@ -210,14 +205,18 @@ struct DashboardWindow: View {
                                         onOpenSettings: onOpenWeiboMonitorSettings ?? onOpenSettings
                                     )
                                 } else {
-                                    DashboardMasthead(orchestrator: orchestrator)
+                                    DashboardDateline()
 
                                     DashboardFilterBar(
                                         searchText: $searchText,
                                         sourceFilter: $sourceFilter,
                                         groups: sourceGroups,
                                         forYou: browseMode == .forYou,
-                                        debouncedQuery: normalizedSearchQuery
+                                        debouncedQuery: normalizedSearchQuery,
+                                        availableWidth: contentWidth,
+                                        weiboCount: orchestrator.weiboItems.count,
+                                        bilibiliCount: orchestrator.bilibiliItems.count,
+                                        rssCount: rssItemCount
                                     )
 
                                     contentLayout(
@@ -484,30 +483,6 @@ struct DashboardWindow: View {
             onResetFilters: { searchText = ""; sourceFilter = .all }
         )
     }
-
-    private var toolbarTitle: some View {
-        ViewThatFits(in: .horizontal) {
-            HStack(spacing: 6) {
-                Image(systemName: "rectangle.split.2x1")
-                    .font(.system(size: 10, weight: settings.appTheme == .retroEditorial ? .black : .semibold))
-                Text("DASHBOARD")
-                    .font(.system(size: 11, weight: settings.appTheme == .retroEditorial ? .black : .semibold, design: settings.appTheme == .retroEditorial ? .monospaced : .default))
-                    .tracking(settings.appTheme == .retroEditorial ? 0.7 : 0)
-                Text("趋势 · RSS · AI")
-                    .font(.system(size: 9))
-                    .foregroundStyle(.secondary)
-            }
-
-            Text("DASHBOARD")
-                .font(.system(size: 10, weight: settings.appTheme == .retroEditorial ? .black : .semibold, design: settings.appTheme == .retroEditorial ? .monospaced : .default))
-
-            Image(systemName: "rectangle.split.2x1")
-                .accessibilityLabel("Dashboard")
-        }
-        .lineLimit(1)
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("Dashboard")
-    }
 }
 
 // MARK: - Search
@@ -528,148 +503,42 @@ enum DashboardSearch {
 
 // MARK: - Masthead
 
-private struct DashboardMasthead: View {
+private struct DashboardDateline: View {
     @Environment(AppSettings.self) private var settings
-    @Environment(\.colorScheme) private var colorScheme
-    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
-    let orchestrator: NewsOrchestrator
-
-    private static let issueDateFormatter: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "zh_CN")
-        formatter.dateFormat = "yyyy年M月d日 EEEE"
-        return formatter
-    }()
 
     private var isRetro: Bool { settings.appTheme == .retroEditorial }
-
-    private var selectedRSSSources: [NewsSource] {
-        settings.activeSources.filter { !$0.isBuiltIn }
-    }
-
-    private var totalRSSItemCount: Int {
-        selectedRSSSources.reduce(0) { partial, source in
-            partial + (orchestrator.rssItemsMap[source.id]?.count ?? 0)
-        }
-    }
-
-    private var hotCount: Int {
-        orchestrator.weiboItems.count + orchestrator.bilibiliItems.count
-    }
+    private var language: AppLanguage { settings.appLanguage }
 
     private var issueNumber: String {
         String(format: "%02d", Calendar.current.component(.day, from: Date()))
     }
 
     private var issueDate: String {
-        Self.issueDateFormatter.string(from: Date())
-    }
-
-    private var mastheadInk: Color {
-        isRetro ? RetroEditorialTokens.ink : .primary
-    }
-
-    private var mastheadAccent: Color {
-        isRetro ? RetroEditorialTokens.brick : .accentColor
-    }
-
-    private var mastheadSecondary: Color {
-        isRetro ? RetroEditorialTokens.fadedInk : .secondary
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: language.bcp47)
+        formatter.dateFormat = language == .en ? "EEEE, MMM d, yyyy" : "yyyy年M月d日 EEEE"
+        return formatter.string(from: Date())
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: 10) {
-                Text("VOL. 06 · NO. \(issueNumber)")
-                    .font(.system(size: 9, weight: .black, design: .monospaced))
-                    .tracking(0.7)
-                Rectangle()
-                    .fill(mastheadInk)
-                    .frame(height: 1)
-                Text(issueDate)
-                    .font(.system(size: 10, weight: .bold, design: .serif))
-                EditorialTag(text: "上海版", fallbackTint: .secondary, filled: true)
-            }
-            .padding(.bottom, 9)
+        HStack(spacing: 10) {
+            Text("VOL. 06 · NO. \(issueNumber)")
+                .font(.system(size: 9, weight: .black, design: .monospaced))
+                .tracking(0.7)
 
             Rectangle()
-                .fill(RetroEditorialTokens.ink)
-                .frame(height: 2)
+                .fill(isRetro ? RetroEditorialTokens.ink : Color(nsColor: .separatorColor))
+                .frame(height: isRetro ? 1.2 : 1)
 
-            ViewThatFits(in: .horizontal) {
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Text("NEWS")
-                        .font(.system(size: 46, weight: .black, design: isRetro ? .serif : .default))
-                        .tracking(-1.5)
-                    Text("BAR")
-                        .font(.system(size: 46, weight: .black, design: isRetro ? .serif : .default))
-                        .tracking(-1.5)
-                        .foregroundStyle(mastheadAccent)
-                    Text("新闻编辑台")
-                        .font(.system(size: 17, weight: .bold, design: isRetro ? .serif : .default))
-                        .foregroundStyle(mastheadSecondary)
-                    Spacer(minLength: 12)
-                    Text("TREND · RSS · AI")
-                        .font(.system(size: 10, weight: .black, design: isRetro ? .monospaced : .default))
-                        .tracking(1.1)
-                }
+            Text(issueDate)
+                .font(.system(size: 10, weight: .bold, design: isRetro ? .serif : .default))
 
-                HStack(alignment: .firstTextBaseline, spacing: 6) {
-                    Text("NEWSBAR")
-                        .font(.system(size: 34, weight: .black, design: isRetro ? .serif : .default))
-                    Text("新闻编辑台")
-                        .font(.system(size: 14, weight: .bold, design: isRetro ? .serif : .default))
-                        .foregroundStyle(mastheadAccent)
-                }
-            }
-            .padding(.vertical, 6)
-
-            HStack(spacing: 8) {
-                Text("实时聚合 · 档案式阅读 · AI 每日简报")
-                    .font(.system(size: 11, weight: .medium, design: isRetro ? .serif : .default))
-                    .foregroundStyle(mastheadSecondary)
-                Spacer(minLength: 8)
-                EditorialTag(text: "热榜 \(hotCount)", fallbackTint: .secondary)
-                EditorialTag(text: "RSS \(totalRSSItemCount)", fallbackTint: .secondary)
-                EditorialTag(text: "来源 \(selectedRSSSources.count + 2)", fallbackTint: .secondary)
-            }
-            .padding(.bottom, 8)
-
-            VStack(spacing: 2) {
-                Rectangle().fill(mastheadAccent).frame(height: isRetro ? 4 : 2)
-                Rectangle().fill(mastheadInk).frame(height: 1)
-            }
+            EditorialTag(text: L10n.string("brand.edition", language: language), fallbackTint: .secondary)
         }
-        .padding(16)
-        .background {
-            if isRetro {
-                Rectangle().fill(RetroEditorialTokens.raisedPaper)
-            } else {
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .fill(EditorialSurfaceTokens.cardFill(
-                        colorScheme: colorScheme,
-                        reduceTransparency: reduceTransparency
-                    ))
-            }
-        }
-        .overlay {
-            if isRetro {
-                Rectangle().strokeBorder(RetroEditorialTokens.ink, lineWidth: 1.5)
-            } else {
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .strokeBorder(Color(nsColor: .separatorColor).opacity(0.34), lineWidth: 1)
-            }
-        }
-        .editorialClipShape(cornerRadius: 14)
-        .background {
-            if isRetro {
-                Rectangle()
-                    .fill(RetroEditorialTokens.ink.opacity(0.72))
-                    .offset(x: 4, y: 4)
-            }
-        }
+        .foregroundStyle(isRetro ? RetroEditorialTokens.ink : Color.primary)
+        .frame(height: 22)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("NewsBar 新闻编辑台，\(issueDate)，RSS \(totalRSSItemCount) 条")
+        .accessibilityLabel("NewsBar, \(issueDate)")
     }
 }
 
@@ -683,6 +552,10 @@ private struct DashboardFilterBar: View {
     let groups: [DashboardBrowseGroup]
     let forYou: Bool
     let debouncedQuery: String?
+    let availableWidth: CGFloat
+    let weiboCount: Int
+    let bilibiliCount: Int
+    let rssCount: Int
 
     private var isSearchActive: Bool {
         !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -704,28 +577,53 @@ private struct DashboardFilterBar: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            DashboardSearchField(
-                text: $searchText,
-                placeholder: "dash.searchPlaceholder".localized
-            )
-
-            HStack(spacing: 6) {
-                ForEach(DashboardSourceFilter.allCases) { filter in
-                    DashboardFilterChip(
-                        title: filter.displayName,
-                        isSelected: sourceFilter == filter
-                    ) {
-                        sourceFilter = filter
-                    }
-                }
-
-                Spacer(minLength: 0)
-
-                if hasAnyFilter {
-                    DashboardFilterCountText(text: L10n.string("dash.filterCount", filterCount))
+        if availableWidth < 620 {
+            VStack(alignment: .leading, spacing: 8) {
+                searchField
+                ScrollView(.horizontal, showsIndicators: false) {
+                    chipRow
                 }
             }
+        } else {
+            HStack(spacing: 10) {
+                searchField
+                    .frame(maxWidth: .infinity)
+                chipRow
+                    .fixedSize()
+            }
+        }
+    }
+
+    private var searchField: some View {
+        DashboardSearchField(
+            text: $searchText,
+            placeholder: "dash.searchPlaceholder".localized
+        )
+    }
+
+    private var chipRow: some View {
+        HStack(spacing: 6) {
+            ForEach(DashboardSourceFilter.allCases) { filter in
+                DashboardFilterChip(
+                    title: chipTitle(for: filter),
+                    isSelected: sourceFilter == filter
+                ) {
+                    sourceFilter = filter
+                }
+            }
+
+            if hasAnyFilter {
+                DashboardFilterCountText(text: L10n.string("dash.filterCount", filterCount))
+            }
+        }
+    }
+
+    private func chipTitle(for filter: DashboardSourceFilter) -> String {
+        switch filter {
+        case .all: return filter.displayName
+        case .weibo: return "\(filter.displayName) \(weiboCount)"
+        case .bilibili: return "\(filter.displayName) \(bilibiliCount)"
+        case .rss: return "\(filter.displayName) \(rssCount)"
         }
     }
 }
@@ -1109,53 +1007,6 @@ private struct DashboardCompactHotTrends: View {
         } else {
             expandedSourceIDs.insert(source.id)
         }
-    }
-}
-
-// MARK: - Toolbar
-
-private struct DashboardRefreshToolbarItem: View {
-    @Environment(AppSettings.self) private var settings
-    let orchestrator: NewsOrchestrator
-    let action: () -> Void
-
-    var body: some View {
-        DashboardToolbarAction(
-            title: settings.appLanguage == .en ? "Refresh" : "刷新",
-            symbol: "arrow.clockwise",
-            isDisabled: orchestrator.isRefreshing,
-            action: action
-        )
-    }
-}
-
-private struct DashboardToolbarAction: View {
-    @Environment(AppSettings.self) private var settings
-
-    let title: String
-    let symbol: String
-    var isDisabled = false
-    let action: () -> Void
-
-    var body: some View {
-        Group {
-            if settings.appTheme == .retroEditorial {
-                Button(action: action) {
-                    ViewThatFits(in: .horizontal) {
-                        Label(title, systemImage: symbol)
-                        Image(systemName: symbol)
-                    }
-                }
-                .buttonStyle(EditorialActionButtonStyle(compact: true))
-            } else {
-                Button(action: action) {
-                    Label(title, systemImage: symbol)
-                }
-            }
-        }
-        .disabled(isDisabled)
-        .help(title)
-        .accessibilityLabel(title)
     }
 }
 
