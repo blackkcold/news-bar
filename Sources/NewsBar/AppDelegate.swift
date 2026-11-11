@@ -55,7 +55,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private var appearanceObservation: NSKeyValueObservation?
     private var lastWeiboUnread = -1
     private var orchestrator: NewsOrchestrator?
-    private var updateChecker: UpdateChecker?
+    private var updater: SparkleUpdater?
     private var agentCommandService: AgentCommandService?
     private var autoRefreshTimer: Timer?
     private var researchMaintenanceTimer: Timer?
@@ -71,7 +71,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         orchestrator = NewsOrchestrator()
-        updateChecker = UpdateChecker()
+        updater = SparkleUpdater()
         setupStatusBar()
         setupNotificationObservers()
 
@@ -206,12 +206,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         )
     }
 
+    /// Starts Sparkle's scheduler after the startup refresh has settled.
+    /// Starting it during launch would race the first feed refresh for
+    /// network and CPU on every cold start.
     private func scheduleAutoUpdateCheck() {
         DispatchQueue.main.asyncAfter(deadline: .now() + Self.updateCheckDelay) { [weak self] in
-            guard let self else { return }
-            Task {
-                await self.updateChecker?.autoCheck()
-            }
+            self?.updater?.start()
         }
     }
 
@@ -624,7 +624,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
 
     private func showPopover(relativeTo button: NSStatusBarButton) {
-        guard let orchestrator, let updateChecker else { return }
+        guard let orchestrator, let updater else { return }
         loadAPIKeyIfNeeded()
 
         let activePopover: NSPopover
@@ -633,7 +633,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         } else {
             let createdPopover = makePopover(
                 orchestrator: orchestrator,
-                updateChecker: updateChecker
+                updater: updater
             )
             popover = createdPopover
             activePopover = createdPopover
@@ -645,11 +645,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
     private func makePopover(
         orchestrator: NewsOrchestrator,
-        updateChecker: UpdateChecker
+        updater: SparkleUpdater
     ) -> NSPopover {
         let contentView = PopoverContent(
             orchestrator: orchestrator,
-            updateChecker: updateChecker,
+            updater: updater,
             onOpenSettings: { [weak self] in self?.openSettings() },
             onOpenDashboard: { [weak self] in self?.openDashboard() },
             onOpenResearchCenter: { [weak self] in
@@ -697,7 +697,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             rootView: SettingsWindow(
                 initialPane: initialPane,
                 sidebarState: settingsSidebarState,
-                weiboMonitor: weiboMonitor
+                weiboMonitor: weiboMonitor,
+                updater: updater
             )
                 .environment(settings)
                 .environment(\.cacheClearAction) { [weak self] in

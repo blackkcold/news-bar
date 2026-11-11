@@ -81,17 +81,6 @@ struct AdvancedTab: View {
             }
 
             Section {
-                Toggle("general.forceLatest".localized, isOn: Binding(
-                    get: { settings.updateDevMode },
-                    set: { settings.updateDevMode = $0 }
-                ))
-            } header: {
-                Text("settings.developer.update".localized)
-            } footer: {
-                Text("general.developer.footer".localized)
-            }
-
-            Section {
                 Toggle("general.showAllModels".localized, isOn: Binding(
                     get: { settings.showAllAIModels },
                     set: { settings.showAllAIModels = $0 }

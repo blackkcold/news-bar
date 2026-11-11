@@ -45,6 +45,8 @@
 
 [Releases](../../releases)에서 최신 DMG를 다운로드하고 **Applications**에 드래그하세요.
 
+이 앱은 고정된 자체 서명 인증서로 서명되었습니다(Apple Developer ID 없음, 공증 없음). 처음 실행할 때 Gatekeeper가 차단하면 **시스템 설정 → 개인정보 보호 및 보안 → 그래도 열기**를 선택하세요. 이후 버전은 Sparkle이 자동으로 업데이트합니다.
+
 > **macOS 15.0+** 필요
 
 ## 🚀 사용법
@@ -126,10 +128,10 @@ Sources/NewsBar/
 │   ├── NewsSource.swift        # 소스 열거(Weibo/Bilibili/RSS)
 │   ├── AppSettings.swift       # 사용자 설정(Observable)
 │   ├── CacheEntry.swift        # 캐시 항목
-│   └── UpdateInfo.swift        # Release/버전 모델
+│   └── AppVersion.swift        # 버전 확인
 ├── Services/
 │   ├── NewsOrchestrator.swift  # 핵심 코디네이터: 새로고침·캐시·공유 AI 상태 머신
-│   ├── UpdateChecker.swift     # GitHub 업데이트 체크 + DMG 다운로드
+│   ├── Update/SparkleUpdater.swift # Sparkle 제자리 업데이트 (EdDSA)
 │   ├── WeiboHotService.swift   # 웨이보 트렌드 페처
 │   ├── BilibiliHotService.swift# 빌리빌리 트렌드 페처
 │   ├── RSSService.swift        # RSS/Atom 파서

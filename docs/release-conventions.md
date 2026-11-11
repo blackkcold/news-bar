@@ -102,7 +102,9 @@ git switch -c release/vX.Y.Z
 # 3. 测试并使用项目官方脚本打包
 swift test
 bash scripts/build.sh
-# 验收：codesign --verify、hdiutil verify、SHA256 一致
+bash scripts/appcast.sh
+# 验收：codesign --verify --deep --strict、hdiutil verify、SHA256 一致、
+#      appcast 版本号与 EdDSA 签名有效
 
 # 4. 提交并推送 release 分支
 git add <本次发版文件>
@@ -129,14 +131,16 @@ git pull --ff-only origin main
 git tag -a vX.Y.Z -m "vX.Y.Z — 副标题"
 git push origin vX.Y.Z
 
-# 7. 在 tag 对应提交上再次使用官方脚本构建
+# 7. 在 tag 对应提交上再次使用官方脚本构建并生成 appcast
 bash scripts/build.sh
+bash scripts/appcast.sh
 
-# 8. 使用项目脚本创建 GitHub Release 并上传 DMG/SHA256
+# 8. 创建 GitHub Release，上传 DMG / SHA256 / appcast.xml / delta
 bash scripts/release.sh
 
-# 9. 验证远端 Tag、Release 标题、Release Body 与两个附件
+# 9. 验证远端 Tag、Release 标题、Release Body 与全部附件
 gh release view vX.Y.Z
+curl -fsSL https://github.com/blackkcold/news-bar/releases/latest/download/appcast.xml | head
 ```
 
 ---
@@ -159,9 +163,12 @@ bash scripts/package-local.sh --force
 
 规则：
 
-- 本地打包**不生成 DMG**，不更新 `release/latest`、`release/versions.json`，也不创建 GitHub Release。
+- 本地打包**不生成 DMG**，不更新 `release/latest`，也不创建 GitHub Release。
+- 本地打包默认使用固定身份签名；没有签名材料时回退 ad-hoc（`--adhoc` 可强制）。
 - 本地打包不得写入 `output/`。该目录是历史遗留的临时目录，已废弃。
-- 需要正式 DMG 时使用 `bash scripts/build.sh`；需要发布时使用 `bash scripts/release.sh`。
+- 需要正式 DMG 时使用 `bash scripts/build.sh`；需要发布时使用
+  `bash scripts/release.sh`。签名、密钥与首次安装的完整说明见
+  [`docs/signing-and-release.md`](signing-and-release.md)。
 
 ---
 

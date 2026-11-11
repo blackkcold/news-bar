@@ -45,6 +45,8 @@
 
 從 [Releases](../../releases) 下載最新 DMG，拖入 **Applications** 即可。
 
+本 App 使用固定自簽憑證簽名（無 Apple Developer ID，未公證）。首次開啟如被 Gatekeeper 攔截，請到 **系統設定 → 隱私權與安全性 → 仍要打開**。之後所有版本由 Sparkle 原地升級，不再重複攔截。
+
 > 需要 **macOS 15.0+**
 
 ## 🚀 使用說明
@@ -126,10 +128,10 @@ Sources/NewsBar/
 │   ├── NewsSource.swift        # 來源列舉（微博/B站/RSS）
 │   ├── AppSettings.swift       # 使用者設定（Observable）
 │   ├── CacheEntry.swift        # 快取條目
-│   └── UpdateInfo.swift        # Release/版本模型
+│   └── AppVersion.swift        # 版本號解析
 ├── Services/
 │   ├── NewsOrchestrator.swift  # 核心協調器：重新整理、快取、共享 AI 狀態機
-│   ├── UpdateChecker.swift     # GitHub 更新檢查 + DMG 下載
+│   ├── Update/SparkleUpdater.swift # Sparkle 原地升級（EdDSA 校驗）
 │   ├── WeiboHotService.swift   # 微博熱搜抓取
 │   ├── BilibiliHotService.swift# B站熱搜抓取
 │   ├── RSSService.swift        # RSS/Atom 解析

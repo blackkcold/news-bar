@@ -67,7 +67,7 @@ final class PopoverNewsroomRenderingTests: XCTestCase {
                 Color(nsColor: .windowBackgroundColor)
                 PopoverContent(
                     orchestrator: orchestrator,
-                    updateChecker: UpdateChecker(),
+                    updater: SparkleUpdater(),
                     onOpenSettings: {},
                     onOpenDashboard: {},
                     onOpenResearchCenter: {},
