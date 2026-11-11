@@ -39,6 +39,9 @@ struct WeiboFollowingFeedView: View {
     /// callers (rendering tests, previews) keep the self-contained control.
     var showsModeControl = true
     var availableWidth: CGFloat = FollowingMasonryLayout.maxFeedWidth
+    /// The dashboard keeps a visited browse pane alive after a tab switch.
+    /// Presence and polling follow the *visible* tab, not the view lifetime.
+    var isActive = true
     let onOpenSettings: () -> Void
 
     @State private var showCollapsed = false
@@ -72,17 +75,31 @@ struct WeiboFollowingFeedView: View {
             }
         }
         .onAppear {
-            WeiboFeedPresence.setVisible(true)
-            guard let monitor else { return }
-            // `start()` already refreshes on the path that actually loads the
-            // store; afterwards the change notification keeps `snapshot` live.
-            // The extra `refresh()` here ran a full snapshot reduce on every
-            // re-entry into the page.
-            Task { await monitor.start() }
+            guard isActive else { return }
+            activate()
+        }
+        .onChange(of: isActive) { _, active in
+            if active {
+                activate()
+            } else {
+                WeiboFeedPresence.setVisible(false)
+            }
         }
         .onDisappear {
             WeiboFeedPresence.setVisible(false)
         }
+    }
+
+    /// Called both on first mount and every time this pane becomes the visible
+    /// tab. `monitor.start()` is idempotent, so a repeated call is free.
+    private func activate() {
+        WeiboFeedPresence.setVisible(true)
+        guard let monitor else { return }
+        // `start()` already refreshes on the path that actually loads the
+        // store; afterwards the change notification keeps `snapshot` live.
+        // The extra `refresh()` here ran a full snapshot reduce on every
+        // re-entry into the page.
+        Task { await monitor.start() }
     }
 
     // MARK: - Content

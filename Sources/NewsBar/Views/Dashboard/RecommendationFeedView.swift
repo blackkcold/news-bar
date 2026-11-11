@@ -164,6 +164,11 @@ struct RecommendationFeedView: View {
     var onResetFilters: () -> Void = {}
     var onRefresh: () -> Void = {}
     var onShowSources: () -> Void = {}
+    /// A refresh is running elsewhere in the dashboard (the newsroom bar and
+    /// this control drive the same orchestrator).
+    var isRefreshing = false
+    /// Newest successful fetch across the sources this feed ranks.
+    var lastRefreshAt: Date? = nil
     @Environment(AppSettings.self) private var settings
     @Environment(\.accessibilityVoiceOverEnabled) private var voiceOverEnabled
     @State private var controller = InterestController.shared
@@ -178,21 +183,101 @@ struct RecommendationFeedView: View {
     @State private var measuredWidth: CGFloat = 0
     private var english: Bool { settings.appLanguage == .en }
 
+    /// A feed-local refresh entry. The newsroom bar refreshes every source too,
+    /// but on this page the control belongs next to the ranking it changes, and
+    /// it can say how old the current batch is.
+    private var refreshControl: some View {
+        Button(action: onRefresh) {
+            HStack(spacing: 5) {
+                if isRefreshing {
+                    ProgressView()
+                        .controlSize(.small)
+                } else {
+                    Image(systemName: "arrow.clockwise")
+                        .font(.system(size: 11, weight: .semibold))
+                }
+                if showsRefreshCaption {
+                    Text(refreshCaption)
+                        .font(.caption)
+                        .lineLimit(1)
+                }
+            }
+            .foregroundStyle(isRefreshing ? Color.secondary : Color.accentColor)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(Capsule().fill(Color.primary.opacity(0.06)))
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .disabled(isRefreshing)
+        .help(isRefreshing
+              ? (english ? "Refreshing sources…" : "正在刷新来源…")
+              : (english ? "Refresh sources, then re-rank" : "刷新来源后重新排序"))
+        .accessibilityLabel(english ? "Refresh recommendations" : "刷新推荐")
+    }
+
+    /// The caption needs a full line; the icon alone carries the action on the
+    /// reader's 320–480 pt list pane.
+    private var showsRefreshCaption: Bool { width >= 440 }
+
+    private var refreshCaption: String {
+        if isRefreshing {
+            return english ? "Refreshing…" : "刷新中…"
+        }
+        guard let lastRefreshAt else {
+            return english ? "Refresh" : "刷新"
+        }
+        let formatter = RelativeDateTimeFormatter()
+        formatter.locale = Locale(identifier: settings.appLanguage.bcp47)
+        formatter.unitsStyle = .short
+        let relative = formatter.localizedString(for: lastRefreshAt, relativeTo: Date())
+        return english ? "Updated \(relative)" : "更新于 \(relative)"
+    }
+
+    private var learningOptOutText: some View {
+        Text(english
+             ? "Public ranking is available without recording your reading behavior."
+             : "未开启阅读行为记录，仍可使用公共推荐。")
+            .font(.caption)
+            .foregroundStyle(.secondary)
+    }
+
+    private var personalizationButton: some View {
+        Button(english ? "Set up personalization" : "设置个性化", action: onOpenSettings)
+            .buttonStyle(.borderless)
+            .font(.caption)
+            .fixedSize()
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            HStack {
+            HStack(spacing: 10) {
                 Label(english ? "For you" : "为你推荐", systemImage: "sparkles").editorialHeading(size: 20)
-                Spacer()
-                Text(controller.learningStatus.title(language: settings.appLanguage))
-                    .font(.caption).foregroundStyle(.secondary)
+                    .lineLimit(1)
+                Spacer(minLength: 8)
+                refreshControl
+                if width >= 400 {
+                    Text(controller.learningStatus.title(language: settings.appLanguage))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
             }
             if !controller.learningEnabled {
-                HStack(alignment: .top, spacing: 12) {
-                    Text(english ? "Public ranking is available without recording your reading behavior." : "未开启阅读行为记录，仍可使用公共推荐。")
-                        .font(.caption).foregroundStyle(.secondary)
-                    Spacer(minLength: 0)
-                    Button(english ? "Set up personalization" : "设置个性化", action: onOpenSettings)
-                        .buttonStyle(.borderless).font(.caption)
+                // At the reader's 320–480 pt list pane the sentence and the
+                // button do not fit side by side; stack them instead of
+                // clipping the button at the trailing edge.
+                if width < 420 {
+                    VStack(alignment: .leading, spacing: 4) {
+                        learningOptOutText
+                        personalizationButton
+                    }
+                } else {
+                    HStack(alignment: .top, spacing: 12) {
+                        learningOptOutText
+                        Spacer(minLength: 0)
+                        personalizationButton
+                    }
                 }
             }
             if controller.learningPaused || controller.privateReading {
