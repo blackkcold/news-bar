@@ -12,7 +12,7 @@ enum PopoverLayout {
 struct PopoverContent: View {
     @Environment(AppSettings.self) private var settings
     let orchestrator: NewsOrchestrator
-    @ObservedObject var updateChecker: UpdateChecker
+    @ObservedObject var updater: SparkleUpdater
 
     var onOpenSettings: () -> Void
     var onOpenDashboard: () -> Void
@@ -101,7 +101,7 @@ struct PopoverContent: View {
 
                 Spacer(minLength: 6)
 
-                UpdateBadge(checker: updateChecker)
+                UpdateBadge(updater: updater)
 
                 Button {
                     showQuitConfirmation = true

@@ -522,10 +522,6 @@ final class AppSettings {
         didSet { TestIsolation.defaults.set(statsDayTimestamp, forKey: "statsDayTimestamp") }
     }
 
-    var updateDevMode: Bool {
-        didSet { TestIsolation.defaults.set(updateDevMode, forKey: "updateDevMode") }
-    }
-
     var showAllAIModels: Bool {
         didSet { TestIsolation.defaults.set(showAllAIModels, forKey: "showAllAIModels") }
     }
@@ -944,7 +940,6 @@ final class AppSettings {
             self.rssSources = []
         }
 
-        self.updateDevMode = defaults.bool(forKey: "updateDevMode")
         self.showAllAIModels = defaults.boolIfPresent(forKey: "showAllAIModels") ?? false
         if let data = defaults.data(forKey: "customAIProviders"),
            let decoded = try? JSONDecoder().decode([CustomAIProviderConfig].self, from: data) {

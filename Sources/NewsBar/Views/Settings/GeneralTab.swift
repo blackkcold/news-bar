@@ -4,6 +4,8 @@ import AppKit
 /// 通用页签：语言、启动、主题与外观。兴趣画像归「隐私与数据」，阅读器代理归「高级」。
 struct GeneralTab: View {
     @Environment(AppSettings.self) private var settings
+    /// Injected by `SettingsWindow`; tests and previews leave it nil.
+    var updater: SparkleUpdater? = nil
 
     var body: some View {
         Form {
@@ -34,6 +36,10 @@ struct GeneralTab: View {
                 LaunchAtLoginRow()
             } header: {
                 Text("general.launch".localized)
+            }
+
+            if let updater {
+                UpdateSettingsSection(updater: updater)
             }
 
             Section {
@@ -73,6 +79,9 @@ struct GeneralTab: View {
         }
         .formStyle(.grouped)
         .scrollContentBackground(.hidden)
+        // Opening this pane is an explicit signal that update controls should
+        // work now, even if the launch-delayed scheduler has not started yet.
+        .onAppear { updater?.start() }
     }
 
     private func themeSwatch(_ color: Color, label: String) -> some View {

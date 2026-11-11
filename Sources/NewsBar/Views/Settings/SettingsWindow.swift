@@ -67,15 +67,18 @@ struct SettingsWindow: View {
     /// previews and the rendering tests self-contained.
     private let sidebarState: SettingsSidebarState
     private let weiboMonitor: WeiboMonitorViewModel?
+    private let updater: SparkleUpdater?
 
     init(
         initialPane: SettingsPane = .general,
         sidebarState: SettingsSidebarState = SettingsSidebarState(),
-        weiboMonitor: WeiboMonitorViewModel? = nil
+        weiboMonitor: WeiboMonitorViewModel? = nil,
+        updater: SparkleUpdater? = nil
     ) {
         _pane = State(initialValue: initialPane)
         self.sidebarState = sidebarState
         self.weiboMonitor = weiboMonitor
+        self.updater = updater
     }
 
     var body: some View {
@@ -226,7 +229,7 @@ struct SettingsWindow: View {
     @ViewBuilder
     private var content: some View {
         switch pane {
-        case .general: GeneralTab()
+        case .general: GeneralTab(updater: updater)
         case .reading: RSSTab()
         case .ai: AITab()
         case .notifications: ReminderTab()
