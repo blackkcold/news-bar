@@ -6,13 +6,20 @@ struct GeneralTab: View {
     @Environment(AppSettings.self) private var settings
     /// Injected by `SettingsWindow`; tests and previews leave it nil.
     var updater: SparkleUpdater? = nil
+    /// Sparkle's window and AppKit's dialogs resolve their language once per
+    /// process, so a switch reaches them on the next launch. The footer says
+    /// so only after the person changes the picker — no permanent noise.
+    @State private var pendingLanguageRestart = false
 
     var body: some View {
         Form {
             Section {
                 Picker("settings.language".localized, selection: Binding(
                     get: { settings.appLanguage },
-                    set: { settings.appLanguage = $0 }
+                    set: { language in
+                        settings.appLanguage = language
+                        pendingLanguageRestart = ProcessLanguage.resolvedLanguage() != language
+                    }
                 )) {
                     ForEach(AppLanguage.allCases) { lang in
                         Text(lang.displayName).tag(lang)
@@ -27,9 +34,15 @@ struct GeneralTab: View {
             } header: {
                 Text("settings.language".localized)
             } footer: {
-                Text(settings.appLanguage == .zh
-                     ? "settings.language.footer".localized
-                     : "settings.rssTranslation.footer".localized)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(settings.appLanguage == .zh
+                         ? "settings.language.footer".localized
+                         : "settings.rssTranslation.footer".localized)
+                    if pendingLanguageRestart {
+                        Text("settings.language.restartHint".localized)
+                            .foregroundStyle(.secondary)
+                    }
+                }
             }
 
             Section {

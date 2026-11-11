@@ -125,6 +125,13 @@ cat > "${BUNDLE_DIR}/Contents/Info.plist" << PLIST
     <string>APPL</string>
     <key>CFBundleSignature</key>
     <string>????</string>
+    <key>CFBundleDevelopmentRegion</key>
+    <string>zh_CN</string>
+    <key>CFBundleLocalizations</key>
+    <array>
+        <string>zh_CN</string>
+        <string>en</string>
+    </array>
     <key>LSMinimumSystemVersion</key>
     <string>15.0</string>
     <key>LSUIElement</key>
@@ -162,6 +169,19 @@ if [ "$PLIST_BUNDLE_ID" != "$BUNDLE_ID" ]; then
     echo "❌ Info.plist bundle id ${PLIST_BUNDLE_ID} does not match ${BUNDLE_ID}" >&2
     exit 1
 fi
+
+# Sparkle's update window and AppKit's standard buttons localize through the
+# process language, which macOS resolves from this declaration. Without
+# zh_CN the whole process falls back to English no matter what the in-app
+# language picker says (see Sources/NewsBar/Support/ProcessLanguage.swift).
+PLIST_LOCALIZATIONS=$(plutil -extract CFBundleLocalizations json -o - "${BUNDLE_DIR}/Contents/Info.plist" 2>/dev/null || true)
+case "$PLIST_LOCALIZATIONS" in
+    *'"zh_CN"'*) ;;
+    *)
+        echo "❌ Info.plist CFBundleLocalizations is missing zh_CN; the update window would fall back to English" >&2
+        exit 1
+        ;;
+esac
 
 echo "🔏 Signing..."
 if [ "$ADHOC" -eq 1 ]; then
