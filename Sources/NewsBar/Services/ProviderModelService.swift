@@ -69,8 +69,8 @@ actor ProviderModelService {
         if path.hasSuffix("/models") { parts.path = path } else { parts.path = path + "/models" }
         guard let first = parts.url else { throw ProviderModelError.invalidEndpoint }
         var result = [ProviderModelEndpoint(url: first, format: connection.responseFormat == .anthropic ? .anthropic : .openAI)]
-        if connection.responseFormat == .anthropic, path.contains("/anthropic") {
-            parts.path = path.replacingOccurrences(of: "/anthropic", with: "") + "/models"
+        if connection.responseFormat == .anthropic, path.hasPrefix("/anthropic") {
+            parts.path = String(path.dropFirst("/anthropic".count)) + "/models"
             if let url = parts.url, url != first { result.append(ProviderModelEndpoint(url: url, format: .openAI)) }
         }
         return result
