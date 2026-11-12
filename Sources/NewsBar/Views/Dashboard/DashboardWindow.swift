@@ -6,6 +6,7 @@ struct DashboardWindow: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let orchestrator: NewsOrchestrator
     var weiboMonitor: WeiboMonitorViewModel? = nil
+    var readerPresentationState: DashboardReaderPresentationState? = nil
     @State private var actionToasts = ActionToastCenter.shared
     @State private var collapsedRSSSourceIDs: Set<NewsSource.ID> = []
     @State private var searchText = ""
@@ -96,7 +97,8 @@ struct DashboardWindow: View {
                 listWidth: $listWidth,
                 isRetro: settings.appTheme == .retroEditorial,
                 reduceMotion: reduceMotion,
-                transitionOriginProvider: { ReaderTransitionCoordinator.shared.consume() }
+                transitionOriginProvider: { ReaderTransitionCoordinator.shared.consume() },
+                presentationState: readerPresentationState
             ) { context in
                 browsePane(isReaderCompact: context.isReaderCompact, phase: context.phase)
             } readerContent: { _, readerPresented in
@@ -108,7 +110,6 @@ struct DashboardWindow: View {
             syncTabs(with: router.selection)
         }
         .onReceive(NotificationCenter.default.publisher(for: .openWeiboFollowFeed)) { _ in
-            router.selection = nil
             browseMode = .following
         }
         .onChange(of: browseMode) { _, newMode in

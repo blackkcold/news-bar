@@ -197,6 +197,7 @@ private struct PopoverFeedList: View {
                             PopoverWeiboFollowChip(
                                 unreadCount: weiboMonitor.snapshot.unreadCount,
                                 onOpen: {
+                                    NewsNavigationRouter.shared.close()
                                     onOpenDashboard()
                                     NotificationCenter.default.post(
                                         name: .openWeiboFollowFeed,
