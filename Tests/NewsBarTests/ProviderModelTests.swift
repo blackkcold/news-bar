@@ -123,6 +123,86 @@ final class ProviderModelTests: XCTestCase {
         XCTAssertEqual(ProviderModelSelection.preferred(in: page.models, current: nil), "deepseek-v4.1-flash")
     }
 
+    func testTTLKeyedCacheWritePricesDoNotBreakTheCatalog() throws {
+        let sample = """
+        {"object":"list","data":[
+          {"id":"deepseek-v4.1-flash","type":"chat","cost":{"text":{"input":{"price":0.3},"output":{"price":1.2}}},"api":{"chat-completions":{}}},
+          {"id":"gpt-5.6-luna","type":"chat","cost":{"text":{"input":{"price":0.2,"cache":{"read":0.02,"write":{"30m":0.25,"12h":0.5}}},"output":{"price":1.2}}},"api":{"responses":{}}}
+        ]}
+        """
+        let page = try ProviderModelParser.parse(Data(sample.utf8), format: .openAI)
+        XCTAssertEqual(page.models.map(\.id), ["deepseek-v4.1-flash", "gpt-5.6-luna"])
+        XCTAssertNil(page.nextCursor)
+    }
+
+    func testOneUnreadableEntryDoesNotDiscardTheWholeCatalog() throws {
+        let sample = """
+        {"object":"list","data":[
+          {"id":"model-one","type":"chat","cost":"not-an-object"},
+          {"id":42},
+          "not-an-entry",
+          null,
+          {"id":"model-two","created":"not-a-timestamp","enabled":"yes"}
+        ]}
+        """
+        let page = try ProviderModelParser.parse(Data(sample.utf8), format: .openAI)
+        XCTAssertEqual(page.models.map(\.id), ["model-one", "model-two"])
+    }
+
+    func testFreeModelKeepsFreeFlagWhenCacheWriteIsTTLKeyed() throws {
+        let sample = """
+        {"data":[{"id":"zero-priced-model","type":"chat","cost":{"text":{"input":{"price":0,"cache":{"read":0,"write":{"30m":0.1,"12h":0.2}}},"output":{"price":0}}},"api":{"chat-completions":{}}}]}
+        """
+        let page = try ProviderModelParser.parse(Data(sample.utf8), format: .openAI)
+        XCTAssertEqual(page.models.map(\.id), ["zero-priced-model"])
+        XCTAssertTrue(page.models.first?.isFree == true)
+    }
+
+    func testOpenCodeCatalogHidesModelsWithoutChatCompletions() async throws {
+        let sample = """
+        {"object":"list","data":[
+          {"id":"deepseek-v4.1-flash","type":"chat","cost":{"text":{"input":{"price":0.3},"output":{"price":1.2}}},"api":{"chat-completions":{}}},
+          {"id":"gpt-6-luna","type":"chat","cost":{"text":{"input":{"price":0.1},"output":{"price":0.5}}},"api":{"responses":{}}},
+          {"id":"claude-haiku-5-5","type":"chat","cost":{"text":{"input":{"price":0.1},"output":{"price":0.5}}},"api":{"messages":{}}},
+          {"id":"gemini-4-argon","type":"chat","cost":{"text":{"input":{"price":2},"output":{"price":10}}},"api":{"generate-content":{}}}
+        ]}
+        """
+        let goFixture = ModelCatalogFixture([(200, sample)])
+        let goService = ProviderModelService(fileURL: temporaryCache(), transport: { try await goFixture.send($0) })
+        let go = try await goService.catalog(
+            providerID: AIProvider.opencodeGo.rawValue,
+            connection: AIProvider.opencodeGo.resolvedConnection(),
+            apiKey: "oc_sk_test",
+            now: now
+        )
+        XCTAssertEqual(go.snapshot.models.map(\.id), ["deepseek-v4.1-flash"])
+
+        let zenFixture = ModelCatalogFixture([(200, sample)])
+        let zenService = ProviderModelService(fileURL: temporaryCache(), transport: { try await zenFixture.send($0) })
+        let zen = try await zenService.catalog(
+            providerID: AIProvider.opencodeZen.rawValue,
+            connection: AIProvider.opencodeZen.resolvedConnection(),
+            apiKey: "oc_sk_test",
+            now: now
+        )
+        XCTAssertEqual(zen.snapshot.models.map(\.id), ["deepseek-v4.1-flash"])
+    }
+
+    func testAnthropicFallbackOnlyStripsTheLeadingSegment() throws {
+        let nested = ResolvedAIConnection(
+            baseURL: "https://provider.example/anthropic/proxy/anthropic/v1/messages",
+            responseFormat: .anthropic,
+            authHeaderName: "x-api-key",
+            authHeaderPrefix: "",
+            apiVersion: "2023-06-01"
+        )
+        let endpoints = try ProviderModelService.endpoints(providerID: "custom:test", connection: nested)
+        XCTAssertEqual(endpoints.map(\.url.absoluteString), [
+            "https://provider.example/anthropic/proxy/anthropic/v1/models",
+            "https://provider.example/proxy/anthropic/v1/models"
+        ])
+    }
+
     func testCapturedOpenCodeGoCatalogParsesEveryModel() throws {
         let data = try fixtureData("OpenCode/go-models")
         let page = try ProviderModelParser.parse(data, format: .openAI)

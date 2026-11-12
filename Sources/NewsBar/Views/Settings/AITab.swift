@@ -611,9 +611,19 @@ struct AITab: View {
             }
 
             if let error = settings.modelCatalogError {
-                Text(error.message(language: settings.appLanguage))
-                    .font(.caption).foregroundStyle(.orange)
-                if settings.currentAIModels.isEmpty && !settings.aiModelManuallyEntered {
+                HStack(alignment: .firstTextBaseline, spacing: 5) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.system(size: 10))
+                    Text(error.message(language: settings.appLanguage))
+                        .font(.caption)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .foregroundStyle(.orange)
+                .accessibilityElement(children: .combine)
+
+                // A catalog that cannot be refreshed must never leave the user
+                // without a way to name a model.
+                if !settings.aiModelManuallyEntered {
                     Button {
                         settings.aiModelManuallyEntered = true
                     } label: {

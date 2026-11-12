@@ -116,15 +116,42 @@ struct ProviderModelPage: Sendable {
     let nextCursor: String?
 }
 
+/// Keys of an open-ended JSON object. Used where only the presence of keys
+/// matters (`api`, TTL-keyed prices) and values may change shape.
+private struct DynamicKey: CodingKey {
+    var stringValue: String
+    var intValue: Int? { nil }
+    init?(stringValue: String) { self.stringValue = stringValue }
+    init?(intValue: Int) { nil }
+}
+
 enum ProviderModelParser {
     private struct Envelope: Decodable {
-        let data: [Entry]?
-        let models: [Entry]?
+        let data: [Entry?]?
+        let models: [Entry?]?
         let has_more: Bool?
         let last_id: String?
         let nextPageToken: String?
+
+        enum CodingKeys: String, CodingKey {
+            case data, models, has_more, last_id, nextPageToken
+        }
+
+        /// Only the root shape is fatal. Every value inside is advisory: a
+        /// provider-side type change must not discard the whole catalog.
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            data = try? container.decodeIfPresent([Entry?].self, forKey: .data)
+            models = try? container.decodeIfPresent([Entry?].self, forKey: .models)
+            has_more = try? container.decodeIfPresent(Bool.self, forKey: .has_more)
+            last_id = try? container.decodeIfPresent(String.self, forKey: .last_id)
+            nextPageToken = try? container.decodeIfPresent(String.self, forKey: .nextPageToken)
+        }
     }
 
+    /// Every field decodes on its own. Providers add richer shapes without
+    /// warning (object capabilities, TTL-keyed cache prices), and one
+    /// unreadable entry must only drop that model — never empty the picker.
     private struct Entry: Decodable {
         let id: String?
         let name: String?
@@ -143,6 +170,32 @@ enum ProviderModelParser {
         let type: String?
         let cost: ModelCost?
         let api: APIMap?
+
+        enum CodingKeys: String, CodingKey {
+            case id, name, model, display_name, displayName, created, created_at, modified_at
+            case capabilities, supportedGenerationMethods, output_modalities, enabled, deprecated, status, type, cost, api
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try? decoder.container(keyedBy: CodingKeys.self)
+            id = container.flatMap { try? $0.decodeIfPresent(String.self, forKey: .id) }
+            name = container.flatMap { try? $0.decodeIfPresent(String.self, forKey: .name) }
+            model = container.flatMap { try? $0.decodeIfPresent(String.self, forKey: .model) }
+            display_name = container.flatMap { try? $0.decodeIfPresent(String.self, forKey: .display_name) }
+            displayName = container.flatMap { try? $0.decodeIfPresent(String.self, forKey: .displayName) }
+            created = container.flatMap { try? $0.decodeIfPresent(Double.self, forKey: .created) }
+            created_at = container.flatMap { try? $0.decodeIfPresent(String.self, forKey: .created_at) }
+            modified_at = container.flatMap { try? $0.decodeIfPresent(String.self, forKey: .modified_at) }
+            capabilities = container.flatMap { try? $0.decodeIfPresent(FlexibleStringList.self, forKey: .capabilities) }
+            supportedGenerationMethods = container.flatMap { try? $0.decodeIfPresent([String].self, forKey: .supportedGenerationMethods) }
+            output_modalities = container.flatMap { try? $0.decodeIfPresent([String].self, forKey: .output_modalities) }
+            enabled = container.flatMap { try? $0.decodeIfPresent(Bool.self, forKey: .enabled) }
+            deprecated = container.flatMap { try? $0.decodeIfPresent(Bool.self, forKey: .deprecated) }
+            status = container.flatMap { try? $0.decodeIfPresent(String.self, forKey: .status) }
+            type = container.flatMap { try? $0.decodeIfPresent(String.self, forKey: .type) }
+            cost = container.flatMap { try? $0.decodeIfPresent(ModelCost.self, forKey: .cost) }
+            api = container.flatMap { try? $0.decodeIfPresent(APIMap.self, forKey: .api) }
+        }
     }
 
     /// OpenCode's catalog nests prices under `cost.text`. Zero input and
@@ -151,16 +204,35 @@ enum ProviderModelParser {
         struct Text: Decodable {
             struct Side: Decodable {
                 struct Cache: Decodable {
-                    let read: Double?
-                    let write: Double?
+                    let read: PriceAmount?
+                    let write: PriceAmount?
                 }
-                let price: Double?
+                let price: PriceAmount?
                 let cache: Cache?
             }
             let input: Side?
             let output: Side?
         }
         let text: Text?
+    }
+
+    /// A price is normally a number. OpenCode already publishes TTL-keyed
+    /// cache-write prices (`{"30m":0.25,"12h":0.5}`), so both shapes must
+    /// decode; the ceiling is the safe value for a local estimate.
+    private struct PriceAmount: Decodable {
+        let value: Double?
+
+        init(from decoder: Decoder) throws {
+            if let single = try? decoder.singleValueContainer(), let number = try? single.decode(Double.self) {
+                value = number
+                return
+            }
+            guard let object = try? decoder.container(keyedBy: DynamicKey.self) else {
+                value = nil
+                return
+            }
+            value = object.allKeys.compactMap { try? object.decode(Double.self, forKey: $0) }.max()
+        }
     }
 
     /// Only the keys matter: `chat-completions`, `responses`, `messages`,
@@ -172,13 +244,6 @@ enum ProviderModelParser {
         init(from decoder: Decoder) throws {
             let container = try decoder.container(keyedBy: DynamicKey.self)
             keys = Set(container.allKeys.map(\.stringValue))
-        }
-
-        private struct DynamicKey: CodingKey {
-            var stringValue: String
-            var intValue: Int? { nil }
-            init?(stringValue: String) { self.stringValue = stringValue }
-            init?(intValue: Int) { nil }
         }
     }
 
@@ -201,10 +266,10 @@ enum ProviderModelParser {
         switch format {
         case .ollama, .google:
             guard let models = envelope.models else { throw ProviderModelError.malformedResponse }
-            entries = models
+            entries = models.compactMap { $0 }
         case .openAI, .anthropic:
-            guard let models = envelope.data else { throw ProviderModelError.malformedResponse }
-            entries = models
+            guard let data = envelope.data else { throw ProviderModelError.malformedResponse }
+            entries = data.compactMap { $0 }
         }
         guard entries.count <= 5000 else { throw ProviderModelError.responseTooLarge }
         var seen: Set<String> = []
@@ -231,16 +296,20 @@ enum ProviderModelParser {
             else if let rawDate = entry.created_at ?? entry.modified_at { date = ISO8601DateFormatter().date(from: rawDate) }
             else { date = nil }
             let costText = entry.cost?.text
-            let zeroPriced = costText?.input?.price == 0 && costText?.output?.price == 0
+            let zeroPriced = costText?.input?.price?.value == 0 && costText?.output?.price?.value == 0
             let freeByName = id.lowercased().hasSuffix("-free")
             let apiKeys = entry.api?.keys ?? []
             let chatType = entry.type == nil || entry.type == "chat" || entry.type == "text"
+            // The catalog's `api` map is authoritative. Without `chat-completions`
+            // this client's OpenAI-shaped request cannot call the model, and
+            // offering it would only produce a failed generation.
+            let chatProtocol = apiKeys.isEmpty || apiKeys.contains("chat-completions")
             return ProviderModel(
                 id: id,
                 displayName: entry.display_name ?? entry.displayName,
                 createdAt: date,
                 isFree: zeroPriced || freeByName,
-                isChatCompatible: chatType && !apiKeys.contains("systemone")
+                isChatCompatible: chatType && chatProtocol && !apiKeys.contains("systemone")
             )
         }
         let cursor: String?
