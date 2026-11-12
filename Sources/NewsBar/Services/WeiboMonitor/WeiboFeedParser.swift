@@ -1,4 +1,5 @@
 import Foundation
+import CoreFoundation
 
 struct WeiboParsedPage: Sendable, Equatable {
     var posts: [WeiboPost]
@@ -106,7 +107,10 @@ enum WeiboFeedParser {
                 imageURLs: imageURLs(from: item),
                 url: WeiboPost.makeURL(uid: uid, bid: bid, mid: mid),
                 read: false,
-                isTop: isTop
+                isTop: isTop,
+                commentCount: count(item["comments_count"]),
+                repostCount: count(item["reposts_count"]),
+                likeCount: count(item["attitudes_count"])
             )
             posts.append(post)
         }
@@ -195,7 +199,10 @@ enum WeiboFeedParser {
                     isRetweet: isRetweet,
                     retweetText: retweetText,
                     imageURLs: imageURLs(from: item),
-                    url: WeiboPost.makeURL(uid: uid, bid: bid, mid: mid)
+                    url: WeiboPost.makeURL(uid: uid, bid: bid, mid: mid),
+                    commentCount: count(item["comments_count"]),
+                    repostCount: count(item["reposts_count"]),
+                    likeCount: count(item["attitudes_count"])
                 )
             )
         }
@@ -431,6 +438,19 @@ enum WeiboFeedParser {
         if let value = value as? NSNumber { return value.intValue }
         if let value = value as? String { return Int(value) }
         return nil
+    }
+
+    private static func count(_ value: Any?) -> Int? {
+        let raw: String
+        if let string = value as? String {
+            raw = string
+        } else if let number = value as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID() {
+            raw = number.stringValue
+        } else {
+            return nil
+        }
+        guard let result = Int(raw), result >= 0 else { return nil }
+        return result
     }
 
     private static func boolValue(_ value: Any?) -> Bool {

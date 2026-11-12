@@ -13,7 +13,7 @@
   "release_branch": true,
   "auto_merge": false,
   "release_note_style": "structured-cn",
-  "summary": "修复 OpenCode 模型目录解析失败，模型列表只保留可调用模型并保留手动出口",
-  "summary_en": "Fix OpenCode catalog parsing so one changed field no longer breaks the model list, and list only callable models",
-  "validation": "swift test 1901 项（5 项跳过，0 失败）+ 固定自签证书 release build + appcast EdDSA 校验 + 真实目录只读核对（Go 30 / Zen 85）+ 三主题双语 UI 渲染校验"
+  "summary": "关注页升级为三栏阅读器，博文评论自动加载、分页并支持缓存与错误回退",
+  "summary_en": "Upgrade the following feed into a three-column reader with automatic, paginated comments, caching and resilient errors",
+  "validation": "swift test 1940 项（5 项跳过，0 失败）+ 评论解析/请求/缓存/状态机 30 项回归 + 现代与复古主题渲染核查 + 构建通过"
 }

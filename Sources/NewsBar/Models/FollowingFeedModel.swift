@@ -35,6 +35,18 @@ struct FollowingFeedContents: Equatable, Sendable {
 /// Pure filtering/selection for every following surface: the standalone
 /// waterfall, the "关注动态" recommendation block and the sidebar card.
 enum FollowingFeedModel {
+    /// Keep the current post stable when the feed updates; only fall back to
+    /// the newest visible post when the selection is no longer in the query.
+    static func readerSelection(
+        currentID: String?,
+        entries: [FollowingPostEntry]
+    ) -> FollowingPostEntry? {
+        if let currentID, let current = entries.first(where: { $0.id == currentID }) {
+            return current
+        }
+        return entries.first
+    }
+
     static func contents(
         snapshot: WeiboMonitorSnapshot,
         query: FollowingFeedQuery

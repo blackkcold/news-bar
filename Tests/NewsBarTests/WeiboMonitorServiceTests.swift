@@ -256,6 +256,56 @@ final class WeiboMonitorServiceTests: XCTestCase {
         XCTAssertTrue(notifications.isEmpty)
     }
 
+    func testExistingPostRefreshesInteractionSnapshotWithoutChangingReadOrText() async throws {
+        let now = Date()
+        let uid = try uid()
+        _ = try await service.addUser(input: uid, priority: .p0, now: now)
+        var old = makePost(mid: "1", text: "保留正文", createdAt: now.addingTimeInterval(-60))
+        old.commentCount = 7
+        old.likeCount = 20
+        await feed.setPage(uid: uid, page: 1, posts: [old])
+        await service.tick(now: now, config: config, credentials: credentials, isLowPower: false, isOnline: true)
+
+        let later = now.addingTimeInterval(120)
+        var updated = old
+        updated.text = "不覆盖已保存的全文"
+        updated.fetchedAt = later
+        updated.commentCount = 18
+        updated.repostCount = 0
+        updated.likeCount = nil
+        await feed.setPage(uid: uid, page: 1, posts: [updated])
+        await service.tick(now: later, config: config, credentials: credentials, isLowPower: false, isOnline: true)
+
+        let refreshedSnapshot = await service.snapshot()
+        let current = try XCTUnwrap(refreshedSnapshot.postsByUID[uid]?.first)
+        XCTAssertEqual(current.commentCount, 18)
+        XCTAssertEqual(current.repostCount, 0)
+        XCTAssertNil(current.likeCount)
+        XCTAssertEqual(current.text, "保留正文")
+        XCTAssertTrue(current.read)
+        let encoded = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(current)) as? [String: Any])
+        XCTAssertNotNil(encoded["metricsFetchedAt"])
+        let persisted = await store.load(now: later)
+        let persistedPost = try XCTUnwrap(persisted.postsByUID[uid]?.first)
+        XCTAssertEqual(persistedPost.commentCount, 18)
+        XCTAssertEqual(persistedPost.repostCount, 0)
+        let persistedDate = try XCTUnwrap(persistedPost.metricsFetchedAt)
+        XCTAssertEqual(persistedDate.timeIntervalSince1970, later.timeIntervalSince1970, accuracy: 1)
+
+        let next = later.addingTimeInterval(120)
+        updated.fetchedAt = next
+        updated.commentCount = nil
+        updated.repostCount = nil
+        await feed.setPage(uid: uid, page: 1, posts: [updated])
+        await service.tick(now: next, config: config, credentials: credentials, isLowPower: false, isOnline: true)
+        let missingSnapshot = await service.snapshot()
+        let afterMissing = try XCTUnwrap(missingSnapshot.postsByUID[uid]?.first)
+        XCTAssertEqual(afterMissing.commentCount, 18, "An omitted snapshot must not erase the last known counts")
+        XCTAssertEqual(afterMissing.repostCount, 0)
+        let notifications = await notifier.notifications
+        XCTAssertTrue(notifications.isEmpty)
+    }
+
     func testNewPostBecomesUnreadAndNotifiesOnce() async throws {
         let now = Date()
         let uid = try uid()

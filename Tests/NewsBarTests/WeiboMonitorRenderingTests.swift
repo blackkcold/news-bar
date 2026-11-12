@@ -36,6 +36,55 @@ private actor RenderFeed: WeiboFeedFetching {
     }
 }
 
+/// Deterministic comment pages for design review. No network, no cookies.
+private actor RenderCommentFeed: WeiboCommentFetching {
+    func fetchComments(
+        mid: String,
+        uid: String,
+        authorUID: String?,
+        cursor: String?,
+        credentials: WeiboCredentials,
+        now: Date
+    ) async -> WeiboCommentOutcome {
+        let comments = [
+            WeiboComment(
+                id: "c1-\(mid)",
+                mid: mid,
+                uid: "1",
+                screenName: "读者甲",
+                avatarURL: nil,
+                text: "期待实际样张对比，尤其是夜景。[吃瓜]",
+                createdAt: now.addingTimeInterval(-300),
+                likeCount: 12,
+                replyToName: nil,
+                isAuthor: false
+            ),
+            WeiboComment(
+                id: "c2-\(mid)",
+                mid: mid,
+                uid: "2",
+                screenName: "摄影爱好者",
+                avatarURL: nil,
+                text: "抓拍成功率确实比参数更重要。",
+                createdAt: now.addingTimeInterval(-120),
+                likeCount: 3,
+                replyToName: nil,
+                isAuthor: false
+            ),
+        ]
+        return .success(
+            page: WeiboCommentPage(
+                comments: comments,
+                total: 2,
+                nextCursor: nil,
+                fetchedAt: now,
+                tier: .desktop
+            ),
+            latency: 0.01
+        )
+    }
+}
+
 /// Renders the two new surfaces with realistic seeded state. The PNGs are for
 /// design review (spacing, hierarchy, empty states), not pixel comparison.
 final class WeiboMonitorRenderingTests: XCTestCase {
@@ -64,7 +113,12 @@ final class WeiboMonitorRenderingTests: XCTestCase {
             changeNotifier: {},
             authAlertRecorder: { _ in }
         )
-        let viewModel = WeiboMonitorViewModel(settings: settings, service: service)
+        let viewModel = WeiboMonitorViewModel(
+            settings: settings,
+            service: service,
+            commentFetcher: RenderCommentFeed(),
+            commentCache: WeiboCommentCache(root: root)
+        )
         await viewModel.start()
 
         let now = Date()
@@ -99,13 +153,17 @@ final class WeiboMonitorRenderingTests: XCTestCase {
             text: "独家：一家厂商决定不做 Ultra 系列，评论区补充了厂商名。",
             createdAt: now.addingTimeInterval(-300)
         )
-        let new0b = post(
+        var new0b = post(
             mid: "102",
             uid: uid0,
             name: "数码闲聊站",
             text: "另一条：新机将采用 2K 直屏，电池容量提升到 6000mAh。",
             createdAt: now.addingTimeInterval(-120)
         )
+        new0b.commentCount = 128
+        new0b.repostCount = 36
+        new0b.likeCount = 356
+        new0b.metricsFetchedAt = now
         let new1 = post(
             mid: "201",
             uid: uid1,
@@ -144,6 +202,24 @@ final class WeiboMonitorRenderingTests: XCTestCase {
             to: output
         )
 
+        let readerWorkspace = FollowingReaderWorkspace(
+            monitor: viewModel,
+            filter: .constant(.all),
+            searchText: .constant(""),
+            accountUID: .constant(nil),
+            isActive: true,
+            onOpenSettings: {}
+        )
+        .frame(width: 1180, height: 760)
+        .adaptiveColorScheme()
+        .environment(settings)
+        try await snapshot(
+            readerWorkspace,
+            size: CGSize(width: 1180, height: 760),
+            name: "following-reader-modern",
+            to: output
+        )
+
         let settingsView = WeiboMonitorTab(monitor: viewModel)
             .frame(width: 665, height: 620)
             .background(Color(nsColor: .windowBackgroundColor))
@@ -158,6 +234,23 @@ final class WeiboMonitorRenderingTests: XCTestCase {
 
         settings.appTheme = .retroEditorial
         settings.colorScheme = "light"
+        let retroReaderWorkspace = FollowingReaderWorkspace(
+            monitor: viewModel,
+            filter: .constant(.all),
+            searchText: .constant(""),
+            accountUID: .constant(nil),
+            isActive: true,
+            onOpenSettings: {}
+        )
+        .frame(width: 960, height: 720)
+        .adaptiveColorScheme()
+        .environment(settings)
+        try await snapshot(
+            retroReaderWorkspace,
+            size: CGSize(width: 960, height: 720),
+            name: "following-reader-retro-narrow",
+            to: output
+        )
         let retroFeed = WeiboFollowingFeedView(
             monitor: viewModel,
             filter: .constant(.all),
@@ -297,6 +390,56 @@ final class WeiboMonitorRenderingTests: XCTestCase {
             to: output
         )
         settings.weiboMonitorRelevanceEnabled = relevanceWasEnabled
+
+        // Opening the original web page must not discard the workspace's
+        // independently scrolling panes; returning should keep their position.
+        let router = NewsNavigationRouter.shared
+        let tabs = WorkspaceTabStore.shared
+        router.close()
+        tabs.terminateAll()
+        defer {
+            router.close()
+            tabs.terminateAll()
+        }
+        let dashboard = NSHostingView(rootView: DashboardWindow(
+            orchestrator: NewsOrchestrator(), weiboMonitor: viewModel
+        ).environment(settings))
+        let dashboardWindow = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 1180, height: 860),
+            styleMask: [.borderless], backing: .buffered, defer: false
+        )
+        dashboardWindow.contentView = dashboard
+        dashboard.frame = dashboardWindow.contentView?.bounds ?? .zero
+        dashboard.layoutSubtreeIfNeeded()
+        let initialScrolls = Set(scrollViews(in: dashboard).map(ObjectIdentifier.init))
+        NotificationCenter.default.post(name: .openWeiboFollowFeed, object: nil)
+        try await Task.sleep(for: .milliseconds(250))
+        dashboard.layoutSubtreeIfNeeded()
+        let workspaceScrolls = scrollViews(in: dashboard).filter { !initialScrolls.contains(ObjectIdentifier($0)) }
+        XCTAssertFalse(workspaceScrolls.isEmpty, "Following should mount its own scrolling panes")
+        XCTAssertTrue(WeiboFeedPresence.isVisible, "The active following workspace must be marked visible")
+
+        router.selection = NewsReaderRequest(
+            url: "invalid-fixture-url", title: "Fixture", item: nil, surface: "test",
+            contextID: nil, consentEpoch: UUID(), privateSession: true
+        )
+        try await Task.sleep(for: .milliseconds(400))
+        dashboard.layoutSubtreeIfNeeded()
+        let duringReader = scrollViews(in: dashboard)
+        XCTAssertTrue(workspaceScrolls.contains { original in duringReader.contains { $0 === original } }, "Opening the original must keep the following workspace mounted")
+        router.selection = nil
+        try await Task.sleep(for: .milliseconds(400))
+        dashboard.layoutSubtreeIfNeeded()
+        let afterReader = scrollViews(in: dashboard)
+        XCTAssertTrue(workspaceScrolls.contains { original in afterReader.contains { $0 === original } }, "Closing the original must retain the following workspace")
+        XCTAssertTrue(WeiboFeedPresence.isVisible, "Closing the original must not clear the active following presence")
+        dashboardWindow.contentView = nil
+    }
+
+    @MainActor
+    private func scrollViews(in view: NSView) -> [NSScrollView] {
+        let current = (view as? NSScrollView).map { [$0] } ?? []
+        return current + view.subviews.flatMap { scrollViews(in: $0) }
     }
 
     private func post(

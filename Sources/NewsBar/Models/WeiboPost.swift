@@ -18,6 +18,12 @@ struct WeiboPost: Codable, Identifiable, Equatable, Sendable {
     var url: String
     var read: Bool
     var isTop: Bool
+    /// Optional platform counters captured with the feed response. Missing is
+    /// not zero, and these are not the platform's post view count.
+    var commentCount: Int?
+    var repostCount: Int?
+    var likeCount: Int?
+    var metricsFetchedAt: Date?
     /// Local relevance decision. Optional on purpose: an old `posts.json` has
     /// no such key and must still decode, and a post fetched while filtering
     /// is off stays nil.
@@ -61,7 +67,11 @@ struct WeiboPost: Codable, Identifiable, Equatable, Sendable {
         url: String,
         read: Bool = false,
         isTop: Bool = false,
-        relevance: WeiboPostRelevance? = nil
+        relevance: WeiboPostRelevance? = nil,
+        commentCount: Int? = nil,
+        repostCount: Int? = nil,
+        likeCount: Int? = nil,
+        metricsFetchedAt: Date? = nil
     ) {
         self.mid = mid
         self.bid = bid
@@ -78,5 +88,9 @@ struct WeiboPost: Codable, Identifiable, Equatable, Sendable {
         self.read = read
         self.isTop = isTop
         self.relevance = relevance
+        self.commentCount = commentCount
+        self.repostCount = repostCount
+        self.likeCount = likeCount
+        self.metricsFetchedAt = metricsFetchedAt ?? ((commentCount != nil || repostCount != nil || likeCount != nil) ? fetchedAt : nil)
     }
 }

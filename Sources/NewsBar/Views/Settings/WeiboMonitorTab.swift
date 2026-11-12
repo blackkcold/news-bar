@@ -1036,6 +1036,25 @@ struct WeiboMonitorTab: View {
 
                 Divider()
 
+                Toggle(
+                    settings.appLanguage == .en ? "Automatically load comments" : "自动加载评论",
+                    isOn: Binding(
+                        get: { settings.weiboCommentsAutoLoad },
+                        set: { settings.weiboCommentsAutoLoad = $0 }
+                    )
+                )
+                .toggleStyle(.switch)
+
+                Text(
+                    settings.appLanguage == .en
+                        ? "Loads comments from Weibo when a followed post is opened. Turn off to load them manually."
+                        : "打开关注博文时自动加载评论；关闭后需手动加载，可减少微博请求。"
+                )
+                .font(.system(size: 9.5))
+                .foregroundStyle(.secondary)
+
+                Divider()
+
                 Text(L10n.string("weibo.advanced.intervals", language: settings.appLanguage))
                     .font(.system(size: 11, weight: .medium))
 

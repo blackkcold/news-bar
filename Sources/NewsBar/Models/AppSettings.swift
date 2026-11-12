@@ -236,6 +236,11 @@ final class AppSettings {
     var weiboMonitorBackfillHours: Int {
         didSet { TestIsolation.defaults.set(weiboMonitorBackfillHours, forKey: "weiboMonitorBackfillHours") }
     }
+    /// Automatically load the comment thread when a following post is opened.
+    /// On by default; disabling it leaves an explicit "load comments" action.
+    var weiboCommentsAutoLoad: Bool {
+        didSet { TestIsolation.defaults.set(weiboCommentsAutoLoad, forKey: "weiboCommentsAutoLoad") }
+    }
     /// Last time the one-shot "login expired" alert was delivered. Stored so a
     /// relaunch does not repeat the same alert within 24 hours.
     var weiboMonitorAuthAlertAt: Date? {
@@ -801,6 +806,8 @@ final class AppSettings {
             2,
             max(0, defaults.integerIfPresent(forKey: "weiboMonitorBackfillHours") ?? 0)
         )
+        self.weiboCommentsAutoLoad =
+            defaults.boolIfPresent(forKey: "weiboCommentsAutoLoad") ?? true
         self.weiboMonitorAuthAlertAt = defaults.object(forKey: "weiboMonitorAuthAlertAt") as? Date
         self.weiboMonitorShowPopoverChip = defaults.boolIfPresent(forKey: "weiboMonitorShowPopoverChip") ?? true
         self.weiboMonitorMenuBarBadgeEnabled =
