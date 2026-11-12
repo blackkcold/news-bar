@@ -55,6 +55,57 @@ final class WeiboUserFeedParserTests: XCTestCase {
         XCTAssertEqual(components.day, 7)
     }
 
+    func testFeedPreservesAvailableInteractionCountsWithoutInventingMissingValues() throws {
+        let fetchedAt = WeiboMonitorTestSupport.date(2026, 11, 7, 10, 0)
+        let item: [String: Any] = [
+            "idstr": "321", "text_raw": "Example", "created_at": "Fri Nov 07 09:58:00 +0800 2026",
+            "comments_count": 128, "reposts_count": 0, "attitudes_count": 356,
+        ]
+        let data = try JSONSerialization.data(withJSONObject: ["ok": 1, "data": ["list": [item]]])
+        let post = try XCTUnwrap(WeiboFeedParser.parseT0(data, uid: "1", fallbackScreenName: "A", fetchedAt: fetchedAt).posts.first)
+        let encoded = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(post)) as? [String: Any])
+        XCTAssertEqual(encoded["commentCount"] as? Int, 128)
+        XCTAssertEqual(encoded["repostCount"] as? Int, 0)
+        XCTAssertEqual(encoded["likeCount"] as? Int, 356)
+        XCTAssertNil(encoded["viewCount"], "Interaction counts must never be presented as views")
+    }
+
+    func testFeedLeavesAbsentAndInvalidInteractionCountsUnavailable() throws {
+        let now = WeiboMonitorTestSupport.date(2026, 11, 7, 12, 0)
+        let item: [String: Any] = [
+            "id": "456", "text": "Example", "created_at": "11-07",
+            "comments_count": -1, "reposts_count": true, "attitudes_count": 1.5,
+        ]
+        let data = try JSONSerialization.data(withJSONObject: ["ok": 1, "data": ["cards": [["mblog": item]]]])
+        let post = try XCTUnwrap(WeiboFeedParser.parseT1(data, uid: "1", fallbackScreenName: "A", fetchedAt: now, now: now, calendar: calendar).posts.first)
+        let encoded = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(post)) as? [String: Any])
+        XCTAssertNil(encoded["commentCount"])
+        XCTAssertNil(encoded["repostCount"])
+        XCTAssertNil(encoded["likeCount"])
+    }
+
+    func testMobileFeedPreservesZeroAndNumericInteractionCounts() throws {
+        let now = WeiboMonitorTestSupport.date(2026, 11, 7, 12, 0)
+        let item: [String: Any] = [
+            "id": "456", "text": "Example", "created_at": "11-07",
+            "comments_count": 0, "reposts_count": 12, "attitudes_count": 42,
+        ]
+        let data = try JSONSerialization.data(withJSONObject: ["ok": 1, "data": ["cards": [["mblog": item]]]])
+        let post = try XCTUnwrap(WeiboFeedParser.parseT1(data, uid: "1", fallbackScreenName: "A", fetchedAt: now, now: now, calendar: calendar).posts.first)
+        XCTAssertEqual(post.commentCount, 0)
+        XCTAssertEqual(post.repostCount, 12)
+        XCTAssertEqual(post.likeCount, 42)
+    }
+
+    func testOldCachedPostsDecodeWithoutInteractionCounts() throws {
+        let post = WeiboMonitorTestSupport.post()
+        let data = try JSONEncoder().encode(post)
+        let decoded = try JSONDecoder().decode(WeiboPost.self, from: data)
+        XCTAssertNil(decoded.commentCount)
+        XCTAssertNil(decoded.repostCount)
+        XCTAssertNil(decoded.likeCount)
+    }
+
     func testShortDateCrossesYearBoundaryBackwards() throws {
         let now = WeiboMonitorTestSupport.date(2026, 1, 2, 12, 0)
         let result = try XCTUnwrap(

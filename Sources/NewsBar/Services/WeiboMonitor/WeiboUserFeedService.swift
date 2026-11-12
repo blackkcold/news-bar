@@ -25,7 +25,7 @@ protocol WeiboFeedFetching: Sendable {
 /// Network boundary for the monitor. It uses its own ephemeral session on
 /// purpose: `URLSession.shared` would silently attach the app's cookie store,
 /// and the reader's cookie vault is the only session that may be replayed.
-actor WeiboUserFeedService: WeiboFeedFetching {
+actor WeiboUserFeedService: WeiboFeedFetching, WeiboCommentFetching {
     private let session: URLSession
 
     init(session: URLSession? = nil) {
@@ -298,6 +298,211 @@ actor WeiboUserFeedService: WeiboFeedFetching {
             }
         }
         return nil
+    }
+
+    // MARK: - Comments
+
+    /// Comments use the same first-party session and the same free web
+    /// endpoints as the feed. No paid API, no second cookie store, and no
+    /// retry across endpoints after a rate-limit or challenge signal.
+    func fetchComments(
+        mid: String,
+        uid: String,
+        authorUID: String?,
+        cursor: String?,
+        credentials: WeiboCredentials,
+        now: Date
+    ) async -> WeiboCommentOutcome {
+        if credentials.hasDesktopLogin {
+            let outcome = await requestDesktopComments(
+                mid: mid,
+                uid: uid,
+                authorUID: authorUID,
+                cursor: cursor,
+                cookies: credentials.desktopCookieHeader,
+                now: now
+            )
+            if case .failure(let failure) = outcome, credentials.hasMobileLogin {
+                switch failure {
+                case .authRequired, .parseChanged, .unknown:
+                    // The free mobile path is the fallback for a desktop
+                    // session or shape failure. Never retry a rate limit or a
+                    // challenge on a second endpoint.
+                    return await requestMobileComments(
+                        mid: mid,
+                        authorUID: authorUID,
+                        cursor: cursor,
+                        cookies: credentials.mobileCookieHeader,
+                        now: now
+                    )
+                case .rateLimited, .challenge, .network, .server:
+                    break
+                }
+            }
+            return outcome
+        }
+
+        if credentials.hasMobileLogin {
+            return await requestMobileComments(
+                mid: mid,
+                authorUID: authorUID,
+                cursor: cursor,
+                cookies: credentials.mobileCookieHeader,
+                now: now
+            )
+        }
+
+        return .failure(.authRequired)
+    }
+
+    private func requestDesktopComments(
+        mid: String,
+        uid: String,
+        authorUID: String?,
+        cursor: String?,
+        cookies: String?,
+        now: Date
+    ) async -> WeiboCommentOutcome {
+        guard let cookies, !cookies.isEmpty else { return .failure(.authRequired) }
+        guard var components = URLComponents(string: "https://weibo.com/ajax/statuses/buildComments") else {
+            return .failure(.unknown)
+        }
+        var query = [
+            URLQueryItem(name: "id", value: mid),
+            URLQueryItem(name: "uid", value: uid),
+            URLQueryItem(name: "is_reload", value: "1"),
+            URLQueryItem(name: "is_show_bulletin", value: "2"),
+            URLQueryItem(name: "is_mix", value: "0"),
+            URLQueryItem(name: "count", value: "20"),
+        ]
+        if let cursor, !cursor.isEmpty {
+            query.append(URLQueryItem(name: "max_id", value: cursor))
+        }
+        components.queryItems = query
+        guard let url = components.url else { return .failure(.unknown) }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.timeoutInterval = 12
+        applyDesktopHeaders(&request, uid: uid, cookies: cookies)
+
+        return await performCommentRequest(
+            request: request,
+            mid: mid,
+            authorUID: authorUID,
+            tier: .desktop,
+            now: now
+        )
+    }
+
+    private func requestMobileComments(
+        mid: String,
+        authorUID: String?,
+        cursor: String?,
+        cookies: String?,
+        now: Date
+    ) async -> WeiboCommentOutcome {
+        guard let cookies, !cookies.isEmpty else { return .failure(.authRequired) }
+        guard var components = URLComponents(string: "https://m.weibo.cn/comments/hotflow") else {
+            return .failure(.unknown)
+        }
+        var query = [
+            URLQueryItem(name: "id", value: mid),
+            URLQueryItem(name: "mid", value: mid),
+            URLQueryItem(name: "max_id_type", value: "0"),
+        ]
+        if let cursor, !cursor.isEmpty {
+            query.append(URLQueryItem(name: "max_id", value: cursor))
+        }
+        components.queryItems = query
+        guard let url = components.url else { return .failure(.unknown) }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.timeoutInterval = 12
+        request.setValue(Self.mobileUserAgent, forHTTPHeaderField: "User-Agent")
+        request.setValue("application/json, text/plain, */*", forHTTPHeaderField: "Accept")
+        request.setValue("zh-CN,zh;q=0.9", forHTTPHeaderField: "Accept-Language")
+        request.setValue("https://m.weibo.cn/detail/\(mid)", forHTTPHeaderField: "Referer")
+        request.setValue(cookies, forHTTPHeaderField: "Cookie")
+
+        return await performCommentRequest(
+            request: request,
+            mid: mid,
+            authorUID: authorUID,
+            tier: .mobile,
+            now: now
+        )
+    }
+
+    private func performCommentRequest(
+        request: URLRequest,
+        mid: String,
+        authorUID: String?,
+        tier: WeiboCommentTier,
+        now: Date
+    ) async -> WeiboCommentOutcome {
+        let started = Date()
+        do {
+            let (data, response) = try await session.data(for: request)
+            let http = response as? HTTPURLResponse
+            let kind = WeiboRiskSignal.classify(
+                statusCode: http?.statusCode,
+                data: data,
+                contentType: http?.value(forHTTPHeaderField: "Content-Type"),
+                error: nil
+            )
+            let latency = Date().timeIntervalSince(started)
+            let retryAfter = Self.retryAfter(from: http)
+
+            switch kind {
+            case .ok, .parseChanged, .unknown, .emptyList:
+                // The free mobile path can return a top-level comment array,
+                // which the shared risk classifier cannot recognize. A payload
+                // that parses as comments is valid even when the envelope is
+                // not the desktop JSON object shape.
+                do {
+                    let page = try WeiboCommentParser.parse(
+                        data,
+                        mid: mid,
+                        authorUID: authorUID,
+                        tier: tier,
+                        fetchedAt: now
+                    )
+                    return .success(page: page, latency: latency)
+                } catch {
+                    switch kind {
+                    case .ok, .parseChanged, .emptyList: return .failure(.parseChanged)
+                    default: return .failure(.unknown)
+                    }
+                }
+            case .authExpired:
+                return .failure(.authRequired)
+            case .rateLimited:
+                return .failure(.rateLimited(retryAfter: retryAfter))
+            case .challenge:
+                return .failure(.challenge)
+            case .network:
+                return .failure(.network)
+            case .server:
+                return .failure(.server)
+            }
+        } catch {
+            let kind = WeiboRiskSignal.classify(
+                statusCode: nil,
+                data: nil,
+                contentType: nil,
+                error: error
+            )
+            switch kind {
+            case .network: return .failure(.network)
+            case .authExpired: return .failure(.authRequired)
+            case .rateLimited: return .failure(.rateLimited(retryAfter: nil))
+            case .challenge: return .failure(.challenge)
+            case .server: return .failure(.server)
+            default: return .failure(.unknown)
+            }
+        }
     }
 
     // A current desktop Safari UA is less suspicious than a fake rotation and

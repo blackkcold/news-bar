@@ -537,6 +537,10 @@ actor WeiboMonitorService {
             return .success
         }
 
+        // Refresh only the interaction snapshot for already-known posts. Never
+        // replace their locally enriched text, read state or relevance verdict.
+        let metricsChanged = refreshInteractionSnapshots(uid: uid, posts: unique)
+
         // A date-format change must not turn every old post into a "new" post.
         // Update the feed and the baseline, but do not notify.
         // Only a page where most dates are unreadable is unsafe to push. A
@@ -660,6 +664,7 @@ actor WeiboMonitorService {
             users[index].nextDueAt = planner.nextDue(
                 for: users[index], now: now, config: config, isLowPower: isLowPower, rng: &rng
             )
+            if metricsChanged { await persistPosts(uid: uid, now: now) }
             if isAuthProbe { finishAuthProbe(now: now) }
             return .success
         }
@@ -1586,6 +1591,27 @@ actor WeiboMonitorService {
                 )
             }
         }
+    }
+
+    private func refreshInteractionSnapshots(uid: String, posts: [WeiboPost]) -> Bool {
+        guard var stored = postsByUID[uid], !stored.isEmpty else { return false }
+        let incoming = Dictionary(uniqueKeysWithValues: posts.map { ($0.mid, $0) })
+        var changed = false
+        for index in stored.indices {
+            guard let fresh = incoming[stored[index].mid],
+                  fresh.commentCount != nil || fresh.repostCount != nil || fresh.likeCount != nil else { continue }
+            guard stored[index].commentCount != fresh.commentCount
+                    || stored[index].repostCount != fresh.repostCount
+                    || stored[index].likeCount != fresh.likeCount
+                    || stored[index].metricsFetchedAt == nil else { continue }
+            stored[index].commentCount = fresh.commentCount
+            stored[index].repostCount = fresh.repostCount
+            stored[index].likeCount = fresh.likeCount
+            stored[index].metricsFetchedAt = fresh.fetchedAt
+            changed = true
+        }
+        if changed { postsByUID[uid] = stored }
+        return changed
     }
 
     private func persistPosts(uid: String, now: Date) async {

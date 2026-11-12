@@ -25,16 +25,30 @@ final class WeiboMonitorViewModel {
     private(set) var isWorking = false
     private(set) var isAdding = false
     private(set) var notificationStatus: UNAuthorizationStatus = .notDetermined
+    /// Comment threads share the same first-party session as the feed. The
+    /// reader asks this controller to load only the post that is open.
+    let comments: WeiboCommentController
     var actionError: String?
 
-    init(settings: AppSettings, service: WeiboMonitorService? = nil) {
+    init(
+        settings: AppSettings,
+        service: WeiboMonitorService? = nil,
+        commentFetcher: (any WeiboCommentFetching)? = nil,
+        commentCache: WeiboCommentCache? = nil
+    ) {
         self.settings = settings
+        let resolvedCommentFetcher: any WeiboCommentFetching
         if let service {
             self.service = service
+            resolvedCommentFetcher = commentFetcher ?? WeiboUserFeedService()
         } else {
             let store = WeiboMonitorStore()
+            // One network service for both boundaries: comments reuse the
+            // same session policy, headers and risk classifier as the feed.
+            let feed = WeiboUserFeedService()
             self.service = WeiboMonitorService(
                 store: store,
+                feed: feed,
                 notifier: WeiboNotificationAdapter(),
                 authAlertRecorder: { [weak settings] date in
                     await MainActor.run {
@@ -42,7 +56,12 @@ final class WeiboMonitorViewModel {
                     }
                 }
             )
+            resolvedCommentFetcher = commentFetcher ?? feed
         }
+        self.comments = WeiboCommentController(
+            fetcher: resolvedCommentFetcher,
+            cache: commentCache ?? WeiboCommentCache()
+        )
 
         changeObserver = NotificationCenter.default.addObserver(
             forName: .weiboMonitorChanged,
@@ -256,6 +275,19 @@ final class WeiboMonitorViewModel {
             item: nil,
             surface: "weiboFollowing"
         )
+    }
+
+    /// Loads the selected post's first comment page. `force` is used by the
+    /// retry and refresh controls and bypasses the auto-load preference.
+    func loadComments(for post: WeiboPost, force: Bool = false) async {
+        guard settings.weiboCommentsAutoLoad || force else { return }
+        let credentials = await loadCredentials()
+        await comments.load(post: post, credentials: credentials, force: force)
+    }
+
+    func loadMoreComments(for post: WeiboPost) async {
+        let credentials = await loadCredentials()
+        await comments.loadMore(post: post, credentials: credentials)
     }
 
     func openNotificationSettings() {

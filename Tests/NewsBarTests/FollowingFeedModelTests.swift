@@ -213,6 +213,33 @@ final class FollowingFeedModelTests: XCTestCase {
         XCTAssertTrue(FollowingFeedModel.contents(snapshot: snapshot, query: FollowingFeedQuery()).entries.isEmpty)
     }
 
+    func testReaderSelectionKeepsCurrentPostWhenNewerPostArrives() {
+        let user = WeiboMonitorTestSupport.user(uid: "1", name: "A", now: now)
+        let selected = WeiboMonitorTestSupport.post(mid: "selected", uid: "1", name: "A", createdAt: now)
+        let newer = WeiboMonitorTestSupport.post(mid: "newer", uid: "1", name: "A", createdAt: now.addingTimeInterval(60))
+        let entries = FollowingFeedModel.entries(
+            snapshot: snapshot(users: [user], posts: ["1": [newer, selected]]),
+            query: FollowingFeedQuery()
+        )
+
+        XCTAssertEqual(FollowingFeedModel.readerSelection(currentID: "selected", entries: entries)?.post.mid, "selected")
+        let automaticPreview = FollowingFeedModel.readerSelection(currentID: nil, entries: entries)
+        XCTAssertEqual(automaticPreview?.post.mid, "newer")
+        XCTAssertEqual(automaticPreview?.post.read, false)
+    }
+
+    func testReaderSelectionFallsBackWhenFilterRemovesCurrentPost() {
+        let user = WeiboMonitorTestSupport.user(uid: "1", name: "A", now: now)
+        let post = WeiboMonitorTestSupport.post(mid: "remaining", uid: "1", name: "A", createdAt: now)
+        let entries = FollowingFeedModel.entries(
+            snapshot: snapshot(users: [user], posts: ["1": [post]]),
+            query: FollowingFeedQuery()
+        )
+
+        XCTAssertEqual(FollowingFeedModel.readerSelection(currentID: "removed", entries: entries)?.post.mid, "remaining")
+        XCTAssertNil(FollowingFeedModel.readerSelection(currentID: "removed", entries: []))
+    }
+
     /// The page builds its rows, its count and its collapsed block from one
     /// scan. These expectations are written out by hand rather than compared
     /// with the delegating wrappers, so the combined pass is pinned on its own.

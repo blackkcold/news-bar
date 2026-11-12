@@ -42,6 +42,8 @@ struct WeiboFollowingFeedView: View {
     /// The dashboard keeps a visited browse pane alive after a tab switch.
     /// Presence and polling follow the *visible* tab, not the view lifetime.
     var isActive = true
+    /// A compact companion can share a mounted workspace, which owns presence.
+    var managesPresence = true
     let onOpenSettings: () -> Void
 
     @State private var showCollapsed = false
@@ -81,19 +83,19 @@ struct WeiboFollowingFeedView: View {
         .onChange(of: isActive) { _, active in
             if active {
                 activate()
-            } else {
+            } else if managesPresence {
                 WeiboFeedPresence.setVisible(false)
             }
         }
         .onDisappear {
-            WeiboFeedPresence.setVisible(false)
+            if managesPresence { WeiboFeedPresence.setVisible(false) }
         }
     }
 
     /// Called both on first mount and every time this pane becomes the visible
     /// tab. `monitor.start()` is idempotent, so a repeated call is free.
     private func activate() {
-        WeiboFeedPresence.setVisible(true)
+        if managesPresence { WeiboFeedPresence.setVisible(true) }
         guard let monitor else { return }
         // `start()` already refreshes on the path that actually loads the
         // store; afterwards the change notification keeps `snapshot` live.

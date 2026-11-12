@@ -246,15 +246,45 @@ struct DashboardWindow: View {
     ) -> some View {
         let isActive = mode == browseMode
         BrowsePaneAccess(isActive: isActive) {
-            browseScroll(
-                mode: mode,
-                isActive: isActive,
-                phase: phase,
-                isWideLayout: isWideLayout,
-                isReaderCompact: isReaderCompact,
-                contentWidth: contentWidth,
-                sourceGroups: sourceGroups
-            )
+            if mode == .following, let weiboMonitor,
+               weiboMonitor.snapshot.isEnabled, !weiboMonitor.snapshot.users.isEmpty {
+                ZStack {
+                    FollowingReaderWorkspace(
+                        monitor: weiboMonitor,
+                        filter: $followingFilter,
+                        searchText: $followingSearch,
+                        accountUID: $followingAccountUID,
+                        isActive: isActive,
+                        onOpenSettings: onOpenWeiboMonitorSettings ?? onOpenSettings
+                    )
+                    .opacity(isReaderCompact ? 0 : 1)
+                    .allowsHitTesting(!isReaderCompact)
+                    .accessibilityHidden(isReaderCompact)
+
+                    if isReaderCompact {
+                        browseScroll(
+                            mode: mode,
+                            isActive: isActive,
+                            phase: phase,
+                            isWideLayout: isWideLayout,
+                            isReaderCompact: isReaderCompact,
+                            contentWidth: contentWidth,
+                            sourceGroups: sourceGroups,
+                            managesFollowingPresence: false
+                        )
+                    }
+                }
+            } else {
+                browseScroll(
+                    mode: mode,
+                    isActive: isActive,
+                    phase: phase,
+                    isWideLayout: isWideLayout,
+                    isReaderCompact: isReaderCompact,
+                    contentWidth: contentWidth,
+                    sourceGroups: sourceGroups
+                )
+            }
         }
         .opacity(isActive ? 1 : 0)
         .allowsHitTesting(isActive)
@@ -269,7 +299,8 @@ struct DashboardWindow: View {
         isWideLayout: Bool,
         isReaderCompact: Bool,
         contentWidth: CGFloat,
-        sourceGroups: [DashboardBrowseGroup]
+        sourceGroups: [DashboardBrowseGroup],
+        managesFollowingPresence: Bool = true
     ) -> some View {
         let anchorID = "browse-top-\(mode.rawValue)"
         return ScrollViewReader { scrollProxy in
@@ -289,7 +320,8 @@ struct DashboardWindow: View {
                         isWideLayout: isWideLayout,
                         isReaderCompact: isReaderCompact,
                         contentWidth: contentWidth,
-                        sourceGroups: sourceGroups
+                        sourceGroups: sourceGroups,
+                        managesFollowingPresence: managesFollowingPresence
                     )
                 }
             }
@@ -343,7 +375,8 @@ struct DashboardWindow: View {
         isWideLayout: Bool,
         isReaderCompact: Bool,
         contentWidth: CGFloat,
-        sourceGroups: [DashboardBrowseGroup]
+        sourceGroups: [DashboardBrowseGroup],
+        managesFollowingPresence: Bool
     ) -> some View {
         VStack(alignment: .leading, spacing: 18) {
             if mode == .following {
@@ -358,6 +391,7 @@ struct DashboardWindow: View {
                     showsModeControl: false,
                     availableWidth: contentWidth,
                     isActive: isActive,
+                    managesPresence: managesFollowingPresence,
                     onOpenSettings: onOpenWeiboMonitorSettings ?? onOpenSettings
                 )
             } else {
