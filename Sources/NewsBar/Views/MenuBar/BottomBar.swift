@@ -8,6 +8,7 @@ struct BottomBar: View {
     let onRefresh: () -> Void
     let onOpenSettings: () -> Void
     let onOpenDashboard: () -> Void
+    var onOpenEventMonitor: () -> Void = {}
 
     var body: some View {
         Group {
@@ -33,6 +34,8 @@ struct BottomBar: View {
             Spacer()
 
             dashboardButton
+
+            eventMonitorButton
 
             settingsButton
         }
@@ -71,6 +74,12 @@ struct BottomBar: View {
             }
             .buttonStyle(EditorialActionButtonStyle(compact: true))
             .accessibilityLabel("bottom.openDashboard".localized)
+
+            Button(action: onOpenEventMonitor) {
+                Label("event.window.title".localized, systemImage: "dot.radiowaves.left.and.right")
+            }
+            .buttonStyle(EditorialActionButtonStyle(compact: true))
+            .accessibilityLabel("event.window.title".localized)
 
             Button(action: onOpenSettings) {
                 Label("settings.badge".localized, systemImage: "gearshape")
@@ -141,5 +150,17 @@ struct BottomBar: View {
         .buttonStyle(.plain)
         .accessibilityLabel("bottom.openSettings".localized)
         .help("bottom.openSettings".localized)
+    }
+
+    private var eventMonitorButton: some View {
+        Button(action: onOpenEventMonitor) {
+            Image(systemName: "dot.radiowaves.left.and.right")
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(.secondary)
+                .padding(5)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("event.window.title".localized)
+        .help("event.window.title".localized)
     }
 }

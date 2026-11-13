@@ -29,6 +29,7 @@ struct DashboardWindow: View {
     var onOpenSettings: () -> Void = {}
     var onConfigureAI: (() -> Void)? = nil
     var onOpenResearchCenter: (String?) -> Void = { _ in }
+    var onOpenEventMonitor: () -> Void = {}
     var onOpenWeiboMonitorSettings: (() -> Void)? = nil
 
     private let layoutBreakpoint = DashboardLayoutMetrics.layoutBreakpoint
@@ -90,6 +91,7 @@ struct DashboardWindow: View {
                 onCloseTab: { id in closeTab(id, router: router) },
                 onRefresh: { Task { await orchestrator.manualRefresh(settings: settings) } },
                 onOpenResearch: { onOpenResearchCenter(nil) },
+                onOpenEventMonitor: onOpenEventMonitor,
                 onOpenSettings: onOpenSettings
             )
             DashboardReaderPresentation(

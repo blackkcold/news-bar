@@ -21,6 +21,7 @@ struct DashboardNewsroomBar: View {
     let onCloseTab: (UUID) -> Void
     let onRefresh: () -> Void
     let onOpenResearch: () -> Void
+    let onOpenEventMonitor: () -> Void
     let onOpenSettings: () -> Void
 
     private var isRetro: Bool { settings.appTheme == .retroEditorial }
@@ -99,6 +100,12 @@ struct DashboardNewsroomBar: View {
                 symbol: "sparkles",
                 title: L10n.string("research.center.title", language: settings.appLanguage),
                 action: onOpenResearch
+            )
+
+            DashboardBarAction(
+                symbol: "dot.radiowaves.left.and.right",
+                title: L10n.string("event.window.title", language: settings.appLanguage),
+                action: onOpenEventMonitor
             )
 
             DashboardBarAction(

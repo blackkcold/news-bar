@@ -41,6 +41,7 @@ final class DashboardNewsroomBarRenderingTests: XCTestCase {
                 onCloseTab: { _ in },
                 onRefresh: {},
                 onOpenResearch: {},
+                onOpenEventMonitor: {},
                 onOpenSettings: {}
             )
             .environment(settings)

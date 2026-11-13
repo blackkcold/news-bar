@@ -89,6 +89,8 @@ struct ReminderTab: View {
                 Text("notif.burst.footer".localized)
             }
 
+            EventMonitorNotificationSettingsSection()
+
             ResearchAutomationSection()
 
             Section {
@@ -105,6 +107,8 @@ struct ReminderTab: View {
             } footer: {
                 Text("notif.keywordTracking.footer".localized)
             }
+
+            EventMonitorInterestSettingsForm()
         }
         .formStyle(.grouped)
         .scrollContentBackground(.hidden)

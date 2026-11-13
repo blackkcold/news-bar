@@ -103,8 +103,14 @@ struct SettingsWindow: View {
         .onReceive(NotificationCenter.default.publisher(for: .switchToWeiboMonitor)) { _ in
             pane = .weiboMonitor
         }
+        .onReceive(NotificationCenter.default.publisher(for: .switchToReminder)) { _ in
+            pane = .notifications
+        }
         .onReceive(NotificationCenter.default.publisher(for: .switchToRSSTab)) { _ in
             pane = .reading
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .switchToInterestSettings)) { _ in
+            pane = .privacy
         }
     }
 
