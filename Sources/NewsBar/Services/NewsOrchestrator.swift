@@ -623,6 +623,7 @@ final class NewsOrchestrator {
         }
 
         var rssChanged = false
+        var deferredSharedChecks: [RSSSharedCheck] = []
         if !rssSources.isEmpty {
             batchProgress = BatchProgress(completed: 0, total: rssSources.count)
 
@@ -648,6 +649,7 @@ final class NewsOrchestrator {
 
                 guard isCurrentCacheWork(token) else { return }
                 applyRSSBatch(outcomes)
+                deferredSharedChecks.append(contentsOf: outcomes.compactMap(\.sharedCheck))
                 rssChanged = rssChanged || outcomes.contains(where: \.changed)
                 batchProgress = BatchProgress(
                     completed: range.upperBound,
@@ -666,8 +668,22 @@ final class NewsOrchestrator {
             manualRefreshWarning = warning
         }
 
-        await updateInterestCandidates(settings: settings, token: token)
+        let evidenceDurable = await updateInterestCandidates(settings: settings, token: token)
         guard isCurrentCacheWork(token) else { return }
+        if evidenceDurable {
+            let eventController = NewsEventController.shared(settings: settings)
+            for check in deferredSharedChecks {
+                let advanceValidators = check.isNotModified || check.hasEventEvidence
+                await eventController.recordSharedRSSCheck(
+                    sourceID: check.sourceID,
+                    eTag: check.eTag,
+                    lastModified: check.lastModified,
+                    checkedAt: check.checkedAt,
+                    advanceValidators: advanceValidators
+                )
+                guard isCurrentCacheWork(token) else { return }
+            }
+        }
         await handleSharedAISummary(
             settings: settings,
             isManualRefresh: isManual,
@@ -774,12 +790,22 @@ final class NewsOrchestrator {
 
     /// Result of one RSS fetch. Observable state is committed by the caller in
     /// one batch so a 6-source batch invalidates the UI once, not 12 times.
+    private struct RSSSharedCheck: Sendable {
+        let sourceID: String
+        let eTag: String?
+        let lastModified: String?
+        let checkedAt: Date
+        let isNotModified: Bool
+        let hasEventEvidence: Bool
+    }
+
     private struct RSSFetchOutcome {
         let source: NewsSource
         let state: SourceLoadState
         /// `nil` leaves the existing map entry untouched.
         let itemsUpdate: [NewsItem]?
         let changed: Bool
+        let sharedCheck: RSSSharedCheck?
     }
 
     private func fetchRSS(
@@ -791,6 +817,10 @@ final class NewsOrchestrator {
         let changed: Bool
         var outcomeItems: [NewsItem]?
         var outcomeState = SourceLoadState.loaded
+        var sharedCursor: (eTag: String?, lastModified: String?)?
+        var sharedIsNotModified = false
+        var sharedHasEventEvidence = false
+        var deferredSharedCheck: RSSSharedCheck?
 
         do {
             let result = try await RSSService.fetchConditional(
@@ -816,6 +846,8 @@ final class NewsOrchestrator {
                 fetchedItems = validated.items
                 changed = false
                 rssUnchangedRefreshCounts[source.id, default: 0] += 1
+                sharedCursor = (eTag, lastModified)
+                sharedIsNotModified = true
 
             case .modified(let items, let eTag, let lastModified):
                 guard !items.isEmpty else {
@@ -838,6 +870,10 @@ final class NewsOrchestrator {
                 guard isCurrentCacheWork(token) else { return nil }
                 outcomeItems = translatedItems
                 fetchedItems = translatedItems
+                sharedCursor = (eTag, lastModified)
+                sharedHasEventEvidence = !NewsEventInputAdapter()
+                    .from(items: translatedItems, kind: .rss, now: now)
+                    .isEmpty
                 if changed {
                     rssUnchangedRefreshCounts[source.id] = 0
                     rssLastChangedAt[source.id] = now
@@ -846,7 +882,18 @@ final class NewsOrchestrator {
                 }
             }
             rssFailureCounts[source.id] = 0
-            lastSourceRefresh[source.id] = Date()
+            let checkedAt = Date()
+            lastSourceRefresh[source.id] = checkedAt
+            if let sharedCursor {
+                deferredSharedCheck = RSSSharedCheck(
+                    sourceID: source.id,
+                    eTag: sharedCursor.eTag,
+                    lastModified: sharedCursor.lastModified,
+                    checkedAt: checkedAt,
+                    isNotModified: sharedIsNotModified,
+                    hasEventEvidence: sharedHasEventEvidence
+                )
+            }
         } catch {
             guard isCurrentCacheWork(token) else { return nil }
             NSLog("[NewsOrchestrator] 获取 \(source.displayName) 失败: \(error.localizedDescription)")
@@ -881,7 +928,8 @@ final class NewsOrchestrator {
             source: source,
             state: outcomeState,
             itemsUpdate: outcomeItems,
-            changed: changed
+            changed: changed,
+            sharedCheck: deferredSharedCheck
         )
     }
 
@@ -2294,20 +2342,38 @@ final class NewsOrchestrator {
                                            language: settings.appLanguage, maxWords: settings.aiDashboardMaxWords)
     }
 
-    private func updateInterestCandidates(settings: AppSettings, token: CacheWriteToken) async {
+    @discardableResult
+    private func updateInterestCandidates(settings: AppSettings, token: CacheWriteToken) async -> Bool {
+        let eventController = NewsEventController.shared(settings: settings)
+        let adapter = NewsEventInputAdapter()
+        let eventNow = Date()
+        let incomingItems = allActiveItems(settings: settings)
+        let eventEvidence = adapter.from(items: incomingItems, kind: .rss, now: eventNow)
+        let evidenceDurable = await eventController.ingest(eventEvidence, now: eventNow)
+        guard isCurrentCacheWork(token) else { return false }
+        ResearchCoordinator.shared.setEventResultIngestor { record in
+            let completedAt = Date()
+            await eventController.ingest(
+                adapter.fromResearchRecord(record, now: completedAt),
+                now: completedAt
+            )
+        }
         let interest = InterestController.shared
         await interest.prepare()
-        guard isCurrentCacheWork(token), interest.isReady else { return }
+        guard isCurrentCacheWork(token) else { return false }
+        guard interest.isReady else { return evidenceDurable }
         let activeIDs = Set(settings.activeSources.map(\.id))
         let current = allActiveItems(settings: settings).filter { activeIDs.contains($0.source.id) }
         await interest.ingest(current)
-        guard isCurrentCacheWork(token) else { return }
+        guard isCurrentCacheWork(token) else { return false }
         await restoreResearchStateIfNeeded()
-        guard isCurrentCacheWork(token) else { return }
+        guard isCurrentCacheWork(token) else { return false }
         let archive = interest.state.contents.values.filter {
             activeIDs.contains($0.item.source.id) && Date().timeIntervalSince($0.lastSeen) <= 24 * 3600
         }.map(\.item)
-        interest.rankCandidates(current + archive)
+        let foldedItems = eventController.foldedRecommendationItems(from: current + archive)
+        interest.rankCandidates(foldedItems)
+        return evidenceDurable
     }
 
     func restoreResearchStateIfNeeded() async {
@@ -2591,7 +2657,15 @@ final class NewsOrchestrator {
         let outcome = await fetchRSS(source: source, useCacheFallback: false, settings: settings, token: token)
         guard isCurrentCacheWork(token), let outcome else { return }
         applyRSSBatch([outcome])
-        await updateInterestCandidates(settings: settings, token: token)
+        let evidenceDurable = await updateInterestCandidates(settings: settings, token: token)
+        guard isCurrentCacheWork(token), evidenceDurable, let check = outcome.sharedCheck else { return }
+        await NewsEventController.shared(settings: settings).recordSharedRSSCheck(
+            sourceID: check.sourceID,
+            eTag: check.eTag,
+            lastModified: check.lastModified,
+            checkedAt: check.checkedAt,
+            advanceValidators: check.isNotModified || check.hasEventEvidence
+        )
     }
 
     /// Health rows for the settings surface. Derived from the same source

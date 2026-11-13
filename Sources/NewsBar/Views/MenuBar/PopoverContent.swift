@@ -18,6 +18,7 @@ struct PopoverContent: View {
     var onOpenDashboard: () -> Void
     var onOpenRSSSettings: () -> Void = {}
     var onOpenResearchCenter: () -> Void = {}
+    var onOpenEventMonitor: () -> Void = {}
     var onConfigureKey: (() -> Void)?
     var weiboMonitor: WeiboMonitorViewModel? = nil
 
@@ -57,7 +58,8 @@ struct PopoverContent: View {
                     }
                 },
                 onOpenSettings: onOpenSettings,
-                onOpenDashboard: onOpenDashboard
+                onOpenDashboard: onOpenDashboard,
+                onOpenEventMonitor: onOpenEventMonitor
             )
         }
         .frame(width: 400)
@@ -524,6 +526,7 @@ private struct PopoverBottomBar: View {
     let onRefresh: () -> Void
     let onOpenSettings: () -> Void
     let onOpenDashboard: () -> Void
+    let onOpenEventMonitor: () -> Void
 
     var body: some View {
         BottomBar(
@@ -531,7 +534,8 @@ private struct PopoverBottomBar: View {
             batchProgress: orchestrator.batchProgress,
             onRefresh: onRefresh,
             onOpenSettings: onOpenSettings,
-            onOpenDashboard: onOpenDashboard
+            onOpenDashboard: onOpenDashboard,
+            onOpenEventMonitor: onOpenEventMonitor
         )
         .overlay(alignment: .top) {
             Rectangle()

@@ -10,6 +10,7 @@ private let notificationLog = Logger(subsystem: "com.newsbar.app", category: "no
 extension Notification.Name {
     static let rssSourceAdded = Notification.Name("rssSourceAdded")
     static let switchToAITab = Notification.Name("switchToAITab")
+    static let switchToReminder = Notification.Name("switchToReminder")
     static let switchToRSSTab = Notification.Name("switchToRSSTab")
     static let apiKeyConfigured = Notification.Name("apiKeyConfigured")
     static let fireFakeBurstPush = Notification.Name("fireFakeBurstPush")
@@ -17,6 +18,7 @@ extension Notification.Name {
     static let fillBurstTestTopic = Notification.Name("fillBurstTestTopic")
     static let interestSettingsRequested = Notification.Name("interestSettingsRequested")
     static let switchToInterestSettings = Notification.Name("switchToInterestSettings")
+    static let newsEventMonitorRequested = Notification.Name("newsEventMonitorRequested")
     static let browserSettingsRequested = Notification.Name("browserSettingsRequested")
     static let switchToBrowserTab = Notification.Name("switchToBrowserTab")
     static let researchRequested = Notification.Name("researchRequested")
@@ -37,6 +39,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private static let dashboardMinimumSize = NSSize(width: 960, height: 720)
     private static let researchCenterSize = NSSize(width: 1120, height: 760)
     private static let researchCenterMinimumSize = NSSize(width: 1000, height: 660)
+    private static let newsEventCenterSize = NSSize(width: 1120, height: 760)
+    private static let newsEventCenterMinimumSize = NSSize(width: 1000, height: 660)
 
     // MARK: - Properties
 
@@ -49,6 +53,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private var dashboardWindow: NSWindow?
     private var researchCenterWindow: NSWindow?
     private var researchCenterModel: ResearchCenterModel?
+    private var newsEventCenterWindow: NSWindow?
+    private var newsEventCenterModel: EventMonitorCenterModel?
 
     private var settings: AppSettings!
     private var weiboMonitor: WeiboMonitorViewModel?
@@ -58,12 +64,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private var updater: SparkleUpdater?
     private var agentCommandService: AgentCommandService?
     private var autoRefreshTimer: Timer?
+    private var newsEventStartupTask: Task<Void, Never>?
+    private var newsEventTickTask: Task<Void, Never>?
+    private var newsEventTickID: UUID?
     private var researchMaintenanceTimer: Timer?
     private var researchMaintenanceTask: Task<Void, Never>?
     private var dashboardRefreshTask: Task<Void, Never>?
     private var popoverRefreshTask: Task<Void, Never>?
     private var workspaceObservers: [NSObjectProtocol] = []
     private var isSystemSleeping = false
+    private var isWakeRecoveryInProgress = false
+    private var isTerminating = false
     private var terminationReplyPending = false
 
     private static let researchMaintenanceDelay: TimeInterval = 30
@@ -123,9 +134,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
 
     private func scheduleStartupAndAutoRefresh() {
-        DispatchQueue.main.asyncAfter(deadline: .now() + Self.startupDelay) { [weak self] in
-            guard let self else { return }
-            Task {
+        newsEventStartupTask?.cancel()
+        newsEventStartupTask = Task { @MainActor [weak self] in
+            do {
+                try await Task.sleep(for: .seconds(Self.startupDelay))
+            } catch {
+                return
+            }
+            guard let self, !Task.isCancelled, !self.isTerminating else { return }
+            await self.runNewsEventTick()
+            guard !Task.isCancelled, !self.isTerminating else { return }
+            self.newsEventStartupTask = nil
+            Task { @MainActor [weak self] in
+                guard let self, !self.isTerminating else { return }
                 await self.orchestrator?.refreshIfNeeded(settings: self.settings, trigger: .startup)
             }
         }
@@ -152,8 +173,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     /// the monitor silently dead for the default configuration.
     @MainActor
     private func scheduledTick() async {
-        guard !isSystemSleeping else { return }
+        guard !isSystemSleeping, !isWakeRecoveryInProgress, !isTerminating else { return }
         await weiboMonitor?.tick(now: Date())
+        await runNewsEventTick()
+        guard !isSystemSleeping, !isWakeRecoveryInProgress, !isTerminating else { return }
         guard settings.autoRefreshEnabled else { return }
         let visibility = currentRefreshVisibility
         await orchestrator?.refreshScheduled(
@@ -161,6 +184,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             visibility: visibility,
             trigger: .scheduled
         )
+    }
+
+    @MainActor
+    private func runNewsEventTick() async {
+        guard !isSystemSleeping, !isTerminating else { return }
+        if let existing = newsEventTickTask {
+            await existing.value
+            if existing.isCancelled, !isSystemSleeping, !isTerminating, !Task.isCancelled {
+                await runNewsEventTick()
+            }
+            return
+        }
+        let taskID = UUID()
+        newsEventTickID = taskID
+        let task = Task { @MainActor [weak self] in
+            defer {
+                if self?.newsEventTickID == taskID {
+                    self?.newsEventTickTask = nil
+                    self?.newsEventTickID = nil
+                }
+            }
+            guard let self, !self.isTerminating, !self.isSystemSleeping else { return }
+            let controller = NewsEventController.shared(settings: self.settings)
+            await controller.recoverAndTick(now: Date(), sources: self.settings.activeSources)
+        }
+        newsEventTickTask = task
+        await task.value
     }
 
     private var currentRefreshVisibility: RefreshVisibility {
@@ -182,6 +232,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 queue: .main
             ) { [weak self] _ in
                 self?.isSystemSleeping = true
+                self?.newsEventTickTask?.cancel()
             }
         )
         workspaceObservers.append(
@@ -192,7 +243,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             ) { [weak self] _ in
                 guard let self else { return }
                 self.isSystemSleeping = false
+                self.isWakeRecoveryInProgress = true
                 Task { @MainActor in
+                    defer { self.isWakeRecoveryInProgress = false }
+                    guard !self.isTerminating else { return }
+                    await self.runNewsEventTick()
+                    guard !self.isTerminating else { return }
                     await self.weiboMonitor?.handleWake(now: Date())
                     guard self.settings.autoRefreshEnabled else { return }
                     let visibility = self.currentRefreshVisibility
@@ -289,14 +345,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 // exists; closing the window must release the notification
                 // suppression that pane holds.
                 WeiboMonitorViewModel.setFeedVisible(false)
-                DockPresence.hide()
+                if self.researchCenterWindow?.isVisible != true,
+                   self.newsEventCenterWindow?.isVisible != true {
+                    DockPresence.hide()
+                }
             }
         }
         NotificationCenter.default.addObserver(forName: NSWindow.willCloseNotification, object: nil, queue: .main) { [weak self] notification in
             guard let self, let window = notification.object as? NSWindow, window === self.researchCenterWindow else { return }
             self.researchCenterWindow = nil
             self.researchCenterModel = nil
-            if self.dashboardWindow?.isVisible != true { DockPresence.hide() }
+            if self.dashboardWindow?.isVisible != true,
+               self.newsEventCenterWindow?.isVisible != true {
+                DockPresence.hide()
+            }
+        }
+        NotificationCenter.default.addObserver(forName: NSWindow.willCloseNotification, object: nil, queue: .main) { [weak self] notification in
+            guard let self, let window = notification.object as? NSWindow, window === self.newsEventCenterWindow else { return }
+            self.newsEventCenterWindow = nil
+            self.newsEventCenterModel = nil
+            if self.dashboardWindow?.isVisible != true,
+               self.researchCenterWindow?.isVisible != true {
+                DockPresence.hide()
+            }
         }
         NotificationCenter.default.addObserver(forName: .newsReaderRequested, object: nil, queue: .main) { [weak self] _ in
             self?.openDashboard(refresh: false)
@@ -309,6 +380,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             self?.openSettings()
             DispatchQueue.main.async {
                 NotificationCenter.default.post(name: .switchToBrowserTab, object: nil)
+            }
+        }
+        NotificationCenter.default.addObserver(forName: .newsEventMonitorRequested, object: nil, queue: .main) { [weak self] notification in
+            let eventID = notification.userInfo?["eventID"] as? String
+            Task { @MainActor [weak self] in
+                self?.openNewsEventMonitor(eventID: eventID)
             }
         }
         NotificationCenter.default.addObserver(forName: .interestDataCleared, object: nil, queue: .main) { [weak self] _ in
@@ -659,6 +736,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             onOpenResearchCenter: { [weak self] in
                 Task { @MainActor in self?.openResearchCenter() }
             },
+            onOpenEventMonitor: { [weak self] in
+                Task { @MainActor in self?.openNewsEventMonitor() }
+            },
             onConfigureKey: { [weak self] in self?.openSettings(toAITab: true) },
             weiboMonitor: weiboMonitor
         )
@@ -671,7 +751,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         return popover
     }
 
-    func openSettings(toAITab: Bool = false, toWeiboMonitor: Bool = false, toRSS: Bool = false) {
+    func openSettings(
+        toAITab: Bool = false,
+        toWeiboMonitor: Bool = false,
+        toRSS: Bool = false,
+        toReminder: Bool = false
+    ) {
         popover?.performClose(nil)
 
         if let existing = settingsWindow {
@@ -683,11 +768,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 NotificationCenter.default.post(name: .switchToAITab, object: nil)
             } else if toRSS {
                 NotificationCenter.default.post(name: .switchToRSSTab, object: nil)
+            } else if toReminder {
+                NotificationCenter.default.post(name: .switchToReminder, object: nil)
             }
             return
         }
 
-        let initialPane: SettingsPane = toWeiboMonitor ? .weiboMonitor : (toAITab ? .ai : (toRSS ? .reading : .general))
+        let initialPane: SettingsPane = toWeiboMonitor
+            ? .weiboMonitor
+            : (toAITab ? .ai : (toRSS ? .reading : (toReminder ? .notifications : .general)))
 
         let window = NSWindow(
             contentRect: NSRect(origin: .zero, size: Self.settingsSize),
@@ -812,6 +901,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 onOpenResearchCenter: { [weak self] recordID in
                     Task { @MainActor in self?.openResearchCenter(selecting: recordID) }
                 },
+                onOpenEventMonitor: { [weak self] in
+                    Task { @MainActor in self?.openNewsEventMonitor() }
+                },
                 onOpenWeiboMonitorSettings: { [weak self] in
                     self?.openSettings(toWeiboMonitor: true)
                 }
@@ -842,18 +934,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 )
             let needsMonitorFlush = settings?.weiboMonitorEnabled == true
                 || !(weiboMonitor?.snapshot.users.isEmpty ?? true)
-            guard needsReaderFlush || needsMonitorFlush else { return .terminateNow }
+            let needsEventFlush = newsEventStartupTask != nil || newsEventTickTask != nil
+            guard needsReaderFlush || needsMonitorFlush || needsEventFlush else {
+                isTerminating = true
+                return .terminateNow
+            }
 
             terminationReplyPending = true
             Task { @MainActor in
                 let watchdog = Task { @MainActor in
-                    try? await Task.sleep(for: .seconds(2))
+                    try? await Task.sleep(for: .seconds(needsEventFlush ? 22 : 2))
                     replyToTerminationRequest()
                 }
+                isTerminating = true
+                newsEventStartupTask?.cancel()
+                newsEventTickTask?.cancel()
+                let startupTask = newsEventStartupTask
+                let eventTask = newsEventTickTask
                 await self.weiboMonitor?.persistNow()
                 for reader in readers {
                     await reader.flushCookiesBeforeTermination()
                 }
+                await eventTask?.value
+                await startupTask?.value
                 watchdog.cancel()
                 replyToTerminationRequest()
             }
@@ -868,6 +971,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        isTerminating = true
+        newsEventStartupTask?.cancel()
+        newsEventTickTask?.cancel()
         dashboardRefreshTask?.cancel()
         popoverRefreshTask?.cancel()
         researchMaintenanceTask?.cancel()
@@ -884,6 +990,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         settingsWindow?.close()
         dashboardWindow?.close()
         researchCenterWindow?.close()
+        newsEventCenterWindow?.close()
         popover?.close()
         // Pending requests are deliberately left in place: the daily summary is a
         // calendar trigger meant to fire after the app is gone. Clearing all of
@@ -955,6 +1062,47 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         }
     }
 
+    @MainActor
+    func openNewsEventMonitor(eventID: String? = nil) {
+        popover?.performClose(nil)
+        let controller = NewsEventController.shared(settings: settings)
+
+        if let existing = newsEventCenterWindow {
+            existing.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            MainActor.assumeIsolated { DockPresence.show() }
+            if let eventID, let model = newsEventCenterModel {
+                Task { @MainActor in await model.openEvent(eventID) }
+            }
+            return
+        }
+
+        let model = EventMonitorCenterModel(controller: controller, settings: settings, eventID: eventID)
+        newsEventCenterModel = model
+        let window = NSWindow(
+            contentRect: NSRect(origin: .zero, size: Self.newsEventCenterSize),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = L10n.string("event.window.title", language: settings.appLanguage)
+        window.minSize = Self.newsEventCenterMinimumSize
+        window.center()
+        window.contentViewController = NSHostingController(
+            rootView: EventMonitorCenterView(
+                model: model,
+                onOpenReminderSettings: { [weak self] in self?.openSettings(toReminder: true) }
+            )
+            .environment(settings)
+            .id(settings.appLanguage)
+        )
+        window.isReleasedWhenClosed = false
+        newsEventCenterWindow = window
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        MainActor.assumeIsolated { DockPresence.show() }
+    }
+
     // MARK: - UNUserNotificationCenterDelegate
 
     func userNotificationCenter(
@@ -983,6 +1131,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 } else {
                     self.openResearchCenter()
                 }
+            }
+        case .newsEvent(let eventID):
+            Task { @MainActor [weak self] in
+                self?.openNewsEventMonitor(eventID: eventID)
             }
         case .research(let recordID):
             Task { @MainActor [weak self] in

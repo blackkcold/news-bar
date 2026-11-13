@@ -224,43 +224,34 @@ enum NotificationService {
         }
     }
 
-    /// Sends a single notification for a Weibo "爆" (burst) topic. The research
-    /// `summary` becomes the body; `userInfo` carries the event identity so the
-    /// notification delegate can route a click to the burst research window.
-    static func sendBurstNotification(title: String, summary: String, eventID: String) {
+    /// Sends only an alert that has already passed the news-event policy gate.
+    /// The controller persists its de-duplication key before calling this method.
+    static func sendNewsEventAlert(_ alert: NewsEventAlert) async throws {
         let content = UNMutableNotificationContent()
-        content.title = title
-        content.body = SecurityPolicies.sanitizeHTMLContent(summary)
+        content.title = alert.title
+        content.body = SecurityPolicies.sanitizeHTMLContent(alert.body)
         content.sound = .default
-        content.userInfo = ["type": "burst", "eventID": eventID]
-        content.categoryIdentifier = "burst"
+        content.threadIdentifier = "newsbar.events"
+        content.userInfo = ["type": "newsEvent", "eventID": alert.eventID]
 
         let request = UNNotificationRequest(
-            identifier: "burst-\(eventID)",
+            identifier: alert.notificationID,
             content: content,
             trigger: nil
         )
-        UNUserNotificationCenter.current().add(request) { error in
-            if let error = error {
-                NSLog("[NotificationService] sendBurstNotification failed: %@", error.localizedDescription)
-            }
-        }
+        try await UNUserNotificationCenter.current().add(request)
     }
 
-    /// Sends one notification when a research record reaches `ready`. The
-    /// record ID is the routing key; the title is only a display fallback.
+    /// Sends a task-completion notice only; report conclusions are never copied
+    /// to the lock screen.
     static func sendResearchNotification(record: ResearchRecord) {
-        guard let report = record.report else { return }
+        guard record.report != nil else { return }
 
         let language = L10n.currentLanguage
         let content = UNMutableNotificationContent()
         content.title = L10n.string("research.notif.title", language: language)
         content.subtitle = record.topic
-        let showsSummary = TestIsolation.defaults
-            .object(forKey: "researchNotificationShowsSummary") as? Bool ?? true
-        content.body = showsSummary
-            ? ResearchNotificationSummary.make(report: report, language: language)
-            : L10n.string("research.notif.fallback", language: language)
+        content.body = L10n.string("research.notif.fallback", language: language)
         content.sound = .default
         content.threadIdentifier = "research"
         content.categoryIdentifier = NotificationIdentifier.researchCategory

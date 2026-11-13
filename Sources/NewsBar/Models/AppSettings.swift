@@ -560,6 +560,23 @@ final class AppSettings {
         didSet { TestIsolation.defaults.set(dailyPushMinute, forKey: "dailyPushMinute") }
     }
 
+    var newsEventMonitoringEnabled: Bool {
+        didSet { TestIsolation.defaults.set(newsEventMonitoringEnabled, forKey: "newsEventMonitoringEnabled") }
+    }
+    var newsEventNotificationsEnabled: Bool {
+        didSet { TestIsolation.defaults.set(newsEventNotificationsEnabled, forKey: "newsEventNotificationsEnabled") }
+    }
+    var newsEventInterestSettings: NewsEventInterestSettings {
+        didSet {
+            do {
+                let data = try JSONEncoder().encode(newsEventInterestSettings)
+                TestIsolation.defaults.set(data, forKey: "newsEventInterestSettings")
+            } catch {
+                NSLog("[AppSettings] Could not encode news-event interest settings: %@", error.localizedDescription)
+            }
+        }
+    }
+
     /// Master toggle for the Weibo "爆" burst-topic realtime push + research.
     var burstPushEnabled: Bool {
         didSet { TestIsolation.defaults.set(burstPushEnabled, forKey: "burstPushEnabled") }
@@ -600,9 +617,8 @@ final class AppSettings {
             TestIsolation.defaults.removeObject(forKey: "researchLastAutomaticDecision")
         }
     }
-    /// Shows the one-sentence summary in the completion notification. Turning
-    /// it off keeps the report title but hides the conclusion from the lock
-    /// screen.
+    /// Legacy preference retained for compatibility; task-completion notices
+    /// no longer include report conclusions, regardless of this value.
     var researchNotificationShowsSummary: Bool {
         didSet {
             TestIsolation.defaults.set(
@@ -960,6 +976,18 @@ final class AppSettings {
         self.pushCount = min(max(defaults.integerIfPresent(forKey: "pushCount") ?? 3, 1), 3)
         self.dailyPushHour = defaults.integerIfPresent(forKey: "dailyPushHour") ?? 9
         self.dailyPushMinute = defaults.integerIfPresent(forKey: "dailyPushMinute") ?? 0
+        self.newsEventMonitoringEnabled = defaults.boolIfPresent(forKey: "newsEventMonitoringEnabled") ?? false
+        self.newsEventNotificationsEnabled = defaults.boolIfPresent(forKey: "newsEventNotificationsEnabled") ?? false
+        if let data = defaults.data(forKey: "newsEventInterestSettings") {
+            do {
+                self.newsEventInterestSettings = try JSONDecoder().decode(NewsEventInterestSettings.self, from: data)
+            } catch {
+                NSLog("[AppSettings] Could not decode news-event interest settings: %@", error.localizedDescription)
+                self.newsEventInterestSettings = NewsEventInterestSettings()
+            }
+        } else {
+            self.newsEventInterestSettings = NewsEventInterestSettings()
+        }
 
         self.burstPushEnabled = defaults.boolIfPresent(forKey: "burstPushEnabled") ?? false
         self.researchAutoEnabled = defaults.boolIfPresent(forKey: "researchAutoEnabled") ?? true

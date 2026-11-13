@@ -65,6 +65,7 @@ final class ResearchCoordinator {
         ResearchRecord,
         @escaping @Sendable (ResearchRun) async -> Void
     ) async -> ResearchExecution
+    typealias EventResultIngestor = @MainActor (ResearchRecord) async -> Void
 
     static let shared = ResearchCoordinator()
 
@@ -91,6 +92,7 @@ final class ResearchCoordinator {
     private let automaticQueueLifetime: TimeInterval
     private let automaticQueueLimit = ResearchAutomationPolicy.maxActiveAutomaticRuns
     private let notifier: @MainActor (ResearchRecord) -> Void
+    private var eventResultIngestor: EventResultIngestor?
     private var running: [String: RunningJob] = [:]
     private var queue: [Job] = []
     private var admitting: Set<String> = []
@@ -114,6 +116,10 @@ final class ResearchCoordinator {
         self.automaticStartInterval = max(0, automaticStartInterval)
         self.automaticQueueLifetime = max(0, automaticQueueLifetime)
         self.notifier = notifier
+        self.eventResultIngestor = { record in
+            let completedAt = Date()
+            await NewsEventController.shared.ingest(researchRecord: record, now: completedAt)
+        }
     }
 
     /// Applies the user's concurrency setting; queued jobs start immediately if
@@ -121,6 +127,10 @@ final class ResearchCoordinator {
     func setMaxConcurrent(_ value: Int) {
         maxConcurrent = max(1, min(3, value))
         startNextIfPossible()
+    }
+
+    func setEventResultIngestor(_ ingestor: @escaping EventResultIngestor) {
+        eventResultIngestor = ingestor
     }
 
     func schedule(
@@ -403,11 +413,15 @@ final class ResearchCoordinator {
             applyCounts()
         }
 
-        try? await store.save(current)
-        postChanged(recordID: job.recordID)
-
-        if current.status == .ready, job.notify {
-            notifier(current)
+        do {
+            try await store.save(current)
+            postChanged(recordID: job.recordID)
+            if current.status == .ready {
+                await eventResultIngestor?(current)
+                if job.notify { notifier(current) }
+            }
+        } catch {
+            NSLog("[ResearchCoordinator] Final record write failed; skipping event ingest and completion notification: %@", error.localizedDescription)
         }
     }
 
