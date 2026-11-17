@@ -28,6 +28,37 @@ enum ResearchPaths {
     static var clearIntentFile: URL {
         researchDirectory.appendingPathComponent("clear-intent.json")
     }
+
+    /// Separate, rebuildable link/version layer. Never inside `records/`, so a
+    /// record-store rebuild cannot delete it and this layer cannot rewrite a
+    /// record file.
+    static var workspaceDirectory: URL {
+        researchDirectory.appendingPathComponent("workspace", isDirectory: true)
+    }
+
+    static var workspaceIndexFile: URL {
+        workspaceDirectory.appendingPathComponent("workspace-v1.json")
+    }
+
+    static var workspaceVersionsDirectory: URL {
+        workspaceDirectory.appendingPathComponent("report-versions", isDirectory: true)
+    }
+
+    static func workspaceVersionFile(_ recordID: String) -> URL {
+        workspaceVersionsDirectory.appendingPathComponent("\(recordID).json")
+    }
+
+    static var workspaceStatesDirectory: URL {
+        workspaceDirectory.appendingPathComponent("report-state", isDirectory: true)
+    }
+
+    static func workspaceStateFile(_ recordID: String) -> URL {
+        workspaceStatesDirectory.appendingPathComponent("\(recordID).json")
+    }
+
+    static var workspaceSearchIndexFile: URL {
+        workspaceDirectory.appendingPathComponent("search-index-v1.json")
+    }
 }
 
 /// Lightweight projection of a record for list rendering and index rebuilds.

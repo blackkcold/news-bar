@@ -1,5 +1,10 @@
 import Foundation
 
+extension Notification.Name {
+    /// Posted after a successful archive record/remove/clear write.
+    static let aiSearchArchiveChanged = Notification.Name("aiSearchArchiveChanged")
+}
+
 protocol AISearchArchivePersisting: Sendable {
     func load() async throws -> Data?
     func save(_ data: Data) async throws
@@ -120,6 +125,7 @@ actor AISearchArchiveStore {
             try await persist(candidate)
             snapshot = candidate
             loadError = nil
+            NotificationCenter.default.post(name: .aiSearchArchiveChanged, object: nil)
         } catch {
             loadError = error.localizedDescription
             throw error
@@ -140,6 +146,7 @@ actor AISearchArchiveStore {
             try await persist(candidate)
             snapshot = candidate
             loadError = nil
+            NotificationCenter.default.post(name: .aiSearchArchiveChanged, object: nil)
         } catch {
             loadError = error.localizedDescription
             throw error
@@ -152,6 +159,7 @@ actor AISearchArchiveStore {
         isLoaded = true
         isReadOnly = false
         loadError = nil
+        NotificationCenter.default.post(name: .aiSearchArchiveChanged, object: nil)
     }
 
     private func persist(_ snapshot: AISearchArchiveSnapshot) async throws {

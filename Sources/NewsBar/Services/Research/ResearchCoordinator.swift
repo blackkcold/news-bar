@@ -91,8 +91,13 @@ final class ResearchCoordinator {
     private let automaticStartInterval: TimeInterval
     private let automaticQueueLifetime: TimeInterval
     private let automaticQueueLimit = ResearchAutomationPolicy.maxActiveAutomaticRuns
-    private let notifier: @MainActor (ResearchRecord) -> Void
+    private var notifier: @MainActor (ResearchRecord) -> Void
     private var eventResultIngestor: EventResultIngestor?
+    /// The built-in version observer is never removed. Stage 4 observers are
+    /// appended and receive the same finalize call.
+    private var resultObservers: [any ResearchResultObserving] = [
+        WorkspaceReportVersionObserver.shared
+    ]
     private var running: [String: RunningJob] = [:]
     private var queue: [Job] = []
     private var admitting: Set<String> = []
@@ -131,6 +136,24 @@ final class ResearchCoordinator {
 
     func setEventResultIngestor(_ ingestor: @escaping EventResultIngestor) {
         eventResultIngestor = ingestor
+    }
+
+    func setNotifier(_ notifier: @escaping @MainActor (ResearchRecord) -> Void) {
+        self.notifier = notifier
+    }
+
+    /// Replaces the extra observers. The built-in report-version observer is
+    /// always retained, so installing stage-4 state observers cannot stop
+    /// version archiving.
+    func setResultObservers(_ observers: [any ResearchResultObserving]) {
+        var merged: [any ResearchResultObserving] = [WorkspaceReportVersionObserver.shared]
+        for observer in observers {
+            let isDuplicate = merged.contains {
+                ($0 as AnyObject) === (observer as AnyObject)
+            }
+            if !isDuplicate { merged.append(observer) }
+        }
+        resultObservers = merged
     }
 
     func schedule(
@@ -358,6 +381,10 @@ final class ResearchCoordinator {
 
         guard var current = await store.record(id: job.recordID) else { return }
         let finishedAt = Date()
+        // Snapshot before any status/report mutation. Stage-4 observers get it
+        // as `previous`, and the version observer archives its report before
+        // this run replaces it.
+        let previousRecord = current
 
         func applyCounts() {
             current.run.pagesRead = max(current.run.pagesRead, execution.pagesRead)
@@ -365,6 +392,8 @@ final class ResearchCoordinator {
             current.run.aiCalls = max(current.run.aiCalls, execution.aiCalls)
             current.run.queriesCompleted = max(current.run.queriesCompleted, execution.queries.count)
         }
+
+        var didReplaceReport = false
 
         if Task.isCancelled {
             current.status = .cancelled
@@ -398,24 +427,57 @@ final class ResearchCoordinator {
             )
             applyCounts()
         } else {
-            current.report = execution.research
-            current.updatedAt = finishedAt
-            current.automaticAttempts = 0
-            current.status = execution.isPartial || execution.research.searchStatus == .failed
-                ? .partial
-                : .ready
-            current.reportVersion = max(
-                current.reportVersion,
-                execution.research.promptVersion > 0 ? 2 : 1
-            )
-            current.run.phase = .done
-            current.run.finishedAt = finishedAt
-            applyCounts()
+            // Archive the outgoing report before replacing it. A partial new
+            // report also replaces the old one, so it goes through the same
+            // hook. A failed/empty run never reaches this branch.
+            var archiveFailed = false
+            if previousRecord.report != nil {
+                for observer in resultObservers {
+                    let archived = await observer.researchWillOverwrite(
+                        previousRecord,
+                        nextReport: execution.research
+                    )
+                    if !archived { archiveFailed = true }
+                }
+            }
+            if archiveFailed {
+                // Keep the previous report. A visible failure is better than a
+                // silent history loss; the user can retry and the event/notify
+                // paths stay closed for this run.
+                current.status = .failed
+                current.run.phase = .done
+                current.run.finishedAt = finishedAt
+                current.run.lastError = L10n.string(
+                    "research.error.versionArchive",
+                    language: L10n.currentLanguage
+                )
+                applyCounts()
+            } else {
+                current.report = execution.research
+                current.updatedAt = finishedAt
+                current.automaticAttempts = 0
+                current.status = execution.isPartial || execution.research.searchStatus == .failed
+                    ? .partial
+                    : .ready
+                current.reportVersion = max(
+                    current.reportVersion,
+                    execution.research.promptVersion > 0 ? 2 : 1
+                )
+                current.run.phase = .done
+                current.run.finishedAt = finishedAt
+                applyCounts()
+                didReplaceReport = true
+            }
         }
 
         do {
             try await store.save(current)
             postChanged(recordID: job.recordID)
+            if didReplaceReport {
+                for observer in resultObservers {
+                    await observer.researchDidFinalize(current, previous: previousRecord)
+                }
+            }
             if current.status == .ready {
                 await eventResultIngestor?(current)
                 if job.notify { notifier(current) }

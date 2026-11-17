@@ -301,8 +301,10 @@ struct ResearchDataSection: View {
 
     private func clearCache() {
         Task { @MainActor in
-            await ResearchCacheStore.shared.clearAll()
-            message = "research.data.clearedCache".localized
+            let receipt = await ResearchCacheCoordinator.clearAll()
+            message = receipt.isComplete
+                ? "research.data.clearedCache".localized
+                : "research.data.clearFailed".localized
             await refreshStorage()
         }
     }
@@ -310,8 +312,10 @@ struct ResearchDataSection: View {
     private func clearAllCaches() {
         cacheClearAction?()
         Task { @MainActor in
-            await ResearchCacheStore.shared.clearAll()
-            message = "research.data.clearedAll".localized
+            let receipt = await ResearchCacheCoordinator.clearAll()
+            message = receipt.isComplete
+                ? "research.data.clearedAll".localized
+                : "research.data.clearFailed".localized
             await refreshStorage()
         }
     }

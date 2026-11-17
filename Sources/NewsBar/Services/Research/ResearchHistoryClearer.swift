@@ -19,6 +19,10 @@ struct ResearchHistoryClearer {
     /// Returns `true` only when the cleared artifact set was durably written.
     var clearArtifacts: () async -> Bool
     var verifyArtifactsCleared: () -> Bool
+    /// Clears the separate workspace version/index layer. Defaulted so existing
+    /// call sites keep compiling; the production path wires it to
+    /// `WorkspaceSubjectStore.applyHistoryClear`.
+    var clearWorkspace: () async -> Bool = { true }
 
     func run(existing: ResearchClearIntent?, generation: Int) async -> ResearchClearResult {
         var intent = existing ?? ResearchClearIntent.make(generation: generation, at: Date())
@@ -42,8 +46,11 @@ struct ResearchHistoryClearer {
             return result
         }
 
-        await cache.clearAll()
-        guard await cache.isEmpty() else {
+        // One cleanup path: the coordinator clears the on-disk store (bumping
+        // the write epoch so an in-flight write cannot restore it) and the
+        // in-memory hit layer, then reports whether anything survived.
+        let receipt = await ResearchCacheCoordinator.clearAll(cache: cache)
+        guard receipt.isComplete else {
             result.error = "search/pages cache still has files"
             return result
         }
@@ -61,6 +68,11 @@ struct ResearchHistoryClearer {
             return result
         }
         advance(&intent, to: .recordsDeleted)
+
+        guard await clearWorkspace() else {
+            result.error = "workspace versions/index were not cleared"
+            return result
+        }
 
         guard await clearArtifacts() else {
             result.error = "legacy artifacts were not persisted as cleared"

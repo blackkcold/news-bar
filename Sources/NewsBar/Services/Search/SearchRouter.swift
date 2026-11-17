@@ -61,6 +61,7 @@ actor SearchRouter {
         maxAttempts: Int = DepthProfile.maxSearchHTTPCallsPerTask,
         maxProviderAttempts: Int = 3,
         useCache: Bool = true,
+        maxAge: TimeInterval? = nil,
         ticket: SearchAttemptTicket? = nil
     ) async throws -> SearchBatch {
         let current = now()
@@ -69,7 +70,12 @@ actor SearchRouter {
         let cacheEpoch = await cache.writeEpoch()
 
         if useCache,
-           let data = await cache.load(kind: .search, key: cacheKey, now: current),
+           let data = await cache.load(
+               kind: .search,
+               key: cacheKey,
+               now: current,
+               maxAge: maxAge
+           ),
            let cached = try? JSONDecoder().decode(CachedSearchResult.self, from: data) {
             return SearchBatch(
                 hits: Array(cached.hits.prefix(query.maxResults)),
@@ -373,7 +379,14 @@ actor SearchRouter {
                 )
                 continue
             }
-            let base = statuses[id] ?? SearchProviderStatus(provider: id, state: .unattempted)
+            var base = statuses[id] ?? SearchProviderStatus(provider: id, state: .unattempted)
+            // A rejection is only meaningful for the key that produced it. The
+            // fingerprint check above already matched the current key, so any
+            // remaining auth rejection is a leftover from a different key or
+            // provider configuration; it must not paint the new one as broken.
+            if base.state == .authRejected {
+                base = SearchProviderStatus(provider: id, state: .unattempted)
+            }
             result.append(
                 SearchProviderStatus(
                     provider: id,

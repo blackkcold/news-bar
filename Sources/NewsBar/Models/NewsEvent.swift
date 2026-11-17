@@ -98,6 +98,9 @@ struct NewsEventEvidence: Codable, Equatable, Identifiable, Sendable {
     var timeline: [NewsEventTimelineNode]
     /// A bounded public signal (for example a trend rank); never a truth score.
     var publicSignal: Int?
+    /// Set only for evidence ingested from a finalized research report. It ties
+    /// an event notice to the exact report version that produced the evidence.
+    var researchCausalToken: String? = nil
 
     var publicationTimeUnknown: Bool { publishedAt == nil }
 
@@ -125,7 +128,8 @@ struct NewsEventEvidence: Codable, Equatable, Identifiable, Sendable {
         coreConflicts: [String]? = nil,
         detailConflicts: [String]? = nil,
         timeline: [NewsEventTimelineNode] = [],
-        publicSignal: Int? = nil
+        publicSignal: Int? = nil,
+        researchCausalToken: String? = nil
     ) {
         self.id = id
         self.title = title
@@ -151,6 +155,7 @@ struct NewsEventEvidence: Codable, Equatable, Identifiable, Sendable {
         self.detailConflicts = detailConflicts
         self.timeline = timeline
         self.publicSignal = publicSignal
+        self.researchCausalToken = researchCausalToken
     }
 }
 

@@ -35,8 +35,6 @@ struct BottomBar: View {
 
             dashboardButton
 
-            eventMonitorButton
-
             settingsButton
         }
         .padding(.horizontal, 12)
@@ -74,12 +72,6 @@ struct BottomBar: View {
             }
             .buttonStyle(EditorialActionButtonStyle(compact: true))
             .accessibilityLabel("bottom.openDashboard".localized)
-
-            Button(action: onOpenEventMonitor) {
-                Label("event.window.title".localized, systemImage: "dot.radiowaves.left.and.right")
-            }
-            .buttonStyle(EditorialActionButtonStyle(compact: true))
-            .accessibilityLabel("event.window.title".localized)
 
             Button(action: onOpenSettings) {
                 Label("settings.badge".localized, systemImage: "gearshape")

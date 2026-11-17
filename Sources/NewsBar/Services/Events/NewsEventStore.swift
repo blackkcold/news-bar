@@ -16,6 +16,12 @@ enum NewsEventStoreError: LocalizedError, Equatable {
     }
 }
 
+extension Notification.Name {
+    /// Posted after the event snapshot is durably written. The workspace uses
+    /// this to coalesce one reconcile; it is not a UI state channel.
+    static let newsEventsChanged = Notification.Name("newsEventsChanged")
+}
+
 actor NewsEventStore: NewsEventPersisting {
     static let shared = NewsEventStore()
     static let currentVersion = 1
@@ -300,6 +306,7 @@ actor NewsEventStore: NewsEventPersisting {
             let data = try encoder.encode(snapshot)
             try data.write(to: fileURL, options: .atomic)
             cachedSnapshot = snapshot
+            NotificationCenter.default.post(name: .newsEventsChanged, object: nil)
         } catch {
             throw NewsEventStoreError.persistenceFailed(error.localizedDescription)
         }

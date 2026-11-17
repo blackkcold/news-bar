@@ -162,13 +162,15 @@ enum PageSummaryService {
         } else {
             let price = configuration.connection.customPrice
                 ?? AIPriceCatalog.price(for: configuration.providerID, model: configuration.model)
-            chatClient = HTTPAIChatClient(
+            chatClient = AIChatClientFactory.metered(
+                origin: .pageSummary,
+                policy: quotaPolicy,
+                price: price,
                 connection: configuration.connection,
                 apiKey: configuration.apiKey,
                 model: configuration.model,
                 thinking: thinking,
-                timeout: 45,
-                quota: .tracked(origin: .pageSummary, policy: quotaPolicy, price: price)
+                timeout: 45
             )
         }
 

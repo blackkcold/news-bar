@@ -30,6 +30,7 @@ struct DashboardWindow: View {
     var onConfigureAI: (() -> Void)? = nil
     var onOpenResearchCenter: (String?) -> Void = { _ in }
     var onOpenEventMonitor: () -> Void = {}
+    var onOpenWorkspaceResult: (WorkspaceSearchResult) -> Void = { _ in }
     var onOpenWeiboMonitorSettings: (() -> Void)? = nil
 
     private let layoutBreakpoint = DashboardLayoutMetrics.layoutBreakpoint
@@ -157,7 +158,8 @@ struct DashboardWindow: View {
                     isActiveTab: active,
                     onOpenSettings: openInterestSettings,
                     onOpenResearch: { onOpenResearchCenter($0) },
-                    onConfigureAI: onConfigureAI ?? {}
+                    onConfigureAI: onConfigureAI ?? {},
+                    onOpenWorkspaceResult: onOpenWorkspaceResult
                 )
                 .id(tab.id)
                 .opacity(active ? 1 : 0)

@@ -22,6 +22,8 @@ extension Notification.Name {
     static let browserSettingsRequested = Notification.Name("browserSettingsRequested")
     static let switchToBrowserTab = Notification.Name("switchToBrowserTab")
     static let researchRequested = Notification.Name("researchRequested")
+    static let openAISettingsRequested = Notification.Name("openAISettingsRequested")
+    static let openRSSSettingsRequested = Notification.Name("openRSSSettingsRequested")
     static let fireTestNewsPush = Notification.Name("fireTestNewsPush")
     static let weiboBadgeSettingsChanged = Notification.Name("weiboBadgeSettingsChanged")
 }
@@ -39,6 +41,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private static let dashboardMinimumSize = NSSize(width: 960, height: 720)
     private static let researchCenterSize = NSSize(width: 1120, height: 760)
     private static let researchCenterMinimumSize = NSSize(width: 1000, height: 660)
+    private static let researchWorkspaceSize = NSSize(width: 1180, height: 780)
+    private static let researchWorkspaceMinimumSize = NSSize(width: 1040, height: 680)
     private static let newsEventCenterSize = NSSize(width: 1120, height: 760)
     private static let newsEventCenterMinimumSize = NSSize(width: 1000, height: 660)
 
@@ -51,6 +55,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private var settingsSidebarState: SettingsSidebarState!
     private var settingsToolbarController: SettingsToolbarController?
     private var dashboardWindow: NSWindow?
+    private var researchWorkspaceWindow: NSWindow?
+    private var researchWorkspaceModel: ResearchWorkspaceModel?
     private var researchCenterWindow: NSWindow?
     private var researchCenterModel: ResearchCenterModel?
     private var newsEventCenterWindow: NSWindow?
@@ -96,6 +102,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         Task { await InterestController.shared.prepare() }
         Task { await ReaderRuleListCache.prewarm() }
         setupWorkspaceObservers()
+
+        // Bind the process-wide event controller to these settings before the
+        // automation service and the workspace checker use it.
+        _ = NewsEventController.shared(settings: settings)
+        if let orchestrator = orchestrator {
+            WorkspaceAutomationService.shared.start(
+                orchestrator: orchestrator,
+                settings: settings
+            )
+        }
 
         let agentService = AgentCommandService(settings: settings) { [weak self] in
             guard let self, let orchestrator = self.orchestrator else { return }
@@ -217,7 +233,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         if ProcessInfo.processInfo.isLowPowerModeEnabled {
             return .lowPower
         }
-        if popover?.isShown == true || dashboardWindow?.isVisible == true {
+        if popover?.isShown == true
+            || dashboardWindow?.isVisible == true
+            || researchWorkspaceWindow?.isVisible == true {
             return .visible
         }
         return .background
@@ -346,9 +364,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 // suppression that pane holds.
                 WeiboMonitorViewModel.setFeedVisible(false)
                 if self.researchCenterWindow?.isVisible != true,
+                   self.researchWorkspaceWindow?.isVisible != true,
                    self.newsEventCenterWindow?.isVisible != true {
                     DockPresence.hide()
                 }
+            }
+        }
+        NotificationCenter.default.addObserver(forName: NSWindow.willCloseNotification, object: nil, queue: .main) { [weak self] notification in
+            guard let self, let window = notification.object as? NSWindow, window === self.researchWorkspaceWindow else { return }
+            self.researchWorkspaceWindow = nil
+            self.researchWorkspaceModel = nil
+            if self.dashboardWindow?.isVisible != true,
+               self.researchCenterWindow?.isVisible != true,
+               self.newsEventCenterWindow?.isVisible != true {
+                DockPresence.hide()
             }
         }
         NotificationCenter.default.addObserver(forName: NSWindow.willCloseNotification, object: nil, queue: .main) { [weak self] notification in
@@ -356,6 +385,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             self.researchCenterWindow = nil
             self.researchCenterModel = nil
             if self.dashboardWindow?.isVisible != true,
+               self.researchWorkspaceWindow?.isVisible != true,
                self.newsEventCenterWindow?.isVisible != true {
                 DockPresence.hide()
             }
@@ -365,6 +395,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             self.newsEventCenterWindow = nil
             self.newsEventCenterModel = nil
             if self.dashboardWindow?.isVisible != true,
+               self.researchWorkspaceWindow?.isVisible != true,
                self.researchCenterWindow?.isVisible != true {
                 DockPresence.hide()
             }
@@ -375,6 +406,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         NotificationCenter.default.addObserver(forName: .interestSettingsRequested, object: nil, queue: .main) { [weak self] _ in
             self?.openSettings()
             NotificationCenter.default.post(name: .switchToInterestSettings, object: nil)
+        }
+        NotificationCenter.default.addObserver(forName: .openAISettingsRequested, object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.openSettings(toAITab: true)
+            }
+        }
+        NotificationCenter.default.addObserver(forName: .openRSSSettingsRequested, object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.openSettings(toRSS: true)
+            }
         }
         NotificationCenter.default.addObserver(forName: .browserSettingsRequested, object: nil, queue: .main) { [weak self] _ in
             self?.openSettings()
@@ -394,6 +435,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 self?.researchCenterWindow?.contentViewController = nil
                 self?.researchCenterWindow = nil
                 self?.researchCenterModel = nil
+                self?.researchWorkspaceWindow?.close()
+                self?.researchWorkspaceWindow = nil
+                self?.researchWorkspaceModel = nil
                 WorkspaceTabStore.shared.terminateAll()
                 await self?.orchestrator?.clearPersonalizedArtifacts()
             }
@@ -448,11 +492,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         ) { [weak self] notification in
             guard let self, let item = notification.userInfo?["item"] as? NewsItem else { return }
             Task { @MainActor [weak self] in
-                guard let self else { return }
-                guard ResearchConsent.presentIfNeeded(settings: self.settings) else { return }
-                if let recordID = await self.orchestrator?.startManualResearch(item: item, settings: self.settings) {
-                    self.openResearchCenter(selecting: recordID)
-                }
+                self?.openWorkspaceResearch(for: item)
             }
         }
 
@@ -734,7 +774,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             onOpenSettings: { [weak self] in self?.openSettings() },
             onOpenDashboard: { [weak self] in self?.openDashboard() },
             onOpenResearchCenter: { [weak self] in
-                Task { @MainActor in self?.openResearchCenter() }
+                Task { @MainActor in
+                    guard let self else { return }
+                    if let unread = await self.workspaceUnreadResearchSubjectID() {
+                        self.openResearchWorkspace(subjectID: unread)
+                    } else {
+                        self.openResearchWorkspace()
+                    }
+                }
             },
             onOpenEventMonitor: { [weak self] in
                 Task { @MainActor in self?.openNewsEventMonitor() }
@@ -899,10 +946,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 onOpenSettings: { [weak self] in self?.openSettings() },
                 onConfigureAI: { [weak self] in self?.openSettings(toAITab: true) },
                 onOpenResearchCenter: { [weak self] recordID in
-                    Task { @MainActor in self?.openResearchCenter(selecting: recordID) }
+                    Task { @MainActor in
+                        guard let self else { return }
+                        if let recordID {
+                            self.openResearchCenter(selecting: recordID)
+                        } else if let unread = await self.workspaceUnreadResearchSubjectID() {
+                            self.openResearchWorkspace(subjectID: unread)
+                        } else {
+                            self.openResearchWorkspace()
+                        }
+                    }
                 },
                 onOpenEventMonitor: { [weak self] in
                     Task { @MainActor in self?.openNewsEventMonitor() }
+                },
+                onOpenWorkspaceResult: { [weak self] result in
+                    Task { @MainActor in self?.openWorkspaceSearchResult(result) }
                 },
                 onOpenWeiboMonitorSettings: { [weak self] in
                     self?.openSettings(toWeiboMonitor: true)
@@ -972,6 +1031,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
     func applicationWillTerminate(_ notification: Notification) {
         isTerminating = true
+        WorkspaceAutomationService.shared.stop()
         newsEventStartupTask?.cancel()
         newsEventTickTask?.cancel()
         dashboardRefreshTask?.cancel()
@@ -989,6 +1049,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         workspaceObservers.removeAll()
         settingsWindow?.close()
         dashboardWindow?.close()
+        researchWorkspaceWindow?.close()
         researchCenterWindow?.close()
         newsEventCenterWindow?.close()
         popover?.close()
@@ -997,11 +1058,144 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         // them here cancelled the daily push for good on every quit.
     }
 
-    // MARK: - Research center window
+    // MARK: - Research workspace window
 
-    /// Legacy entry point: find the exact-topic record, or create a manual
-    /// record when the topic has no history. The research center is now the
-    /// single detail window.
+    /// The single window for subjects, events, evidence and research. Every
+    /// legacy entry point resolves into this method.
+    @MainActor
+    func openResearchWorkspace(
+        subjectID: String? = nil,
+        researchID: String? = nil,
+        eventID: String? = nil,
+        answerID: String? = nil,
+        startResearchDepth: ResearchDepth? = nil,
+        evidenceHint: WorkspaceEvidenceFocus? = nil
+    ) {
+        popover?.performClose(nil)
+
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            var resolved = subjectID
+            if resolved == nil {
+                resolved = await self.resolveWorkspaceSubjectID(
+                    recordID: researchID,
+                    eventID: eventID
+                )
+            }
+
+            if let existing = self.researchWorkspaceWindow, let model = self.researchWorkspaceModel {
+                existing.makeKeyAndOrderFront(nil)
+                NSApp.activate(ignoringOtherApps: true)
+                DockPresence.show()
+                await model.load()
+                if resolved != nil || answerID != nil {
+                    await model.handleNotification(
+                        subjectID: resolved,
+                        recordID: researchID,
+                        eventID: eventID,
+                        answerID: answerID,
+                        evidenceHint: evidenceHint
+                    )
+                }
+                if let startResearchDepth, let resolved {
+                    await model.startResearch(
+                        id: resolved,
+                        forceRefresh: false,
+                        depth: startResearchDepth
+                    )
+                }
+                return
+            }
+
+            guard let orchestrator = self.orchestrator else { return }
+            let model = ResearchWorkspaceModel(
+                orchestrator: orchestrator,
+                settings: self.settings,
+                store: WorkspaceSubjectStore.shared,
+                coordinator: .shared,
+                eventController: NewsEventController.shared(settings: self.settings),
+                updateChecker: WorkspaceUpdateChecker.shared
+            )
+            self.researchWorkspaceModel = model
+
+            let window = NSWindow(
+                contentRect: NSRect(origin: .zero, size: Self.researchWorkspaceSize),
+                styleMask: [.titled, .closable, .miniaturizable, .resizable],
+                backing: .buffered,
+                defer: false
+            )
+            window.title = L10n.string(
+                "research.workspace.windowTitle",
+                language: self.settings.appLanguage
+            )
+            window.minSize = Self.researchWorkspaceMinimumSize
+            window.center()
+            window.contentViewController = NSHostingController(
+                rootView: ResearchWorkspaceView(model: model)
+                    .environment(self.settings)
+                    .id(self.settings.appLanguage)
+            )
+            window.isReleasedWhenClosed = false
+
+            self.researchWorkspaceWindow = window
+            window.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            DockPresence.show()
+
+            await model.load()
+            if resolved != nil || answerID != nil {
+                await model.handleNotification(
+                    subjectID: resolved,
+                    recordID: researchID,
+                    eventID: eventID,
+                    answerID: answerID,
+                    evidenceHint: evidenceHint
+                )
+            }
+            if let startResearchDepth, let resolved {
+                await model.startResearch(
+                    id: resolved,
+                    forceRefresh: false,
+                    depth: startResearchDepth
+                )
+            }
+        }
+    }
+
+    /// Compatibility wrapper for the old research-center call sites and both
+    /// research notification routes.
+    @MainActor
+    func openResearchCenter(selecting recordID: String? = nil) {
+        openResearchWorkspace(researchID: recordID)
+    }
+
+    /// Compatibility wrapper for the old event-monitor call sites. Without an
+    /// event ID it opens the most recently active event-backed subject.
+    @MainActor
+    func openNewsEventMonitor(eventID: String? = nil) {
+        if let eventID {
+            openResearchWorkspace(eventID: eventID)
+            return
+        }
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            let store = WorkspaceSubjectStore.shared
+            var subject = await store.subjects()
+                .filter { !$0.eventIDs.isEmpty }
+                .max { $0.lastActivityAt < $1.lastActivityAt }
+            if subject == nil {
+                await self.reconcileWorkspace()
+                subject = await store.subjects()
+                    .filter { !$0.eventIDs.isEmpty }
+                    .max { $0.lastActivityAt < $1.lastActivityAt }
+            }
+            self.openResearchWorkspace(subjectID: subject?.id)
+        }
+    }
+
+    /// The legacy burst entry no longer creates a research record directly.
+    /// It reuses the topic's record or creates a followed subject and lets the
+    /// workspace launcher own the single in-flight task.
     @MainActor
     func openBurstWindow(title: String) {
         guard let orchestrator else { return }
@@ -1009,98 +1203,174 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             guard let self else { return }
             await orchestrator.restoreResearchStateIfNeeded()
             if let recordID = await orchestrator.recordID(forTopic: title) {
-                self.openResearchCenter(selecting: recordID)
-            } else if ResearchConsent.presentIfNeeded(settings: self.settings),
-                      let recordID = await orchestrator.startManualResearch(title: title, settings: self.settings) {
-                self.openResearchCenter(selecting: recordID)
-            } else {
-                self.openResearchCenter()
+                self.openResearchWorkspace(researchID: recordID)
+                return
             }
-        }
-    }
 
-    @MainActor
-    func openResearchCenter(selecting recordID: String? = nil) {
-        popover?.performClose(nil)
-
-        if let existing = researchCenterWindow {
-            existing.makeKeyAndOrderFront(nil)
-            NSApp.activate(ignoringOtherApps: true)
-            if let recordID, let model = researchCenterModel {
-                Task { @MainActor in await model.select(recordID) }
+            let store = WorkspaceSubjectStore.shared
+            _ = await store.bootstrap()
+            var subject = await store.subjects().first {
+                TopicFingerprint.normalized($0.title) == TopicFingerprint.normalized(title)
             }
-            return
-        }
-
-        guard let orchestrator else { return }
-        let model = ResearchCenterModel(orchestrator: orchestrator, settings: settings)
-        researchCenterModel = model
-
-        let window = NSWindow(
-            contentRect: NSRect(origin: .zero, size: Self.researchCenterSize),
-            styleMask: [.titled, .closable, .miniaturizable, .resizable],
-            backing: .buffered,
-            defer: false
-        )
-        window.title = L10n.string("research.center.windowTitle")
-        window.minSize = Self.researchCenterMinimumSize
-        window.center()
-        window.contentViewController = NSHostingController(
-            rootView: ResearchCenterView(model: model)
-                .environment(settings)
-                .id(settings.appLanguage)
-        )
-        window.isReleasedWhenClosed = false
-
-        researchCenterWindow = window
-        window.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
-        MainActor.assumeIsolated { DockPresence.show() }
-
-        if let recordID {
-            Task { @MainActor in await model.select(recordID) }
-        }
-    }
-
-    @MainActor
-    func openNewsEventMonitor(eventID: String? = nil) {
-        popover?.performClose(nil)
-        let controller = NewsEventController.shared(settings: settings)
-
-        if let existing = newsEventCenterWindow {
-            existing.makeKeyAndOrderFront(nil)
-            NSApp.activate(ignoringOtherApps: true)
-            MainActor.assumeIsolated { DockPresence.show() }
-            if let eventID, let model = newsEventCenterModel {
-                Task { @MainActor in await model.openEvent(eventID) }
+            if subject == nil {
+                subject = try? await store.createSubject(
+                    title: title,
+                    aliases: [],
+                    isFollowed: true,
+                    now: Date()
+                )
             }
-            return
-        }
-
-        let model = EventMonitorCenterModel(controller: controller, settings: settings, eventID: eventID)
-        newsEventCenterModel = model
-        let window = NSWindow(
-            contentRect: NSRect(origin: .zero, size: Self.newsEventCenterSize),
-            styleMask: [.titled, .closable, .miniaturizable, .resizable],
-            backing: .buffered,
-            defer: false
-        )
-        window.title = L10n.string("event.window.title", language: settings.appLanguage)
-        window.minSize = Self.newsEventCenterMinimumSize
-        window.center()
-        window.contentViewController = NSHostingController(
-            rootView: EventMonitorCenterView(
-                model: model,
-                onOpenReminderSettings: { [weak self] in self?.openSettings(toReminder: true) }
+            guard let subject else {
+                self.openResearchWorkspace()
+                return
+            }
+            guard ResearchConsent.presentIfNeeded(settings: self.settings) else {
+                self.openResearchWorkspace(subjectID: subject.id)
+                return
+            }
+            self.openResearchWorkspace(
+                subjectID: subject.id,
+                startResearchDepth: self.settings.researchDepth
             )
-            .environment(settings)
-            .id(settings.appLanguage)
+        }
+    }
+
+    /// `.researchRequested` is a seed for the unified launcher, not a second
+    /// task entry. The subject carries the page URL so a later start has a real
+    /// seed instead of a fabricated Weibo home page.
+    @MainActor
+    private func openWorkspaceResearch(for item: NewsItem) {
+        guard ResearchConsent.presentIfNeeded(settings: settings) else { return }
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            let store = WorkspaceSubjectStore.shared
+            _ = await store.bootstrap()
+            let topicKey = TopicFingerprint.key(for: item.title)
+
+            var subject = await store.subjects().first { candidate in
+                guard !candidate.isArchived else { return false }
+                if TopicFingerprint.normalized(candidate.title) == TopicFingerprint.normalized(item.title) {
+                    return true
+                }
+                return candidate.aliases.contains {
+                    TopicFingerprint.normalized($0) == TopicFingerprint.normalized(item.title)
+                }
+            }
+            if subject == nil,
+               let record = await ResearchStore.shared.latestRecord(topicKey: topicKey) {
+                subject = await store.subject(containingResearchID: record.id)
+            }
+            if subject == nil {
+                subject = try? await store.createSubject(
+                    title: item.title,
+                    aliases: [],
+                    isFollowed: true,
+                    now: Date()
+                )
+            }
+            guard let subject else {
+                self.openResearchWorkspace()
+                return
+            }
+            let subjectID = subject.id
+            _ = try? await store.updateSubject(id: subjectID) { latest in
+                latest.isFollowed = true
+                latest.markUserStateChanged(at: Date())
+                if latest.seedURL == nil {
+                    latest.seedURL = item.readerURL ?? item.url
+                }
+            }
+
+            self.openResearchWorkspace(
+                subjectID: subjectID,
+                startResearchDepth: self.settings.researchDepth
+            )
+        }
+    }
+
+    // MARK: - Workspace resolution
+
+    @MainActor
+    private func openWorkspaceSearchResult(_ result: WorkspaceSearchResult) {
+        switch result {
+        case let .subject(id, _, _, _):
+            openResearchWorkspace(subjectID: id)
+        case let .report(recordID, subjectID, _, _, _):
+            openResearchWorkspace(subjectID: subjectID, researchID: recordID)
+        case let .evidence(resultID, subjectID, title, snippet, url):
+            openResearchWorkspace(
+                subjectID: subjectID,
+                evidenceHint: WorkspaceEvidenceFocus(
+                    resultID: resultID,
+                    canonicalURL: ContentIdentity.canonicalURL(url),
+                    quoteHint: snippet,
+                    title: title
+                )
+            )
+        case let .answer(id, _, _, _):
+            openResearchWorkspace(answerID: id)
+        }
+    }
+
+    /// The popover research chip means "unread research", not just "the first
+    /// remembered subject". It selects the newest unread report-backed subject.
+    private func workspaceUnreadResearchSubjectID() async -> String? {
+        let store = WorkspaceSubjectStore.shared
+        _ = await store.bootstrap()
+        let entries = await ResearchStore.shared.index()
+        let candidates = entries
+            .filter { !$0.isRead && $0.hasReport && $0.issue == nil }
+            .sorted { $0.updatedAt > $1.updatedAt }
+        for entry in candidates {
+            if let subject = await store.subject(containingResearchID: entry.id) {
+                return subject.id
+            }
+        }
+        return nil
+    }
+
+    private func resolveWorkspaceSubjectID(recordID: String?, eventID: String?) async -> String? {        let store = WorkspaceSubjectStore.shared
+        if let recordID,
+           let subject = await store.subject(containingResearchID: recordID) {
+            return subject.id
+        }
+        if let eventID,
+           let subject = await store.subject(containingEventID: eventID) {
+            return subject.id
+        }
+        guard recordID != nil || eventID != nil else { return nil }
+        // A legacy payload may predate the workspace index. Reconcile once
+        // before opening so a valid record/event never lands on an empty window.
+        await reconcileWorkspace()
+        if let recordID,
+           let subject = await store.subject(containingResearchID: recordID) {
+            return subject.id
+        }
+        if let eventID,
+           let subject = await store.subject(containingEventID: eventID) {
+            return subject.id
+        }
+        return nil
+    }
+
+    private func reconcileWorkspace() async {
+        let store = WorkspaceSubjectStore.shared
+        _ = await store.bootstrap()
+        let research = await ResearchStore.shared.index()
+        let events = (try? await NewsEventStore.shared.events()) ?? []
+        let existing = await store.subjects()
+        let result = WorkspaceReconciler().reconcile(
+            research: research,
+            events: events,
+            existing: existing,
+            now: Date()
         )
-        window.isReleasedWhenClosed = false
-        newsEventCenterWindow = window
-        window.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
-        MainActor.assumeIsolated { DockPresence.show() }
+        let changed = !result.changedIDs.isEmpty
+            || !result.createdIDs.isEmpty
+            || result.subjects.count != existing.count
+        if changed {
+            try? await store.saveAll(result.subjects)
+        }
     }
 
     // MARK: - UNUserNotificationCenterDelegate
@@ -1115,6 +1385,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             userInfo: userInfo,
             actionIdentifier: response.actionIdentifier
         )
+        let payloadSubjectID = (userInfo["subjectID"] as? String).flatMap {
+            $0.isEmpty ? nil : $0
+        }
         let digestCount = NotificationDigest.decode(userInfo["digest"] as? String)?.items.count ?? -1
         notificationLog.notice(
             "[Notify] action=\(response.actionIdentifier, privacy: .public) type=\((userInfo["type"] as? String) ?? "-", privacy: .public) digestItems=\(digestCount, privacy: .public) route=\(route.label, privacy: .public)"
@@ -1126,19 +1399,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 await self.orchestrator?.restoreResearchStateIfNeeded()
-                if let recordID = await self.orchestrator?.recordID(forTopic: eventID) {
-                    self.openResearchCenter(selecting: recordID)
+                if let payloadSubjectID {
+                    self.openResearchWorkspace(subjectID: payloadSubjectID)
+                } else if let recordID = await self.orchestrator?.recordID(forTopic: eventID) {
+                    self.openResearchWorkspace(researchID: recordID)
                 } else {
-                    self.openResearchCenter()
+                    self.openResearchWorkspace()
                 }
             }
         case .newsEvent(let eventID):
             Task { @MainActor [weak self] in
-                self?.openNewsEventMonitor(eventID: eventID)
+                self?.openResearchWorkspace(
+                    subjectID: payloadSubjectID,
+                    eventID: eventID
+                )
             }
         case .research(let recordID):
             Task { @MainActor [weak self] in
-                self?.openResearchCenter(selecting: recordID)
+                self?.openResearchWorkspace(
+                    subjectID: payloadSubjectID,
+                    researchID: recordID
+                )
             }
         case .markResearchRead(let recordID):
             Task { @MainActor [weak self] in

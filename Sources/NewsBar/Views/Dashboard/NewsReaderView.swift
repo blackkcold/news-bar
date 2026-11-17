@@ -1163,6 +1163,7 @@ struct NewsReaderView: View {
     var onOpenSettings: () -> Void = {}
     var onOpenResearch: (String) -> Void = { _ in }
     var onConfigureAI: () -> Void = {}
+    var onOpenWorkspaceResult: (WorkspaceSearchResult) -> Void = { _ in }
 
     init(
         model: NewsReaderModel,
@@ -1171,7 +1172,8 @@ struct NewsReaderView: View {
         isActiveTab: Bool = true,
         onOpenSettings: @escaping () -> Void = {},
         onOpenResearch: @escaping (String) -> Void = { _ in },
-        onConfigureAI: @escaping () -> Void = {}
+        onConfigureAI: @escaping () -> Void = {},
+        onOpenWorkspaceResult: @escaping (WorkspaceSearchResult) -> Void = { _ in }
     ) {
         self.model = model
         self.activeNewsItems = activeNewsItems
@@ -1180,6 +1182,7 @@ struct NewsReaderView: View {
         self.onOpenSettings = onOpenSettings
         self.onOpenResearch = onOpenResearch
         self.onConfigureAI = onConfigureAI
+        self.onOpenWorkspaceResult = onOpenWorkspaceResult
     }
 
     var body: some View {
@@ -1191,7 +1194,8 @@ struct NewsReaderView: View {
             onClose: { ReaderTransitionCoordinator.shared.requestClose() },
             onOpenSettings: onOpenSettings,
             onOpenResearch: onOpenResearch,
-            onConfigureAI: onConfigureAI
+            onConfigureAI: onConfigureAI,
+            onOpenWorkspaceResult: onOpenWorkspaceResult
         )
             .task {
                 await model.start(options: NewsReaderModel.SessionOptions(
@@ -1217,6 +1221,7 @@ struct ReaderContentView: View {
     var onOpenSettings: () -> Void = {}
     var onOpenResearch: (String) -> Void = { _ in }
     var onConfigureAI: () -> Void = {}
+    var onOpenWorkspaceResult: (WorkspaceSearchResult) -> Void = { _ in }
     @State private var lastFeedback: UUID?
     @State private var feedbackMessage: String?
     @State private var askExternal = false
@@ -1241,6 +1246,7 @@ struct ReaderContentView: View {
         onOpenSettings: @escaping () -> Void = {},
         onOpenResearch: @escaping (String) -> Void = { _ in },
         onConfigureAI: @escaping () -> Void = {},
+        onOpenWorkspaceResult: @escaping (WorkspaceSearchResult) -> Void = { _ in },
         initialAuxiliaryTab: ReaderAuxiliaryTab? = nil
     ) {
         self.model = model
@@ -1251,6 +1257,7 @@ struct ReaderContentView: View {
         self.onOpenSettings = onOpenSettings
         self.onOpenResearch = onOpenResearch
         self.onConfigureAI = onConfigureAI
+        self.onOpenWorkspaceResult = onOpenWorkspaceResult
         _auxiliary = State(initialValue: ReaderAuxiliaryModel(initialTab: initialAuxiliaryTab))
     }
 
@@ -1360,6 +1367,9 @@ struct ReaderContentView: View {
                         onConfigureAI: {
                             closeAuxiliary()
                             onConfigureAI()
+                        },
+                        onOpenWorkspaceResult: { result in
+                            onOpenWorkspaceResult(result)
                         },
                         onClose: { closeAuxiliary() },
                         onOpenCitation: { citation in
@@ -1756,17 +1766,6 @@ struct ReaderContentView: View {
             .accessibilityLabel(english ? "Toggle research sidebar" : "切换研究侧栏")
             .help(english ? "Research for this page" : "查看当前页面的研究")
             if let item = model.request.item {
-                Button {
-                    NotificationCenter.default.post(
-                        name: .researchRequested,
-                        object: nil,
-                        userInfo: ["item": item]
-                    )
-                } label: {
-                    Image(systemName: "checkmark.seal").frame(width: 28, height: 28)
-                }
-                .accessibilityLabel(english ? "Verify online" : "联网核查")
-                .help(english ? "Cross-check this story with public sources" : "用公开来源核查这条新闻")
                 Button {
                     lastFeedback = controller.toggleBookmark(item)
                     feedbackMessage = isBookmarked ? (english ? "Article bookmarked" : "已收藏文章") : (english ? "Bookmark removed" : "已取消收藏")

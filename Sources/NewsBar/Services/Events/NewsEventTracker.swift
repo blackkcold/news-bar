@@ -4,12 +4,49 @@ protocol NewsEventTracking: Sendable {
     func tick(now: Date, sources: [NewsSource]) async -> NewsEventTrackingResult
     func recover(now: Date, sources: [NewsSource]) async -> NewsEventTrackingResult
     func budgetSnapshot(now: Date) async throws -> NewsEventBudgetSnapshot
+    /// One conditional feed check for the workspace RSS checker. It uses the
+    /// same budget actor and single-flight slot as event tracking; it does not
+    /// touch event records or the scheduler. The budget slot is held until the
+    /// caller acknowledges the result.
+    func checkFeed(_ source: NewsSource, now: Date) async -> NewsEventSharedFeedCheck
+    func acknowledgeFeedCheck(sourceID: String, outcome: NewsEventFeedAck) async
+}
+
+enum NewsEventFeedAck: Sendable {
+    case committed
+    case failed
+    case cancelled
+}
+
+/// Result of one shared conditional feed check. The caller must persist any
+/// returned evidence before committing `cursor`; the tracker never commits a
+/// success cursor itself.
+enum NewsEventSharedFeedCheck: Sendable {
+    case reused(cursor: NewsEventFeedCursor, budget: NewsEventBudgetSnapshot)
+    case notModified(cursor: NewsEventFeedCursor, budget: NewsEventBudgetSnapshot)
+    case modified(evidence: [NewsEventEvidence], cursor: NewsEventFeedCursor,
+                  budget: NewsEventBudgetSnapshot)
+    case pending(budget: NewsEventBudgetSnapshot, reason: String)
+    case throttled(until: Date?, budget: NewsEventBudgetSnapshot, reason: String)
+    case failed(message: String, retryAt: Date?, budget: NewsEventBudgetSnapshot)
 }
 
 actor NewsEventTracker: NewsEventTracking {
+    private struct PendingFeedCheck {
+        let sourceID: String
+        let evidence: [NewsEventEvidence]
+        let cursor: NewsEventFeedCursor
+        let createdAt: Date
+    }
+
     private let store: any NewsEventPersisting
     private let fetcher: any NewsEventRSSFetching
     private let budget: NewsEventTrackingBudget
+    /// A successful fetch whose evidence/cursor has not been acknowledged by
+    /// the controller yet. The budget slot stays held for this source, so no
+    /// tick or second manual check can fetch it again before durability.
+    private var pendingFeedChecks: [String: PendingFeedCheck] = [:]
+    private let pendingLifetime: TimeInterval = 120
 
     init(
         store: any NewsEventPersisting = NewsEventStore.shared,
@@ -30,6 +67,7 @@ actor NewsEventTracker: NewsEventTracking {
     }
 
     func tick(now: Date, sources: [NewsSource]) async -> NewsEventTrackingResult {
+        await purgeStalePending(now: now)
         do {
             let allEvents = try await store.events()
             let dueEvents = allEvents.filter {
@@ -80,7 +118,9 @@ actor NewsEventTracker: NewsEventTracking {
             }
 
             let linkedSourceIDs = Set(remainingDue.flatMap { $0.evidence.compactMap(\.sourceID) })
+            let pendingSourceIDs = Set(pendingFeedChecks.keys)
             let candidates = rssSources
+                .filter { !pendingSourceIDs.contains($0.id) }
                 .filter { (cursors[$0.id]?.retryAfter ?? .distantPast) <= now }
                 .sorted { lhs, rhs in
                     let lhsCursor = cursors[lhs.id]
@@ -95,6 +135,16 @@ actor NewsEventTracker: NewsEventTracking {
                 }
 
             guard let source = candidates.first else {
+                if !pendingSourceIDs.isEmpty {
+                    let pendingBudget = (try? await budget.snapshot(now: now)) ?? currentBudget
+                    return Self.result(
+                        state: .budgetDeferred,
+                        budget: pendingBudget,
+                        checkedEventIDs: sharedCheckedIDs,
+                        pendingEventIDs: remainingDue.map(\.id).sorted(),
+                        message: "同一 RSS 源已有检查等待证据/cursor 落盘；本轮不重复请求。"
+                    )
+                }
                 let retryAt = rssSources.compactMap { cursors[$0.id]?.retryAfter }.filter { $0 > now }.min()
                 let message = retryAt.map {
                     "所有已启用 RSS 来源均处于失败退避期；事件 due 保留，最早重试时间为 \($0.formatted(date: .abbreviated, time: .shortened))。"
@@ -176,7 +226,12 @@ actor NewsEventTracker: NewsEventTracking {
                     cursorAfterIngest = cursor
                 }
 
-                await budget.release()
+                pendingFeedChecks[source.id] = PendingFeedCheck(
+                    sourceID: source.id,
+                    evidence: evidence,
+                    cursor: cursorAfterIngest ?? cursor,
+                    createdAt: now
+                )
                 let snapshot = try await budget.snapshot(now: now)
                 let message: String
                 if case .notModified = refresh {
@@ -254,6 +309,191 @@ actor NewsEventTracker: NewsEventTracking {
                 pendingEventIDs: [],
                 message: "无法读取事件或追踪 cursor：\(error.localizedDescription)"
             )
+        }
+    }
+
+    // MARK: - Workspace shared feed checks
+
+    /// Conditional check for one feed. The workspace calls this through
+    /// `NewsEventController`; it shares this tracker's budget actor, so a
+    /// manual check and an automatic tick cannot both pass the single-flight
+    /// slot even though they share the same store.
+    func checkFeed(_ source: NewsSource, now: Date) async -> NewsEventSharedFeedCheck {
+        guard case .rss = source else {
+            let snapshot = (try? await budget.snapshot(now: now)) ?? Self.paused(
+                NewsEventBudgetSnapshot(),
+                reason: "仅支持 RSS 来源。"
+            )
+            return .failed(message: "仅支持 RSS 来源。", retryAt: nil, budget: snapshot)
+        }
+
+        await purgeStalePending(now: now)
+        if pendingFeedChecks[source.id] != nil {
+            let snapshot = (try? await budget.snapshot(now: now))
+                ?? Self.paused(NewsEventBudgetSnapshot(), reason: "同一 RSS 源正在落盘。")
+            return .pending(
+                budget: snapshot,
+                reason: "同一 RSS 源的检查已完成，正在等待证据/cursor 落盘；不重复请求。"
+            )
+        }
+
+        do {
+            let oldCursor = try await store.feedCursor(for: source.id)
+            let currentBudget = try await budget.snapshot(now: now)
+
+            if let retryAfter = oldCursor?.retryAfter, retryAfter > now {
+                return .throttled(
+                    until: retryAfter,
+                    budget: Self.paused(currentBudget, reason: "该 RSS 来源仍在失败退避期。"),
+                    reason: "该 RSS 来源仍在失败退避期；不会绕过退避重试。"
+                )
+            }
+
+            // A check completed moments ago is a valid shared check. Reusing it
+            // avoids spending another rolling-hour slot for the same feed.
+            if let cursor = oldCursor,
+               let checkedAt = cursor.checkedAt,
+               checkedAt <= now,
+               now.timeIntervalSince(checkedAt) < 90 {
+                return .reused(cursor: cursor, budget: currentBudget)
+            }
+
+            let acquired: Bool
+            do {
+                acquired = try await budget.acquire(now: now)
+            } catch {
+                return .failed(
+                    message: "追踪预算账本不可用；未发起 RSS 请求：\(error.localizedDescription)",
+                    retryAt: nil,
+                    budget: Self.paused(currentBudget, reason: "追踪预算账本不可用。")
+                )
+            }
+            guard acquired else {
+                let deferred = (try? await budget.snapshot(now: now))
+                    ?? Self.paused(currentBudget, reason: "已有 RSS 检查在进行或预算已用完。")
+                let reason = deferred.reason ?? "RSS 预算暂不可用。"
+                return .throttled(
+                    until: deferred.resetsAt,
+                    budget: deferred,
+                    reason: reason
+                )
+            }
+
+            let refresh: NewsEventFeedRefresh
+            do {
+                refresh = try await fetcher.refresh(source, cursor: oldCursor, now: now)
+            } catch {
+                await budget.release()
+                if error is CancellationError || Task.isCancelled {
+                    let snapshot = (try? await budget.snapshot(now: now)) ?? currentBudget
+                    return .failed(message: "检查已取消。", retryAt: nil, budget: snapshot)
+                }
+                let retryAt = await recordFeedFailure(
+                    source: source,
+                    oldCursor: oldCursor,
+                    now: now,
+                    error: error
+                )
+                let snapshot = (try? await budget.snapshot(now: now)) ?? currentBudget
+                let minutes = retryAt.map { max(1, Int($0.timeIntervalSince(now) / 60)) } ?? 5
+                return .failed(
+                    message: "\(source.displayName) RSS 检查失败；\(minutes) 分钟后重试。",
+                    retryAt: retryAt,
+                    budget: Self.paused(snapshot, reason: "RSS 源检查失败，已退避。")
+                )
+            }
+
+            let snapshot = (try? await budget.snapshot(now: now)) ?? currentBudget
+            switch refresh {
+            case let .notModified(cursor):
+                pendingFeedChecks[source.id] = PendingFeedCheck(
+                    sourceID: source.id,
+                    evidence: [],
+                    cursor: cursor,
+                    createdAt: now
+                )
+                return .notModified(cursor: cursor, budget: snapshot)
+            case let .modified(evidence, newCursor):
+                let finalCursor: NewsEventFeedCursor
+                if evidence.isEmpty {
+                    // A 200 with no archivable evidence may advance the check
+                    // time but must not publish new validators.
+                    finalCursor = NewsEventFeedCursor(
+                        sourceID: newCursor.sourceID,
+                        eTag: oldCursor?.eTag,
+                        lastModified: oldCursor?.lastModified,
+                        checkedAt: newCursor.checkedAt,
+                        attemptedAt: newCursor.attemptedAt,
+                        failureCount: 0
+                    )
+                } else {
+                    finalCursor = newCursor
+                }
+                pendingFeedChecks[source.id] = PendingFeedCheck(
+                    sourceID: source.id,
+                    evidence: evidence,
+                    cursor: finalCursor,
+                    createdAt: now
+                )
+                return .modified(evidence: evidence, cursor: finalCursor, budget: snapshot)
+            }
+        } catch {
+            let snapshot = (try? await budget.snapshot(now: now)) ?? NewsEventBudgetSnapshot()
+            return .failed(
+                message: "无法读取 RSS cursor：\(error.localizedDescription)",
+                retryAt: nil,
+                budget: Self.paused(snapshot, reason: "RSS cursor 不可用。")
+            )
+        }
+    }
+
+    func acknowledgeFeedCheck(sourceID: String, outcome: NewsEventFeedAck) async {
+        guard pendingFeedChecks.removeValue(forKey: sourceID) != nil else { return }
+        await budget.release()
+    }
+
+    private func purgeStalePending(now: Date) async {
+        let stale = pendingFeedChecks.values
+            .filter { now.timeIntervalSince($0.createdAt) > pendingLifetime }
+            .map(\.sourceID)
+        guard !stale.isEmpty else { return }
+        for sourceID in stale {
+            pendingFeedChecks.removeValue(forKey: sourceID)
+        }
+        // The single-flight slot belongs to the expired pending check.
+        await budget.release()
+    }
+
+    private func recordFeedFailure(
+        source: NewsSource,
+        oldCursor: NewsEventFeedCursor?,
+        now: Date,
+        error: Error
+    ) async -> Date? {
+        let failureCount = (oldCursor?.failureCount ?? 0) + 1
+        let exponent = min(max(0, failureCount - 1), 4)
+        let delay = min(300 * Double(1 << exponent), 3_600)
+        let retryAfter = now.addingTimeInterval(delay)
+        let failedCursor = NewsEventFeedCursor(
+            sourceID: source.id,
+            eTag: oldCursor?.eTag,
+            lastModified: oldCursor?.lastModified,
+            checkedAt: oldCursor?.checkedAt,
+            attemptedAt: now,
+            retryAfter: retryAfter,
+            failureCount: failureCount,
+            lastError: String(String(describing: type(of: error)).prefix(80))
+        )
+        do {
+            try await store.saveFeedCursor(failedCursor)
+            return retryAfter
+        } catch {
+            NSLog(
+                "[NewsEventTracker] could not persist feed backoff for %@: %@",
+                source.id,
+                error.localizedDescription
+            )
+            return nil
         }
     }
 

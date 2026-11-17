@@ -40,62 +40,40 @@ enum AISearchServiceFactory {
         let searchConfiguration = SearchRouterConfiguration(enabled: providerIDs, keys: searchKeys)
         // AI search is a first-class search consumer: it must obey the same
         // local per-provider rate guards as research, not only the AI quota.
-        let router = SearchRouter(quota: .shared)
+        // The router is the single production instance; its cache, epoch and
+        // provider state are shared with research and page summary.
+        let router = ResearchServiceAssembly.shared.searchRouter
         let firecrawlKey = searchKeys[.firecrawl] ?? ""
-        let pageReader = PageReader(isScrapeEnabled: !firecrawlKey.isEmpty)
+        let pageReader = ResearchServiceAssembly.shared.pageReader(
+            isScrapeEnabled: !firecrawlKey.isEmpty
+        )
 
         let price = connection.customPrice
             ?? AIPriceCatalog.price(for: connection.providerID, model: model)
 
-        let chatQuota = AIChatQuota(
-            reserve: { request, outputTokens in
-                let system = request.messages.filter { $0.role == .system }.map(\.content).joined(separator: "\n")
-                let user = request.messages.filter { $0.role != .system }.map(\.content).joined(separator: "\n")
-                let reserved = price.map {
-                    AICostEstimator.reserveMicros(
-                        inputTokens: AICostEstimator.estimateInputTokens(system: system, user: user),
-                        maxOutputTokens: outputTokens,
-                        price: $0
-                    )
-                } ?? 0
-                return AIQuotaStore.shared.reserveTracked(
-                    .aiSearch, policy: policy, reservedCostMicros: reserved
-                )
-            },
-            settle: { reservation, outcome in
-                switch outcome {
-                case let .completed(usage, price):
-                    AIQuotaStore.shared.settle(reservation, usage: usage, price: price)
-                case .unknown:
-                    AIQuotaStore.shared.settle(reservation, usage: nil, price: nil)
-                case .notDispatched:
-                    AIQuotaStore.shared.settle(
-                        reservation, actualCostMicros: 0,
-                        inputTokens: 0, outputTokens: 0, priced: true
-                    )
-                }
-            }
-        )
-
-        let client = HTTPAIChatClient(
+        let client = AIChatClientFactory.metered(
+            origin: .aiSearch,
+            policy: policy,
+            price: price,
             connection: connection,
             apiKey: key,
             model: model,
             thinking: thinking,
-            timeout: 45,
-            quota: chatQuota
+            timeout: 45
         )
         // The assessor is a separate call with its own output ceiling. It does
         // not carry the answer's thinking level: auditing quotations is a
         // short, factual task, and reasoning tokens would only add cost.
         let assessClient: HTTPAIChatClient? = settings.aiEvidenceAssessmentEnabled
-            ? HTTPAIChatClient(
+            ? AIChatClientFactory.metered(
+                origin: .aiSearch,
+                policy: policy,
+                price: price,
                 connection: connection,
                 apiKey: key,
                 model: model,
                 thinking: nil,
-                timeout: 45,
-                quota: chatQuota
+                timeout: 45
             )
             : nil
 
@@ -143,25 +121,20 @@ enum AISearchServiceFactory {
 
         return AISearchService(
             search: { query, ticket in
-                let key = [
-                    query.text,
-                    query.recency.rawValue,
-                    query.language ?? "",
-                    String(query.maxResults),
-                    providerIDs.map(\.rawValue).sorted().joined(separator: ","),
-                ].joined(separator: "|")
-                if let cached = await SearchHitCache.shared.hits(for: key) {
-                    return cached
-                }
+                // Same key, file and write epoch as research: the router builds
+                // the key from the query and the dispatchable provider set.
+                // `maxAge` preserves the 10-minute window AI search always had,
+                // so sharing the 12-hour research snapshot cannot serve an old
+                // answer. A cached hit does not consume the ticket.
                 let batch = try await router.search(
                     query,
                     configuration: searchConfiguration,
                     maxAttempts: EvidenceRetriever.maxAttemptsPerQuery,
                     maxProviderAttempts: EvidenceRetriever.maxProviderAttemptsPerQuery,
-                    useCache: false,
+                    useCache: true,
+                    maxAge: SearchHitCache.aiSearchMaxAge,
                     ticket: ticket
                 )
-                await SearchHitCache.shared.store(batch.hits, for: key)
                 return batch.hits
             },
             read: { hit in
