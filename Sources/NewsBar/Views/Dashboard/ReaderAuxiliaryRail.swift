@@ -16,6 +16,7 @@ struct ReaderAuxiliaryRail: View {
     let onOpenResult: (URL) -> Void
     let onOpenSource: (URL) -> Void
     let onConfigureAI: () -> Void
+    var onOpenWorkspaceResult: (WorkspaceSearchResult) -> Void = { _ in }
     let onClose: () -> Void
     let onOpenCitation: (PageSummaryCitation) -> Void
     let onSwitchToReaderMode: () -> Void
@@ -151,7 +152,8 @@ struct ReaderAuxiliaryRail: View {
             availableHeight: availableHeight,
             onOpenResult: onOpenResult,
             onOpenSource: onOpenSource,
-            onConfigureAI: onConfigureAI
+            onConfigureAI: onConfigureAI,
+            onOpenWorkspaceResult: onOpenWorkspaceResult
         )
         .padding(.horizontal, 14)
         .padding(.vertical, 12)

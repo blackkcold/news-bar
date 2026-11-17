@@ -8,13 +8,108 @@ enum ResearchRecordProvisioner {
     private static let inFlightLock = NSLock()
     nonisolated(unsafe) private static var inFlight: Set<String> = []
 
+    /// Topic-only research (a new subject with no event evidence and no
+    /// explicit seed). It creates a `ResearchRecord` directly instead of
+    /// inventing a `NewsItem` URL/source. The legacy non-optional
+    /// `ResearchSeed.source` is a placeholder and is never treated as a
+    /// citation when `seed.url` is nil.
+    static func ensureTopicRecord(
+        title: String,
+        seed: ResearchSeed?,
+        origin: ResearchOrigin,
+        store: any ResearchPersisting,
+        now: Date = Date()
+    ) async -> ResearchRecord? {
+        let normalizedTitle = TopicFingerprint.normalized(title)
+        guard !normalizedTitle.isEmpty else { return nil }
+        let topicKey = TopicFingerprint.key(for: title)
+
+        inFlightLock.lock()
+        let inserted = inFlight.insert(topicKey).inserted
+        inFlightLock.unlock()
+        guard inserted else {
+            try? await Task.sleep(nanoseconds: 50_000_000)
+            return await store.latestRecord(topicKey: topicKey)
+        }
+        defer {
+            inFlightLock.lock()
+            inFlight.remove(topicKey)
+            inFlightLock.unlock()
+        }
+
+        if let existing = await store.latestRecord(topicKey: topicKey),
+           shouldReuse(existing, origin: origin, now: now) {
+            var record = existing
+            if record.topic != title {
+                record.addAlias(record.topic)
+                record.topic = title
+                record.topicKey = topicKey
+            }
+            record.lastSeenAt = now
+            if record.seed.title.isEmpty { record.seed.title = title }
+            if record.seed.url == nil, let url = seed?.url, !url.isEmpty {
+                record.seed.url = url
+                record.seed.source = seed?.source ?? record.seed.source
+            }
+            if record.seed.publishedAt == nil { record.seed.publishedAt = seed?.publishedAt }
+            if record.seed.initialSummary.isEmpty {
+                record.seed.initialSummary = seed?.initialSummary ?? ""
+            }
+            do {
+                try await store.save(record)
+                return record
+            } catch {
+                return nil
+            }
+        }
+
+        var finalSeed = seed ?? ResearchSeed(
+            itemID: nil,
+            title: title,
+            url: nil,
+            source: .weibo,
+            publishedAt: nil,
+            initialSummary: ""
+        )
+        if finalSeed.title.isEmpty { finalSeed.title = title }
+
+        var run = ResearchRun()
+        run.phase = .idle
+        run.depth = .quick
+        run.origin = origin
+
+        let record = ResearchRecord(
+            id: UUID().uuidString,
+            topicKey: topicKey,
+            origin: origin,
+            topic: title,
+            aliases: [],
+            seed: finalSeed,
+            createdAt: now,
+            lastSeenAt: now,
+            updatedAt: now,
+            lastAccessedAt: now,
+            isPinned: false,
+            isRead: false,
+            status: .queued,
+            report: nil,
+            run: run,
+            reportVersion: 0
+        )
+        do {
+            try await store.save(record)
+            return record
+        } catch {
+            return nil
+        }
+    }
+
     static func ensureRecord(
         for item: NewsItem,
         origin: ResearchOrigin,
         store: any ResearchPersisting,
         now: Date = Date()
-    ) async -> ResearchRecord? {
-        let normalizedTitle = TopicFingerprint.normalized(item.title)
+    ) async -> ResearchRecord? {        let normalizedTitle = TopicFingerprint.normalized(item.title)
         guard !normalizedTitle.isEmpty else { return nil }
 
         let topicKey = TopicFingerprint.key(for: item.title)

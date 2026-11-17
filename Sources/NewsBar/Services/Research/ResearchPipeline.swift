@@ -17,6 +17,12 @@ struct ResearchPipelineConfiguration: Sendable {
     /// Re-checked at every phase boundary so a cancelled or superseded run
     /// stops before spending another network request.
     var isAllowed: @Sendable () async -> Bool
+    /// When present, the run re-analyses a previous report instead of doing a
+    /// full plan/search/extract pass. New materials are the only new inputs.
+    var incremental: ResearchIncrementalContext?
+    /// Explicit full re-research: bypass the page cache as well as the report
+    /// reuse path.
+    var forceRefresh: Bool
 
     init(
         record: ResearchRecord,
@@ -29,6 +35,8 @@ struct ResearchPipelineConfiguration: Sendable {
         quotaPolicy: AIQuotaPolicy,
         taskDailyCap: Int,
         seedSourceName: String? = nil,
+        incremental: ResearchIncrementalContext? = nil,
+        forceRefresh: Bool = false,
         isAllowed: @escaping @Sendable () async -> Bool = { true }
     ) {
         self.record = record
@@ -41,6 +49,8 @@ struct ResearchPipelineConfiguration: Sendable {
         self.quotaPolicy = quotaPolicy
         self.taskDailyCap = taskDailyCap
         self.seedSourceName = seedSourceName
+        self.incremental = incremental
+        self.forceRefresh = forceRefresh
         self.isAllowed = isAllowed
     }
 }
@@ -97,6 +107,7 @@ struct ResearchPipeline: Sendable {
         let language = configuration.language
         let startedAt = now()
         let state = ResearchRunState()
+        let incremental = configuration.incremental
 
         var plannedQueries: [PlannedQuery] = []
         var plannedQueryCount = 0
@@ -237,43 +248,56 @@ struct ResearchPipeline: Sendable {
         if let reason = await checkStop() { return await fail(reason) }
 
         var plan = ResearchPlan(claims: [], queries: [])
-        if let response = await callAI(
-            AIChatRequest(
-                messages: [
-                    AIChatMessage(
-                        role: .system,
-                        content: ResearchPrompts.planningSystemPrompt(language: language)
-                    ),
-                    AIChatMessage(
-                        role: .user,
-                        content: ResearchPrompts.planningUserPrompt(
-                            seed: seed,
-                            trendContext: configuration.trendContext,
-                            depth: depth,
-                            recency: recency,
-                            language: language
-                        )
-                    ),
-                ],
-                maxTokens: 1_500,
-                temperature: 0.2
+        var plannedClaims: [String] = []
+        if let incremental {
+            // Incremental runs reuse the prior claims/queries instead of
+            // spending an AI call to re-plan the same subject.
+            plannedClaims = Array(
+                (incremental.priorReport.verification?.claims.map(\.claim) ?? []).prefix(5)
             )
-        ) {
-            plan = ResearchReportParser.plan(from: response.text) ?? plan
-        }
-        if state.budgetExhausted {
-            return await fail(budgetMessage())
-        }
+            plannedQueries = (incremental.priorReport.method?.queries ?? []).map {
+                PlannedQuery(text: $0, recency: nil)
+            }
+            plannedQueryCount = plannedQueries.count
+        } else {
+            if let response = await callAI(
+                AIChatRequest(
+                    messages: [
+                        AIChatMessage(
+                            role: .system,
+                            content: ResearchPrompts.planningSystemPrompt(language: language)
+                        ),
+                        AIChatMessage(
+                            role: .user,
+                            content: ResearchPrompts.planningUserPrompt(
+                                seed: seed,
+                                trendContext: configuration.trendContext,
+                                depth: depth,
+                                recency: recency,
+                                language: language
+                            )
+                        ),
+                    ],
+                    maxTokens: 1_500,
+                    temperature: 0.2
+                )
+            ) {
+                plan = ResearchReportParser.plan(from: response.text) ?? plan
+            }
+            if state.budgetExhausted {
+                return await fail(budgetMessage())
+            }
 
-        plannedQueries = Self.resolvedQueries(
-            plan: plan,
-            title: title,
-            language: language,
-            recency: recency,
-            limit: profile.queryCount
-        )
-        plannedQueryCount = plannedQueries.count
-        let plannedClaims = Array(plan.claims.prefix(5))
+            plannedQueries = Self.resolvedQueries(
+                plan: plan,
+                title: title,
+                language: language,
+                recency: recency,
+                limit: profile.queryCount
+            )
+            plannedQueryCount = plannedQueries.count
+            plannedClaims = Array(plan.claims.prefix(5))
+        }
 
         // Stage 2 — search.
         await progress(snapshot(.searching))
@@ -285,79 +309,89 @@ struct ResearchPipeline: Sendable {
         /// not remembered across passes either.
         var blockedProviders: Set<SearchProviderID> = []
 
-        for planned in plannedQueries {
-            if let reason = await checkStop() { return await fail(reason) }
-            let remainingCalls = DepthProfile.maxSearchHTTPCallsPerTask - state.searchCalls
-            guard remainingCalls > 0 else {
-                state.partial = true
-                break
-            }
-            let query = SearchQuery(
-                text: planned.text,
-                recency: planned.recency ?? recency,
-                language: language.bcp47,
-                maxResults: 6
-            )
-            // One ticket per query. Every dispatched request consumes a slot
-            // before it leaves the process; skips and cache hits cost nothing.
-            // The same ticket is read after success, failure and cancellation,
-            // so the pipeline never has to guess how many requests were sent.
-            let ticket = SearchAttemptTicket(limit: remainingCalls)
-            var settled = false
-            func settleSearchCalls() {
-                guard !settled else { return }
-                settled = true
-                let used = ticket.used
-                guard used > 0 else { return }
-                state.searchCalls += used
-                if !ledger.recordSearchCalls(used, origin: origin) {
-                    ledgerWriteFailed = true
+        if incremental == nil {
+            for planned in plannedQueries {
+                if let reason = await checkStop() { return await fail(reason) }
+                let remainingCalls = DepthProfile.maxSearchHTTPCallsPerTask - state.searchCalls
+                guard remainingCalls > 0 else {
+                    state.partial = true
+                    break
                 }
-            }
-
-            var queryConfiguration = configuration.searchConfiguration
-            queryConfiguration.enabled.subtract(blockedProviders)
-            do {
-                let batch = try await searchRouter.search(
-                    query,
-                    configuration: queryConfiguration,
-                    maxAttempts: remainingCalls,
-                    ticket: ticket
+                let query = SearchQuery(
+                    text: planned.text,
+                    recency: planned.recency ?? recency,
+                    language: language.bcp47,
+                    maxResults: 6
                 )
-                settleSearchCalls()
-                anySearchSucceeded = true
-                state.failovers += batch.failovers
-                state.usedProviders.formUnion(batch.providers)
-                for failure in batch.failures where failure.reason == .forbidden {
-                    if let provider = failure.provider {
-                        blockedProviders.insert(provider)
+                // One ticket per query. Every dispatched request consumes a slot
+                // before it leaves the process; skips and cache hits cost nothing.
+                // The same ticket is read after success, failure and cancellation,
+                // so the pipeline never has to guess how many requests were sent.
+                let ticket = SearchAttemptTicket(limit: remainingCalls)
+                var settled = false
+                func settleSearchCalls() {
+                    guard !settled else { return }
+                    settled = true
+                    let used = ticket.used
+                    guard used > 0 else { return }
+                    state.searchCalls += used
+                    if !ledger.recordSearchCalls(used, origin: origin) {
+                        ledgerWriteFailed = true
                     }
                 }
-                hits.append(contentsOf: batch.hits)
-            } catch is CancellationError {
-                settleSearchCalls()
-                return await fail(L10n.string("research.error.cancelled", language: language))
-            } catch let unavailable as SearchUnavailableError {
-                settleSearchCalls()
-                anySearchFailed = true
-                for failure in unavailable.failures where failure.reason == .forbidden {
-                    if let provider = failure.provider {
-                        blockedProviders.insert(provider)
+
+                var queryConfiguration = configuration.searchConfiguration
+                queryConfiguration.enabled.subtract(blockedProviders)
+                do {
+                    let batch = try await searchRouter.search(
+                        query,
+                        configuration: queryConfiguration,
+                        maxAttempts: remainingCalls,
+                        useCache: !configuration.forceRefresh,
+                        ticket: ticket
+                    )
+                    settleSearchCalls()
+                    anySearchSucceeded = true
+                    state.failovers += batch.failovers
+                    state.usedProviders.formUnion(batch.providers)
+                    for failure in batch.failures where failure.reason == .forbidden {
+                        if let provider = failure.provider {
+                            blockedProviders.insert(provider)
+                        }
                     }
+                    hits.append(contentsOf: batch.hits)
+                } catch is CancellationError {
+                    settleSearchCalls()
+                    return await fail(L10n.string("research.error.cancelled", language: language))
+                } catch let unavailable as SearchUnavailableError {
+                    settleSearchCalls()
+                    anySearchFailed = true
+                    for failure in unavailable.failures where failure.reason == .forbidden {
+                        if let provider = failure.provider {
+                            blockedProviders.insert(provider)
+                        }
+                    }
+                } catch {
+                    settleSearchCalls()
+                    anySearchFailed = true
                 }
-            } catch {
-                settleSearchCalls()
-                anySearchFailed = true
+                state.queriesCompleted += 1
+                await progress(snapshot(.searching))
+                if ledgerWriteFailed {
+                    return await fail(budgetMessage())
+                }
             }
-            if ledgerWriteFailed {
-                return await fail(budgetMessage())
-            }
-            state.queriesCompleted += 1
-            await progress(snapshot(.searching))
         }
 
         let searchStatus: BurstSearchStatus
-        if anySearchSucceeded {
+        if incremental != nil {
+            // A prior validated report already supplies grounded pages. No new
+            // search is issued for an unchanged subject; candidates are the
+            // explicit new materials and their cached pages.
+            anySearchSucceeded = true
+            searchStatus = .succeeded
+            state.queriesCompleted = plannedQueries.count
+        } else if anySearchSucceeded {
             searchStatus = .succeeded
         } else if anySearchFailed || !plannedQueries.isEmpty {
             searchStatus = .failed
@@ -369,9 +403,9 @@ struct ResearchPipeline: Sendable {
         }
 
         // Stage 3 — select pages.
-        let selected = Array(
-            SearchResultRanking.deduplicated(hits).prefix(profile.pageCount)
-        )
+        let selected: [SearchHit] = incremental == nil
+            ? Array(SearchResultRanking.deduplicated(hits).prefix(profile.pageCount))
+            : []
 
         // Stage 4 — read.
         await progress(snapshot(.reading))
@@ -385,7 +419,8 @@ struct ResearchPipeline: Sendable {
                         group.addTask {
                             try await pageReader.read(
                                 hit,
-                                apiKey: configuration.firecrawlAPIKey
+                                apiKey: configuration.firecrawlAPIKey,
+                                useCache: !configuration.forceRefresh
                             )
                         }
                     }
@@ -409,7 +444,7 @@ struct ResearchPipeline: Sendable {
             byURL[document.canonicalURL] = document
         }
         var orderedDocuments = selected.compactMap { byURL[$0.canonicalURL] }
-        if orderedDocuments.count < selected.count {
+        if incremental == nil, orderedDocuments.count < selected.count {
             for hit in selected where byURL[hit.canonicalURL] == nil {
                 let snippet = hit.snippet.trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !snippet.isEmpty else { continue }
@@ -425,6 +460,67 @@ struct ResearchPipeline: Sendable {
                 byURL[document.canonicalURL] = document
             }
         }
+
+        if let incremental {
+            // Cached prior pages are read from local storage only. New
+            // materials may hit the same cache first; only a cache miss is a
+            // network read.
+            var merged: [String: ResearchDocument] = [:]
+            for evidence in incremental.priorReport.evidence {
+                if let cached = await pageReader.cachedDocument(
+                    canonicalURL: evidence.canonicalURL
+                ) {
+                    merged[cached.canonicalURL] = cached
+                }
+            }
+            for material in incremental.newMaterials {
+                if let reason = await checkStop() { return await fail(reason) }
+                if let cached = await pageReader.cachedDocument(
+                    canonicalURL: material.canonicalURL
+                ) {
+                    merged[cached.canonicalURL] = cached
+                    continue
+                }
+                do {
+                    let outcome = try await pageReader.readOutcome(
+                        PageReadRequest(
+                            url: material.url,
+                            title: material.title,
+                            snippet: material.snippet,
+                            publishedAt: material.publishedAt,
+                            useCache: !configuration.forceRefresh
+                        ),
+                        apiKey: configuration.firecrawlAPIKey
+                    )
+                    if case let .document(document) = outcome {
+                        merged[document.canonicalURL] = document
+                        continue
+                    }
+                } catch is CancellationError {
+                    return await fail(
+                        L10n.string("research.error.cancelled", language: language)
+                    )
+                } catch {
+                    // A failed new page falls back to its snippet below.
+                }
+                let snippet = material.snippet.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !snippet.isEmpty {
+                    let document = ResearchDocument(
+                        url: material.url,
+                        title: material.title,
+                        text: snippet,
+                        publishedAt: material.publishedAt,
+                        fetchedAt: now(),
+                        source: .snippet
+                    )
+                    merged[document.canonicalURL] = document
+                }
+            }
+            orderedDocuments = merged.values.sorted {
+                $0.canonicalURL < $1.canonicalURL
+            }
+        }
+
         state.pagesRead = orderedDocuments.filter(\.isFullText).count
         orderedDocuments = Self.cappedDocuments(
             orderedDocuments,
@@ -441,10 +537,50 @@ struct ResearchPipeline: Sendable {
 
         // Stage 5 — extract evidence in batches of two pages.
         var candidates: [EvidenceCandidate] = []
-        let fullTextDocuments = orderedDocuments.filter(\.isFullText)
-        let extractionDocuments = fullTextDocuments.isEmpty
-            ? orderedDocuments.filter { !$0.text.isEmpty }
-            : fullTextDocuments
+
+        if let incremental {
+            // Reuse an old quote only when the current local body still
+            // contains it verbatim. A missing body is not trusted; the old
+            // version file keeps that history visible.
+            let claimByEvidence = Dictionary(
+                (incremental.priorReport.verification?.claims ?? []).flatMap { claim in
+                    claim.evidenceIDs.map { ($0, claim.claim) }
+                },
+                uniquingKeysWith: { first, _ in first }
+            )
+            for item in incremental.priorReport.evidence {
+                guard let document = documents[item.canonicalURL] else { continue }
+                guard QuoteVerifier.verified(quote: item.quote, in: document.text) else {
+                    continue
+                }
+                candidates.append(
+                    EvidenceCandidate(
+                        url: item.url,
+                        title: item.title,
+                        quote: item.quote,
+                        claim: claimByEvidence[item.id] ?? "",
+                        stance: item.stance,
+                        publishedAt: item.publishedAt,
+                        fetchedAt: item.fetchedAt
+                    )
+                )
+            }
+        }
+
+        let extractionDocuments: [ResearchDocument]
+        if let incremental {
+            let priorURLs = Set(incremental.priorReport.evidence.map(\.canonicalURL))
+            let priorGenerated = incremental.priorReport.generatedAt ?? .distantPast
+            extractionDocuments = orderedDocuments.filter { document in
+                !priorURLs.contains(document.canonicalURL)
+                    || document.fetchedAt > priorGenerated
+            }
+        } else {
+            let fullTextDocuments = orderedDocuments.filter(\.isFullText)
+            extractionDocuments = fullTextDocuments.isEmpty
+                ? orderedDocuments.filter { !$0.text.isEmpty }
+                : fullTextDocuments
+        }
 
         if !extractionDocuments.isEmpty {
             await progress(snapshot(.extracting))
@@ -564,6 +700,10 @@ struct ResearchPipeline: Sendable {
         var allowedURLs = Set(hits.map(\.canonicalURL))
         allowedURLs.formUnion(selected.map(\.canonicalURL))
         allowedURLs.formUnion(documents.keys)
+        if let incremental {
+            allowedURLs.formUnion(incremental.priorReport.evidence.map(\.canonicalURL))
+            allowedURLs.formUnion(incremental.newMaterials.map(\.canonicalURL))
+        }
         if let seedURL = configuration.record.seed.url {
             allowedURLs.insert(ContentIdentity.canonicalURL(seedURL))
         }
@@ -581,7 +721,7 @@ struct ResearchPipeline: Sendable {
             language: language,
             hasEvidence: hasEvidence
         )
-        let synthesisUser = ResearchPrompts.synthesisUserPrompt(
+        var synthesisUser = ResearchPrompts.synthesisUserPrompt(
             seed: seed,
             claims: hasEvidence ? claims : [],
             evidence: cards,
@@ -589,6 +729,16 @@ struct ResearchPipeline: Sendable {
             trendContext: configuration.trendContext,
             language: language
         )
+        if let incremental {
+            // Background only: the model updates the prior account, but only
+            // the evidence cards above may be cited in the new report.
+            let priorSummary = incremental.priorReport.summary
+            let priorOverview = incremental.priorReport.overview
+            synthesisUser += "\n\n上一版报告（仅作更新背景，不得当作新证据引用）：\n"
+                + "摘要：\(priorSummary)\n"
+                + "概述：\(priorOverview)\n"
+                + "请只使用本次证据卡与页面资料更新事实、时间线与结论。"
+        }
 
         guard var response = await callAI(
             AIChatRequest(
@@ -681,15 +831,17 @@ struct ResearchPipeline: Sendable {
         if let reason = await checkStop() { return await fail(reason) }
 
         let method = ResearchMethod(
-            providers: SearchProviderID.failoverOrder
-                .filter { state.usedProviders.contains($0) }
-                .map(\.rawValue),
-            queries: plannedQueries.map(\.text),
+            providers: incremental?.priorReport.method?.providers
+                ?? SearchProviderID.failoverOrder
+                    .filter { state.usedProviders.contains($0) }
+                    .map(\.rawValue),
+            queries: incremental?.priorReport.method?.queries
+                ?? plannedQueries.map(\.text),
             pagesRead: state.pagesRead,
-            recency: recency.rawValue,
+            recency: incremental?.priorReport.method?.recency ?? recency.rawValue,
             generatedAt: now(),
             promptVersion: ResearchPrompts.version,
-            failovers: state.failovers
+            failovers: incremental?.priorReport.method?.failovers ?? state.failovers
         )
         let validationInput = ReportValidationInput(
             draft: draft,

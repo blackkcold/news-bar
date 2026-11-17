@@ -238,26 +238,26 @@ enum PageSummaryEvidenceFactory {
             enabled: providerIDs,
             keys: searchKeys
         )
-        let router = SearchRouter(quota: .shared)
+        let router = ResearchServiceAssembly.shared.searchRouter
         let firecrawlKey = searchKeys[.firecrawl] ?? ""
-        let pageReader = PageReader(isScrapeEnabled: !firecrawlKey.isEmpty)
+        let pageReader = ResearchServiceAssembly.shared.pageReader(
+            isScrapeEnabled: !firecrawlKey.isEmpty
+        )
         let language = settings.appLanguage
 
         let assess: PageSummaryEvidenceProvider.AssessHandler?
         if settings.aiEvidenceAssessmentEnabled {
             let price = configuration.connection.customPrice
                 ?? AIPriceCatalog.price(for: configuration.providerID, model: configuration.model)
-            let client = HTTPAIChatClient(
+            let client = AIChatClientFactory.metered(
+                origin: .pageSummary,
+                policy: settings.aiQuotaPolicy,
+                price: price,
                 connection: configuration.connection,
                 apiKey: configuration.apiKey,
                 model: configuration.model,
                 thinking: nil,
-                timeout: 45,
-                quota: .tracked(
-                    origin: .pageSummary,
-                    policy: settings.aiQuotaPolicy,
-                    price: price
-                )
+                timeout: 45
             )
             assess = { question, pageTitle, sources in
                 await EvidenceAssessor.assess(
@@ -274,6 +274,8 @@ enum PageSummaryEvidenceFactory {
 
         return PageSummaryEvidenceProvider(
             search: { query, ticket in
+                // The page overview always wanted fresh corroboration; only the
+                // store/router are shared, not the freshness policy.
                 let batch = try await router.search(
                     query,
                     configuration: searchConfiguration,

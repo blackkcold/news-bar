@@ -226,13 +226,18 @@ enum NotificationService {
 
     /// Sends only an alert that has already passed the news-event policy gate.
     /// The controller persists its de-duplication key before calling this method.
-    static func sendNewsEventAlert(_ alert: NewsEventAlert) async throws {
+    /// `subjectID` is additive; legacy `type` / `eventID` keys stay unchanged.
+    static func sendNewsEventAlert(_ alert: NewsEventAlert, subjectID: String? = nil) async throws {
         let content = UNMutableNotificationContent()
         content.title = alert.title
         content.body = SecurityPolicies.sanitizeHTMLContent(alert.body)
         content.sound = .default
         content.threadIdentifier = "newsbar.events"
-        content.userInfo = ["type": "newsEvent", "eventID": alert.eventID]
+        var userInfo: [AnyHashable: Any] = ["type": "newsEvent", "eventID": alert.eventID]
+        if let subjectID, !subjectID.isEmpty {
+            userInfo["subjectID"] = subjectID
+        }
+        content.userInfo = userInfo
 
         let request = UNNotificationRequest(
             identifier: alert.notificationID,
@@ -243,8 +248,9 @@ enum NotificationService {
     }
 
     /// Sends a task-completion notice only; report conclusions are never copied
-    /// to the lock screen.
-    static func sendResearchNotification(record: ResearchRecord) {
+    /// to the lock screen. `subjectID` is additive and lets the click open the
+    /// unified workspace without changing the legacy record route.
+    static func sendResearchNotification(record: ResearchRecord, subjectID: String? = nil) {
         guard record.report != nil else { return }
 
         let language = L10n.currentLanguage
@@ -255,11 +261,15 @@ enum NotificationService {
         content.sound = .default
         content.threadIdentifier = "research"
         content.categoryIdentifier = NotificationIdentifier.researchCategory
-        content.userInfo = [
+        var userInfo: [AnyHashable: Any] = [
             "type": "research",
             "recordID": record.id,
             "title": record.topic,
         ]
+        if let subjectID, !subjectID.isEmpty {
+            userInfo["subjectID"] = subjectID
+        }
+        content.userInfo = userInfo
 
         let request = UNNotificationRequest(
             identifier: "research-\(record.id)",

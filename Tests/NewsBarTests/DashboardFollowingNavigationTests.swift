@@ -45,8 +45,13 @@ final class DashboardFollowingNavigationTests: XCTestCase {
         var post = WeiboMonitorTestSupport.post()
         post.url = "invalid-fixture-url"
         monitor.openPost(post)
-        try await Task.sleep(for: .milliseconds(400))
-        host.layoutSubtreeIfNeeded()
+        // The reveal runs in a MainActor task, so a loaded CI runner can delay it
+        // past any fixed sleep. Wait for the postcondition instead of guessing.
+        let firstOpenDeadline = ContinuousClock.now.advanced(by: .seconds(5))
+        while !presentation.readerVisible, ContinuousClock.now < firstOpenDeadline {
+            try await Task.sleep(for: .milliseconds(10))
+            host.layoutSubtreeIfNeeded()
+        }
 
         XCTAssertEqual(router.selection?.url, post.url)
         XCTAssertEqual(tabs.activeRequest?.id, router.selection?.id)
@@ -58,7 +63,12 @@ final class DashboardFollowingNavigationTests: XCTestCase {
         var secondPost = WeiboMonitorTestSupport.post(mid: "1003")
         secondPost.url = "another-invalid-fixture-url"
         monitor.openPost(secondPost)
-        try await Task.sleep(for: .milliseconds(400))
+        let secondOpenDeadline = ContinuousClock.now.advanced(by: .seconds(5))
+        while presentation.displayedRequest?.id != router.selection?.id,
+              ContinuousClock.now < secondOpenDeadline {
+            try await Task.sleep(for: .milliseconds(10))
+            host.layoutSubtreeIfNeeded()
+        }
         host.layoutSubtreeIfNeeded()
 
         XCTAssertEqual(router.selection?.url, secondPost.url)

@@ -12,12 +12,14 @@ enum QuickSearchResult: Identifiable, Sendable {
     case news(NewsItem)
     case readerHistory(ReaderHistoryEntry)
     case archive(AISearchArchiveEntry)
+    case workspace(WorkspaceSearchResult)
 
     var id: String {
         switch self {
         case .news(let item): return "news:\(item.id)"
         case .readerHistory(let entry): return "history:\(entry.id.uuidString)"
         case .archive(let entry): return "archive:\(entry.id.uuidString)"
+        case .workspace(let result): return "workspace:\(result.id)"
         }
     }
 }
@@ -28,6 +30,7 @@ final class QuickSearchModel {
     var query = ""
     var mode: QuickSearchMode = .local
     private(set) var localResults: [QuickSearchResult] = []
+    var workspaceResults: [WorkspaceSearchResult] = []
     private(set) var webHits: [SearchHit] = []
     private(set) var isSearching = false
     private(set) var error: String?
@@ -36,9 +39,11 @@ final class QuickSearchModel {
         query: String,
         newsItems: [NewsItem],
         readingHistory: [ReaderHistoryEntry],
-        archiveEntries: [AISearchArchiveEntry]
+        archiveEntries: [AISearchArchiveEntry],
+        workspaceResults: [WorkspaceSearchResult] = []
     ) {
         self.query = query
+        self.workspaceResults = workspaceResults
         mode = .local
         error = nil
 
@@ -91,6 +96,16 @@ final class QuickSearchModel {
             guard archiveCount < 30 else { break }
             results.append(.archive(entry))
             archiveCount += 1
+        }
+
+        var seenResultIDs = Set(results.map(\.id))
+        var workspaceCount = 0
+        for result in workspaceResults {
+            let id = QuickSearchResult.workspace(result).id
+            guard seenResultIDs.insert(id).inserted else { continue }
+            guard workspaceCount < 8 else { break }
+            results.append(.workspace(result))
+            workspaceCount += 1
         }
 
         localResults = results

@@ -1,5 +1,7 @@
 import SwiftUI
 
+// Legacy root; no longer opened by AppDelegate.
+
 struct ResearchCenterView: View {
     @Environment(AppSettings.self) private var settings
     @Bindable var model: ResearchCenterModel

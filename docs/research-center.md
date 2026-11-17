@@ -1,66 +1,58 @@
-# Research Center
+# Research Workspace
 
-The research center turns a topic into a verifiable report: it plans queries, searches the web, reads pages, extracts evidence, synthesizes a draft, and validates every quote before the report is marked ready.
+The research workspace keeps a topic, its events, its evidence and its reports on one timeline. The old Research Center and Event Monitor windows are now one window; legacy entry points, notification payloads and records still work.
 
 ## Entry points
 
-- Menu bar popover: the research chip opens the most recent unread report.
-- Dashboard: the research section lists recent records; right-click a news row to verify it.
-- Reader toolbar: "Verify online" starts a run for the open article.
-- Settings → AI: usage and limit (calls or budget), model and key; Settings → Research: providers, task cap, retention and the Firecrawl key.
+- Menu bar popover: the research chip opens the subject behind the newest unread report.
+- Dashboard: the research section and a news row's "verify online" action open the same workspace.
+- Reader toolbar and ⌘K: ⌘K returns local topics, reports, evidence and historical answers. Web search remains an explicit action.
+- Settings → News events → "Open Research Workspace" opens the same window and prefers the most recent event subject.
+- Legacy research/event notification clicks still resolve `recordID` / `eventID`; the additive `subjectID` opens the linked subject. A legacy payload without a subject is reconciled locally instead of opening a blank window.
 
-## Pipeline
+## Working with a subject
 
-1. **Plan** — the model proposes up to N queries for the selected depth.
-2. **Search** — Tavily, Firecrawl, TinyFish, Exa, Parallel and Brave are tried in failover order. Disabled providers are never contacted. Without a key only Tavily and Firecrawl use their rate-limited free tiers; the other providers need a free key. A query tries at most three providers, and a task may dispatch at most 12 search HTTP requests. Each dispatched request consumes one slot before it leaves the process; cache hits, skipped providers and cooldowns consume none. The same count is charged whether the call succeeds, fails or is cancelled after dispatch.
-3. **Read** — inline content → page cache → Firecrawl scrape (only when enabled and keyed) → direct HTTPS. Direct reads reject non-public IPv4/IPv6, re-check every redirect, and stream-cap the body at 4 MB.
-4. **Extract** — the model returns claims, quotes and stances; quotes are checked verbatim against the fetched page.
-5. **Synthesize** — a JSON report is produced; invalid JSON gets one repair call.
-6. **Validate** — only evidence cited by a claim, and only verified quotes, can support it. Unsupported runs stay `unverified`.
+- **New topic** creates local state only. It starts no AI and fetches no page. An optional seed link only seeds the first run and is never treated as evidence.
+- **Follow** makes the existing RSS refresh collect matching new items as leads. It adds no network request and no timer, and it never starts AI research.
+- **Check updates** uses only RSS sources enabled in Settings. It never calls search or AI. One click checks one feed by default (eight is a ceiling), so a single click cannot consume the whole rolling-hour budget; a just-finished shared check is reused. A 304 is a successful check.
+- **Budget and backoff**: checks and event tracking share one rolling-hour budget and one single-flight slot. Failures back off over 5/10/20/40/60 minutes, and clicking again does not bypass the backoff. Results show actual source coverage, budget usage and the next eligible time.
+- **Research**: manual, burst-automatic and keyword research all use one launcher and the same admission/quota gates. Manual runs keep their completion notification; automatic runs follow the research-completion notification switch.
+- **Versions**: every successful report replacement archives a version. Failed or partial runs do not fabricate a version. If archiving the previous report fails, the old report is kept and the run is marked failed.
+- **Archive** stops new lead collection and notifications while keeping all evidence, reports and versions. Unarchiving resumes collection. Nothing is deleted.
 
-A run that loses search, pages or budget still produces a `partial` report instead of failing outright.
+## Linking and "no automatic AI"
 
-## Data
-
-- `records/<id>.json` is authoritative; `index.json` is a rebuildable projection.
-- Runs and reports share one record file. Progress writes are throttled to one per second and the index to one per ten seconds.
-- Deleting a record writes a tombstone, so a late progress callback cannot recreate it.
-- Default retention: 30 days / 200 records (configurable). Pinned, in-flight, corrupt and newer-schema records are exempt.
-- Record, index, meta, cache, ledger and clear-intent files are created owner-only (0600) *before* content is written, via a same-directory temporary file and an atomic rename. A failed write leaves the previous file intact. The same writer covers translation caches, AI summary caches, the encrypted key store, the machine UUID, reading history and the request budget.
-- Every record and index write states `schemaVersion: 1`. A missing version is read as v1; a higher version is projected read-only and is never overwritten by an older build. Corrupt, unreadable and newer-version records cannot be pinned, marked read or rewritten; they can still be deleted.
-- The ledger is versioned and reports `available / corrupt / ioUnavailable / unsupportedVersion`. Anything other than `available` fails closed and the UI shows “—” instead of a fake zero. A reset archives a corrupt file (0600) first, refuses while a research task is running, and never restores provider-side quota.
-- AI usage lives in its own global ledger (`AIQuota/quota.json`): summaries, research and triage share one daily allowance with unlimited / 200 / 500 tiers. A money budget can replace the call limit; it is estimated from model prices and reported token usage, and falls back to the call limit when no price is known. A corrupt ledger fails closed and a reset archives it first.
-
-## Providers and keys
-
-Keys live in the app's owner-only encrypted file (AES-GCM, machine-bound), never in `UserDefaults` or logs. The Keychain is read only for the one-time legacy migration.
-
-Settings shows a per-provider state: off, key missing, allowance exhausted, not tried yet, last call succeeded, authentication rejected, access refused, cooling down, or last call failed temporarily, plus the local request count and its conservative guard for the day or month. A 401 is remembered only when a key was actually sent; a keyless 401 is not a permanent block. A 403 is not retried within the same research pass but is not remembered across passes. A 429 honours `Retry-After` when present and otherwise backs off over 1/5/15/60 minutes. A 402 means the allowance is gone and parks the provider until its daily or monthly window resets, instead of retrying in 15 minutes. “Retry authentication” only clears that provider's auth block: it sends nothing, keeps cooldowns and does not reset the ledger. Saving or clearing a key refreshes the state without lifting a quota cooldown.
-
-Firecrawl is still the only provider that may also read pages. Fill in a personal key to use your own Firecrawl quota; page reads are capped per run. **Search** and **scrape** have different keyless semantics: search may use Firecrawl's keyless route (capped per IP per day by both requests and credits, returning 429 when exceeded), while scrape sends nothing without a key and falls back to direct reads. Turning every provider off is valid: reports are generated AI-only and labelled as offline.
-
-## Automation
-
-- `researchAutoEnabled` is the single master switch for burst and keyword research.
-- `burstPushEnabled` only controls whether a finished burst report raises a notification.
-- Keyword tracking additionally requires `keywordTrackingEnabled`.
-
-## Clearing history
-
-Every "clear research history" entry point uses one staged flow: write a durable clear intent, stop new research, persist the legacy-import marker, clear the search and page caches, delete authoritative records, clear legacy research artifacts (notification de-duplication sets, other interest data, keys and the ledger stay), verify each stage, and remove the intent last. A crash or relaunch resumes from the intent and never re-imports discarded artifacts. A failed stage keeps the intent and is reported instead of showing success. The legacy import derives stable identities from the artifact key (including titles that normalize to nothing) and only writes its one-time marker when every artifact is persisted or provably equivalent.
-
-This is a logical deletion: it does not promise forensic erasure of SQLite free pages, WAL files, system backups or synced copies.
+- New research records and events link locally by explicit ID, normalized title/alias and report evidence URLs. Two events with the same subject but different times are not merged by title alone.
+- When an event has evidence newer than a ready report, the subject is marked `needs review`. That is a prompt only; no research starts.
+- Followed topics collect leads only during a normal successful RSS refresh. No extra request is made for lead collection.
+- **Monitoring itself never starts AI, search or page fetches.** Only an explicit "start/update research/verify online" action, or a burst/keyword rule the user already enabled, runs the research pipeline.
 
 ## Notifications
 
-A finished report posts one notification: title "Research complete", subtitle = topic, body = one sentence (max 80 characters) derived from the summary, with markup and links stripped. Failures and cancellations post nothing. Clicking opens the report; if the record was deleted, the list opens instead.
+- Event progress wins. For one subject and one update, an event-progress and a research-completion notice are not both sent within 30 minutes; the report is still visible in the workspace.
+- There is no blanket six-hour suppression of the same kind. Genuine new progress, corrections and explicitly requested new research still notify.
+- The same report version is never notified twice. An event's semantic de-duplication key is claimed only after the workspace allows delivery, so a suppressed workspace notice cannot consume the key and hide a later real update.
+- Archived subjects send no new notifications and say why; old evidence is kept. New progress resumes after unarchiving.
+- Payloads keep `type`, `recordID` and `eventID`; `subjectID` is additive. Notification bodies stay on the lock screen, so they carry only a completion notice, never report conclusions.
 
-## Privacy
+## Migration
 
-Outbound traffic only goes to the enabled search providers, Firecrawl (when enabled and keyed), the configured AI endpoint, and the pages being verified. Consent text lists the actual recipients. The notification body is visible on the lock screen, which is why it is capped and stripped.
+- No file migration: existing `ResearchRecord`, `NewsEvent`, indexes and event snapshots decode unchanged. The workspace index is a separate, rebuildable layer.
+- Old records/events gain a subject on first open or first local linking; the original record file is not rewritten.
+- Legacy Research Center / Event Monitor views stay compiled but are no longer window roots. Every entry goes through `openResearchWorkspace`.
+- Legacy `research` / `newsEvent` / `burst` notification clicks keep their original keys and prefer the new `subjectID` when present.
 
-## Known limits
+## Pipeline and data
 
-- DNS rebinding is narrowed by resolving and checking before connecting, but the session resolves again; a fully pinned connection layer is still future work.
-- Firecrawl scrape counts toward your own quota; the settings page shows the per-run page cap.
-- Corrupt records are isolated and can be removed from the data section.
+1. Plan queries → 2. search enabled providers (disabled providers are never contacted; at most 12 dispatches per task) → 3. read pages (inline/cache/Firecrawl/direct HTTPS, rejecting private networks and oversized bodies) → 4. extract claims, quotes and stances → 5. synthesize JSON → 6. validate every quote and claim.
+2. Only evidence cited by the claim and verified verbatim can support it; otherwise it stays `unverified`. Partial failures produce a `partial` report instead of a fake success.
+3. `records/<id>.json` is authoritative and `index.json` is a rebuildable projection. Workspace index, report versions and analysis state live under `Research/workspace/`.
+4. Records, indexes, caches, ledgers and clear intents use 0600 atomic writes. Corrupt or newer-version files are isolated read-only and are never overwritten by an older build.
+5. "Clear research history" keeps its staged flow: durable intent → stop research → clear caches → delete records → clear workspace versions/state → verify → remove intent. Event evidence is preserved.
+
+## Privacy and known limits
+
+- Outbound traffic goes only to enabled search providers, Firecrawl (when enabled and keyed), the configured AI endpoint and pages the user explicitly verifies. RSS checks request only enabled RSS URLs.
+- DNS rebinding is narrowed by resolving and checking before connecting, but the system resolves again; a fully pinned connection layer is still future work.
+- The workspace rebuilds its local search index once on first open for a large library, then updates after coalesced notifications.
+- Changes are verified by compilation and code review, not by a manual UI acceptance run. First live use should check split-view compression at 1040 pt, long-report scrolling and notification click targeting.

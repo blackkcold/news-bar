@@ -149,6 +149,7 @@ final class NewsEventController: NewsEventControlling {
             var seenEvidence = Set(working.values.flatMap { $0.evidence.map(\.id) })
             var changedIDs: Set<String> = []
             var changeHints: [String: NewsEventChangeKind] = [:]
+            var changeEvidenceByEventID: [String: NewsEventEvidence] = [:]
             var allIncomingPersisted = true
             var capacityDeletedCount = 0
             var capacityPressureDeletedCount = 0
@@ -320,9 +321,14 @@ final class NewsEventController: NewsEventControlling {
                     working[eventID] = event
                     changedIDs.insert(eventID)
                     if let existing = changeHints[eventID] {
-                        changeHints[eventID] = Self.moreSignificant(existing, changeHint)
+                        let chosen = Self.moreSignificant(existing, changeHint)
+                        changeHints[eventID] = chosen
+                        if chosen != existing {
+                            changeEvidenceByEventID[eventID] = evidence
+                        }
                     } else {
                         changeHints[eventID] = changeHint
+                        changeEvidenceByEventID[eventID] = evidence
                     }
                 }
             }
@@ -343,7 +349,12 @@ final class NewsEventController: NewsEventControlling {
 
                 if settings.newsEventNotificationsEnabled {
                     let change = event.lastNotifiedAt == nil ? NewsEventChangeKind.initial : (changeHints[id] ?? .routine)
-                    await sendIfAllowed(event: &event, change: change, now: now)
+                    await sendIfAllowed(
+                        event: &event,
+                        change: change,
+                        triggeringEvidence: changeEvidenceByEventID[id],
+                        now: now
+                    )
                     working[id] = event
                 }
             }
@@ -412,41 +423,119 @@ final class NewsEventController: NewsEventControlling {
                     attemptedAt: checkedAt,
                     failureCount: 0
                 )
-                try await store.saveFeedCursor(cursor)
-
-                if settings.newsEventMonitoringEnabled {
-                    var restored = try await store.events()
-                    for index in restored.indices where restored[index].lifecycle != .expired {
-                        let previous = restored[index]
-                        restored[index].lifecycle = .tracking
-                        if NewsEventScheduler.isDue(restored[index], at: checkedAt) {
-                            NewsEventScheduler.markChecked(
-                                &restored[index],
-                                at: checkedAt,
-                                message: "常规 RSS 条件检查已满足本次 due；未重复请求。"
-                            )
-                        }
-                        if restored[index] != previous {
-                            try await store.upsert(restored[index])
-                        }
-                    }
-                    events = Self.ordered(restored)
-                    if trackingState != .capacityLimited {
-                        trackingState = restored.count >= NewsEventStore.maximumEvents
-                            ? .capacityLimited
-                            : (restored.contains(where: { $0.lifecycle != .expired }) ? .tracking : .idle)
-                    }
-                    try await store.saveTrackingState(trackingState)
-                }
-
-                budgetSnapshot = try await store.budgetSnapshot()
-                try await store.saveBudgetSnapshot(budgetSnapshot)
+                try await saveSharedCursorSerialized(cursor)
             } catch {
                 trackingState = .failed
                 state = .failed(message: "常规 RSS 共享 cursor 无法持久化：\(error.localizedDescription)", hasCachedEvents: !events.isEmpty)
                 NSLog("[NewsEventController] Failed to persist shared RSS cursor: %@", error.localizedDescription)
             }
         }
+    }
+
+    /// Workspace RSS checker: one feed check through the tracker's budget and
+    /// single-flight slot. It never commits the cursor itself.
+    func checkSharedFeed(_ source: NewsSource, now: Date) async -> NewsEventSharedFeedCheck {
+        await tracker.checkFeed(source, now: now)
+    }
+
+    /// Fresh budget snapshot from the tracker's budget actor (not the cached
+    /// UI snapshot). Used by the checker before choosing a feed and in its
+    /// coverage line.
+    func sharedFeedBudgetSnapshot(now: Date) async -> NewsEventBudgetSnapshot? {
+        try? await tracker.budgetSnapshot(now: now)
+    }
+
+    /// Commits a workspace feed check only after the caller durably stored the
+    /// evidence. Marks due events as satisfied by the shared check, exactly like
+    /// an ordinary RSS refresh, without consuming another budget slot.
+    @discardableResult
+    func commitSharedFeedCheck(_ cursor: NewsEventFeedCursor) async -> Bool {
+        await withSerializedMutation {
+            do {
+                try await saveSharedCursorSerialized(cursor)
+                await tracker.acknowledgeFeedCheck(
+                    sourceID: cursor.sourceID,
+                    outcome: .committed
+                )
+                return true
+            } catch {
+                await tracker.acknowledgeFeedCheck(
+                    sourceID: cursor.sourceID,
+                    outcome: .failed
+                )
+                trackingState = .failed
+                state = .failed(
+                    message: "证据已保存，但 RSS cursor 确认失败；保留旧 cursor，允许重抓：\(error.localizedDescription)",
+                    hasCachedEvents: !events.isEmpty
+                )
+                NSLog("[NewsEventController] Failed to commit workspace feed cursor: %@", error.localizedDescription)
+                return false
+            }
+        }
+    }
+
+    /// The feed was fetched but its evidence could not be stored. Keep the old
+    /// validators and set the same exponential backoff the tracker uses.
+    func recordSharedFeedFailure(sourceID: String, now: Date, message: String) async {
+        await withSerializedMutation {
+            do {
+                let old = try await store.feedCursor(for: sourceID)
+                let failureCount = (old?.failureCount ?? 0) + 1
+                let exponent = min(max(0, failureCount - 1), 4)
+                let delay = min(300 * Double(1 << exponent), 3_600)
+                let cursor = NewsEventFeedCursor(
+                    sourceID: sourceID,
+                    eTag: old?.eTag,
+                    lastModified: old?.lastModified,
+                    checkedAt: old?.checkedAt,
+                    attemptedAt: now,
+                    retryAfter: now.addingTimeInterval(delay),
+                    failureCount: failureCount,
+                    lastError: String(message.prefix(80))
+                )
+                try await store.saveFeedCursor(cursor)
+                budgetSnapshot = try await store.budgetSnapshot()
+                try await store.saveBudgetSnapshot(budgetSnapshot)
+            } catch {
+                trackingState = .failed
+                state = .failed(
+                    message: "RSS 证据保存失败后的退避状态无法写入：\(error.localizedDescription)",
+                    hasCachedEvents: !events.isEmpty
+                )
+                NSLog("[NewsEventController] Failed to persist workspace feed failure: %@", error.localizedDescription)
+            }
+            await tracker.acknowledgeFeedCheck(sourceID: sourceID, outcome: .failed)
+        }
+    }
+
+    private func saveSharedCursorSerialized(_ cursor: NewsEventFeedCursor) async throws {
+        try await store.saveFeedCursor(cursor)
+        if settings.newsEventMonitoringEnabled {
+            var restored = try await store.events()
+            for index in restored.indices where restored[index].lifecycle != .expired {
+                let previous = restored[index]
+                restored[index].lifecycle = .tracking
+                if NewsEventScheduler.isDue(restored[index], at: cursor.checkedAt ?? Date()) {
+                    NewsEventScheduler.markChecked(
+                        &restored[index],
+                        at: cursor.checkedAt ?? Date(),
+                        message: "常规 RSS 条件检查已满足本次 due；未重复请求。"
+                    )
+                }
+                if restored[index] != previous {
+                    try await store.upsert(restored[index])
+                }
+            }
+            events = Self.ordered(restored)
+            if trackingState != .capacityLimited {
+                trackingState = restored.count >= NewsEventStore.maximumEvents
+                    ? .capacityLimited
+                    : (restored.contains(where: { $0.lifecycle != .expired }) ? .tracking : .idle)
+            }
+            try await store.saveTrackingState(trackingState)
+        }
+        budgetSnapshot = try await store.budgetSnapshot()
+        try await store.saveBudgetSnapshot(budgetSnapshot)
     }
 
     /// Confirms a tracker HTTP 200 cursor only after the caller has durably ingested its evidence.
@@ -578,10 +667,24 @@ final class NewsEventController: NewsEventControlling {
         // The mutation slot is deliberately free while the tracker awaits the
         // network. Its result is then applied through the same serialized path.
         let result = await tracker.recover(now: now, sources: sources)
-        guard !Task.isCancelled else { return }
+        if Task.isCancelled {
+            if let cursor = result.cursorToCommitAfterIngest {
+                await tracker.acknowledgeFeedCheck(
+                    sourceID: cursor.sourceID,
+                    outcome: .cancelled
+                )
+            }
+            return
+        }
         if !result.evidence.isEmpty {
             let durable = await ingest(result.evidence, now: now)
             guard durable else {
+                if let cursor = result.cursorToCommitAfterIngest {
+                    await tracker.acknowledgeFeedCheck(
+                        sourceID: cursor.sourceID,
+                        outcome: .failed
+                    )
+                }
                 let failure = trackingResultAfterPersistenceFailure(
                     result,
                     message: "RSS 返回的 evidence 未能全部持久化；cursor 未推进，due 保留以便安全重抓。"
@@ -592,6 +695,10 @@ final class NewsEventController: NewsEventControlling {
         }
         if let cursor = result.cursorToCommitAfterIngest {
             let committed = await commitTrackingCursorAfterIngest(cursor)
+            await tracker.acknowledgeFeedCheck(
+                sourceID: cursor.sourceID,
+                outcome: committed ? .committed : .failed
+            )
             guard committed else {
                 let failure = trackingResultAfterPersistenceFailure(
                     result,
@@ -791,7 +898,12 @@ final class NewsEventController: NewsEventControlling {
         }
     }
 
-    private func sendIfAllowed(event: inout NewsEvent, change: NewsEventChangeKind, now: Date) async {
+    private func sendIfAllowed(
+        event: inout NewsEvent,
+        change: NewsEventChangeKind,
+        triggeringEvidence: NewsEventEvidence?,
+        now: Date
+    ) async {
         if event.interestDisposition == .hardBlocked || event.interestDisposition == .excluded {
             event.notificationEligibility = notificationPolicy.eligibility(for: event)
             event.notificationMessage = event.interestDisposition == .hardBlocked
@@ -816,6 +928,25 @@ final class NewsEventController: NewsEventControlling {
                 state = .failed(message: error.localizedDescription, hasCachedEvents: !events.isEmpty)
             }
         case .notify(let alert):
+            // Coordinate before claiming the event's semantic key. If the
+            // workspace suppresses (for example an archived subject), the key
+            // is not consumed and a later real update can still notify.
+            let causalToken = triggeringEvidence?.researchCausalToken
+            let coordinated = await WorkspaceNotificationCoordinator.shared
+                .authorizeEvent(eventID: event.id, at: now, causalToken: causalToken)
+            guard case let .allowed(subjectID) = coordinated else {
+                if case let .suppressed(reason) = coordinated {
+                    event.notificationEligibility = notificationPolicy.eligibility(for: event)
+                    event.notificationMessage = reason
+                }
+                do {
+                    try await store.upsert(event)
+                } catch {
+                    event.notificationMessage = "通知协调已完成，但事件状态未能持久化：\(error.localizedDescription)"
+                    state = .failed(message: error.localizedDescription, hasCachedEvents: !events.isEmpty)
+                }
+                return
+            }
             do {
                 guard try await store.claimNotification(eventID: event.id, key: alert.notificationID, at: now) else {
                     event.notificationMessage = "通知去重键已存在；为避免重复未重发。"
@@ -824,11 +955,16 @@ final class NewsEventController: NewsEventControlling {
                 event.notificationKeys.insert(alert.notificationID)
                 event.notificationMessage = "通知去重键已持久化，系统投递结果待确认。"
                 do {
-                    try await NotificationService.sendNewsEventAlert(alert)
+                    try await NotificationService.sendNewsEventAlert(alert, subjectID: subjectID)
                     event.lastNotifiedAt = now
                     event.lastNotifiedFingerprint = alert.semanticFingerprint
                     event.notificationEligibility = notificationPolicy.eligibility(for: event)
                     event.notificationMessage = "macOS 已接受通知请求；是否实际显示仍由系统通知策略决定。"
+                    await WorkspaceNotificationCoordinator.shared.recordEventNotified(
+                        eventID: event.id,
+                        at: now,
+                        causalToken: causalToken
+                    )
                 } catch {
                     event.notificationMessage = "系统未确认通知投递；去重键已保存，本事件不会自动重发。\(error.localizedDescription)"
                 }

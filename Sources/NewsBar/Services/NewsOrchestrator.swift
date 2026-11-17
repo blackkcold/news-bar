@@ -122,8 +122,7 @@ final class NewsOrchestrator {
     private var cacheClearDepth = 0
     private let rateLimiter = RateLimiter()
     private let researchStore = ResearchStore.shared
-    private let researchCacheStore = ResearchCacheStore.shared
-    private let researchSearchRouter = SearchRouter(ledger: .shared, quota: .shared)
+    private let researchCacheStore = ResearchServiceAssembly.shared.cache
     private let researchLedger = ResearchLedger.shared
     private let researchClearIntentStore = ResearchClearIntentStore()
     /// True from the moment a clear starts until every stage is verified. New
@@ -624,6 +623,7 @@ final class NewsOrchestrator {
 
         var rssChanged = false
         var deferredSharedChecks: [RSSSharedCheck] = []
+        var workspaceLeadItems: [NewsItem] = []
         if !rssSources.isEmpty {
             batchProgress = BatchProgress(completed: 0, total: rssSources.count)
 
@@ -651,6 +651,11 @@ final class NewsOrchestrator {
                 applyRSSBatch(outcomes)
                 deferredSharedChecks.append(contentsOf: outcomes.compactMap(\.sharedCheck))
                 rssChanged = rssChanged || outcomes.contains(where: \.changed)
+                for outcome in outcomes where outcome.changed {
+                    if let items = outcome.itemsUpdate {
+                        workspaceLeadItems.append(contentsOf: items)
+                    }
+                }
                 batchProgress = BatchProgress(
                     completed: range.upperBound,
                     total: rssSources.count
@@ -671,6 +676,13 @@ final class NewsOrchestrator {
         let evidenceDurable = await updateInterestCandidates(settings: settings, token: token)
         guard isCurrentCacheWork(token) else { return }
         if evidenceDurable {
+            if !workspaceLeadItems.isEmpty {
+                await WorkspaceAutoDiscovery.shared.ingestRSSItems(
+                    workspaceLeadItems,
+                    now: Date()
+                )
+                guard isCurrentCacheWork(token) else { return }
+            }
             let eventController = NewsEventController.shared(settings: settings)
             for check in deferredSharedChecks {
                 let advanceValidators = check.isNotModified || check.hasEventEvidence
@@ -1191,18 +1203,16 @@ final class NewsOrchestrator {
         guard let configuration = await settings.validatedAIConfiguration(boundKey: bound) else {
             return nil
         }
-        return HTTPAIChatClient(
+        return AIChatClientFactory.metered(
+            origin: .triage,
+            policy: settings.aiQuotaPolicy,
+            price: configuration.connection.customPrice
+                ?? AIPriceCatalog.price(for: configuration.connection.providerID, model: configuration.model),
             connection: configuration.connection,
             apiKey: configuration.apiKey,
             model: configuration.model,
             disableDeepSeekThinking: settings.aiDisableDeepSeekThinking,
-            timeout: 12,
-            quota: .tracked(
-                origin: .triage,
-                policy: settings.aiQuotaPolicy,
-                price: configuration.connection.customPrice
-                    ?? AIPriceCatalog.price(for: configuration.connection.providerID, model: configuration.model)
-            )
+            timeout: 12
         )
     }
 
@@ -1282,7 +1292,9 @@ final class NewsOrchestrator {
             recordID: record.id,
             settings: settings,
             notify: settings.burstPushEnabled,
-            trigger: origin
+            trigger: origin,
+            allowReuse: false,
+            allowsIncremental: false
         )
         guard scheduled else { return false }
         lastAutomaticStartedAt = now
@@ -1347,16 +1359,43 @@ final class NewsOrchestrator {
         // A finished record opens as-is; re-running is an explicit action from
         // the detail view, not a side effect of clicking "verify" again.
         if record.run.startedAt == nil {
-            await scheduleResearch(recordID: record.id, settings: settings)
+            await scheduleResearch(
+                recordID: record.id,
+                settings: settings,
+                notify: true,
+                trigger: .manual,
+                allowReuse: true,
+                allowsIncremental: true
+            )
         }
         await refreshResearchSummary()
         return record.id
     }
 
     func startManualResearch(title: String, settings: AppSettings) async -> String? {
-        let item = weiboItems.first { $0.title == title }
-            ?? NewsItem(title: title, url: "https://s.weibo.com", source: .weibo)
-        return await startManualResearch(item: item, settings: settings)
+        if let item = weiboItems.first(where: { $0.title == title }) {
+            return await startManualResearch(item: item, settings: settings)
+        }
+        await InterestController.shared.prepare()
+        guard let record = await ResearchRecordProvisioner.ensureTopicRecord(
+            title: title,
+            seed: nil,
+            origin: .manual,
+            store: researchStore
+        ) else { return nil }
+
+        if record.run.startedAt == nil {
+            await scheduleResearch(
+                recordID: record.id,
+                settings: settings,
+                notify: true,
+                trigger: .manual,
+                allowReuse: true,
+                allowsIncremental: true
+            )
+        }
+        await refreshResearchSummary()
+        return record.id
     }
 
     @discardableResult
@@ -1364,20 +1403,38 @@ final class NewsOrchestrator {
         recordID: String,
         settings: AppSettings,
         notify: Bool = true,
-        trigger: ResearchOrigin = .manual
+        trigger: ResearchOrigin = .manual,
+        forceRefresh: Bool = false,
+        allowReuse: Bool = true,
+        allowsIncremental: Bool = true
     ) async -> Bool {
         ResearchCoordinator.shared.setMaxConcurrent(settings.researchMaxConcurrent)
-        let outcome = await ResearchCoordinator.shared.schedule(recordID: recordID, notify: notify, trigger: trigger) { [weak self] record, progress in
-            guard let self else {
-                return .failure(L10n.string("research.error.unavailable", language: settings.appLanguage))
-            }
-            return await self.executeResearch(
-                record: record,
-                settings: settings,
-                progress: progress
+        let request = WorkspaceResearchRequest(
+            subjectID: "",
+            depth: settings.researchDepth,
+            trigger: trigger,
+            forceRefresh: forceRefresh,
+            notify: notify,
+            allowReuse: allowReuse,
+            allowsIncremental: allowsIncremental
+        )
+        let action = await workspaceLauncher(settings: settings).start(
+            recordID: recordID,
+            request: request
+        )
+        if case .started = action { return true }
+        return false
+    }
+
+    private func workspaceLauncher(settings: AppSettings) -> WorkspaceResearchLauncher {
+        WorkspaceResearchLauncher(
+            settings: settings,
+            coordinator: .shared,
+            executor: WorkspaceResearchLauncher.productionExecutor(
+                orchestrator: self,
+                settings: settings
             )
-        }
-        return outcome == .accepted
+        )
     }
 
     /// Runs the evidence-backed pipeline for one record. The coordinator owns
@@ -1386,6 +1443,7 @@ final class NewsOrchestrator {
     func executeResearch(
         record: ResearchRecord,
         settings: AppSettings,
+        depth: ResearchDepth? = nil,
         progress: @escaping @Sendable (ResearchRun) async -> Void
     ) async -> ResearchExecution {
         await InterestController.shared.prepare()
@@ -1393,7 +1451,7 @@ final class NewsOrchestrator {
         let item = weiboItems.first { $0.title == record.topic }
             ?? NewsItem(
                 title: record.topic,
-                url: record.seed.url ?? "https://s.weibo.com",
+                url: record.seed.url ?? "",
                 source: record.seed.source,
                 publishedAt: record.seed.publishedAt
             )
@@ -1413,23 +1471,29 @@ final class NewsOrchestrator {
             keys: keys
         )
         let pipeline = ResearchPipeline(
-            ai: HTTPAIChatClient(
+            // ResearchPipeline owns `.research` reserve/settle; this client must
+            // stay unmetered, otherwise every dispatch is charged twice.
+            ai: AIChatClientFactory.unmetered(
                 connection: configuration.connection,
                 apiKey: configuration.apiKey,
                 model: configuration.model,
                 disableDeepSeekThinking: settings.aiDisableDeepSeekThinking
             ),
-            searchRouter: researchSearchRouter,
-            pageReader: PageReader(
-                cache: researchCacheStore,
+            searchRouter: ResearchServiceAssembly.shared.searchRouter,
+            pageReader: ResearchServiceAssembly.shared.pageReader(
                 isScrapeEnabled: settings.enabledSearchProviders.contains(.firecrawl)
                     && !(keys[.firecrawl] ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             ),
             ledger: researchLedger
         )
+        let storedDepth = await ResearchIncrementalContextStore.shared.takeDepth(
+            recordID: record.id
+        )
+        let storedForceRefresh = await ResearchIncrementalContextStore.shared
+            .takeForceRefresh(recordID: record.id)
         let pipelineConfiguration = ResearchPipelineConfiguration(
             record: record,
-            depth: settings.researchDepth,
+            depth: depth ?? storedDepth ?? settings.researchDepth,
             language: settings.appLanguage,
             trendContext: latestTrendSummary.context,
             defaultRecency: settings.researchDefaultRecency,
@@ -1437,7 +1501,9 @@ final class NewsOrchestrator {
             firecrawlAPIKey: keys[.firecrawl] ?? "",
             quotaPolicy: settings.aiQuotaPolicy,
             taskDailyCap: settings.researchDailyTaskCap,
-            seedSourceName: item.source.displayName,
+            seedSourceName: record.seed.url == nil ? "" : item.source.displayName,
+            incremental: await ResearchIncrementalContextStore.shared.take(recordID: record.id),
+            forceRefresh: storedForceRefresh,
             isAllowed: {
                 await MainActor.run {
                     InterestController.shared.state.consentEpoch == epoch
@@ -1475,13 +1541,14 @@ final class NewsOrchestrator {
             enabled: settings.enabledSearchProviders,
             keys: keys
         )
-        return await researchSearchRouter.statusSnapshot(configuration: configuration)
+        return await ResearchServiceAssembly.shared.searchRouter
+            .statusSnapshot(configuration: configuration)
     }
 
     /// Clears only this provider's auth block. Never sends a request, never
     /// clears a quota cooldown and never touches the ledger.
     func clearSearchAuthBlock(for provider: SearchProviderID) async {
-        await researchSearchRouter.clearAuthBlock(for: provider)
+        await ResearchServiceAssembly.shared.searchRouter.clearAuthBlock(for: provider)
     }
 
     /// Search keys live in the encrypted store, with the legacy Firecrawl
@@ -1546,7 +1613,14 @@ final class NewsOrchestrator {
             ) else { continue }
 
             guard ResearchAutoAdmission.allows(record, now: now) else { continue }
-            scheduled = await scheduleResearch(recordID: record.id, settings: settings, trigger: .keyword)
+            scheduled = await scheduleResearch(
+                recordID: record.id,
+                settings: settings,
+                notify: settings.burstPushEnabled,
+                trigger: .keyword,
+                allowReuse: false,
+                allowsIncremental: false
+            )
             if scheduled {
                 lastAutomaticStartedAt = now
                 let pair = "\(match.keyword)\n\(match.item.title)"
@@ -1596,7 +1670,14 @@ final class NewsOrchestrator {
             store: researchStore
         ) else { return }
 
-        await scheduleResearch(recordID: record.id, settings: settings)
+        await scheduleResearch(
+            recordID: record.id,
+            settings: settings,
+            notify: true,
+            trigger: .burst,
+            allowReuse: false,
+            allowsIncremental: true
+        )
         openBurstDetail(title: trimmedTopic)
         await refreshResearchSummary()
     }
@@ -2527,6 +2608,14 @@ final class NewsOrchestrator {
             },
             verifyArtifactsCleared: {
                 interest.state.research.artifacts.isEmpty
+            },
+            clearWorkspace: {
+                do {
+                    _ = try await WorkspaceSubjectStore.shared.applyHistoryClear(now: Date())
+                    return true
+                } catch {
+                    return false
+                }
             }
         )
 
@@ -2658,7 +2747,12 @@ final class NewsOrchestrator {
         guard isCurrentCacheWork(token), let outcome else { return }
         applyRSSBatch([outcome])
         let evidenceDurable = await updateInterestCandidates(settings: settings, token: token)
-        guard isCurrentCacheWork(token), evidenceDurable, let check = outcome.sharedCheck else { return }
+        guard isCurrentCacheWork(token), evidenceDurable else { return }
+        if outcome.changed, let items = outcome.itemsUpdate, !items.isEmpty {
+            await WorkspaceAutoDiscovery.shared.ingestRSSItems(items, now: Date())
+            guard isCurrentCacheWork(token) else { return }
+        }
+        guard let check = outcome.sharedCheck else { return }
         await NewsEventController.shared(settings: settings).recordSharedRSSCheck(
             sourceID: check.sourceID,
             eTag: check.eTag,

@@ -131,14 +131,15 @@ struct ResearchMaintenance: Sendable {
         )
         result.removedRecords = removed.count
 
-        let cacheStats = await cache.enforceLimits(
-            now: now(),
+        let cacheStats = await ResearchCacheCoordinator.enforceLimits(
             maxBytes: Int64(settings.researchTempCacheMB) * 1024 * 1024,
             // Cache files are keyed by content hashes, not record IDs, so the
             // active-record set cannot map onto them. Protect everything a run
             // could still be reading: files touched in the last hour.
             protecting: [],
-            protectingSince: now().addingTimeInterval(-3_600)
+            protectingSince: now().addingTimeInterval(-3_600),
+            now: now(),
+            cache: cache
         )
         result.removedCacheFiles = cacheStats.removedFiles
         result.removedCacheBytes = cacheStats.removedBytes

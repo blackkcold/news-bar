@@ -17,6 +17,36 @@ enum PageReadOutcome: Sendable, Equatable {
     case failed(PageReadFailure)
 }
 
+/// A page-read input that is not tied to a search provider. Incremental
+/// research passes new materials here instead of inventing a fake `SearchHit`.
+struct PageReadRequest: Sendable, Equatable {
+    let url: String
+    let canonicalURL: String
+    let title: String
+    let snippet: String
+    let inlineContent: String?
+    let publishedAt: Date?
+    /// False for an explicit full re-research: skip the page cache and fetch.
+    let useCache: Bool
+
+    init(
+        url: String,
+        title: String,
+        snippet: String = "",
+        inlineContent: String? = nil,
+        publishedAt: Date? = nil,
+        useCache: Bool = true
+    ) {
+        self.url = url
+        self.canonicalURL = ContentIdentity.canonicalURL(url)
+        self.title = title
+        self.snippet = snippet
+        self.inlineContent = inlineContent
+        self.publishedAt = publishedAt
+        self.useCache = useCache
+    }
+}
+
 /// Reads one search hit into a document. Order is fixed by the design:
 /// Tavily inline content → page cache → Firecrawl → direct HTTPS → give up.
 /// The pipeline turns a `nil` into a snippet-only document and marks the report
@@ -61,7 +91,25 @@ struct PageReader: Sendable {
     }
 
     func read(_ hit: SearchHit, apiKey: String) async throws -> ResearchDocument? {
-        guard case .document(let document) = try await readOutcome(hit, apiKey: apiKey) else {
+        try await read(hit, apiKey: apiKey, useCache: true)
+    }
+
+    func read(
+        _ hit: SearchHit,
+        apiKey: String,
+        useCache: Bool
+    ) async throws -> ResearchDocument? {
+        guard case .document(let document) = try await readOutcome(
+            PageReadRequest(
+                url: hit.url,
+                title: hit.title,
+                snippet: hit.snippet,
+                inlineContent: hit.inlineContent,
+                publishedAt: hit.publishedAt,
+                useCache: useCache
+            ),
+            apiKey: apiKey
+        ) else {
             return nil
         }
         return document
@@ -71,19 +119,32 @@ struct PageReader: Sendable {
     /// distinguish "the page was short" from "the network failed"; the old
     /// `nil` erased that difference.
     func readOutcome(_ hit: SearchHit, apiKey: String) async throws -> PageReadOutcome {
+        try await readOutcome(
+            PageReadRequest(
+                url: hit.url,
+                title: hit.title,
+                snippet: hit.snippet,
+                inlineContent: hit.inlineContent,
+                publishedAt: hit.publishedAt
+            ),
+            apiKey: apiKey
+        )
+    }
+
+    func readOutcome(_ request: PageReadRequest, apiKey: String) async throws -> PageReadOutcome {
         // Cancellation is a first-class outcome: it must never look like an
         // unreadable page, otherwise the pipeline keeps scheduling work after
         // the user closed the panel.
         try Task.checkCancellation()
         let cacheEpoch = await cache.writeEpoch()
         var shortInline: Int?
-        if let inline = hit.inlineContent?.trimmingCharacters(in: .whitespacesAndNewlines) {
+        if let inline = request.inlineContent?.trimmingCharacters(in: .whitespacesAndNewlines) {
             if inline.count >= Self.minInlineCharacters {
                 let document = ResearchDocument(
-                    url: hit.url,
-                    title: hit.title,
+                    url: request.url,
+                    title: request.title,
                     text: String(inline.prefix(DepthProfile.maxPageCharacters)),
-                    publishedAt: hit.publishedAt,
+                    publishedAt: request.publishedAt,
                     fetchedAt: now(),
                     source: .inline
                 )
@@ -93,7 +154,8 @@ struct PageReader: Sendable {
             shortInline = inline.count
         }
 
-        if let cached = await load(canonicalURL: hit.canonicalURL) {
+        if request.useCache,
+           let cached = await load(canonicalURL: request.canonicalURL) {
             let text = cached.text.trimmingCharacters(in: .whitespacesAndNewlines)
             guard text.count >= Self.minScrapedCharacters else {
                 return .tooShort(text.count)
@@ -104,14 +166,14 @@ struct PageReader: Sendable {
         var shortScraped: Int?
         if isScrapeEnabled {
             do {
-                let text = try await scrape(hit.url, apiKey)
+                let text = try await scrape(request.url, apiKey)
                     .trimmingCharacters(in: .whitespacesAndNewlines)
                 if text.count >= Self.minScrapedCharacters {
                     let document = ResearchDocument(
-                        url: hit.url,
-                        title: hit.title,
+                        url: request.url,
+                        title: request.title,
                         text: String(text.prefix(DepthProfile.maxPageCharacters)),
-                        publishedAt: hit.publishedAt,
+                        publishedAt: request.publishedAt,
                         fetchedAt: now(),
                         source: .firecrawl
                     )
@@ -130,7 +192,7 @@ struct PageReader: Sendable {
         try Task.checkCancellation()
         let document: ResearchDocument
         do {
-            document = try await direct.read(urlString: hit.url)
+            document = try await direct.read(urlString: request.url)
         } catch is CancellationError {
             throw CancellationError()
         } catch {
@@ -144,6 +206,12 @@ struct PageReader: Sendable {
         // `read` keeps its historical behaviour and returns the document.
         await store(document, epoch: cacheEpoch)
         return .document(document)
+    }
+
+    /// Cache-only lookup. Incremental research reuses a previously read page
+    /// without any network request.
+    func cachedDocument(canonicalURL: String) async -> ResearchDocument? {
+        await load(canonicalURL: canonicalURL)
     }
 
     /// Maps a reader error to the coarse reason the UI shows. The mapping is

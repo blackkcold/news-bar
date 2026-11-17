@@ -251,18 +251,16 @@ final class SelectionExplainModel {
         }
         guard AIQuotaStore.shared.snapshot().availability.isUsable else { return nil }
 
-        let client = HTTPAIChatClient(
+        let client = AIChatClientFactory.metered(
+            origin: .selection,
+            policy: settings.aiQuotaPolicy,
+            price: configuration.connection.customPrice
+                ?? AIPriceCatalog.price(for: configuration.connection.providerID, model: configuration.model),
             connection: configuration.connection,
             apiKey: configuration.apiKey,
             model: configuration.model,
             disableDeepSeekThinking: settings.aiDisableDeepSeekThinking,
-            timeout: 20,
-            quota: .tracked(
-                origin: .selection,
-                policy: settings.aiQuotaPolicy,
-                price: configuration.connection.customPrice
-                    ?? AIPriceCatalog.price(for: configuration.connection.providerID, model: configuration.model)
-            )
+            timeout: 20
         )
         let escaped = String(text.prefix(2_000))
             .replacingOccurrences(of: "&", with: "&amp;")
@@ -336,13 +334,15 @@ final class SelectionExplainModel {
         } else {
             let price = configuration.connection.customPrice
                 ?? AIPriceCatalog.price(for: configuration.connection.providerID, model: configuration.model)
-            let client = HTTPAIChatClient(
+            let client = AIChatClientFactory.metered(
+                origin: .selection,
+                policy: policy,
+                price: price,
                 connection: configuration.connection,
                 apiKey: configuration.apiKey,
                 model: configuration.model,
                 disableDeepSeekThinking: settings.aiDisableDeepSeekThinking,
-                timeout: 60,
-                quota: .tracked(origin: .selection, policy: policy, price: price)
+                timeout: 60
             )
             service = SelectionExplainService(
                 client: client,

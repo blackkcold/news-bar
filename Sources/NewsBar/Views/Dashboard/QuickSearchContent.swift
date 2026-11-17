@@ -89,8 +89,10 @@ struct QuickSearchContent: View {
     let onOpenResult: (URL) -> Void
     let onOpenSource: (URL) -> Void
     let onConfigureAI: () -> Void
+    var onOpenWorkspaceResult: (WorkspaceSearchResult) -> Void = { _ in }
 
     @State private var webGateway = ManualSearchGateway()
+    @State private var workspaceSearch = WorkspaceSearchService()
     @State private var webTask: Task<Void, Never>?
     @FocusState private var queryFocused: Bool
 
@@ -115,13 +117,22 @@ struct QuickSearchContent: View {
             }
         }
         .onChange(of: model.query) { _, _ in
-            if surface == .local { refreshLocalResults() }
+            if surface == .local {
+                model.workspaceResults = []
+                refreshLocalResults()
+            }
+        }
+        .task(id: model.query) {
+            await loadWorkspaceResults()
         }
         .onChange(of: archiveController.entries) { _, _ in
             if surface == .local { refreshLocalResults() }
         }
         .onChange(of: surface) { _, newSurface in
-            if newSurface == .local { refreshLocalResults() }
+            if newSurface == .local {
+                refreshLocalResults()
+                Task { await loadWorkspaceResults() }
+            }
             if newSurface == .ai { aiModel.present() }
             queryFocused = newSurface != .ai
         }
@@ -195,8 +206,23 @@ struct QuickSearchContent: View {
             } else {
                 ScrollView {
                     LazyVStack(spacing: 6) {
-                        ForEach(model.localResults) { result in
+                        ForEach(regularResults) { result in
                             localResultRow(result)
+                        }
+                        if !workspaceLocalResults.isEmpty {
+                            HStack(spacing: 5) {
+                                Text("reader.quickSearch.workspaceSection".localized.uppercased())
+                                    .font(.system(size: 8.5, weight: .black))
+                                    .tracking(0.5)
+                                    .foregroundStyle(.secondary)
+                                Rectangle()
+                                    .fill(Color(nsColor: .separatorColor).opacity(0.4))
+                                    .frame(height: 1)
+                            }
+                            .padding(.top, 2)
+                            ForEach(workspaceLocalResults) { result in
+                                localResultRow(result)
+                            }
                         }
                     }
                 }
@@ -404,10 +430,16 @@ struct QuickSearchContent: View {
             if case .archive = result { return true }
             return false
         }()
+        let workspaceResult: WorkspaceSearchResult? = {
+            if case let .workspace(result) = result { return result }
+            return nil
+        }()
         return Button {
             if case .archive(let entry) = result {
                 selectSurface(.archive)
                 selectedArchiveEntry = entry
+            } else if let workspaceResult {
+                onOpenWorkspaceResult(workspaceResult)
             } else if let url = Self.allowedReaderURL(for: result) {
                 onOpenResult(url)
             }
@@ -430,7 +462,14 @@ struct QuickSearchContent: View {
             .background(.quaternary.opacity(0.24), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
         }
         .buttonStyle(.plain)
-        .disabled(!canReplayArchive && Self.allowedReaderURL(for: result) == nil)
+        .disabled(!canReplayArchive && workspaceResult == nil && Self.allowedReaderURL(for: result) == nil)
+        .contextMenu {
+            if let workspaceResult {
+                Button("reader.quickSearch.openWorkspace".localized) {
+                    onOpenWorkspaceResult(workspaceResult)
+                }
+            }
+        }
         .accessibilityLabel(L10n.string("reader.quickSearch.result", language: language, title, subtitle))
     }
 
@@ -505,6 +544,13 @@ struct QuickSearchContent: View {
         case .news(let item): return item.title
         case .readerHistory(let entry): return entry.title
         case .archive(let entry): return entry.query
+        case .workspace(let result):
+            switch result {
+            case let .subject(_, title, _, _): return title
+            case let .report(_, _, title, _, _): return title
+            case let .evidence(_, _, title, _, _): return title
+            case let .answer(_, query, _, _): return query
+            }
         }
     }
 
@@ -513,6 +559,17 @@ struct QuickSearchContent: View {
         case .news(let item): return item.url
         case .readerHistory(let entry): return entry.host
         case .archive(let entry): return entry.pageTitle ?? entry.answer.oneLine
+        case .workspace(let result):
+            switch result {
+            case .subject:
+                return "workspace.result.subject".localized
+            case .report:
+                return "workspace.result.report".localized
+            case .evidence:
+                return "workspace.result.evidence".localized
+            case .answer:
+                return "workspace.result.answer".localized
+            }
         }
     }
 
@@ -534,12 +591,51 @@ struct QuickSearchContent: View {
         if nextSurface == .ai { aiModel.present() }
     }
 
+    private var regularResults: [QuickSearchResult] {
+        model.localResults.filter {
+            if case .workspace = $0 { return false }
+            return true
+        }
+    }
+
+    private var workspaceLocalResults: [QuickSearchResult] {
+        model.localResults.filter {
+            if case .workspace = $0 { return true }
+            return false
+        }
+    }
+
+    private func loadWorkspaceResults() async {
+        let query = model.query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard surface == .local, !query.isEmpty else {
+            model.workspaceResults = []
+            return
+        }
+        do {
+            try await Task.sleep(for: .milliseconds(200))
+        } catch {
+            return
+        }
+        guard !Task.isCancelled,
+              surface == .local,
+              model.query.trimmingCharacters(in: .whitespacesAndNewlines) == query
+        else { return }
+        let response = await workspaceSearch.searchLocal(query, scopes: .all, limit: 8)
+        guard !Task.isCancelled,
+              surface == .local,
+              model.query.trimmingCharacters(in: .whitespacesAndNewlines) == query
+        else { return }
+        model.workspaceResults = response.results
+        refreshLocalResults()
+    }
+
     private func refreshLocalResults() {
         model.searchLocal(
             query: model.query,
             newsItems: activeNewsItems,
             readingHistory: readingHistory,
-            archiveEntries: archiveController.entries
+            archiveEntries: archiveController.entries,
+            workspaceResults: model.workspaceResults
         )
     }
 
@@ -574,7 +670,7 @@ struct QuickSearchContent: View {
             return ReaderNavigationPolicy.allowedURL(item.readerURL ?? item.url)
         case .readerHistory(let entry):
             return ReaderNavigationPolicy.allowedURL(entry.url)
-        case .archive:
+        case .archive, .workspace:
             return nil
         }
     }

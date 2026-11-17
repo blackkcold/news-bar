@@ -3,10 +3,16 @@ import Foundation
 /// Adapts the shared search router for user-initiated web searches.
 /// The router stays alive for the gateway's lifetime so cache and cooldown
 /// state can be reused between searches.
+///
+/// The production gateway uses `ResearchServiceAssembly.shared.searchRouter`:
+/// one router, one `SearchQuotaStore`, one search ledger for manual search, AI
+/// search and research. Each `search` call creates exactly one
+/// `SearchAttemptTicket(limit: 6)`; a cached or skipped provider does not
+/// consume it.
 struct ManualSearchGateway: Sendable {
     private let router: SearchRouter
 
-    init(router: SearchRouter = SearchRouter()) {
+    init(router: SearchRouter = ResearchServiceAssembly.shared.searchRouter) {
         self.router = router
     }
 

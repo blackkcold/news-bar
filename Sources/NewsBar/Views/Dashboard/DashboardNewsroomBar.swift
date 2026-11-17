@@ -103,12 +103,6 @@ struct DashboardNewsroomBar: View {
             )
 
             DashboardBarAction(
-                symbol: "dot.radiowaves.left.and.right",
-                title: L10n.string("event.window.title", language: settings.appLanguage),
-                action: onOpenEventMonitor
-            )
-
-            DashboardBarAction(
                 symbol: "gearshape",
                 title: settings.appLanguage == .en ? "Settings" : "设置",
                 action: onOpenSettings

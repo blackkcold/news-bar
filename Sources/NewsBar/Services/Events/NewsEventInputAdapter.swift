@@ -132,7 +132,8 @@ struct NewsEventInputAdapter: NewsEventInputAdapting {
                 conflicts: primaryConflicts,
                 coreConflicts: index == 0 ? coreConflicts : [],
                 detailConflicts: index == 0 ? detailConflicts : [],
-                timeline: primaryTimeline
+                timeline: primaryTimeline,
+                researchCausalToken: WorkspaceResearchCausalToken.make(record: record)
             )
         }
     }

@@ -87,15 +87,30 @@ actor ResearchCacheStore {
         }
     }
 
-    func load(kind: ResearchCacheKind, key: String, now: Date = Date()) -> Data? {
+    /// `maxAge` shortens the effective TTL for one consumer; it can never extend
+    /// it. AI search passes its 10-minute window while research keeps the
+    /// 12-hour snapshot window, and both still share this file layout and epoch.
+    func load(
+        kind: ResearchCacheKind,
+        key: String,
+        now: Date = Date(),
+        maxAge: TimeInterval? = nil
+    ) -> Data? {
         let url = directoryURL
             .appendingPathComponent(kind.rawValue, isDirectory: true)
             .appendingPathComponent(fileKey(kind: kind, key: key) + ".json")
         guard let record = fileRecord(at: url, kind: kind) else { return nil }
-        guard now.timeIntervalSince(record.modifiedAt) <= ttl(for: kind) else {
+        let storeLimit = ttl(for: kind)
+        let age = now.timeIntervalSince(record.modifiedAt)
+        if age > storeLimit {
+            // Only the store's own TTL is a reason to delete a file. A consumer
+            // with a shorter `maxAge` must miss without destroying a snapshot
+            // another consumer (research) could still reuse for its full TTL.
             try? fileManager.removeItem(at: url)
             return nil
         }
+        let limit = maxAge.map { min(storeLimit, max(0, $0)) } ?? storeLimit
+        guard age <= limit else { return nil }
         guard let data = try? Data(contentsOf: url),
               let entry = try? JSONDecoder().decode(Entry.self, from: data) else {
             try? fileManager.removeItem(at: url)
