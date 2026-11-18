@@ -3,6 +3,7 @@ import UserNotifications
 
 struct EventMonitorNotificationSettingsSection: View {
     @Environment(AppSettings.self) private var settings
+    @Environment(\.settingsNotificationAuthorizationStatusAction) private var authorizationStatusAction
 
     @State private var authorizationGranted = false
     @State private var controller: NewsEventController?
@@ -58,7 +59,7 @@ struct EventMonitorNotificationSettingsSection: View {
             Text("event.settings.footer".localized)
         }
         .task {
-            let status = await NotificationService.authorizationStatus()
+            let status = await authorizationStatusAction()
             authorizationGranted = status == .authorized || status == .provisional
             controller = NewsEventController.shared(settings: settings)
             await controller?.reload(now: Date())

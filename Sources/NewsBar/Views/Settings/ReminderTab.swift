@@ -1,10 +1,24 @@
 import SwiftUI
 import UserNotifications
 
+private struct SettingsNotificationAuthorizationActionKey: EnvironmentKey {
+    static let defaultValue: @MainActor () async -> UNAuthorizationStatus = {
+        await NotificationService.authorizationStatus()
+    }
+}
+
+extension EnvironmentValues {
+    var settingsNotificationAuthorizationStatusAction: @MainActor () async -> UNAuthorizationStatus {
+        get { self[SettingsNotificationAuthorizationActionKey.self] }
+        set { self[SettingsNotificationAuthorizationActionKey.self] = newValue }
+    }
+}
+
 /// 提醒页签：定时推送、爆款推送、联网搜索、关键词监控。
 /// 标准主题下使用 Liquid Glass 胶囊/浮框；复古主题使用纸张 + 硬描边风格。
 struct ReminderTab: View {
     @Environment(AppSettings.self) private var settings
+    @Environment(\.settingsNotificationAuthorizationStatusAction) private var authorizationStatusAction
 
     @State private var authorized = false
     @State private var newKeyword = ""
@@ -113,7 +127,7 @@ struct ReminderTab: View {
         .formStyle(.grouped)
         .scrollContentBackground(.hidden)
         .task {
-            let status = await NotificationService.authorizationStatus()
+            let status = await authorizationStatusAction()
             authorized = (status == .authorized || status == .provisional)
         }
     }
