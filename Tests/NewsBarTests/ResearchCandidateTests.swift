@@ -26,7 +26,7 @@ final class ResearchCandidateTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(candidates.first?.personalRelevance ?? 0, ResearchCandidateBuilder.personalThreshold)
     }
 
-    func testBlockedKeywordAndOldRSSItemsAreExcluded() {
+    func testBlockedItemsAndOldRSSAreExcludedButKeywordMatchesRemainCandidates() {
         var state = LocalInterestState()
         state.learningEnabled = true
         state.followedTopics = ["OpenAI"]
@@ -43,7 +43,7 @@ final class ResearchCandidateTests: XCTestCase {
             isKeywordMatch: { $0.id == keyword.id }
         )
 
-        XCTAssertEqual(candidates.map(\.item.id), [fresh.id])
+        XCTAssertEqual(candidates.map(\.item.id), [keyword.id, fresh.id])
     }
 
     func testSameEventIsDeduplicatedBeforeTriage() {
@@ -124,14 +124,33 @@ final class ResearchCandidateTests: XCTestCase {
             ResearchCandidateItem(item: itemB, kind: .personal, publicHeat: nil, personalRelevance: 0.8, priority: 0.7),
         ]
         let decisions = [
-            ResearchTriageDecision(id: itemA.id, sameEventAs: "record-1", sameAngleAs: nil, worth: true, confidence: 0.9, reason: "same"),
-            ResearchTriageDecision(id: itemB.id, sameEventAs: nil, sameAngleAs: nil, worth: true, confidence: 0.8, reason: "new"),
+            ResearchTriageDecision(
+                id: itemA.id,
+                sameEventAs: "record-1",
+                sameAngleAs: nil,
+                worth: true,
+                confidence: 0.9,
+                reason: "same",
+                researchQuestion: "发生了什么变化？",
+                hasSubstantiveUpdate: true
+            ),
+            ResearchTriageDecision(
+                id: itemB.id,
+                sameEventAs: nil,
+                sameAngleAs: nil,
+                worth: true,
+                confidence: 0.8,
+                reason: "new",
+                researchQuestion: "新事件的情况如何？",
+                hasSubstantiveUpdate: true
+            ),
         ]
 
         let chosen = ResearchTriage.choose(
             candidates: candidates,
             decisions: decisions,
-            knownRecordIDs: ["record-1"]
+            knownRecordIDs: ["record-1"],
+            knownRecordUpdatedAt: ["record-1": now.addingTimeInterval(1)]
         )
 
         XCTAssertEqual(chosen?.item.id, itemB.id)
