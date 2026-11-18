@@ -19,6 +19,26 @@ struct ResearchCandidateItem: Sendable, Equatable {
     let publicHeat: Double?
     let personalRelevance: Double
     let priority: Double
+    let eventID: String?
+    let isUrgent: Bool
+
+    init(
+        item: NewsItem,
+        kind: Kind,
+        publicHeat: Double?,
+        personalRelevance: Double,
+        priority: Double,
+        eventID: String? = nil,
+        isUrgent: Bool = false
+    ) {
+        self.item = item
+        self.kind = kind
+        self.publicHeat = publicHeat
+        self.personalRelevance = personalRelevance
+        self.priority = priority
+        self.eventID = eventID
+        self.isUrgent = isUrgent
+    }
 
     var topicKey: String { TopicFingerprint.key(for: item.title) }
 }
@@ -39,6 +59,7 @@ enum ResearchCandidateBuilder {
         lastResearchedAtByTopicKey: [String: Date] = [:],
         publicImportanceItemIDs: Set<String> = [],
         eventIDByItemID: [String: String] = [:],
+        urgentEventIDs: Set<String> = [],
         includePersonal: Bool = true,
         isKeywordMatch: (NewsItem) -> Bool = { _ in false }
     ) -> [ResearchCandidateItem] {
@@ -76,12 +97,14 @@ enum ResearchCandidateBuilder {
         var result: [ResearchCandidateItem] = []
         for row in snapshot.items {
             guard seenContent.insert(row.contentID).inserted else { continue }
-            if let eventID = eventIDByItemID[row.item.id],
+            let eventID = eventIDByItemID[row.item.id]
+            if let eventID,
                !seenEventIDs.insert(eventID).inserted { continue }
+            let isUrgent = eventID.map(urgentEventIDs.contains) ?? false
             let personal = row.components["interest"] ?? 0
             let heat = row.components["publicHeat"]
             let kind: ResearchCandidateItem.Kind
-            if publicImportanceItemIDs.contains(row.item.id) {
+            if publicImportanceItemIDs.contains(row.item.id) || isUrgent {
                 kind = .publicImpact
             } else if isKeywordMatch(row.item) {
                 kind = .keyword
@@ -99,7 +122,9 @@ enum ResearchCandidateBuilder {
                 kind: kind,
                 publicHeat: heat,
                 personalRelevance: personal,
-                priority: row.score
+                priority: row.score,
+                eventID: eventID,
+                isUrgent: isUrgent
             ))
         }
         result.sort { lhs, rhs in

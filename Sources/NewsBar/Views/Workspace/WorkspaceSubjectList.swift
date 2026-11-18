@@ -122,12 +122,22 @@ struct WorkspaceSubjectList: View {
                 showsNewTopic: true
             )
         } else if model.visibleSubjects.isEmpty {
-            emptyState(
-                title: "workspace.empty.filter".localized,
-                body: "workspace.empty.filter.body".localized,
-                symbol: model.filter.symbol,
-                showsNewTopic: false
-            )
+            if model.filter == .followUp {
+                emptyState(
+                    title: "workspace.empty.followUp".localized,
+                    body: "workspace.empty.followUp.body".localized,
+                    symbol: model.filter.symbol,
+                    showsNewTopic: false,
+                    showsAllLeads: true
+                )
+            } else {
+                emptyState(
+                    title: "workspace.empty.filter".localized,
+                    body: "workspace.empty.filter.body".localized,
+                    symbol: model.filter.symbol,
+                    showsNewTopic: false
+                )
+            }
         } else {
             ScrollViewReader { proxy in
                 ScrollView(.vertical, showsIndicators: true) {
@@ -379,7 +389,8 @@ struct WorkspaceSubjectList: View {
         title: String,
         body: String,
         symbol: String,
-        showsNewTopic: Bool
+        showsNewTopic: Bool,
+        showsAllLeads: Bool = false
     ) -> some View {
         VStack(spacing: 8) {
             Image(systemName: symbol)
@@ -395,6 +406,12 @@ struct WorkspaceSubjectList: View {
             if showsNewTopic {
                 Button("workspace.action.newTopic".localized, action: onNewTopic)
                     .buttonStyle(EditorialActionButtonStyle(tone: .prominent, compact: true))
+            }
+            if showsAllLeads {
+                Button("workspace.action.showAllLeads".localized) {
+                    model.filter = .all
+                }
+                .buttonStyle(EditorialActionButtonStyle(tone: .secondary, compact: true))
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)

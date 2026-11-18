@@ -226,6 +226,13 @@ struct ResearchAutomaticDecision: Codable, Sendable, Equatable {
     var reason: String?
 }
 
+struct AutomaticUrgentResearchStart: Codable, Sendable, Equatable {
+    var eventID: String
+    var startedAt: Date
+    /// Only starts beyond the ordinary daily target consume an exception slot.
+    var isExtra: Bool
+}
+
 struct PersistedResearchState: Codable, Sendable {
     var artifacts: [String: BurstResearch] = [:]
     var notifiedBursts: Set<String> = []
@@ -234,6 +241,9 @@ struct PersistedResearchState: Codable, Sendable {
     /// Start of the most recent feed-triggered research run. Persisted so a
     /// relaunch cannot bypass the one-per-hour automatic budget.
     var lastAutomaticStartedAt: Date?
+    /// Recent event IDs prevent repeated urgency bypasses after relaunch.
+    /// Optional so state written before urgent admission remains readable.
+    var urgentAutomaticStarts: [AutomaticUrgentResearchStart]? = nil
     /// Last time the automatic selector looked for a topic, whether or not it
     /// started one. Throttles AI triage independently of the run budget.
     var lastAutomaticCheckAt: Date?

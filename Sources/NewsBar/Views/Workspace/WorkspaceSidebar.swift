@@ -26,7 +26,7 @@ struct WorkspaceSidebar: View {
 
             ScrollView(.vertical, showsIndicators: false) {
                 VStack(spacing: 2) {
-                    ForEach(WorkspaceFilter.allCases) { filter in
+                    ForEach(WorkspaceFilter.sidebarOrder) { filter in
                         filterButton(filter)
                     }
                 }

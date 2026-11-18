@@ -4,7 +4,11 @@ import Observation
 // MARK: - Filters and presentation types
 
 enum WorkspaceFilter: String, CaseIterable, Identifiable, Sendable {
-    case all, following, updated, review, archived
+    case all, following, updated, review, archived, followUp
+
+    /// Keeps the existing keyboard command order stable while putting the
+    /// actionable view first in the sidebar.
+    static let sidebarOrder: [WorkspaceFilter] = [.followUp, .all, .following, .updated, .review, .archived]
 
     var id: String { rawValue }
     var titleKey: String { "workspace.sidebar.\(rawValue)" }
@@ -16,22 +20,24 @@ enum WorkspaceFilter: String, CaseIterable, Identifiable, Sendable {
         case .updated: return "arrow.triangle.2.circlepath"
         case .review: return "exclamationmark.magnifyingglass"
         case .archived: return "archivebox"
+        case .followUp: return "arrowshape.turn.up.right"
         }
     }
 
-    func matches(_ subject: WorkspaceSubject) -> Bool {
+    func matches(_ subject: WorkspaceSubject, isFollowUp: Bool = false) -> Bool {
         switch self {
         case .all: return !subject.isArchived
         case .following: return subject.isFollowed && !subject.isArchived
         case .updated: return subject.updateState == .hasUpdates && !subject.isArchived
         case .review: return subject.updateState == .needsReview && !subject.isArchived
         case .archived: return subject.isArchived
+        case .followUp: return isFollowUp && !subject.isArchived
         }
     }
 }
 
 enum WorkspaceSort: String, CaseIterable, Identifiable, Sendable {
-    case activity, created, title
+    case activity, created, title, followUp
 
     var id: String { rawValue }
     var titleKey: String { "workspace.sort.\(rawValue)" }
@@ -148,8 +154,8 @@ final class ResearchWorkspaceModel {
     var subjects: [WorkspaceSubject] = []
     var selectedSubjectID: String?
     var detail: WorkspaceDetail?
-    var filter: WorkspaceFilter = .all
-    var sort: WorkspaceSort = .activity
+    var filter: WorkspaceFilter = .followUp
+    var sort: WorkspaceSort = .followUp
     var searchText = ""
     var searchResults: [WorkspaceSearchResult] = []
     var webResults: [SearchHit] = []
@@ -164,6 +170,9 @@ final class ResearchWorkspaceModel {
     var bootstrap: WorkspaceBootstrap?
     var lastDataRefreshAt: Date?
     var activeSubjectIDs: Set<String> = []
+    /// Derived only from already persisted event/research/subject state.
+    /// Lower values sort first: major progress, corrections, active runs, follows.
+    private(set) var followUpPriorityBySubjectID: [String: Int] = [:]
     var reusePreview: WorkspaceReusePreview?
     var archiveReplay: AISearchArchiveEntry?
     var segmentRequest: WorkspaceSegmentRequest?
@@ -239,7 +248,9 @@ final class ResearchWorkspaceModel {
     // MARK: - Derived state
 
     var visibleSubjects: [WorkspaceSubject] {
-        let filtered = subjects.filter { filter.matches($0) }
+        let filtered = subjects.filter {
+            filter.matches($0, isFollowUp: followUpPriorityBySubjectID[$0.id] != nil)
+        }
         switch sort {
         case .activity:
             return filtered.sorted { lhs, rhs in
@@ -259,11 +270,23 @@ final class ResearchWorkspaceModel {
                 if order != .orderedSame { return order == .orderedAscending }
                 return lhs.id < rhs.id
             }
+        case .followUp:
+            return filtered.sorted { lhs, rhs in
+                let lhsPriority = followUpPriorityBySubjectID[lhs.id] ?? Int.max
+                let rhsPriority = followUpPriorityBySubjectID[rhs.id] ?? Int.max
+                if lhsPriority != rhsPriority { return lhsPriority < rhsPriority }
+                if lhs.lastActivityAt != rhs.lastActivityAt {
+                    return lhs.lastActivityAt > rhs.lastActivityAt
+                }
+                return lhs.title.localizedStandardCompare(rhs.title) == .orderedAscending
+            }
         }
     }
 
     func count(for filter: WorkspaceFilter) -> Int {
-        subjects.filter { filter.matches($0) }.count
+        subjects.filter {
+            filter.matches($0, isFollowUp: followUpPriorityBySubjectID[$0.id] != nil)
+        }.count
     }
 
     var isSearching: Bool {
@@ -457,6 +480,11 @@ final class ResearchWorkspaceModel {
                 }
                 .map(\.id)
         )
+        followUpPriorityBySubjectID = Self.followUpPriorities(
+            subjects: subjects,
+            events: events,
+            activeSubjectIDs: activeSubjectIDs
+        )
 
         if reloadSearchIndex {
             await searchService.reloadIndex()
@@ -480,6 +508,37 @@ final class ResearchWorkspaceModel {
         } else if let first = visibleSubjects.first {
             await select(first.id)
         }
+    }
+
+    private static func followUpPriorities(
+        subjects: [WorkspaceSubject],
+        events: [NewsEvent],
+        activeSubjectIDs: Set<String>
+    ) -> [String: Int] {
+        let eventsByID = Dictionary(events.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        var priorities: [String: Int] = [:]
+
+        for subject in subjects where !subject.isArchived {
+            var priority: Int?
+            let linkedEvents = subject.eventIDs.compactMap { eventsByID[$0] }
+            if linkedEvents.contains(where: { $0.lastMajorProgressAt != nil })
+                || subject.updateState == .hasUpdates {
+                priority = 0
+            } else if linkedEvents.contains(where: { event in
+                event.coreConsistency == .contested
+                    || !event.coreConflictDetails.isEmpty
+                    || event.claims.contains { $0.scope == .core && $0.status == .corrected }
+            }) || subject.updateState == .needsReview {
+                priority = 1
+            } else if activeSubjectIDs.contains(subject.id) {
+                priority = 2
+            } else if subject.isFollowed {
+                priority = 3
+            }
+
+            if let priority { priorities[subject.id] = priority }
+        }
+        return priorities
     }
 
     private func reloadSelectedDetail() async {
@@ -824,7 +883,8 @@ final class ResearchWorkspaceModel {
                 latest.markUserStateChanged(at: Date())
             }
             subjects = await store.subjects()
-            if archived, selectedSubjectID == id, !filter.matches(subject) {
+            if archived, selectedSubjectID == id,
+               !filter.matches(subject, isFollowUp: followUpPriorityBySubjectID[id] != nil) {
                 await select(visibleSubjects.first?.id)
             } else if selectedSubjectID == id, var detail {
                 detail.subject = subject
