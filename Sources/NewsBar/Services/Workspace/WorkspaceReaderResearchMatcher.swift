@@ -129,7 +129,8 @@ final class WorkspaceReaderResearchMatcher {
         }
         let expectedRevision = revision
         let task = Task { @MainActor [weak self] in
-            await self?.performLoad(expectedRevision: expectedRevision)
+            guard let self else { return }
+            await self.performLoad(expectedRevision: expectedRevision)
         }
         loadTask = task
         await task.value

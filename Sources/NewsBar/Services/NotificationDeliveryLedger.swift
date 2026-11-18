@@ -444,8 +444,8 @@ actor NotificationDeliveryLedger {
 
     private static func channel(for requestID: String) -> NotificationDeliveryChannel {
         switch requestID {
-        case NotificationIdentifier.hourlyRequest: .hourlySummary
-        case NotificationIdentifier.dailyRequest: .dailySummary
+        case NotificationIdentifier.hourlyRequest: return .hourlySummary
+        case NotificationIdentifier.dailyRequest: return .dailySummary
         default:
             if requestID.hasPrefix("research-v2-") { return .researchAlert }
             if requestID.hasPrefix("news-event-") { return .eventAlert }

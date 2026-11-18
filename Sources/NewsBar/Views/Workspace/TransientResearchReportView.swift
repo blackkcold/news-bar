@@ -149,10 +149,11 @@ final class TransientResearchReportModel {
             }
         }
 
-        let versions = if let resolvedRecordID {
-            await workspaceStore.versions(recordID: resolvedRecordID)
+        let versions: [WorkspaceReportVersion]
+        if let resolvedRecordID {
+            versions = await workspaceStore.versions(recordID: resolvedRecordID)
         } else {
-            []
+            versions = []
         }
         guard revision == expectedRevision, !Task.isCancelled else { return }
         if markReadOnOpen,
@@ -234,6 +235,8 @@ struct TransientResearchReportView: View {
 
     private var english: Bool { settings.appLanguage == .en }
     private var report: BurstResearch? { model.selectedVersion?.report ?? model.record?.report }
+    private var fallbackSourceURL: String? { model.fallbackSourceURL }
+    private var fallbackTitle: String? { model.fallbackTitle }
 
     var body: some View {
         VStack(spacing: 0) {

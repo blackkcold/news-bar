@@ -208,7 +208,7 @@ struct NewsEventNotificationPolicy: NewsEventNotificationPolicing {
         if event.coreConsistency == .unknown { return .coreUnknown }
         let recentEvidence = freshEvidence(in: event, now: now)
         if recentEvidence.isEmpty { return .staleEvidence }
-        let supportedOfficialCoreClaim = Self.hasOfficialOriginalEvidence(event)
+        let supportedOfficialCoreClaim = NewsEventSummaryBuilder.hasOfficialOriginalEvidence(event)
             && NewsEventSummaryBuilder.officialGrounding(in: event, now: now) != nil
         if sourceResolver.countablePublisherCount(in: recentEvidence) < 3,
            !supportedOfficialCoreClaim {
