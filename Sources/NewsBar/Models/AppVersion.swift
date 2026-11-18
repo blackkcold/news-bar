@@ -33,4 +33,14 @@ enum AppVersion {
         // 4. Hardcoded fallback for unusual development launches.
         return "1.4.2"
     }()
+
+    /// Optional timestamp for this bundle's packaging/build run. Older bundles
+    /// do not contain this independent Info.plist field.
+    static let buildDateUTC: Date? = {
+        guard let value = Bundle.main.object(forInfoDictionaryKey: "NewsBarBuildTimestampUTC") as? String,
+              !value.isEmpty else { return nil }
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter.date(from: value)
+    }()
 }

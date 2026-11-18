@@ -115,6 +115,11 @@ scripts/build.sh --adhoc
 scripts/package-local.sh --force
 ```
 
+两种打包脚本都会在各自运行开始时生成一次 UTC ISO-8601 时间，并写入
+`Info.plist` 的 `NewsBarBuildTimestampUTC`。设置 → 关于页将其转换为本地时区并显示到秒；
+旧包没有该字段时会隐藏构建时间行。该字段独立于 `CFBundleVersion`、
+`CFBundleShortVersionString` 和 Sparkle 版本。脚本会打印同一个 UTC 值供本地核对。
+
 签名顺序（顺序错会让 framework 的封印对不上）：
 
 ```

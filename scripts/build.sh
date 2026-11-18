@@ -76,6 +76,8 @@ if [ "$ADHOC" -eq 0 ] && ! newsbar_signing_material_available; then
 fi
 
 echo "🔨 Building NewsBar v${VERSION}..."
+BUILD_TIMESTAMP_UTC="$(newsbar_generate_build_timestamp_utc)"
+echo "   Build time UTC: ${BUILD_TIMESTAMP_UTC}"
 
 rm -rf .build/release
 mkdir -p "${RELEASE_DIR}"
@@ -121,6 +123,8 @@ cat > "${BUNDLE_DIR}/Contents/Info.plist" << PLIST
     <string>${VERSION}</string>
     <key>CFBundleShortVersionString</key>
     <string>${VERSION}</string>
+    <key>NewsBarBuildTimestampUTC</key>
+    <string>${BUILD_TIMESTAMP_UTC}</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleSignature</key>
@@ -278,6 +282,7 @@ echo ""
 echo "✅ Build complete!"
 echo "   App:  ${BUNDLE_DIR}"
 echo "   DMG:  ${DMG_PATH}"
+echo "   Build time UTC: ${BUILD_TIMESTAMP_UTC}"
 ls -lh "${DMG_PATH}"
 
 echo "🔐 Generating SHA256..."

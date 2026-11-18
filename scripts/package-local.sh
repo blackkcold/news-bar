@@ -53,6 +53,8 @@ if [ -e "$BUNDLE" ]; then
 fi
 
 mkdir -p "$RELEASE_DIR"
+BUILD_TIMESTAMP_UTC="$(newsbar_generate_build_timestamp_utc)"
+echo "Build time UTC: ${BUILD_TIMESTAMP_UTC}"
 
 swift build -c release --arch arm64
 BIN_DIR="$(swift build -c release --arch arm64 --show-bin-path)"
@@ -83,6 +85,7 @@ cat > "$BUNDLE/Contents/Info.plist" <<PLIST
     <key>CFBundleDisplayName</key><string>${APP_NAME}</string>
     <key>CFBundleVersion</key><string>${VERSION}</string>
     <key>CFBundleShortVersionString</key><string>${VERSION}</string>
+    <key>NewsBarBuildTimestampUTC</key><string>${BUILD_TIMESTAMP_UTC}</string>
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleSignature</key><string>????</string>
     <key>CFBundleDevelopmentRegion</key><string>zh_CN</string>
@@ -120,5 +123,5 @@ fi
     shasum -a 256 "release/${VERSION}/NewsBar.app/Contents/MacOS/NewsBar"
 ) > "$RELEASE_DIR/NewsBar-binary.sha256"
 
-printf '\nAPP_BUNDLE=%s\nOUTPUT_DIR=%s\nSHA256_FILE=%s\n' \
-    "$BUNDLE" "$RELEASE_DIR" "$RELEASE_DIR/NewsBar-binary.sha256"
+printf '\nAPP_BUNDLE=%s\nOUTPUT_DIR=%s\nSHA256_FILE=%s\nBUILD_TIMESTAMP_UTC=%s\n' \
+    "$BUNDLE" "$RELEASE_DIR" "$RELEASE_DIR/NewsBar-binary.sha256" "$BUILD_TIMESTAMP_UTC"
