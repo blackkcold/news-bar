@@ -1092,15 +1092,25 @@ final class NewsOrchestrator {
         }
 
         // First-party exact-field matches become event evidence even when the
-        // hourly deep-research budget is full. They state only what the source
-        // itself published and carry an explicit, narrow qualification.
+        // hourly deep-research budget is full. The small persistent selector
+        // caps this automatic lookup at two distinct events per rolling hour;
+        // user-started research does not use this path.
+        guard settings.researchAutoEnabled,
+              epoch == InterestController.shared.state.consentEpoch,
+              !isClearingResearchHistory,
+              !isResearchClearBlocked,
+              isCurrentCacheWork(token) else { return false }
+        let quickEvidenceCandidates = await OfficialEvidenceCandidateScheduler.shared.select(
+            from: candidates,
+            now: now
+        )
         guard settings.researchAutoEnabled,
               epoch == InterestController.shared.state.consentEpoch,
               !isClearingResearchHistory,
               !isResearchClearBlocked,
               isCurrentCacheWork(token) else { return false }
         let quickFindings = await OfficialEvidenceSourceCatalog.shared.findings(
-            for: candidates,
+            for: quickEvidenceCandidates,
             now: now
         )
         guard settings.researchAutoEnabled,

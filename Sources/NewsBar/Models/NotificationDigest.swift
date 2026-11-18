@@ -89,6 +89,12 @@ enum NotificationDigestResearchKind: String, Codable, Sendable {
     case correction
 }
 
+enum NotificationDigestUrgency: String, Codable, Sendable {
+    case ordinary
+    case major
+    case urgentCorrection
+}
+
 /// A compact report/event reference in an existing news digest. Detail text is
 /// present only after the user explicitly enables detailed notification preview.
 struct NotificationDigestResearchItem: Codable, Equatable, Identifiable, Sendable {
@@ -102,6 +108,8 @@ struct NotificationDigestResearchItem: Codable, Equatable, Identifiable, Sendabl
     let compareFromVersionID: String?
     let sourceURL: String?
     let createdAt: Date
+    /// Optional so digests already scheduled by older app versions still decode.
+    var urgency: NotificationDigestUrgency? = nil
     /// When the same event already occupies a digest news slot, the research
     /// action is attached to that row and does not consume another slot.
     var relatedNewsItemID: String? = nil

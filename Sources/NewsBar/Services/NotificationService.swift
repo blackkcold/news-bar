@@ -49,6 +49,7 @@ enum NotificationService {
                 compareFromVersionID: item.compareFromVersionID,
                 sourceURL: item.sourceURL,
                 createdAt: item.createdAt,
+                urgency: item.urgency,
                 relatedNewsItemID: item.relatedNewsItemID
             )
         }
@@ -201,19 +202,33 @@ enum NotificationService {
         min(max(count, 1), maxPushCount)
     }
 
+    private static func digestEventKey(for item: NotificationDigestResearchItem) -> String {
+        if let eventID = item.eventID, !eventID.isEmpty { return "event:\(eventID)" }
+        if let recordID = item.recordID, !recordID.isEmpty { return "record:\(recordID)" }
+        return "item:\(item.id)"
+    }
+
     private static func digestResearchPriority(
         _ lhs: NotificationDigestResearchItem,
         _ rhs: NotificationDigestResearchItem
     ) -> Bool {
-        func priority(_ kind: NotificationDigestResearchKind) -> Int {
-            switch kind {
+        func priority(_ item: NotificationDigestResearchItem) -> Int {
+            let urgency: NotificationDigestUrgency = item.kind == .correction
+                ? .urgentCorrection
+                : (item.urgency ?? .ordinary)
+            switch urgency {
+            case .urgentCorrection: return 0
+            case .major: return 1
+            case .ordinary: break
+            }
+            return switch item.kind {
             case .correction: 0
-            case .reportReady: 1
-            case .eventUpdate: 2
+            case .reportReady: 2
+            case .eventUpdate: 3
             }
         }
-        if priority(lhs.kind) != priority(rhs.kind) {
-            return priority(lhs.kind) < priority(rhs.kind)
+        if priority(lhs) != priority(rhs) {
+            return priority(lhs) < priority(rhs)
         }
         if lhs.createdAt != rhs.createdAt { return lhs.createdAt < rhs.createdAt }
         return lhs.id < rhs.id
@@ -249,7 +264,7 @@ enum NotificationService {
             var selected: [NotificationDigestResearchItem] = []
             var seenEvents: Set<String> = []
             for candidate in researchCandidates.sorted(by: digestResearchPriority) {
-                let eventKey = candidate.eventID ?? candidate.recordID ?? candidate.id
+                let eventKey = digestEventKey(for: candidate)
                 guard seenEvents.insert(eventKey).inserted else { continue }
                 var item = candidate
                 item.relatedNewsItemID = nil
@@ -295,7 +310,7 @@ enum NotificationService {
         var standaloneCount = 0
         let orderedCandidates = researchCandidates.sorted(by: digestResearchPriority)
         for candidate in orderedCandidates {
-            let eventKey = candidate.eventID ?? candidate.recordID ?? candidate.id
+            let eventKey = digestEventKey(for: candidate)
             guard seenEvents.insert(eventKey).inserted else { continue }
             if let newsID = matchingNewsID[candidate.id] {
                 if associatedNewsIDs.insert(newsID).inserted {
@@ -344,8 +359,9 @@ enum NotificationService {
     @discardableResult
     static func sendHourlyPush(items: [NewsItem], count: Int) async -> Bool {
         let limit = normalizedPushCount(count)
+        let admissionDate = Date()
         let queuedResearch = ResearchNotificationPreferences.enabled
-            ? await NotificationDeliveryLedger.shared.pendingSummaryItems()
+            ? await NotificationDeliveryLedger.shared.pendingSummaryCandidates(at: admissionDate)
             : []
         let selection = await selectDigestContents(items: items, researchCandidates: queuedResearch, limit: limit)
         let selectedResearch = selection.researchItems
@@ -354,7 +370,8 @@ enum NotificationService {
 
         guard await NotificationDeliveryLedger.shared.beginSubmission(
             selectedResearch,
-            requestID: NotificationIdentifier.hourlyRequest
+            requestID: NotificationIdentifier.hourlyRequest,
+            at: admissionDate
         ) else {
             // Keep the existing news digest usable if the local delivery ledger
             // cannot durably claim a research item.
@@ -485,21 +502,37 @@ enum NotificationService {
         let sortedResearch = allResearch.filter { seen.insert($0.id).inserted }
             .sorted(by: digestResearchPriority)
         let limit = normalizedPushCount(count)
-        let selection = await selectDigestContents(items: items, researchCandidates: sortedResearch, limit: limit)
+        let admissionDate = Date()
+        let priorResearch = ResearchNotificationPreferences.enabled
+            ? (prior?.researchItems ?? []).filter { !deliveredResearchIDs.contains($0.id) }
+            : []
+        let quotaEligibleResearch = await NotificationDeliveryLedger.shared.summaryCandidates(
+            from: sortedResearch,
+            at: admissionDate
+        )
+        let selection = await selectDigestContents(
+            items: items,
+            researchCandidates: quotaEligibleResearch,
+            limit: limit
+        )
         let selectedResearch = selection.researchItems
         let selectedNews = selection.newsItems
         let queuedIDs = Set(queued.map(\.id))
         let newlyQueued = selectedResearch.filter { queuedIDs.contains($0.id) }
         guard await NotificationDeliveryLedger.shared.beginSubmission(
             newlyQueued,
-            requestID: NotificationIdentifier.dailyRequest
+            requestID: NotificationIdentifier.dailyRequest,
+            at: admissionDate
         ) else {
             // Keep a previously scheduled research row if a new queue entry
             // cannot be claimed durably; do not replace the whole user's daily
             // summary with a research-free fallback.
             let fallbackSelection = await selectDigestContents(
                 items: items,
-                researchCandidates: ResearchNotificationPreferences.enabled ? (prior?.researchItems ?? []) : [],
+                researchCandidates: await NotificationDeliveryLedger.shared.summaryCandidates(
+                    from: priorResearch,
+                    at: admissionDate
+                ),
                 limit: limit
             )
             guard let request = makeDailyRequest(
@@ -613,28 +646,72 @@ enum NotificationService {
         compareFromVersionID: String? = nil
     ) -> NotificationDigestResearchItem {
         let english = L10n.currentLanguage == .en
-        let topic = SecurityPolicies.sanitizeHTMLContent(event.title)
+        let hasOfficialEvidence = NewsEventSummaryBuilder.hasOfficialOriginalEvidence(event)
+        let officialGrounding = NewsEventSummaryBuilder.officialGrounding(
+            in: event,
+            evidenceID: evidence?.id,
+            now: Date()
+        )
+        let topicSource = hasOfficialEvidence ? officialGrounding?.claim.text : event.title
+        let topic = SecurityPolicies.sanitizeHTMLContent(topicSource ?? "")
             .replacingOccurrences(of: "\n", with: " ")
             .trimmingCharacters(in: .whitespacesAndNewlines)
+        let sensitiveMaterial: String
+        if hasOfficialEvidence {
+            sensitiveMaterial = [
+                officialGrounding?.claim.text ?? "",
+                officialGrounding?.evidence.title ?? "",
+                officialGrounding?.evidence.excerpt ?? "",
+            ].joined(separator: "\n")
+        } else {
+            sensitiveMaterial = ([event.title, event.eventDescription] + event.claims.map(\.text))
+                .joined(separator: "\n")
+        }
         let sensitive = NewsEventRiskClassifier.isHighRisk(
-            ([event.title, event.eventDescription] + event.claims.map(\.text)).joined(separator: "\n")
+            sensitiveMaterial
         )
         let genericTitle: String = if alert.change == .correction {
             english ? "A verified correction is ready" : "有新的核验更正"
         } else {
             english ? "A verified event update" : "有新的核验进展"
         }
-        let safeTitle = sensitive || topic.isEmpty
-            ? genericTitle
-            : clipped(alert.change == .correction
-                ? (english ? "\(topic) has a correction" : "\(topic) 有更正")
-                : topic)
-        let detail = ResearchNotificationPreferences.detailedPreviewEnabled && !sensitive
-            ? clipped(alert.body, limit: 160)
-            : nil
-        let sourceURL = safeSourceURL(evidence?.url ?? event.evidence.max(by: {
+        let safeTitle: String
+        if sensitive || alert.change == .correction || topic.isEmpty {
+            safeTitle = genericTitle
+        } else if hasOfficialEvidence && officialGrounding == nil {
+            safeTitle = genericTitle
+        } else {
+            safeTitle = clipped(topic)
+        }
+
+        let detail: String?
+        if !ResearchNotificationPreferences.detailedPreviewEnabled || sensitive || alert.change == .correction {
+            detail = nil
+        } else if hasOfficialEvidence {
+            detail = officialGrounding.map { grounding in
+                let source = NewsEventSummaryBuilder.sanitizedSourceName(
+                    grounding.evidence.sourceName,
+                    language: L10n.currentLanguage
+                )
+                return clipped(
+                    english ? "Verified official field · \(source)" : "已核验官方字段 · \(source)",
+                    limit: 160
+                )
+            }
+        } else {
+            detail = clipped(alert.body, limit: 160)
+        }
+
+        let sourceURL: String?
+        if alert.change == .correction {
+            sourceURL = safeSourceURL(evidence?.url)
+        } else if hasOfficialEvidence {
+            sourceURL = officialGrounding.flatMap { safeSourceURL($0.evidence.url) }
+        } else {
+            sourceURL = safeSourceURL(evidence?.url ?? event.evidence.max(by: {
             ($0.publishedAt ?? $0.fetchedAt) < ($1.publishedAt ?? $1.fetchedAt)
-        })?.url)
+            })?.url)
+        }
         return NotificationDigestResearchItem(
             id: alert.notificationID,
             kind: alert.change == .correction ? .correction : .eventUpdate,
@@ -645,7 +722,8 @@ enum NotificationService {
             versionID: versionID,
             compareFromVersionID: compareFromVersionID,
             sourceURL: sourceURL,
-            createdAt: Date()
+            createdAt: Date(),
+            urgency: notificationUrgency(for: alert.change)
         )
     }
 
@@ -698,8 +776,17 @@ enum NotificationService {
             versionID: versionID,
             compareFromVersionID: compareFromVersionID,
             sourceURL: safeSourceURL(fallbackURL),
-            createdAt: Date()
+            createdAt: Date(),
+            urgency: isCorrection ? .urgentCorrection : .ordinary
         )
+    }
+
+    private static func notificationUrgency(for change: NewsEventChangeKind) -> NotificationDigestUrgency {
+        switch change {
+        case .correction: .urgentCorrection
+        case .majorProgress: .major
+        case .initial, .routine: .ordinary
+        }
     }
 
     static func enqueueSummaryItem(_ item: NotificationDigestResearchItem) async -> Bool {
@@ -721,15 +808,19 @@ enum NotificationService {
     ) async -> Bool {
         guard hourlyEnabled || dailyEnabled,
               await enqueueSummaryItem(item) else { return false }
+        let acceptedRequest: Bool
         if hourlyEnabled {
-            return await sendHourlyPush(items: [], count: pushCount)
+            acceptedRequest = await sendHourlyPush(items: [], count: pushCount)
+        } else {
+            acceptedRequest = await rescheduleDailyPushAndWait(
+                items: [],
+                count: pushCount,
+                hour: dailyHour,
+                minute: dailyMinute
+            )
         }
-        return await rescheduleDailyPushAndWait(
-            items: [],
-            count: pushCount,
-            hour: dailyHour,
-            minute: dailyMinute
-        )
+        guard acceptedRequest else { return false }
+        return await NotificationDeliveryLedger.shared.wasAccepted(semanticID: item.id)
     }
 
     /// Sends only an alert that has already passed the news-event policy gate.
@@ -755,22 +846,25 @@ enum NotificationService {
                 compareFromVersionID: compareFromVersionID
             )
         } else {
+            let kind: NotificationDigestResearchKind = alert.change == .correction ? .correction : .eventUpdate
             item = NotificationDigestResearchItem(
                 id: alert.notificationID,
-                kind: alert.change == .correction ? .correction : .eventUpdate,
-                title: alert.title,
+                kind: kind,
+                title: genericTitle(for: kind),
                 detail: nil,
                 eventID: alert.eventID,
                 recordID: recordID,
                 versionID: versionID,
                 compareFromVersionID: compareFromVersionID,
                 sourceURL: safeSourceURL(evidence?.url),
-                createdAt: Date()
+                createdAt: Date(),
+                urgency: notificationUrgency(for: alert.change)
             )
         }
 
         let requestID = alert.notificationID
         guard await NotificationDeliveryLedger.shared.beginSubmission([item], requestID: requestID) else {
+            _ = await enqueueSummaryItem(item)
             throw SubmissionError.intentUnavailable
         }
         let content = UNMutableNotificationContent()
@@ -848,6 +942,7 @@ enum NotificationService {
         )
         let requestID = "research-v2-\(item.id)"
         guard await NotificationDeliveryLedger.shared.beginSubmission([item], requestID: requestID) else {
+            _ = await enqueueSummaryItem(item)
             throw SubmissionError.intentUnavailable
         }
 

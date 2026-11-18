@@ -58,14 +58,25 @@ struct NotificationDeliveryMetrics: Equatable, Sendable {
 actor NotificationDeliveryLedger {
     static let shared = NotificationDeliveryLedger()
     static let maximumAttempts = 2
+    private static let rollingHourLimit = 2
+    private static let normalDayLimit = 6
+    private static let busyDayLimit = 10
+
+    private struct EnhancedQuotaReservation: Codable {
+        let eventKey: String
+        let reservedAt: Date
+    }
 
     private struct Snapshot: Codable {
         var version = 1
         var deliveries: [String: NotificationDeliveryRecord] = [:]
         var summaryItems: [String: NotificationDigestResearchItem] = [:]
         var receipts: [NotificationDeliveryReceipt] = []
+        var enhancedQuotaReservations: [String: EnhancedQuotaReservation] = [:]
 
-        enum CodingKeys: String, CodingKey { case version, deliveries, summaryItems, receipts }
+        enum CodingKeys: String, CodingKey {
+            case version, deliveries, summaryItems, receipts, enhancedQuotaReservations
+        }
 
         init() {}
 
@@ -84,6 +95,10 @@ actor NotificationDeliveryLedger {
                 [NotificationDeliveryReceipt].self,
                 forKey: .receipts
             ) ?? []
+            enhancedQuotaReservations = try container.decodeIfPresent(
+                [String: EnhancedQuotaReservation].self,
+                forKey: .enhancedQuotaReservations
+            ) ?? [:]
         }
     }
 
@@ -116,21 +131,43 @@ actor NotificationDeliveryLedger {
     func pendingSummaryItems() -> [NotificationDigestResearchItem] {
         guard loadIfNeeded() else { return [] }
         return snapshot.summaryItems.values.filter { canRetry($0.id) }.sorted {
-            if priority($0.kind) != priority($1.kind) {
-                return priority($0.kind) < priority($1.kind)
+            if priority($0) != priority($1) {
+                return priority($0) < priority($1)
             }
             if $0.createdAt != $1.createdAt { return $0.createdAt < $1.createdAt }
             return $0.id < $1.id
         }
     }
 
-    func beginSubmission(_ items: [NotificationDigestResearchItem], requestID: String) -> Bool {
+    func pendingSummaryCandidates(at date: Date = Date()) -> [NotificationDigestResearchItem] {
+        guard loadIfNeeded() else { return [] }
+        let pending = snapshot.summaryItems.values.filter { canRetry($0.id) }
+        return admissionEligible(Array(pending), at: date)
+    }
+
+    /// Returns the highest-priority queued candidates that fit the independent
+    /// enhanced-notification frequency budget. Excluded items remain queued.
+    func summaryCandidates(
+        from candidates: [NotificationDigestResearchItem],
+        at date: Date = Date()
+    ) -> [NotificationDigestResearchItem] {
+        guard loadIfNeeded() else { return [] }
+        return admissionEligible(candidates, at: date)
+    }
+
+    func beginSubmission(
+        _ items: [NotificationDigestResearchItem],
+        requestID: String,
+        at date: Date = Date()
+    ) -> Bool {
         guard loadIfNeeded() else { return false }
         guard !items.isEmpty else { return true }
         // Validate the entire batch before mutating any row. A partially
         // prepared batch must never leave in-memory `submitting` rows when the
         // durable write is rejected.
         guard items.allSatisfy({ canRetry($0.id) }) else { return false }
+        trimQuotaReservations(at: date)
+        guard canReserve(items, at: date) else { return false }
         var records = snapshot.deliveries
         for item in items {
             var record = records[item.id] ?? makeRecord(item, requestID: requestID)
@@ -141,6 +178,10 @@ actor NotificationDeliveryLedger {
             record.updatedAt = Date()
             record.lastError = nil
             records[item.id] = record
+            snapshot.enhancedQuotaReservations[item.id] = EnhancedQuotaReservation(
+                eventKey: Self.quotaEventKey(for: item),
+                reservedAt: date
+            )
         }
         snapshot.deliveries = records
         return persist()
@@ -157,6 +198,12 @@ actor NotificationDeliveryLedger {
             record.lastError = nil
             snapshot.deliveries[item.id] = record
             snapshot.summaryItems[item.id] = nil
+            if snapshot.enhancedQuotaReservations[item.id] == nil {
+                snapshot.enhancedQuotaReservations[item.id] = EnhancedQuotaReservation(
+                    eventKey: Self.quotaEventKey(for: item),
+                    reservedAt: Date()
+                )
+            }
         }
         snapshot.receipts.append(NotificationDeliveryReceipt(
             id: UUID(),
@@ -183,6 +230,7 @@ actor NotificationDeliveryLedger {
             record.updatedAt = Date()
             record.lastError = SecurityPolicies.sanitizeHTMLContent(error).prefix(180).description
             snapshot.deliveries[item.id] = record
+            snapshot.enhancedQuotaReservations[item.id] = nil
         }
         _ = persist()
     }
@@ -243,6 +291,11 @@ actor NotificationDeliveryLedger {
                 $0.channel == .hourlySummary || $0.channel == .dailySummary
             }.count
         )
+    }
+
+    func wasAccepted(semanticID: String) -> Bool {
+        guard loadIfNeeded() else { return false }
+        return snapshot.receipts.contains { $0.semanticIDs.contains(semanticID) }
     }
 
     /// Reconciles crash-interrupted `submitting` intents with the system's own
@@ -400,12 +453,131 @@ actor NotificationDeliveryLedger {
         }
     }
 
-    private func priority(_ kind: NotificationDigestResearchKind) -> Int {
-        switch kind {
-        case .correction: 0
-        case .reportReady: 1
-        case .eventUpdate: 2
+    private func admissionEligible(
+        _ candidates: [NotificationDigestResearchItem],
+        at date: Date
+    ) -> [NotificationDigestResearchItem] {
+        var dayEventKeys = Set(snapshot.enhancedQuotaReservations.values.compactMap { reservation in
+            Calendar.current.isDate(reservation.reservedAt, inSameDayAs: date)
+                ? reservation.eventKey
+                : nil
+        })
+        var hourEventKeys = Set(snapshot.enhancedQuotaReservations.values.compactMap { reservation in
+            let age = date.timeIntervalSince(reservation.reservedAt)
+            return age >= 0 && age < 60 * 60 ? reservation.eventKey : nil
+        })
+        var consideredKeys: Set<String> = []
+        var selected: [NotificationDigestResearchItem] = []
+
+        let ordered = candidates.sorted {
+            if priority($0) != priority($1) { return priority($0) < priority($1) }
+            if $0.createdAt != $1.createdAt { return $0.createdAt < $1.createdAt }
+            return $0.id < $1.id
         }
+        for item in ordered {
+            let key = Self.quotaEventKey(for: item)
+            guard consideredKeys.insert(key).inserted else { continue }
+            guard canAdmit(
+                key: key,
+                urgency: Self.effectiveUrgency(for: item),
+                dayEventKeys: &dayEventKeys,
+                hourEventKeys: &hourEventKeys
+            ) else { continue }
+            selected.append(item)
+        }
+        return selected
+    }
+
+    private func canReserve(_ items: [NotificationDigestResearchItem], at date: Date) -> Bool {
+        var dayEventKeys = Set(snapshot.enhancedQuotaReservations.values.compactMap { reservation in
+            Calendar.current.isDate(reservation.reservedAt, inSameDayAs: date)
+                ? reservation.eventKey
+                : nil
+        })
+        var hourEventKeys = Set(snapshot.enhancedQuotaReservations.values.compactMap { reservation in
+            let age = date.timeIntervalSince(reservation.reservedAt)
+            return age >= 0 && age < 60 * 60 ? reservation.eventKey : nil
+        })
+        let ordered = items.sorted {
+            if priority($0) != priority($1) { return priority($0) < priority($1) }
+            return $0.id < $1.id
+        }
+        for item in ordered {
+            guard canAdmit(
+                key: Self.quotaEventKey(for: item),
+                urgency: Self.effectiveUrgency(for: item),
+                dayEventKeys: &dayEventKeys,
+                hourEventKeys: &hourEventKeys
+            ) else { return false }
+        }
+        return true
+    }
+
+    private func canAdmit(
+        key: String,
+        urgency: NotificationDigestUrgency,
+        dayEventKeys: inout Set<String>,
+        hourEventKeys: inout Set<String>
+    ) -> Bool {
+        if dayEventKeys.contains(key) {
+            hourEventKeys.insert(key)
+            return true
+        }
+        if urgency == .urgentCorrection {
+            dayEventKeys.insert(key)
+            hourEventKeys.insert(key)
+            return true
+        }
+
+        let hasHourlySlot = hourEventKeys.contains(key)
+            || hourEventKeys.count < Self.rollingHourLimit
+        let hasDailySlot = dayEventKeys.count < Self.normalDayLimit
+            || (dayEventKeys.count < Self.busyDayLimit && urgency == .major)
+        guard hasHourlySlot && hasDailySlot else { return false }
+        dayEventKeys.insert(key)
+        hourEventKeys.insert(key)
+        return true
+    }
+
+    private func trimQuotaReservations(at date: Date) {
+        let cutoff = date.addingTimeInterval(-3 * 24 * 60 * 60)
+        snapshot.enhancedQuotaReservations = snapshot.enhancedQuotaReservations.filter {
+            $0.value.reservedAt >= cutoff
+        }
+        if snapshot.enhancedQuotaReservations.count > 1_000 {
+            let retainedIDs = snapshot.enhancedQuotaReservations
+                .sorted { $0.value.reservedAt > $1.value.reservedAt }
+                .prefix(1_000)
+                .map(\.key)
+            let retained = Set(retainedIDs)
+            snapshot.enhancedQuotaReservations = snapshot.enhancedQuotaReservations.filter {
+                retained.contains($0.key)
+            }
+        }
+    }
+
+    private func priority(_ item: NotificationDigestResearchItem) -> Int {
+        switch Self.effectiveUrgency(for: item) {
+        case .urgentCorrection: 0
+        case .major: 1
+        case .ordinary:
+            switch item.kind {
+            case .correction: 0
+            case .reportReady: 2
+            case .eventUpdate: 3
+            }
+        }
+    }
+
+    private static func effectiveUrgency(for item: NotificationDigestResearchItem) -> NotificationDigestUrgency {
+        if item.kind == .correction { return .urgentCorrection }
+        return item.urgency ?? .ordinary
+    }
+
+    private static func quotaEventKey(for item: NotificationDigestResearchItem) -> String {
+        if let eventID = item.eventID, !eventID.isEmpty { return "event:\(eventID)" }
+        if let recordID = item.recordID, !recordID.isEmpty { return "record:\(recordID)" }
+        return "item:\(item.id)"
     }
 
     private static func pendingRequests(_ center: UNUserNotificationCenter) async -> [UNNotificationRequest] {
