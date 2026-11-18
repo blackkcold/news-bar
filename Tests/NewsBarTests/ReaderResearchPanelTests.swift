@@ -6,14 +6,18 @@ final class ReaderResearchPanelTests: XCTestCase {
     func testCurrentPageMatchAndRecentResearch() async throws {
         let store = ResearchStore(directoryURL: try researchTestDirectory())
         let item = NewsItem(title: "Original", url: "https://example.org/original", source: .weibo)
-        var original = researchTestRecord(title: "Original")
+        var original = researchTestRecord(
+            title: "Original",
+            report: BurstResearch(summary: "已核验报告")
+        )
         original.seed.itemID = item.id
         original.seed.url = item.url
         try await store.save(original)
         for number in 1...6 {
             try await store.save(researchTestRecord(title: "Recent \(number)", updatedAt: Date().addingTimeInterval(Double(number))))
         }
-        let model = ReaderResearchPanelModel(store: store)
+        let matcher = WorkspaceReaderResearchMatcher(researchStore: store)
+        let model = ReaderResearchPanelModel(store: store, matcher: matcher)
         await model.refresh(item: item, requestURL: item.url, currentURL: item.url)
         XCTAssertEqual(model.match?.id, original.id)
         XCTAssertEqual(model.recent.count, 5)
