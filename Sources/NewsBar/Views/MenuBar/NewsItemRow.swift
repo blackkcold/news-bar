@@ -39,52 +39,42 @@ struct NewsItemRow: View, Equatable {
     private var sourceMetadataSpacing: CGFloat { 4 }
 
     var body: some View {
+        observedRow
+            .onHover { hovering in
+                if reduceMotion {
+                    isHovering = hovering
+                } else {
+                    withAnimation(.easeInOut(duration: 0.15)) {
+                        isHovering = hovering
+                    }
+                }
+            }
+            .overlay(alignment: .topTrailing) {
+                associationBadge
+            }
+    }
+
+    private var observedRow: some View {
+        interactiveRow
+            .task(id: item.id + "\n" + (item.readerURL ?? item.url)) { await refreshResearchMatch() }
+            .onReceive(NotificationCenter.default.publisher(for: .researchRecordsChanged)) { notification in
+                let changedID = notification.userInfo?[ResearchChangeKey.recordID] as? String
+                guard changedID == nil || changedID == researchMatch?.recordID else { return }
+                Task { await refreshResearchMatch() }
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .researchWorkspaceChanged)) { _ in
+                Task { await refreshResearchMatch() }
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .newsEventsChanged)) { _ in
+                Task { await refreshResearchMatch() }
+            }
+    }
+
+    private var interactiveRow: some View {
         Button {
             NewsNavigationRouter.shared.open(item, surface: "menuTrend")
         } label: {
-            HStack(alignment: .top, spacing: rowSpacing) {
-                if showRank, let rank = item.rank {
-                    rankBadge(rank)
-                }
-
-                VStack(alignment: .leading, spacing: titleSpacing) {
-                    Text(item.displayTitle)
-                        .font(.system(size: titleFontSize, weight: .medium))
-                        .foregroundStyle(.primary)
-                        .lineLimit(titleLineLimit)
-                        .multilineTextAlignment(.leading)
-                        .fixedSize(horizontal: false, vertical: true)
-
-                    if !isCompactPresentation {
-                        HStack(spacing: sourceMetadataSpacing) {
-                            sourcePill
-
-                            if let host = URL(string: item.url)?.host, !host.isEmpty {
-                                Text(host)
-                                    .font(.system(size: 10))
-                                    .foregroundStyle(.secondary)
-                                    .lineLimit(1)
-                            }
-                        }
-                    }
-                }
-                .layoutPriority(1)
-
-                Spacer(minLength: 0)
-
-                if !isCompactPresentation, researchReadingEnabled, hasResearchMatch {
-                    Color.clear.frame(width: 68, height: 17)
-                } else {
-                    Image(systemName: "arrow.up.forward")
-                        .font(.system(size: arrowIconSize, weight: .semibold))
-                        .foregroundStyle(.tertiary)
-                        .opacity(isHovering ? 1 : 0.55)
-                }
-            }
-            .padding(.horizontal, rowHorizontalPadding)
-            .padding(.vertical, rowVerticalPadding)
-            .background(rowBackground)
-            .contentShape(rowShape)
+            rowLabel
         }
         .buttonStyle(.plain)
         .contextMenu {
@@ -101,33 +91,69 @@ struct NewsItemRow: View, Equatable {
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(accessibilityLabel)
         .accessibilityHint("news.openInBrowser".localized)
-        .onHover { hovering in
-            if reduceMotion {
-                isHovering = hovering
-            } else {
-                withAnimation(.easeInOut(duration: 0.15)) {
-                    isHovering = hovering
+    }
+
+    @ViewBuilder
+    private var associationBadge: some View {
+        if !isCompactPresentation, researchReadingEnabled, hasResearchMatch {
+            ResearchAssociationBadge(item: item, match: researchMatch, compact: true)
+                .padding(.top, rowVerticalPadding + 1)
+                .padding(.trailing, rowHorizontalPadding + 1)
+        }
+    }
+
+    private var rowLabel: some View {
+        HStack(alignment: .top, spacing: rowSpacing) {
+            if showRank, let rank = item.rank {
+                rankBadge(rank)
+            }
+
+            titleAndSource
+                .layoutPriority(1)
+
+            Spacer(minLength: 0)
+
+            trailingAccessory
+        }
+        .padding(.horizontal, rowHorizontalPadding)
+        .padding(.vertical, rowVerticalPadding)
+        .background(rowBackground)
+        .contentShape(rowShape)
+    }
+
+    private var titleAndSource: some View {
+        VStack(alignment: .leading, spacing: titleSpacing) {
+            Text(item.displayTitle)
+                .font(.system(size: titleFontSize, weight: .medium))
+                .foregroundStyle(.primary)
+                .lineLimit(titleLineLimit)
+                .multilineTextAlignment(.leading)
+                .fixedSize(horizontal: false, vertical: true)
+
+            if !isCompactPresentation {
+                HStack(spacing: sourceMetadataSpacing) {
+                    sourcePill
+
+                    if let host = URL(string: item.url)?.host, !host.isEmpty {
+                        Text(host)
+                            .font(.system(size: 10))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
                 }
             }
         }
-        .overlay(alignment: .topTrailing) {
-            if !isCompactPresentation, researchReadingEnabled, hasResearchMatch {
-                ResearchAssociationBadge(item: item, match: researchMatch, compact: true)
-                    .padding(.top, rowVerticalPadding + 1)
-                    .padding(.trailing, rowHorizontalPadding + 1)
-            }
-        }
-        .task(id: item.id + "\n" + (item.readerURL ?? item.url)) { await refreshResearchMatch() }
-        .onReceive(NotificationCenter.default.publisher(for: .researchRecordsChanged)) { notification in
-            let changedID = notification.userInfo?[ResearchChangeKey.recordID] as? String
-            guard changedID == nil || changedID == researchMatch?.recordID else { return }
-            Task { await refreshResearchMatch() }
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .researchWorkspaceChanged)) { _ in
-            Task { await refreshResearchMatch() }
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .newsEventsChanged)) { _ in
-            Task { await refreshResearchMatch() }
+    }
+
+    @ViewBuilder
+    private var trailingAccessory: some View {
+        if !isCompactPresentation, researchReadingEnabled, hasResearchMatch {
+            Color.clear.frame(width: 68, height: 17)
+        } else {
+            Image(systemName: "arrow.up.forward")
+                .font(.system(size: arrowIconSize, weight: .semibold))
+                .foregroundStyle(.tertiary)
+                .opacity(isHovering ? 1 : 0.55)
         }
     }
 

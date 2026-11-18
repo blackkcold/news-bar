@@ -237,9 +237,9 @@ enum NotificationService {
     private static func summaryLabel(for kind: NotificationDigestResearchKind) -> String {
         let english = L10n.currentLanguage == .en
         switch kind {
-        case .eventUpdate: english ? "Verified update" : "核验进展"
-        case .reportReady: english ? "Research" : "有深研"
-        case .correction: english ? "Correction" : "有更正"
+        case .eventUpdate: return english ? "Verified update" : "核验进展"
+        case .reportReady: return english ? "Research" : "有深研"
+        case .correction: return english ? "Correction" : "有更正"
         }
     }
 

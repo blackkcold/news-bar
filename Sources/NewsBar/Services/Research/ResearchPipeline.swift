@@ -931,14 +931,16 @@ struct ResearchPipeline: Sendable {
                   QuoteVerifier.verified(quote: evidence.quote, in: document.text),
                   SecurityPolicies.validatePublicHTTPURL(evidence.url).url != nil else { continue }
             let factID = "quote:\(ContentIdentity.digest("\(evidence.canonicalURL)\n\(evidence.quote)"))"
+            let claimText = report.verification?.claims
+                .first(where: { $0.evidenceIDs.contains(evidence.id) })
+                .map { String($0.claim.prefix(300)) }
             appendProgressFact(ResearchRunFact(
                 id: factID,
                 kind: .quoteVerified,
                 title: String(evidence.title.prefix(240)),
                 url: evidence.url,
                 quote: String(evidence.quote.prefix(300)),
-                claim: report.verification?.claims.first(where: { $0.evidenceIDs.contains(evidence.id) })?.claim
-                    .map { String($0.prefix(300)) },
+                claim: claimText,
                 recordedAt: now()
             ))
         }

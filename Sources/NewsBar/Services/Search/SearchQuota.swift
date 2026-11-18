@@ -92,6 +92,30 @@ actor SearchQuotaStore {
         var monthStart: Date
         var monthCount: Int
 
+        init(
+            minuteStart: Date,
+            minuteCount: Int,
+            hourStart: Date,
+            hourCount: Int,
+            dayStart: Date,
+            dayCount: Int,
+            automaticDayCount: Int,
+            manualDayCount: Int,
+            monthStart: Date,
+            monthCount: Int
+        ) {
+            self.minuteStart = minuteStart
+            self.minuteCount = minuteCount
+            self.hourStart = hourStart
+            self.hourCount = hourCount
+            self.dayStart = dayStart
+            self.dayCount = dayCount
+            self.automaticDayCount = automaticDayCount
+            self.manualDayCount = manualDayCount
+            self.monthStart = monthStart
+            self.monthCount = monthCount
+        }
+
         static func empty(at date: Date, calendar: Calendar) -> Window {
             Window(
                 minuteStart: Self.minuteStart(date),

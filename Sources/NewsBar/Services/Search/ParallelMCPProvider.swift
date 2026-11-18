@@ -12,7 +12,7 @@ struct ParallelMCPSearchProvider: SearchProvider {
 
     func search(_ query: SearchQuery, key: String) async throws -> [SearchHit] {
         guard key.isEmpty else { throw SearchProviderError.malformedResponse }
-        try await client.search(query)
+        return try await client.search(query)
     }
 }
 

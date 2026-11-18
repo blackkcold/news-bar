@@ -19,6 +19,21 @@ struct ResearchSettingsSection: View {
     @State private var lastStatusRefresh = Date.distantPast
     @AppStorage("researchReadingEnabled") private var researchReadingEnabled = true
 
+    private var parallelMCPEnabledBinding: Binding<Bool> {
+        Binding(
+            get: { settings.researchParallelMCPEnabled },
+            set: { settings.researchParallelMCPEnabled = $0 }
+        )
+    }
+
+    private func concurrencyCapLabel(_ value: Int) -> String {
+        L10n.string(
+            "research.cap.concurrent",
+            language: settings.appLanguage,
+            value
+        )
+    }
+
     var body: some View {
         Group {
             Section {
@@ -99,14 +114,7 @@ struct ResearchSettingsSection: View {
                     set: { settings.researchMaxConcurrent = $0 }
                 )) {
                     ForEach(Array(AppSettings.validResearchConcurrency).sorted(), id: \.self) { value in
-                        Text(
-                            L10n.string(
-                                "research.cap.concurrent",
-                                language: settings.appLanguage,
-                                value
-                            )
-                        )
-                        .tag(value)
+                        Text(concurrencyCapLabel(value)).tag(value)
                     }
                 }
             } header: {
@@ -123,7 +131,7 @@ struct ResearchSettingsSection: View {
                     settings.appLanguage == .en
                         ? "Allow Parallel MCP fallback"
                         : "允许 Parallel MCP 免 Key 备援",
-                    isOn: $settings.researchParallelMCPEnabled
+                    isOn: parallelMCPEnabledBinding
                 )
                 .help(settings.appLanguage == .en
                       ? "Sends the current public research question to Parallel only when enabled providers return no usable results. Uses read-only web_search and web_fetch."
