@@ -34,7 +34,9 @@ struct RecommendationCardView: View {
 
     @Environment(AppSettings.self) private var settings
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @AppStorage("researchReadingEnabled") private var researchReadingEnabled = true
     @State private var controller = InterestController.shared
+    @State private var researchMatch: WorkspaceReaderResearchMatch?
     @State private var imagePhase: RecommendationImagePhase = .idle
     /// The URL currently represented by `imagePhase`. Without it a recycled
     /// card that receives a new article keeps the previous cover forever.
@@ -105,6 +107,20 @@ struct RecommendationCardView: View {
         }
         .task(id: imageURL) {
             await loadImage()
+        }
+        .task(id: row.item.id + "\n" + (row.item.readerURL ?? row.item.url)) {
+            await refreshResearchMatch()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .researchRecordsChanged)) { notification in
+            let changedID = notification.userInfo?[ResearchChangeKey.recordID] as? String
+            guard changedID == nil || changedID == researchMatch?.recordID else { return }
+            Task { await refreshResearchMatch() }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .researchWorkspaceChanged)) { _ in
+            Task { await refreshResearchMatch() }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .newsEventsChanged)) { _ in
+            Task { await refreshResearchMatch() }
         }
     }
 
@@ -268,6 +284,12 @@ struct RecommendationCardView: View {
 
             Spacer(minLength: 0)
 
+            if researchReadingEnabled,
+               researchMatch?.isVisibleToReaders == true,
+               researchMatch?.recordID != nil {
+                ResearchAssociationBadge(item: row.item, match: researchMatch, compact: true)
+            }
+
             Menu {
                 Button(english ? "Bookmark / remove" : "收藏／取消收藏") {
                     if let id = controller.toggleBookmark(row.item) {
@@ -378,6 +400,16 @@ struct RecommendationCardView: View {
         case "exploration": return english ? "Source rotation" : "来源补位"
         default: return english ? "Recently discovered" : "近期采集内容"
         }
+    }
+
+    @MainActor
+    private func refreshResearchMatch() async {
+        let match = await WorkspaceReaderResearchMatcher.shared.match(
+            item: row.item,
+            url: row.item.readerURL ?? row.item.url
+        )
+        guard !Task.isCancelled else { return }
+        researchMatch = match
     }
 
     private var explanation: String {

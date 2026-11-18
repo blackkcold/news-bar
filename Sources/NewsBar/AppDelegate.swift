@@ -22,13 +22,14 @@ extension Notification.Name {
     static let browserSettingsRequested = Notification.Name("browserSettingsRequested")
     static let switchToBrowserTab = Notification.Name("switchToBrowserTab")
     static let researchRequested = Notification.Name("researchRequested")
+    static let transientResearchRequested = Notification.Name("transientResearchRequested")
     static let openAISettingsRequested = Notification.Name("openAISettingsRequested")
     static let openRSSSettingsRequested = Notification.Name("openRSSSettingsRequested")
     static let fireTestNewsPush = Notification.Name("fireTestNewsPush")
     static let weiboBadgeSettingsChanged = Notification.Name("weiboBadgeSettingsChanged")
 }
 
-final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate, NSWindowDelegate {
 
     // MARK: - Constants
 
@@ -57,6 +58,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private var dashboardWindow: NSWindow?
     private var researchWorkspaceWindow: NSWindow?
     private var researchWorkspaceModel: ResearchWorkspaceModel?
+    private var transientResearchWindow: NSPanel?
+    private var transientResearchModel: TransientResearchReportModel?
+    private weak var transientResearchReturnWindow: NSWindow?
     private var researchCenterWindow: NSWindow?
     private var researchCenterModel: ResearchCenterModel?
     private var newsEventCenterWindow: NSWindow?
@@ -235,7 +239,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         }
         if popover?.isShown == true
             || dashboardWindow?.isVisible == true
-            || researchWorkspaceWindow?.isVisible == true {
+            || researchWorkspaceWindow?.isVisible == true
+            || transientResearchWindow?.isVisible == true {
             return .visible
         }
         return .background
@@ -427,6 +432,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             let eventID = notification.userInfo?["eventID"] as? String
             Task { @MainActor [weak self] in
                 self?.openNewsEventMonitor(eventID: eventID)
+            }
+        }
+        NotificationCenter.default.addObserver(forName: .transientResearchRequested, object: nil, queue: .main) { [weak self] notification in
+            let recordID = notification.userInfo?["recordID"] as? String
+            let eventID = notification.userInfo?["eventID"] as? String
+            Task { @MainActor [weak self] in
+                self?.openTransientResearch(recordID: recordID, eventID: eventID)
             }
         }
         NotificationCenter.default.addObserver(forName: .interestDataCleared, object: nil, queue: .main) { [weak self] _ in
@@ -957,6 +969,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                         }
                     }
                 },
+                onOpenTransientResearch: { [weak self] recordID, eventID in
+                    Task { @MainActor [weak self] in
+                        self?.openTransientResearch(recordID: recordID, eventID: eventID)
+                    }
+                },
                 onOpenEventMonitor: { [weak self] in
                     Task { @MainActor in self?.openNewsEventMonitor() }
                 },
@@ -1052,6 +1069,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         researchWorkspaceWindow?.close()
         researchCenterWindow?.close()
         newsEventCenterWindow?.close()
+        transientResearchWindow?.close()
         popover?.close()
         // Pending requests are deliberately left in place: the daily summary is a
         // calendar trigger meant to fire after the app is gone. Clearing all of
@@ -1159,6 +1177,109 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                     depth: startResearchDepth
                 )
             }
+        }
+    }
+
+    /// Shows a single non-modal report window and leaves the reader, Dashboard
+    /// search, and workspace management state in place underneath it.
+    @MainActor
+    func openTransientResearch(recordID: String? = nil, eventID: String? = nil) {
+        guard recordID != nil || eventID != nil else { return }
+
+        if transientResearchWindow?.isVisible != true {
+            let candidate = NSApp.keyWindow ?? NSApp.mainWindow
+            if let candidate, let currentPanel = transientResearchWindow, candidate === currentPanel {
+                transientResearchReturnWindow = nil
+            } else {
+                transientResearchReturnWindow = candidate
+            }
+        }
+
+        let model: TransientResearchReportModel
+        if let existing = transientResearchModel {
+            model = existing
+        } else {
+            model = TransientResearchReportModel()
+            transientResearchModel = model
+        }
+
+        let window: NSPanel
+        if let existing = transientResearchWindow {
+            window = existing
+        } else {
+            let panel = NSPanel(
+                contentRect: NSRect(origin: .zero, size: NSSize(width: 680, height: 720)),
+                styleMask: [.titled, .closable, .miniaturizable, .resizable, .utilityWindow],
+                backing: .buffered,
+                defer: false
+            )
+            panel.title = settings.appLanguage == .en ? "Research report" : "研究报告"
+            panel.minSize = NSSize(width: 560, height: 460)
+            panel.isReleasedWhenClosed = false
+            panel.hidesOnDeactivate = false
+            panel.becomesKeyOnlyIfNeeded = false
+            panel.delegate = self
+            panel.center()
+            panel.contentViewController = NSHostingController(
+                rootView: TransientResearchReportView(
+                    model: model,
+                    onClose: { [weak self] in self?.transientResearchWindow?.performClose(nil) }
+                )
+                .environment(settings)
+                .id(settings.appLanguage)
+            )
+            transientResearchWindow = panel
+            window = panel
+        }
+
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        DockPresence.show()
+        Task { @MainActor in
+            await model.open(
+                recordID: recordID,
+                eventID: eventID,
+                markReadOnOpen: settings.researchMarkReadOnOpen
+            )
+        }
+    }
+
+    /// Notification delivery uses this to avoid interrupting the event or
+    /// report the user is already reading in the visible Dashboard or panel.
+    @MainActor
+    func isResearchTargetVisibleAndAppActive(
+        eventID: String? = nil,
+        recordID: String? = nil
+    ) -> Bool {
+        guard NSApp.isActive else { return false }
+        if transientResearchWindow?.isVisible == true,
+           transientResearchWindow?.isMiniaturized != true,
+           transientResearchModel?.matches(eventID: eventID, recordID: recordID) == true {
+            return true
+        }
+        guard dashboardWindow?.isVisible == true,
+              dashboardWindow?.isMiniaturized != true else { return false }
+        return ResearchReadingContextRegistry.contains(eventID: eventID, recordID: recordID)
+    }
+
+    @MainActor
+    func windowWillClose(_ notification: Notification) {
+        guard let window = notification.object as? NSWindow,
+              window === transientResearchWindow else { return }
+        transientResearchWindow = nil
+        transientResearchModel = nil
+        let returnWindow = transientResearchReturnWindow
+        transientResearchReturnWindow = nil
+        if let returnWindow, returnWindow.isVisible {
+            DispatchQueue.main.async { returnWindow.makeKeyAndOrderFront(nil) }
+        }
+        if settingsWindow?.isVisible != true,
+           dashboardWindow?.isVisible != true,
+           researchWorkspaceWindow?.isVisible != true,
+           researchCenterWindow?.isVisible != true,
+           newsEventCenterWindow?.isVisible != true,
+           popover?.isShown != true {
+            DockPresence.hide()
         }
     }
 
@@ -1295,8 +1416,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         switch result {
         case let .subject(id, _, _, _):
             openResearchWorkspace(subjectID: id)
-        case let .report(recordID, subjectID, _, _, _):
-            openResearchWorkspace(subjectID: subjectID, researchID: recordID)
+        case let .report(recordID, _, _, _, _):
+            openTransientResearch(recordID: recordID, eventID: nil)
         case let .evidence(resultID, subjectID, title, snippet, url):
             openResearchWorkspace(
                 subjectID: subjectID,

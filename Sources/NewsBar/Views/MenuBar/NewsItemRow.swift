@@ -7,7 +7,9 @@ struct NewsItemRow: View, Equatable {
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(AppSettings.self) private var settings
+    @AppStorage("researchReadingEnabled") private var researchReadingEnabled = true
     @State private var isHovering = false
+    @State private var researchMatch: WorkspaceReaderResearchMatch?
 
     private var isRetro: Bool { settings.appTheme == .retroEditorial }
 
@@ -19,6 +21,10 @@ struct NewsItemRow: View, Equatable {
 
     private var isCompactPresentation: Bool {
         presentation.isCompactTrend
+    }
+
+    private var hasResearchMatch: Bool {
+        researchMatch?.isVisibleToReaders == true && researchMatch?.recordID != nil
     }
 
     private var rowHorizontalPadding: CGFloat { isCompactPresentation ? 8 : 10 }
@@ -66,10 +72,14 @@ struct NewsItemRow: View, Equatable {
 
                 Spacer(minLength: 0)
 
-                Image(systemName: "arrow.up.forward")
-                    .font(.system(size: arrowIconSize, weight: .semibold))
-                    .foregroundStyle(.tertiary)
-                    .opacity(isHovering ? 1 : 0.55)
+                if !isCompactPresentation, researchReadingEnabled, hasResearchMatch {
+                    Color.clear.frame(width: 68, height: 17)
+                } else {
+                    Image(systemName: "arrow.up.forward")
+                        .font(.system(size: arrowIconSize, weight: .semibold))
+                        .foregroundStyle(.tertiary)
+                        .opacity(isHovering ? 1 : 0.55)
+                }
             }
             .padding(.horizontal, rowHorizontalPadding)
             .padding(.vertical, rowVerticalPadding)
@@ -100,6 +110,32 @@ struct NewsItemRow: View, Equatable {
                 }
             }
         }
+        .overlay(alignment: .topTrailing) {
+            if !isCompactPresentation, researchReadingEnabled, hasResearchMatch {
+                ResearchAssociationBadge(item: item, match: researchMatch, compact: true)
+                    .padding(.top, rowVerticalPadding + 1)
+                    .padding(.trailing, rowHorizontalPadding + 1)
+            }
+        }
+        .task(id: item.id + "\n" + (item.readerURL ?? item.url)) { await refreshResearchMatch() }
+        .onReceive(NotificationCenter.default.publisher(for: .researchRecordsChanged)) { notification in
+            let changedID = notification.userInfo?[ResearchChangeKey.recordID] as? String
+            guard changedID == nil || changedID == researchMatch?.recordID else { return }
+            Task { await refreshResearchMatch() }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .researchWorkspaceChanged)) { _ in
+            Task { await refreshResearchMatch() }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .newsEventsChanged)) { _ in
+            Task { await refreshResearchMatch() }
+        }
+    }
+
+    @MainActor
+    private func refreshResearchMatch() async {
+        let match = await WorkspaceReaderResearchMatcher.shared.match(item: item, url: item.readerURL ?? item.url)
+        guard !Task.isCancelled else { return }
+        researchMatch = match
     }
 
     private var accessibilityLabel: String {

@@ -54,7 +54,15 @@ final class WorkspaceSearchService {
                 forName: name,
                 object: nil,
                 queue: .main
-            ) { [weak self] _ in
+            ) { [weak self] notification in
+                // Progress snapshots rewrite a record but do not change the
+                // searchable report. Final publication, history removal and
+                // workspace membership changes arrive through the workspace
+                // store notification and rebuild the index there.
+                if notification.name == .researchRecordsChanged,
+                   notification.userInfo?[ResearchChangeKey.recordID] is String {
+                    return
+                }
                 Task { @MainActor [weak self] in
                     self?.markDirty()
                 }

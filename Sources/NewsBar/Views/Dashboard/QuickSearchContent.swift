@@ -94,6 +94,7 @@ struct QuickSearchContent: View {
     @State private var webGateway = ManualSearchGateway()
     @State private var workspaceSearch = WorkspaceSearchService()
     @State private var webTask: Task<Void, Never>?
+    @AppStorage("researchReadingEnabled") private var researchReadingEnabled = true
     @FocusState private var queryFocused: Bool
 
     var body: some View {
@@ -126,6 +127,9 @@ struct QuickSearchContent: View {
             await loadWorkspaceResults()
         }
         .onChange(of: archiveController.entries) { _, _ in
+            if surface == .local { refreshLocalResults() }
+        }
+        .onChange(of: researchReadingEnabled) { _, _ in
             if surface == .local { refreshLocalResults() }
         }
         .onChange(of: surface) { _, newSurface in
@@ -635,7 +639,14 @@ struct QuickSearchContent: View {
             newsItems: activeNewsItems,
             readingHistory: readingHistory,
             archiveEntries: archiveController.entries,
-            workspaceResults: model.workspaceResults
+            workspaceResults: researchReadingEnabled
+                ? model.workspaceResults
+                : model.workspaceResults.filter { result in
+                    switch result {
+                    case .report, .evidence: return false
+                    case .subject, .answer: return true
+                    }
+                }
         )
     }
 

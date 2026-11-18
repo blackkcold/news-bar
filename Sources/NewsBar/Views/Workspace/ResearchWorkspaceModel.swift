@@ -1315,9 +1315,12 @@ final class ResearchWorkspaceModel {
                 forName: .researchRecordsChanged,
                 object: nil,
                 queue: .main
-            ) { [weak self] _ in
+            ) { [weak self] notification in
+                let changedID = notification.userInfo?[ResearchChangeKey.recordID] as? String
                 Task { @MainActor [weak self] in
-                    self?.scheduleDataRefresh()
+                    guard let self,
+                          changedID == nil || self.detail?.research?.id == changedID else { return }
+                    self.scheduleDataRefresh()
                 }
             }
         )
