@@ -178,6 +178,8 @@ enum RSSService {
                 return nil
             }()
             let title = SecurityPolicies.sanitizeHTMLContent(item.title)
+            let excerpt = SecurityPolicies.sanitizeHTMLContent(item.descriptionText)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
             let identity: String?
             if !item.guid.isEmpty {
                 identity = "guid\n\(item.guid)"
@@ -201,6 +203,7 @@ enum RSSService {
                 url: rawLink,
                 source: .rss(name: sourceName, url: sourceURL),
                 imageURL: validatedImageURL,
+                excerpt: excerpt.isEmpty ? nil : String(excerpt.prefix(1_200)),
                 publishedAt: parsePublicationDate(item.publicationDate),
                 readerURL: readerURL,
                 identity: identity

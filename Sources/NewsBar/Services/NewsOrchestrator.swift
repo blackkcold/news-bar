@@ -175,6 +175,9 @@ final class NewsOrchestrator {
     private var lastHourlyPushAt: Date?
     /// Titles of Weibo "爆" topics already pushed, to avoid re-notifying the same one.
     private var notifiedBurstTopics: Set<String> = []
+    /// Persisted compatibility marker. New keyword candidates use the shared
+    /// triage gate and add their pair only after a run is admitted.
+    private var notifiedKeywordPairs: Set<String> = []
     /// Staging buffer for legacy artifact migration only. Runtime detail views
     /// read `ResearchRecord`; this cache is never a second source of truth.
     private var legacyBurstArtifacts: [String: BurstResearch] = [:]
@@ -706,12 +709,8 @@ final class NewsOrchestrator {
         )
         guard isCurrentCacheWork(token) else { return }
 
-        let automaticScheduled = await handleAutomaticResearch(settings: settings, token: token)
+        _ = await handleAutomaticResearch(settings: settings, token: token)
         guard isCurrentCacheWork(token) else { return }
-        if !automaticScheduled {
-            await handleKeywordTopics(settings: settings, token: token)
-            guard isCurrentCacheWork(token) else { return }
-        }
 
         let allItems = allActiveItems(settings: settings)
         if !isManual {
@@ -1020,6 +1019,15 @@ final class NewsOrchestrator {
         let knownKeys = Set(index.filter {
             now.timeIntervalSince($0.lastSeenAt) <= 7 * 86_400
         }.map(\.topicKey))
+        let lastResearchedAtByTopicKey = Dictionary(
+            index.filter { knownKeys.contains($0.topicKey) }
+                .map { ($0.topicKey, $0.updatedAt) },
+            uniquingKeysWith: { max($0, $1) }
+        )
+        let lastReportUpdatedAtByID = Dictionary(
+            index.map { ($0.id, $0.updatedAt) },
+            uniquingKeysWith: { max($0, $1) }
+        )
         let keywordMatch: (NewsItem) -> Bool = { item in
             settings.keywordTrackingEnabled && settings.keywordMatches(item.title)
         }
@@ -1030,12 +1038,26 @@ final class NewsOrchestrator {
             if let items = rssItemsMap[source.id] { pool.append(contentsOf: items) }
         }
 
+        let eventController = NewsEventController.shared(settings: settings)
+        let publicImportanceItemIDs = Set(eventController.events.filter { event in
+            event.publicImportanceScore >= ResearchCandidateBuilder.publicImportanceThreshold
+                && event.interestDisposition != .hardBlocked
+                && event.interestDisposition != .excluded
+                && now.timeIntervalSince(event.lastEvidenceAt) <= 24 * 3_600
+        }.flatMap { $0.evidence.map(\.id) })
+        let eventIDByItemID = Dictionary(
+            eventController.events.flatMap { event in event.evidence.map { ($0.id, event.id) } },
+            uniquingKeysWith: { first, _ in first }
+        )
         let candidates = ResearchCandidateBuilder.build(
             items: pool,
             state: state,
             now: now,
             limit: settings.researchDetectionLimit,
             excludingTopicKeys: knownKeys,
+            lastResearchedAtByTopicKey: lastResearchedAtByTopicKey,
+            publicImportanceItemIDs: publicImportanceItemIDs,
+            eventIDByItemID: eventIDByItemID,
             includePersonal: personalizationEnabled,
             isKeywordMatch: keywordMatch
         )
@@ -1046,6 +1068,33 @@ final class NewsOrchestrator {
                                       settings: settings, epoch: epoch, now: now)
             return false
         }
+
+        // First-party exact-field matches become event evidence even when the
+        // hourly deep-research budget is full. They state only what the source
+        // itself published and carry an explicit, narrow qualification.
+        guard settings.researchAutoEnabled,
+              epoch == InterestController.shared.state.consentEpoch,
+              !isClearingResearchHistory,
+              !isResearchClearBlocked,
+              isCurrentCacheWork(token) else { return false }
+        let quickFindings = await OfficialEvidenceSourceCatalog.shared.findings(
+            for: candidates,
+            now: now
+        )
+        guard settings.researchAutoEnabled,
+              epoch == InterestController.shared.state.consentEpoch,
+              !isClearingResearchHistory,
+              !isResearchClearBlocked,
+              isCurrentCacheWork(token) else { return false }
+        if !quickFindings.isEmpty {
+            _ = await eventController.ingest(quickFindings.map { $0.eventEvidence() }, now: now)
+            guard settings.researchAutoEnabled,
+                  epoch == InterestController.shared.state.consentEpoch,
+                  !isClearingResearchHistory,
+                  !isResearchClearBlocked,
+                  isCurrentCacheWork(token) else { return false }
+        }
+
         guard ResearchCandidateBuilder.hasPlausibleCandidate(
             candidates,
             personalizationEnabled: personalizationEnabled
@@ -1062,21 +1111,23 @@ final class NewsOrchestrator {
             return false
         }
 
-        // Decide the keyword priority before paying for triage. A burst still
-        // wins, but anything else must yield to an actionable keyword match.
-        let keywordPriority = hasExplicitKeywordCandidate(settings: settings)
-        if keywordPriority, !candidates.contains(where: { $0.kind == .burst }) {
-            await recordAutomaticSkip(
-                .skippedKeywordPriority,
-                candidateCount: candidates.count,
-                reasonKey: "research.auto.skip.keywordPriority",
-                settings: settings, epoch: epoch, now: now
-            )
-            return false
-        }
-
-        var cache = (state.research.triage ?? [:]).filter {
-            now.timeIntervalSince($0.value.evaluatedAt) <= 7 * 86_400
+        let candidatesByTopicKey = Dictionary(
+            candidates.map { ($0.topicKey, $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
+        var cache = (state.research.triage ?? [:]).filter { topicKey, verdict in
+            guard now.timeIntervalSince(verdict.evaluatedAt) <= 7 * 86_400 else { return false }
+            if verdict.worth,
+               verdict.hasSubstantiveUpdate != true,
+               verdict.researchQuestion?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty != false {
+                return false
+            }
+            if let candidate = candidatesByTopicKey[topicKey],
+               let publishedAt = candidate.item.publishedAt,
+               publishedAt > verdict.evaluatedAt {
+                return false
+            }
+            return true
         }
         var decisions: [ResearchTriageDecision] = []
         var uncached: [ResearchCandidateItem] = []
@@ -1088,7 +1139,9 @@ final class NewsOrchestrator {
                     sameAngleAs: cached.sameAngleAs,
                     worth: cached.worth,
                     confidence: cached.confidence,
-                    reason: cached.reason
+                    reason: cached.reason,
+                    researchQuestion: cached.researchQuestion ?? "",
+                    hasSubstantiveUpdate: cached.hasSubstantiveUpdate ?? false
                 ))
             } else {
                 uncached.append(candidate)
@@ -1104,7 +1157,10 @@ final class NewsOrchestrator {
                     now: now
                 )
                 guard !Task.isCancelled else { return false }
-                _ = researchLedger.recordAICalls(1, origin: .burst)
+                let triageOrigin: ResearchOrigin = uncached.first?.kind == .keyword
+                    ? .keyword
+                    : (uncached.first?.kind == .burst ? .burst : .interest)
+                _ = researchLedger.recordAICalls(1, origin: triageOrigin)
                 do {
                     let response = try await client.complete(request)
                     let parsed = ResearchTriage.parse(response.text)
@@ -1118,7 +1174,9 @@ final class NewsOrchestrator {
                             worth: decision.worth,
                             confidence: decision.confidence,
                             reason: decision.reason,
-                            evaluatedAt: now
+                            evaluatedAt: now,
+                            researchQuestion: decision.researchQuestion,
+                            hasSubstantiveUpdate: decision.hasSubstantiveUpdate
                         )
                     }
                 } catch AIChatError.quotaUnavailable {
@@ -1138,27 +1196,10 @@ final class NewsOrchestrator {
         if let chosen = ResearchTriage.choose(
             candidates: candidates,
             decisions: decisions,
-            knownRecordIDs: knownIDs
+            knownRecordIDs: knownIDs,
+            knownRecordUpdatedAt: lastReportUpdatedAtByID
         ) {
-            // Explicit keywords outrank inferred interest. A burst still wins;
-            // anything else yields so the keyword pass can run this round.
-            if chosen.kind != .burst, keywordPriority {
-                await recordAutomaticSkip(
-                    .skippedKeywordPriority,
-                    candidateCount: candidates.count,
-                    reasonKey: "research.auto.skip.keywordPriority",
-                    settings: settings, epoch: epoch, now: now
-                )
-                return false
-            }
             return await startOrRecordFailure(chosen, settings: settings, epoch: epoch, now: now)
-        }
-
-        // No usable verdict: keep only a very hot burst that has not already
-        // been judged. A cached "not worth it" is a verdict and must not be
-        // overridden by this fallback.
-        if let fallback = ResearchTriage.fallbackBurst(candidates: candidates, decisions: decisions) {
-            return await startOrRecordFailure(fallback, settings: settings, epoch: epoch, now: now)
         }
 
         // A cached batch that produced decisions is a real "not worth it"
@@ -1179,21 +1220,6 @@ final class NewsOrchestrator {
         }
         guard let lastAutomaticCheckAt else { return true }
         return now.timeIntervalSince(lastAutomaticCheckAt) >= ResearchAutomationPolicy.minimumInterval
-    }
-
-    /// True when the user has typed a keyword that matches a currently loaded
-    /// item. The explicit keyword path must get its turn before inferred
-    /// interest, matching the documented priority order.
-    private func hasExplicitKeywordCandidate(settings: AppSettings) -> Bool {
-        guard settings.keywordTrackingEnabled, !settings.keywordList.isEmpty else { return false }
-        let state = InterestController.shared.state
-        return ResearchKeywordPriority.hasUnprocessedMatch(
-            items: allActiveItems(settings: settings),
-            keywords: settings.activeKeywords,
-            handledPairs: notifiedKeywordPairs,
-            handledTitles: notifiedBurstTopics,
-            isBlocked: { state.isBlocked($0) }
-        )
     }
 
     private func makeTriageClient(settings: AppSettings) async -> HTTPAIChatClient? {
@@ -1280,7 +1306,12 @@ final class NewsOrchestrator {
     ) async -> Bool {
         guard epoch == InterestController.shared.state.consentEpoch,
               automaticBudgetAllows(now: now) else { return false }
-        let origin: ResearchOrigin = candidate.kind == .burst ? .burst : .interest
+        let origin: ResearchOrigin
+        switch candidate.kind {
+        case .burst: origin = .burst
+        case .keyword: origin = .keyword
+        case .publicImpact, .publicHot, .personal: origin = .interest
+        }
         guard let record = await ResearchRecordProvisioner.ensureRecord(
             for: candidate.item,
             origin: origin,
@@ -1310,7 +1341,12 @@ final class NewsOrchestrator {
             now: now,
             reason: L10n.string("research.auto.started", language: settings.appLanguage, candidate.item.title)
         ))
-        notifiedBurstTopics.insert(candidate.item.title)
+        if origin == .keyword,
+           let keyword = settings.activeKeywords.first(where: { TitleFeatures.matches($0, in: candidate.item.title) }) {
+            _ = notifiedKeywordPairs.insert("\(keyword)\n\(candidate.item.title)")
+        } else if origin == .burst {
+            notifiedBurstTopics.insert(candidate.item.title)
+        }
         await persistResearchState(epoch: epoch)
         await refreshResearchSummary()
         return true
@@ -1465,10 +1501,22 @@ final class NewsOrchestrator {
             return .failure(L10n.string("research.error.noAIKey", language: settings.appLanguage))
         }
 
-        let keys = await resolveSearchKeys(settings: settings)
+        // `origin` is fixed at record creation; the current run origin is
+        // rewritten by the coordinator, so a manual retry of an auto-created
+        // record can use the manual provider route and quota.
+        let isAutomaticRun = record.run.origin.isAutomatic
+        let keys = isAutomaticRun ? [:] : await resolveSearchKeys(settings: settings)
+        let configuredProviders = settings.enabledSearchProviders
+        let searchableProviders = isAutomaticRun
+            ? Set(configuredProviders.filter { $0.authMode == .optionalKey || $0 == .parallelMCP })
+            : configuredProviders
+        // Automatic research never sends stored search-provider credentials.
+        // The optional-key providers receive an empty key and use their
+        // anonymous route; metered keyed routes remain manual-only.
+        let dispatchKeys = isAutomaticRun ? [:] : keys
         let searchConfiguration = SearchRouterConfiguration(
-            enabled: settings.enabledSearchProviders,
-            keys: keys
+            enabled: searchableProviders,
+            keys: dispatchKeys
         )
         let pipeline = ResearchPipeline(
             // ResearchPipeline owns `.research` reserve/settle; this client must
@@ -1481,8 +1529,11 @@ final class NewsOrchestrator {
             ),
             searchRouter: ResearchServiceAssembly.shared.searchRouter,
             pageReader: ResearchServiceAssembly.shared.pageReader(
-                isScrapeEnabled: settings.enabledSearchProviders.contains(.firecrawl)
-                    && !(keys[.firecrawl] ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                isScrapeEnabled: !isAutomaticRun
+                    && searchableProviders.contains(.firecrawl)
+                    && !(keys[.firecrawl] ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                isParallelMCPEnabled: settings.researchParallelMCPEnabled,
+                trafficClass: isAutomaticRun ? .automaticFetch : .manual
             ),
             ledger: researchLedger
         )
@@ -1498,9 +1549,10 @@ final class NewsOrchestrator {
             trendContext: latestTrendSummary.context,
             defaultRecency: settings.researchDefaultRecency,
             searchConfiguration: searchConfiguration,
-            firecrawlAPIKey: keys[.firecrawl] ?? "",
+            firecrawlAPIKey: isAutomaticRun ? "" : (keys[.firecrawl] ?? ""),
             quotaPolicy: settings.aiQuotaPolicy,
             taskDailyCap: settings.researchDailyTaskCap,
+            automaticSearchDailyLimit: settings.researchAutoSearchDailyLimit,
             seedSourceName: record.seed.url == nil ? "" : item.source.displayName,
             incremental: await ResearchIncrementalContextStore.shared.take(recordID: record.id),
             forceRefresh: storedForceRefresh,
@@ -1508,6 +1560,7 @@ final class NewsOrchestrator {
                 await MainActor.run {
                     InterestController.shared.state.consentEpoch == epoch
                         && settings.isCurrentAIConfiguration(configuration)
+                        && (!isAutomaticRun || settings.researchAutoEnabled)
                         && !Task.isCancelled
                 }
             }
@@ -1559,80 +1612,6 @@ final class NewsOrchestrator {
         if firecrawl.isEmpty { keys.removeValue(forKey: .firecrawl) }
         else { keys[.firecrawl] = firecrawl }
         return keys
-    }
-
-    // MARK: - Custom keyword topic push
-
-    /// Tracks which (keyword,title) pairs have already been researched to avoid
-    /// re-notifying the same match across refreshes.
-    private var notifiedKeywordPairs: Set<String> = []
-
-    /// Detects news items whose titles match a user keyword and enqueues a
-    /// research record for each new match. Keyword research shares the same
-    /// coordinator, pipeline and budget ledger as burst research; the old
-    /// inline call and the shared 15-minute cooldown are gone, so a keyword
-    /// match no longer blocks (or is blocked by) burst research.
-    private func handleKeywordTopics(settings: AppSettings, token: CacheWriteToken) async {
-        guard settings.researchAutoEnabled,
-              isCurrentCacheWork(token),
-              settings.keywordTrackingEnabled,
-              !isClearingResearchHistory,
-              !isResearchClearBlocked else { return }
-        let active = settings.activeKeywords
-        guard !active.isEmpty else { return }
-
-        let now = Date()
-        let epoch = InterestController.shared.state.consentEpoch
-
-        var matches: [(keyword: String, item: NewsItem)] = []
-        for item in allActiveItems(settings: settings) {
-            guard settings.keywordMatches(item.title) else { continue }
-            guard !InterestController.shared.state.isBlocked(item), !notifiedBurstTopics.contains(item.title),
-                  let keyword = active.first(where: { TitleFeatures.matches($0, in: item.title) }) else { continue }
-            let pair = "\(keyword)\n\(item.title)"
-            guard !notifiedKeywordPairs.contains(pair) else { continue }
-            matches.append((keyword, item))
-        }
-        guard !matches.isEmpty else { return }
-        guard let bound = await resolveAPIKey(settings: settings),
-              await validatedConfiguration(settings: settings, bound: bound) != nil else { return }
-
-        let prioritizedIDs = ResearchSelectionPolicy.select(items: matches.map(\.item), state: InterestController.shared.state, limit: 2).map { $0.item.id }
-        matches.sort { (prioritizedIDs.firstIndex(of: $0.item.id) ?? Int.max) < (prioritizedIDs.firstIndex(of: $1.item.id) ?? Int.max) }
-
-        var notifiedChanged = false
-        var scheduled = false
-        for match in matches.prefix(2) {
-            guard epoch == InterestController.shared.state.consentEpoch else { return }
-            guard automaticBudgetAllows(now: now) else { break }
-            guard let record = await ResearchRecordProvisioner.ensureRecord(
-                for: match.item,
-                origin: .keyword,
-                store: researchStore,
-                now: now
-            ) else { continue }
-
-            guard ResearchAutoAdmission.allows(record, now: now) else { continue }
-            scheduled = await scheduleResearch(
-                recordID: record.id,
-                settings: settings,
-                notify: settings.burstPushEnabled,
-                trigger: .keyword,
-                allowReuse: false,
-                allowsIncremental: false
-            )
-            if scheduled {
-                lastAutomaticStartedAt = now
-                let pair = "\(match.keyword)\n\(match.item.title)"
-                if notifiedKeywordPairs.insert(pair).inserted { notifiedChanged = true }
-                break
-            }
-        }
-
-        if notifiedChanged || scheduled {
-            await persistResearchState(epoch: epoch)
-        }
-        await refreshResearchSummary()
     }
 
     /// Single gate for every feed-triggered run. Callers must consult it before

@@ -57,6 +57,25 @@ struct ResearchSeed: Codable, Hashable, Sendable {
     var initialSummary: String
 }
 
+/// Read-only milestone carried with the active run. Each type has a narrow
+/// meaning: a fetched source, a verbatim quote, or a supported claim tied to
+/// one or more located quotations.
+struct ResearchRunFact: Codable, Hashable, Sendable, Identifiable {
+    enum Kind: String, Codable, Sendable {
+        case sourceLocated
+        case quoteVerified
+        case claimSupported
+    }
+
+    let id: String
+    let kind: Kind
+    let title: String
+    let url: String
+    let quote: String?
+    let claim: String?
+    let recordedAt: Date
+}
+
 extension ResearchSeed {
     enum CodingKeys: String, CodingKey {
         case itemID, title, url, source, publishedAt, initialSummary
@@ -87,6 +106,9 @@ struct ResearchRun: Codable, Hashable, Sendable {
     var pagesRead = 0
     var aiCalls = 0
     var searchCalls = 0
+    /// Source-located and locally validated milestones from the active run.
+    /// Optional so older record files remain readable.
+    var progressFacts: [ResearchRunFact]? = nil
     var startedAt: Date?
     var finishedAt: Date?
     var lastError: String?
@@ -95,7 +117,7 @@ struct ResearchRun: Codable, Hashable, Sendable {
 extension ResearchRun {
     enum CodingKeys: String, CodingKey {
         case phase, depth, origin, queriesPlanned, queriesCompleted, pagesRead
-        case aiCalls, searchCalls, startedAt, finishedAt, lastError
+        case aiCalls, searchCalls, progressFacts, startedAt, finishedAt, lastError
     }
 
     init(from decoder: Decoder) throws {
@@ -108,6 +130,7 @@ extension ResearchRun {
         pagesRead = try container.decodeIfPresent(Int.self, forKey: .pagesRead) ?? 0
         aiCalls = try container.decodeIfPresent(Int.self, forKey: .aiCalls) ?? 0
         searchCalls = try container.decodeIfPresent(Int.self, forKey: .searchCalls) ?? 0
+        progressFacts = try container.decodeIfPresent([ResearchRunFact].self, forKey: .progressFacts)
         startedAt = try container.decodeIfPresent(Date.self, forKey: .startedAt)
         finishedAt = try container.decodeIfPresent(Date.self, forKey: .finishedAt)
         lastError = try container.decodeIfPresent(String.self, forKey: .lastError)

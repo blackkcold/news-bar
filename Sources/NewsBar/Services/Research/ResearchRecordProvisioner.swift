@@ -187,7 +187,7 @@ enum ResearchRecordProvisioner {
                 url: item.url,
                 source: item.source,
                 publishedAt: item.publishedAt,
-                initialSummary: ""
+                initialSummary: item.excerpt ?? ""
             ),
             createdAt: now,
             lastSeenAt: now,
@@ -227,8 +227,20 @@ enum ResearchRecordProvisioner {
         }
         record.lastSeenAt = now
         if record.seed.title.isEmpty { record.seed.title = item.title }
-        if record.seed.url == nil { record.seed.url = item.url }
-        if record.seed.publishedAt == nil { record.seed.publishedAt = item.publishedAt }
+        let hasNewerPublication = item.publishedAt.map { publishedAt in
+            guard let previous = record.seed.publishedAt else { return true }
+            return publishedAt > previous
+        } ?? false
+        if hasNewerPublication, let publishedAt = item.publishedAt {
+            record.seed.url = item.url
+            record.seed.source = item.source
+            record.seed.publishedAt = publishedAt
+            record.seed.initialSummary = item.excerpt ?? ""
+        } else {
+            if record.seed.url == nil { record.seed.url = item.url }
+            if record.seed.publishedAt == nil { record.seed.publishedAt = item.publishedAt }
+            if record.seed.initialSummary.isEmpty { record.seed.initialSummary = item.excerpt ?? "" }
+        }
         return record
     }
 

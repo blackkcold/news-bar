@@ -18,7 +18,7 @@ struct SearchRouterConfiguration: Sendable, Equatable {
     var keys: [SearchProviderID: String]
 
     init(
-        enabled: Set<SearchProviderID> = Set(SearchProviderID.allCases),
+        enabled: Set<SearchProviderID> = Set(SearchProviderID.failoverOrder.filter { !$0.isStandaloneOptIn }),
         keys: [SearchProviderID: String] = [:]
     ) {
         self.enabled = enabled

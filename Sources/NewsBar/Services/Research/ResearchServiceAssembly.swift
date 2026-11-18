@@ -40,7 +40,17 @@ final class ResearchServiceAssembly: Sendable {
     }
 
     /// The direct reader is stateless; only the cache must be shared.
-    func pageReader(isScrapeEnabled: Bool) -> PageReader {
-        PageReader(cache: cache, isScrapeEnabled: isScrapeEnabled)
+    func pageReader(
+        isScrapeEnabled: Bool,
+        isParallelMCPEnabled: Bool = false,
+        trafficClass: SearchTrafficClass = .manual
+    ) -> PageReader {
+        PageReader(
+            cache: cache,
+            isScrapeEnabled: isScrapeEnabled,
+            isParallelMCPEnabled: isParallelMCPEnabled,
+            trafficClass: trafficClass,
+            searchQuota: searchQuota
+        )
     }
 }

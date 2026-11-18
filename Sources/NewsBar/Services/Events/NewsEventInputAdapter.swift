@@ -34,7 +34,7 @@ struct NewsEventInputAdapter: NewsEventInputAdapting {
                 id: item.id,
                 title: title,
                 url: item.url,
-                excerpt: title,
+                excerpt: String((item.excerpt ?? title).prefix(1_200)),
                 inputKind: inputKind,
                 publisherKind: publisherKind,
                 sourceID: item.source.id,

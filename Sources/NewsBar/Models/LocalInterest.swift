@@ -202,6 +202,8 @@ struct ResearchTriageRecord: Codable, Sendable, Equatable {
     var confidence: Double
     var reason: String
     var evaluatedAt: Date
+    var researchQuestion: String? = nil
+    var hasSubstantiveUpdate: Bool? = nil
 }
 
 /// Why the last automatic check did or did not start a run. Shown in settings

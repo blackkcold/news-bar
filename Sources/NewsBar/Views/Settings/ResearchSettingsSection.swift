@@ -17,10 +17,40 @@ struct ResearchSettingsSection: View {
     @State private var isSavingKey = false
     @State private var statuses: [SearchProviderStatus] = []
     @State private var lastStatusRefresh = Date.distantPast
+    @AppStorage("researchReadingEnabled") private var researchReadingEnabled = true
 
     var body: some View {
         Group {
             Section {
+                Toggle(
+                    settings.appLanguage == .en
+                        ? "Show research with articles"
+                        : "阅读时显示研究提示与报告",
+                    isOn: $researchReadingEnabled
+                )
+                .help(settings.appLanguage == .en
+                      ? "Show trusted research matches in article reading and local search."
+                      : "在文章阅读和本地搜索中显示可信关联的研究。")
+
+                Picker(
+                    settings.appLanguage == .en
+                        ? "Automatic search requests per day"
+                        : "自动搜索请求上限／日",
+                    selection: Binding(
+                        get: { settings.researchAutoSearchDailyLimit },
+                        set: { settings.researchAutoSearchDailyLimit = $0 }
+                    )
+                ) {
+                    ForEach([8, 20, 40], id: \.self) { value in
+                        Text("\(value)").tag(value)
+                    }
+                }
+                Text(settings.appLanguage == .en
+                     ? "Request count only, not a spending cap. Automatic search uses keyless routes; keyed providers remain manual."
+                     : "这是请求次数，不是金额上限。自动搜索只走免 Key 通道；需 Key 的服务仅供手动研究。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
                 Picker("research.settings.depth".localized, selection: Binding(
                     get: { settings.researchDepth },
                     set: { settings.researchDepth = $0 }
@@ -89,11 +119,27 @@ struct ResearchSettingsSection: View {
             }
 
             Section {
+                Toggle(
+                    settings.appLanguage == .en
+                        ? "Allow Parallel MCP fallback"
+                        : "允许 Parallel MCP 免 Key 备援",
+                    isOn: $settings.researchParallelMCPEnabled
+                )
+                .help(settings.appLanguage == .en
+                      ? "Sends the current public research question to Parallel only when enabled providers return no usable results. Uses read-only web_search and web_fetch."
+                      : "仅在启用的搜索服务没有可用结果时，将当前公开研究问题发送给 Parallel；只调用只读搜索与取页。")
+
+                Text(settings.appLanguage == .en
+                     ? "Off by default. Search results must be exhausted first; every MCP search or fetch uses its own local request allowance."
+                     : "默认关闭。先用完已启用来源；每次 MCP 搜索或取页分别占用本地请求额度。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
                 LazyVGrid(
                     columns: [GridItem(.adaptive(minimum: 240), spacing: 10)],
                     spacing: 10
                 ) {
-                    ForEach(SearchProviderID.failoverOrder) { provider in
+                    ForEach(SearchProviderID.failoverOrder.filter { !$0.isStandaloneOptIn }) { provider in
                         providerCard(provider)
                     }
                 }
@@ -122,6 +168,9 @@ struct ResearchSettingsSection: View {
             await refreshStatuses()
         }
         .onChange(of: settings.researchSearchProviders) { _, _ in
+            Task { await refreshStatuses() }
+        }
+        .onChange(of: settings.researchParallelMCPEnabled) { _, _ in
             Task { await refreshStatuses() }
         }
         .onReceive(NotificationCenter.default.publisher(for: .researchRecordsChanged)) { _ in
@@ -178,7 +227,7 @@ struct ResearchSettingsSection: View {
                 }
                 // An empty set is a valid AI-only configuration.
                 settings.researchSearchProviders = SearchProviderID.failoverOrder
-                    .filter { next.contains($0) }
+                    .filter { next.contains($0) && !$0.isStandaloneOptIn }
                     .map(\.rawValue)
             }
         )
