@@ -19,6 +19,11 @@ struct NewsEventSummaryBuilder: NewsEventSummaryBuilding {
     }
 
     private static func sourcePhrase(_ event: NewsEvent, language: AppLanguage) -> String {
+        if event.evidence.contains(where: { $0.verificationBasis == .officialOriginalFields }) {
+            return language == .en
+                ? "Based on a verified field in an official original release."
+                : "依据来自官方原始发布中已核实的字段。"
+        }
         let hasUnknownIndependence = event.sourceGroups.contains { $0.independence == .unknown }
         if event.countablePublisherCount >= 2 && hasUnknownIndependence {
             return language == .en ? "Reported by multiple media; independence is unknown." : "多家媒体报道；来源独立性未知。"
@@ -143,7 +148,18 @@ struct NewsEventNotificationPolicy: NewsEventNotificationPolicing {
         if event.coreConsistency == .unknown { return .coreUnknown }
         let recentEvidence = freshEvidence(in: event, now: now)
         if recentEvidence.isEmpty { return .staleEvidence }
-        if sourceResolver.countablePublisherCount(in: recentEvidence) < 3 { return .insufficientPublishers }
+        let officialEvidenceIDs = Set(recentEvidence.compactMap { evidence in
+            evidence.verificationBasis == .officialOriginalFields ? evidence.id : nil
+        })
+        let supportedOfficialCoreClaim = event.claims.contains { claim in
+            claim.scope != .detail
+                && claim.status == .supported
+                && !Set(claim.evidenceIDs).isDisjoint(with: officialEvidenceIDs)
+        }
+        if sourceResolver.countablePublisherCount(in: recentEvidence) < 3,
+           !supportedOfficialCoreClaim {
+            return .insufficientPublishers
+        }
         return .eligible
     }
 
