@@ -14,12 +14,12 @@ final class ReaderResearchPanelTests: XCTestCase {
             try await store.save(researchTestRecord(title: "Recent \(number)", updatedAt: Date().addingTimeInterval(Double(number))))
         }
         let model = ReaderResearchPanelModel(store: store)
-        await model.refresh(item: item, requestURL: item.url, currentURL: item.url, title: item.title)
+        await model.refresh(item: item, requestURL: item.url, currentURL: item.url)
         XCTAssertEqual(model.match?.id, original.id)
         XCTAssertEqual(model.recent.count, 5)
         XCTAssertEqual(model.record?.id, original.id)
 
-        await model.refresh(item: item, requestURL: item.url, currentURL: "https://example.org/other", title: "Other")
+        await model.refresh(item: item, requestURL: item.url, currentURL: "https://example.org/other")
         XCTAssertNil(model.match)
         XCTAssertNil(model.record)
         XCTAssertEqual(model.recent.count, 5)
