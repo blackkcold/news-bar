@@ -31,7 +31,7 @@ enum AppVersion {
         }
 
         // 4. Hardcoded fallback for unusual development launches.
-        return "1.4.2"
+        return "3.3.0"
     }()
 
     /// Optional timestamp for this bundle's packaging/build run. Older bundles
