@@ -98,7 +98,7 @@ actor SearchRouter {
 
         var failures: [SearchProviderFailure] = []
         var failovers = 0
-        var providerAttempts = 0
+        var providerDispatches = 0
         let dispatchLimit = maxProviderAttempts
             + (maxProviderAttempts > 0 && configuration.enabled.contains(.parallelMCP) ? 1 : 0)
 
@@ -151,14 +151,15 @@ actor SearchRouter {
                 continue
             }
 
-            // A single query must not spend the whole task budget walking six
-            // providers. Skips above are free; this cap counts real dispatches.
+            // A single query must not walk six providers. Skips above are free;
+            // this cap counts distinct providers, while the attempt ticket
+            // separately caps every HTTP dispatch including retries.
             if provider.id == .parallelMCP {
-                guard providerAttempts < dispatchLimit else {
+                guard providerDispatches < dispatchLimit else {
                     failures.append(SearchProviderFailure(provider: nil, reason: .attemptLimit))
                     break
                 }
-            } else if providerAttempts >= maxProviderAttempts {
+            } else if providerDispatches >= maxProviderAttempts {
                 if configuration.enabled.contains(.parallelMCP) { continue }
                 failures.append(SearchProviderFailure(provider: nil, reason: .attemptLimit))
                 break
@@ -166,14 +167,9 @@ actor SearchRouter {
 
             let keyed = !key.isEmpty
             var retried = false
+            var countedProvider = false
             while true {
                 try Task.checkCancellation()
-                let providerDispatchLimit = provider.id == .parallelMCP
-                    ? dispatchLimit : maxProviderAttempts
-                guard providerAttempts < providerDispatchLimit else {
-                    failures.append(SearchProviderFailure(provider: nil, reason: .attemptLimit))
-                    break
-                }
                 guard attempts.remaining > 0 else {
                     failures.append(
                         SearchProviderFailure(provider: nil, reason: .budgetExhausted)
@@ -218,7 +214,10 @@ actor SearchRouter {
                     )
                     throw SearchUnavailableError(failures: failures)
                 }
-                providerAttempts += 1
+                if !countedProvider {
+                    providerDispatches += 1
+                    countedProvider = true
+                }
 
                 do {
                     let hits = try await provider.search(query, key: key)

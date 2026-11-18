@@ -72,7 +72,10 @@ final class SearchFailoverTests: XCTestCase {
     private func configuration(
         keys: [SearchProviderID: String] = [.tavily: "tavily-key", .brave: "brave-key"]
     ) -> SearchRouterConfiguration {
-        SearchRouterConfiguration(enabled: Set(SearchProviderID.allCases), keys: keys)
+        SearchRouterConfiguration(
+            enabled: Set(SearchProviderID.allCases.filter { !$0.isStandaloneOptIn }),
+            keys: keys
+        )
     }
 
     private func router(
@@ -129,6 +132,39 @@ final class SearchFailoverTests: XCTestCase {
             XCTAssertEqual(error.failures.map(\.reason), [.missingKey])
         }
         XCTAssertEqual(exa.callCount, 0)
+    }
+
+    func testParallelMCPIsUsedOnlyWithExplicitOptIn() async throws {
+        let parallelMCP = ScriptedSearchProvider(
+            id: .parallelMCP,
+            script: [.success([hit("https://search.example/parallel-mcp", provider: .parallelMCP)])]
+        )
+        let router = SearchRouter(
+            providers: [parallelMCP],
+            cache: cache,
+            now: { [clock] in clock?.now ?? Date() }
+        )
+
+        do {
+            _ = try await router.search(
+                query("parallel MCP default off"),
+                configuration: configuration(keys: [:]),
+                useCache: false
+            )
+            XCTFail("Parallel MCP is a standalone opt-in provider")
+        } catch let error as SearchUnavailableError {
+            XCTAssertEqual(error.failures.map(\.reason), [.disabled])
+        }
+        XCTAssertEqual(parallelMCP.callCount, 0)
+
+        let optedIn = try await router.search(
+            query("parallel MCP explicit opt-in"),
+            configuration: SearchRouterConfiguration(enabled: [.parallelMCP], keys: [:]),
+            useCache: false
+        )
+        XCTAssertEqual(optedIn.providers, [.parallelMCP])
+        XCTAssertEqual(optedIn.attempts, 1)
+        XCTAssertEqual(parallelMCP.callCount, 1)
     }
 
     // MARK: - Quota
