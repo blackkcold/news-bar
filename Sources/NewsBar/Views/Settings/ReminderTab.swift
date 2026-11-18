@@ -21,7 +21,21 @@ struct ReminderTab: View {
     @Environment(\.settingsNotificationAuthorizationStatusAction) private var authorizationStatusAction
 
     @State private var authorized = false
+    @State private var authorizationHasLoaded = false
+    @State private var authorizationRefreshInFlight = false
+    @State private var authorizationNeedsRefreshOnActivation = false
     @State private var newKeyword = ""
+
+    private let suppliedEventController: NewsEventController?
+    private let activationNotificationCenter: NotificationCenter
+
+    init(
+        eventController: NewsEventController? = nil,
+        activationNotificationCenter: NotificationCenter = .default
+    ) {
+        self.suppliedEventController = eventController
+        self.activationNotificationCenter = activationNotificationCenter
+    }
 
     var body: some View {
         Form {
@@ -103,7 +117,10 @@ struct ReminderTab: View {
                 Text("notif.burst.footer".localized)
             }
 
-            EventMonitorNotificationSettingsSection()
+            EventMonitorNotificationSettingsSection(
+                authorizationGranted: authorized,
+                controller: suppliedEventController
+            )
 
             ResearchAutomationSection()
 
@@ -127,9 +144,35 @@ struct ReminderTab: View {
         .formStyle(.grouped)
         .scrollContentBackground(.hidden)
         .task {
-            let status = await authorizationStatusAction()
-            authorized = (status == .authorized || status == .provisional)
+            await refreshNotificationAuthorization()
         }
+        .onReceive(activationNotificationCenter.publisher(for: NSApplication.didResignActiveNotification)) { _ in
+            Task { @MainActor in
+                guard authorizationHasLoaded else { return }
+                authorizationNeedsRefreshOnActivation = true
+            }
+        }
+        .onReceive(activationNotificationCenter.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            Task { @MainActor in
+                guard authorizationHasLoaded, authorizationNeedsRefreshOnActivation else { return }
+                authorizationNeedsRefreshOnActivation = false
+                await refreshNotificationAuthorization()
+            }
+        }
+    }
+
+    @MainActor
+    private func refreshNotificationAuthorization() async {
+        guard !authorizationRefreshInFlight else { return }
+        authorizationRefreshInFlight = true
+
+        let status = await authorizationStatusAction()
+        let newValue = status == .authorized || status == .provisional
+        if authorized != newValue {
+            authorized = newValue
+        }
+        authorizationHasLoaded = true
+        authorizationRefreshInFlight = false
     }
 
     private var permissionRow: some View {

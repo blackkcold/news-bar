@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import UserNotifications
 import XCTest
 @testable import NewsBar
 
@@ -21,10 +22,9 @@ final class SettingsEventBudgetTests: XCTestCase {
         let settings = AppSettings()
         let controller = NewsEventController(settings: settings, store: store)
         let root = Form {
-            EventMonitorNotificationSettingsSection(controller: controller)
+            EventMonitorNotificationSettingsSection(authorizationGranted: true, controller: controller)
         }
         .environment(settings)
-        .environment(\.settingsNotificationAuthorizationStatusAction) { .authorized }
         .defaultAppStorage(TestIsolation.defaults)
 
         let size = NSSize(width: 720, height: 580)
@@ -56,6 +56,79 @@ final class SettingsEventBudgetTests: XCTestCase {
         XCTAssertEqual(counts.trackingStateReads, 0)
         XCTAssertEqual(counts.persistenceWrites, 0, "opening settings must not rewrite or normalize event records")
         XCTAssertTrue(controller.events.isEmpty, "settings should not populate or recompute the controller event list")
+    }
+
+    func testReminderTabSharesOneAuthorizationReadAndRefreshesOnActivation() async throws {
+        let store = CountingNewsEventSettingsStore(events: [])
+        let settings = AppSettings()
+        let controller = NewsEventController(settings: settings, store: store)
+        let activationNotificationCenter = NotificationCenter()
+        let authorization = CountingSettingsNotificationAuthorizationAction(
+            statuses: [.authorized, .denied]
+        )
+        let root = ReminderTab(
+            eventController: controller,
+            activationNotificationCenter: activationNotificationCenter
+        )
+            .environment(settings)
+            .environment(\.settingsNotificationAuthorizationStatusAction) {
+                await authorization.query()
+            }
+            .defaultAppStorage(TestIsolation.defaults)
+
+        let size = NSSize(width: 720, height: 580)
+        let window = NSWindow(
+            contentRect: NSRect(origin: .zero, size: size),
+            styleMask: [.titled, .closable],
+            backing: .buffered,
+            defer: false
+        )
+        window.isReleasedWhenClosed = false
+        let host = NSHostingView(rootView: root)
+        host.frame = NSRect(origin: .zero, size: size)
+        window.contentView = host
+        defer { window.contentView = nil }
+        host.layoutSubtreeIfNeeded()
+
+        let initialDeadline = ProcessInfo.processInfo.systemUptime + 2.0
+        var counts = await store.callCounts()
+        while (authorization.queryCount == 0 || counts.trackingAttemptReads == 0),
+              ProcessInfo.processInfo.systemUptime < initialDeadline {
+            host.layoutSubtreeIfNeeded()
+            try await Task.sleep(nanoseconds: 10_000_000)
+            counts = await store.callCounts()
+        }
+
+        XCTAssertEqual(authorization.queryCount, 1, "the parent tab should perform the only initial authorization query")
+        XCTAssertEqual(counts.trackingAttemptReads, 1, "the child section should retain its single shared budget read")
+        XCTAssertEqual(counts.eventReads, 0, "mounting the notification tab must not load event history")
+        XCTAssertEqual(counts.persistenceWrites, 0, "mounting the notification tab must not persist event changes")
+
+        activationNotificationCenter.post(name: NSApplication.didResignActiveNotification, object: nil)
+        activationNotificationCenter.post(name: NSApplication.didBecomeActiveNotification, object: nil)
+
+        let refreshDeadline = ProcessInfo.processInfo.systemUptime + 2.0
+        while authorization.queryCount < 2, ProcessInfo.processInfo.systemUptime < refreshDeadline {
+            host.layoutSubtreeIfNeeded()
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+
+        XCTAssertEqual(authorization.queryCount, 2, "returning from system settings should refresh authorization once")
+    }
+}
+
+@MainActor
+private final class CountingSettingsNotificationAuthorizationAction {
+    private let statuses: [UNAuthorizationStatus]
+    private(set) var queryCount = 0
+
+    init(statuses: [UNAuthorizationStatus]) {
+        self.statuses = statuses
+    }
+
+    func query() async -> UNAuthorizationStatus {
+        queryCount += 1
+        return statuses[min(queryCount - 1, statuses.count - 1)]
     }
 }
 

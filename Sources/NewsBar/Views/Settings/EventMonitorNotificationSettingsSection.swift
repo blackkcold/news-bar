@@ -1,17 +1,16 @@
 import SwiftUI
-import UserNotifications
 
 struct EventMonitorNotificationSettingsSection: View {
     @Environment(AppSettings.self) private var settings
-    @Environment(\.settingsNotificationAuthorizationStatusAction) private var authorizationStatusAction
 
-    @State private var authorizationGranted = false
     @State private var controller: NewsEventController?
     @State private var displayedBudgetSnapshot = NewsEventBudgetSnapshot()
 
+    private let authorizationGranted: Bool
     private let suppliedController: NewsEventController?
 
-    init(controller: NewsEventController? = nil) {
+    init(authorizationGranted: Bool, controller: NewsEventController? = nil) {
+        self.authorizationGranted = authorizationGranted
         self.suppliedController = controller
     }
 
@@ -67,9 +66,6 @@ struct EventMonitorNotificationSettingsSection: View {
             Text("event.settings.footer".localized)
         }
         .task {
-            let status = await authorizationStatusAction()
-            authorizationGranted = status == .authorized || status == .provisional
-
             let controller = suppliedController ?? NewsEventController.shared(settings: settings)
             self.controller = controller
             displayedBudgetSnapshot = await controller.sharedFeedBudgetSnapshot(now: Date())

@@ -64,3 +64,23 @@
 - 复现时的主线程/actor 阻塞栈、首个阻塞符号和是否有同步等待或锁持有；据此确认 matcher 是否为 P0 根因。
 - 展示关闭及宿主关闭后是否仍在创建匹配任务，以及通知风暴是否来自设置/生命周期或其他调用点。
 - 事件/研究变更通知能否携带足够稳定的变更 ID；如果不能，保留合并后的 revision 失效与单次重载作为正确性回退。
+
+## 阶段 02 附加修复：通知页授权状态去重
+
+### 范围
+
+- `Sources/NewsBar/Views/Settings/ReminderTab.swift`
+- `Sources/NewsBar/Views/Settings/EventMonitorNotificationSettingsSection.swift`
+- `Tests/NewsBarTests/SettingsEventBudgetTests.swift`
+
+### 行为与准入
+
+- `ReminderTab` 是通知页授权状态的唯一读取者：页首次进入时只调用一次可注入的授权状态 action，并把只读 `authorized` 值传给 `EventMonitorNotificationSettingsSection`；子节不再直接查询系统授权状态。
+- 用户从系统设置返回后，通知页在应用重新激活时刷新授权状态。刷新结果未变化时不写 SwiftUI 状态，避免无意义布局失效；初次查询尚未完成时忽略激活回调，避免首次进入重复查询。
+- 子节继续显示现有权限提示、保留事件监控与提醒的独立开关、中心入口和只读预算摘要；预算继续经 controller 的轻量共享接口读取，不调用事件历史加载/归一化。
+
+### 隔离验收
+
+- 使用注入的授权 action 计数器与 fake event store；挂载完整通知页后，初次进入授权查询恰为 1 次，子节不额外查询。
+- 500 条 fake 事件仍只触发一次共享预算读取，事件历史读取和持久化写入均为 0，controller 的事件数组保持为空。
+- 注入授权变化并发送应用重新激活通知后，允许且只需额外查询一次；相同授权状态不得造成重复状态写入。测试不访问系统授权中心、不打开 App 或系统设置。
