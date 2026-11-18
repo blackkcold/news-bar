@@ -24,15 +24,36 @@ struct NewsDigestRequest: Identifiable, Equatable {
 
     let id = UUID()
     let items: [NewsItem]
+    let researchItems: [NotificationDigestResearchItem]
     let kind: String
     let generatedAt: Date
 
-    init(digest: NotificationDigest) {
-        self.init(items: digest.items, kind: digest.kind, generatedAt: digest.generatedAt)
+    var itemCount: Int {
+        let newsIDs = Set(items.map(\.id))
+        let attachedCount = researchItems.filter { item in
+            guard let relatedID = item.relatedNewsItemID else { return false }
+            return newsIDs.contains(relatedID)
+        }.count
+        return items.count + researchItems.count - attachedCount
     }
 
-    init(items: [NewsItem], kind: String, generatedAt: Date = Date()) {
+    init(digest: NotificationDigest) {
+        self.init(
+            items: digest.items,
+            researchItems: digest.researchItems,
+            kind: digest.kind,
+            generatedAt: digest.generatedAt
+        )
+    }
+
+    init(
+        items: [NewsItem],
+        researchItems: [NotificationDigestResearchItem] = [],
+        kind: String,
+        generatedAt: Date = Date()
+    ) {
         self.items = items
+        self.researchItems = researchItems
         self.kind = kind
         self.generatedAt = generatedAt
     }

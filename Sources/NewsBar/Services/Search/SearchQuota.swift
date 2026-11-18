@@ -50,6 +50,11 @@ enum SearchRateLimits {
         case .parallel:
             // Free: 5,000 requests / month, 600 / minute.
             return SearchRateLimit(perMinute: 60, perMonth: 5_000)
+        case .parallelMCP:
+            // Anonymous hosted MCP has no public numeric allowance. These are
+            // deliberately conservative local request guards, not a vendor
+            // quota or money estimate.
+            return SearchRateLimit(perMinute: 2, perHour: 8, perDay: 20)
         case .brave:
             return SearchRateLimit(perMinute: 30, perMonth: 2_000)
         }
@@ -66,6 +71,11 @@ struct SearchQuotaSnapshot: Sendable, Equatable {
     var monthlyLimit: Int?
 }
 
+struct AutomaticSearchUsage: Sendable, Equatable {
+    var usedToday: Int
+    var dailyLimit: Int
+}
+
 /// Persisted per-provider request counters. This is a guardrail, not billing:
 /// it never stores queries, keys or responses, and a corrupt file resets the
 /// counters rather than bricking search.
@@ -77,8 +87,34 @@ actor SearchQuotaStore {
         var hourCount: Int
         var dayStart: Date
         var dayCount: Int
+        var automaticDayCount: Int
+        var manualDayCount: Int
         var monthStart: Date
         var monthCount: Int
+
+        init(
+            minuteStart: Date,
+            minuteCount: Int,
+            hourStart: Date,
+            hourCount: Int,
+            dayStart: Date,
+            dayCount: Int,
+            automaticDayCount: Int,
+            manualDayCount: Int,
+            monthStart: Date,
+            monthCount: Int
+        ) {
+            self.minuteStart = minuteStart
+            self.minuteCount = minuteCount
+            self.hourStart = hourStart
+            self.hourCount = hourCount
+            self.dayStart = dayStart
+            self.dayCount = dayCount
+            self.automaticDayCount = automaticDayCount
+            self.manualDayCount = manualDayCount
+            self.monthStart = monthStart
+            self.monthCount = monthCount
+        }
 
         static func empty(at date: Date, calendar: Calendar) -> Window {
             Window(
@@ -88,6 +124,8 @@ actor SearchQuotaStore {
                 hourCount: 0,
                 dayStart: calendar.startOfDay(for: date),
                 dayCount: 0,
+                automaticDayCount: 0,
+                manualDayCount: 0,
                 monthStart: Self.monthStart(date, calendar: calendar),
                 monthCount: 0
             )
@@ -108,6 +146,8 @@ actor SearchQuotaStore {
             if day != dayStart {
                 dayStart = day
                 dayCount = 0
+                automaticDayCount = 0
+                manualDayCount = 0
             }
             let month = Self.monthStart(date, calendar: calendar)
             if month != monthStart {
@@ -132,11 +172,54 @@ actor SearchQuotaStore {
             components.second = 0
             return calendar.date(from: components) ?? calendar.startOfDay(for: date)
         }
+
+        private enum CodingKeys: String, CodingKey {
+            case minuteStart, minuteCount, hourStart, hourCount
+            case dayStart, dayCount, automaticDayCount, manualDayCount
+            case monthStart, monthCount
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            minuteStart = try container.decode(Date.self, forKey: .minuteStart)
+            minuteCount = try container.decode(Int.self, forKey: .minuteCount)
+            hourStart = try container.decode(Date.self, forKey: .hourStart)
+            hourCount = try container.decode(Int.self, forKey: .hourCount)
+            dayStart = try container.decode(Date.self, forKey: .dayStart)
+            dayCount = try container.decode(Int.self, forKey: .dayCount)
+            // Existing totals came from manual and automatic requests mixed;
+            // conservatively keep them in the manual bucket during migration.
+            automaticDayCount = try container.decodeIfPresent(Int.self, forKey: .automaticDayCount) ?? 0
+            manualDayCount = try container.decodeIfPresent(Int.self, forKey: .manualDayCount) ?? dayCount
+            monthStart = try container.decode(Date.self, forKey: .monthStart)
+            monthCount = try container.decode(Int.self, forKey: .monthCount)
+        }
     }
 
     private struct FileState: Codable {
         var version: Int
         var providers: [String: Window]
+        var automaticDayStart: Date?
+        var automaticSearchCount: Int
+
+        enum CodingKeys: String, CodingKey {
+            case version, providers, automaticDayStart, automaticSearchCount
+        }
+
+        init(version: Int, providers: [String: Window], automaticDayStart: Date?, automaticSearchCount: Int) {
+            self.version = version
+            self.providers = providers
+            self.automaticDayStart = automaticDayStart
+            self.automaticSearchCount = automaticSearchCount
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            version = try container.decode(Int.self, forKey: .version)
+            providers = try container.decode([String: Window].self, forKey: .providers)
+            automaticDayStart = try container.decodeIfPresent(Date.self, forKey: .automaticDayStart)
+            automaticSearchCount = try container.decodeIfPresent(Int.self, forKey: .automaticSearchCount) ?? 0
+        }
     }
 
     // v1 was only produced by pre-release builds whose counters could be
@@ -152,6 +235,8 @@ actor SearchQuotaStore {
     private let now: @Sendable () -> Date
     private let calendar: Calendar
     private var windows: [SearchProviderID: Window] = [:]
+    private var automaticDayStart: Date?
+    private var automaticSearchCount = 0
     private var loaded = false
 
     init(
@@ -167,23 +252,59 @@ actor SearchQuotaStore {
     }
 
     /// `false` means a local window is already full; nothing should be sent.
-    func consume(for provider: SearchProviderID, keyed: Bool) -> Bool {
+    func consume(
+        for provider: SearchProviderID,
+        keyed: Bool,
+        trafficClass: SearchTrafficClass = .manual,
+        automaticDailyLimit: Int? = nil
+    ) -> Bool {
         let date = now()
         loadIfNeeded()
+        rollAutomaticDay(to: date)
+        if trafficClass.countsTowardAutomaticSearchCap,
+           let automaticDailyLimit,
+           automaticSearchCount >= automaticDailyLimit {
+            return false
+        }
         var window = windows[provider] ?? .empty(at: date, calendar: calendar)
         window.roll(to: date, calendar: calendar)
         let limit = SearchRateLimits.limit(for: provider, keyed: keyed)
         if let perMinute = limit.perMinute, window.minuteCount >= perMinute { return false }
         if let perHour = limit.perHour, window.hourCount >= perHour { return false }
-        if let perDay = limit.perDay, window.dayCount >= perDay { return false }
+        if let perDay = limit.perDay {
+            if trafficClass.isAutomatic {
+                let manualReserve = perDay / 2
+                let unspentManualReserve = max(0, manualReserve - window.manualDayCount)
+                if window.dayCount + 1 + unspentManualReserve > perDay { return false }
+            } else if window.dayCount >= perDay {
+                return false
+            }
+        }
         if let perMonth = limit.perMonth, window.monthCount >= perMonth { return false }
         window.minuteCount += 1
         window.hourCount += 1
         window.dayCount += 1
+        if trafficClass.isAutomatic { window.automaticDayCount += 1 }
+        else { window.manualDayCount += 1 }
         window.monthCount += 1
         windows[provider] = window
+        if trafficClass.countsTowardAutomaticSearchCap { automaticSearchCount += 1 }
         persist()
         return true
+    }
+
+    func automaticSearchUsage(limit: Int) -> AutomaticSearchUsage {
+        let date = now()
+        loadIfNeeded()
+        rollAutomaticDay(to: date)
+        return AutomaticSearchUsage(usedToday: automaticSearchCount, dailyLimit: limit)
+    }
+
+    func automaticSearchLimitReached(limit: Int, at date: Date? = nil) -> Bool {
+        let current = date ?? now()
+        loadIfNeeded()
+        rollAutomaticDay(to: current)
+        return automaticSearchCount >= limit
     }
 
     func snapshot(
@@ -236,13 +357,25 @@ actor SearchQuotaStore {
                 return (provider, window)
             }
         )
+        automaticDayStart = state.automaticDayStart
+        automaticSearchCount = state.automaticSearchCount
+        rollAutomaticDay(to: now())
+    }
+
+    private func rollAutomaticDay(to date: Date) {
+        let day = calendar.startOfDay(for: date)
+        guard automaticDayStart != day else { return }
+        automaticDayStart = day
+        automaticSearchCount = 0
     }
 
     private func persist() {
         guard let fileURL else { return }
         let state = FileState(
             version: Self.currentVersion,
-            providers: Dictionary(uniqueKeysWithValues: windows.map { ($0.key.rawValue, $0.value) })
+            providers: Dictionary(uniqueKeysWithValues: windows.map { ($0.key.rawValue, $0.value) }),
+            automaticDayStart: automaticDayStart,
+            automaticSearchCount: automaticSearchCount
         )
         guard let data = try? JSONEncoder().encode(state) else { return }
         // Quota counters are a guardrail; a failed write must not fail a search.

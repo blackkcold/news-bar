@@ -468,17 +468,19 @@ final class SearchKeyStoreTests: XCTestCase {
     }
 
     func testProviderAuthModeMatchesProductPolicy() {
-        // Firecrawl and Tavily both have documented keyless search routes;
-        // the other providers are not contacted until a key exists.
+        // Firecrawl and Tavily have keyless routes; Parallel MCP is keyless
+        // too, but its route remains disabled until the user opts in.
         XCTAssertEqual(SearchProviderID.tavily.authMode, .optionalKey)
         XCTAssertEqual(SearchProviderID.firecrawl.authMode, .optionalKey)
         XCTAssertEqual(SearchProviderID.tinyfish.authMode, .requiredKey)
         XCTAssertEqual(SearchProviderID.exa.authMode, .requiredKey)
         XCTAssertEqual(SearchProviderID.parallel.authMode, .requiredKey)
         XCTAssertEqual(SearchProviderID.brave.authMode, .requiredKey)
+        XCTAssertEqual(SearchProviderID.parallelMCP.authMode, .keyless)
+        XCTAssertTrue(SearchProviderID.parallelMCP.isStandaloneOptIn)
         XCTAssertEqual(
             SearchProviderID.failoverOrder,
-            [.tavily, .firecrawl, .tinyfish, .exa, .parallel, .brave]
+            [.tavily, .firecrawl, .tinyfish, .exa, .parallel, .brave, .parallelMCP]
         )
     }
 

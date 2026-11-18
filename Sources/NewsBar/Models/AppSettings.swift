@@ -604,6 +604,16 @@ final class AppSettings {
     var researchUsePersonalization: Bool {
         didSet { TestIsolation.defaults.set(researchUsePersonalization, forKey: "researchUsePersonalization") }
     }
+    /// Automatic-search request count per UTC day. This is a request limit,
+    /// not a currency budget; metered providers stay manual-only unless their
+    /// price and remaining balance can be enforced before dispatch.
+    var researchAutoSearchDailyLimit: Int {
+        didSet { TestIsolation.defaults.set(researchAutoSearchDailyLimit, forKey: "researchAutoSearchDailyLimit") }
+    }
+    /// Separate, explicit consent for the anonymous read-only Parallel MCP route.
+    var researchParallelMCPEnabled: Bool {
+        didSet { TestIsolation.defaults.set(researchParallelMCPEnabled, forKey: "researchParallelMCPEnabled") }
+    }
     /// Read-only mirror of the last automatic selection result. Written by the
     /// orchestrator so settings can explain a skipped hour; never persisted as
     /// a preference.
@@ -996,6 +1006,10 @@ final class AppSettings {
         self.researchShowPopoverChip = defaults.boolIfPresent(forKey: "researchShowPopoverChip") ?? true
         self.researchMarkReadOnOpen = defaults.boolIfPresent(forKey: "researchMarkReadOnOpen") ?? true
         self.researchUsePersonalization = defaults.boolIfPresent(forKey: "researchUsePersonalization") ?? true
+        let rawAutomaticSearchLimit = defaults.integerIfPresent(forKey: "researchAutoSearchDailyLimit") ?? 20
+        self.researchAutoSearchDailyLimit = Self.validResearchAutoSearchDailyLimits.contains(rawAutomaticSearchLimit)
+            ? rawAutomaticSearchLimit : 20
+        self.researchParallelMCPEnabled = defaults.boolIfPresent(forKey: "researchParallelMCPEnabled") ?? false
         self.researchLastAutomaticDecision = defaults.stringIfPresent(forKey: "researchLastAutomaticDecision")
         self.researchNotificationShowsSummary = defaults.boolIfPresent(forKey: "researchNotificationShowsSummary") ?? true
         let rawDepth = defaults.stringIfPresent(forKey: "researchDepth") ?? ResearchDepth.standard.rawValue
@@ -1639,6 +1653,7 @@ final class AppSettings {
     static let validBurstCaps: Set<Int> = [10, 20, 50]
     /// Whitelisted automatic-detection limits.
     static let validResearchDetectionLimits: Set<Int> = [1, 2, 3, 5]
+    static let validResearchAutoSearchDailyLimits: Set<Int> = [8, 20, 40]
     /// Whitelisted research execution limits.
     static let validResearchDailyTaskCaps: Set<Int> = [1, 2, 3, 5, 10]
     static let validResearchConcurrency: Set<Int> = [1, 2, 3]
@@ -1653,11 +1668,13 @@ final class AppSettings {
         let enabled = Set(raw)
         return SearchProviderID.allCases
             .map(\.rawValue)
-            .filter { enabled.contains($0) }
+            .filter { enabled.contains($0) && SearchProviderID(rawValue: $0)?.isStandaloneOptIn != true }
     }
 
     var enabledSearchProviders: Set<SearchProviderID> {
-        Set(researchSearchProviders.compactMap(SearchProviderID.init(rawValue:)))
+        var enabled = Set(researchSearchProviders.compactMap(SearchProviderID.init(rawValue:)))
+        if researchParallelMCPEnabled { enabled.insert(.parallelMCP) }
+        return enabled
     }
     /// Whitelisted Popup AI summary lengths. Any value outside this set is rejected.
     static let validAIPopupMaxWords: Set<Int> = [80, 120, 160, 200]

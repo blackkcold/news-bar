@@ -25,6 +25,10 @@ enum ResearchPaths {
         researchDirectory.appendingPathComponent("search-quota.json")
     }
 
+    static var officialSourceCatalogFile: URL {
+        researchDirectory.appendingPathComponent("official-source-catalog-v1.json")
+    }
+
     static var clearIntentFile: URL {
         researchDirectory.appendingPathComponent("clear-intent.json")
     }

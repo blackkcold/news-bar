@@ -94,6 +94,7 @@ struct QuickSearchContent: View {
     @State private var webGateway = ManualSearchGateway()
     @State private var workspaceSearch = WorkspaceSearchService()
     @State private var webTask: Task<Void, Never>?
+    @AppStorage("researchReadingEnabled") private var researchReadingEnabled = true
     @FocusState private var queryFocused: Bool
 
     var body: some View {
@@ -119,6 +120,8 @@ struct QuickSearchContent: View {
         .onChange(of: model.query) { _, _ in
             if surface == .local {
                 model.workspaceResults = []
+                model.workspaceSubjectTitles = [:]
+                model.workspaceActiveResearchRuns = []
                 refreshLocalResults()
             }
         }
@@ -126,6 +129,9 @@ struct QuickSearchContent: View {
             await loadWorkspaceResults()
         }
         .onChange(of: archiveController.entries) { _, _ in
+            if surface == .local { refreshLocalResults() }
+        }
+        .onChange(of: researchReadingEnabled) { _, _ in
             if surface == .local { refreshLocalResults() }
         }
         .onChange(of: surface) { _, newSurface in
@@ -220,8 +226,25 @@ struct QuickSearchContent: View {
                                     .frame(height: 1)
                             }
                             .padding(.top, 2)
-                            ForEach(workspaceLocalResults) { result in
+                            ForEach(workspaceOtherResults) { result in
                                 localResultRow(result)
+                            }
+                            if !workspaceResearchResults.isEmpty {
+                                WorkspaceResearchSearchDisclosureList(
+                                    results: workspaceResearchResults,
+                                    subjectTitles: model.workspaceSubjectTitles,
+                                    activeRuns: model.workspaceActiveResearchRuns,
+                                    language: language,
+                                    onOpenResult: onOpenWorkspaceResult,
+                                    onOpenSource: { url, _ in onOpenSource(url) },
+                                    onExpandSubject: { subjectID in
+                                        Task {
+                                            let runs = await workspaceSearch.refreshActiveResearchRuns(subjectID: subjectID)
+                                            model.workspaceActiveResearchRuns.removeAll { $0.subjectID == subjectID }
+                                            model.workspaceActiveResearchRuns.append(contentsOf: runs)
+                                        }
+                                    }
+                                )
                             }
                         }
                     }
@@ -605,10 +628,27 @@ struct QuickSearchContent: View {
         }
     }
 
+    private var workspaceResearchResults: [WorkspaceSearchResult] {
+        workspaceLocalResults.compactMap { result in
+            guard case let .workspace(workspaceResult) = result,
+                  workspaceResult.isResearchMatch else { return nil }
+            return workspaceResult
+        }
+    }
+
+    private var workspaceOtherResults: [QuickSearchResult] {
+        workspaceLocalResults.filter { result in
+            guard case let .workspace(workspaceResult) = result else { return false }
+            return !workspaceResult.isResearchMatch
+        }
+    }
+
     private func loadWorkspaceResults() async {
         let query = model.query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard surface == .local, !query.isEmpty else {
             model.workspaceResults = []
+            model.workspaceSubjectTitles = [:]
+            model.workspaceActiveResearchRuns = []
             return
         }
         do {
@@ -626,6 +666,8 @@ struct QuickSearchContent: View {
               model.query.trimmingCharacters(in: .whitespacesAndNewlines) == query
         else { return }
         model.workspaceResults = response.results
+        model.workspaceSubjectTitles = response.subjectTitles
+        model.workspaceActiveResearchRuns = response.activeResearchRuns
         refreshLocalResults()
     }
 
@@ -635,7 +677,17 @@ struct QuickSearchContent: View {
             newsItems: activeNewsItems,
             readingHistory: readingHistory,
             archiveEntries: archiveController.entries,
-            workspaceResults: model.workspaceResults
+            workspaceResults: researchReadingEnabled
+                ? model.workspaceResults
+                : model.workspaceResults.filter { result in
+                    switch result {
+                    case .report, .evidence: return false
+                    case .subject, .answer: return true
+                    }
+                },
+            workspaceSubjectTitles: model.workspaceSubjectTitles,
+            workspaceActiveResearchRuns: model.workspaceActiveResearchRuns,
+            allWorkspaceResults: model.workspaceResults
         )
     }
 

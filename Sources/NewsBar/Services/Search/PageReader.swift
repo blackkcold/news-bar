@@ -48,7 +48,7 @@ struct PageReadRequest: Sendable, Equatable {
 }
 
 /// Reads one search hit into a document. Order is fixed by the design:
-/// Tavily inline content → page cache → Firecrawl → direct HTTPS → give up.
+/// Tavily inline content → page cache → Firecrawl → direct HTTPS → optional MCP.
 /// The pipeline turns a `nil` into a snippet-only document and marks the report
 /// partial; a single unreadable page never aborts the whole research task.
 struct PageReader: Sendable {
@@ -72,6 +72,10 @@ struct PageReader: Sendable {
     /// False when Firecrawl is disabled or has no API key. The reader then goes
     /// straight to the local direct reader and never contacts the third party.
     let isScrapeEnabled: Bool
+    let isParallelMCPEnabled: Bool
+    let trafficClass: SearchTrafficClass
+    let searchQuota: SearchQuotaStore?
+    let parallelMCP: ParallelMCPClient
     let now: @Sendable () -> Date
 
     init(
@@ -81,12 +85,20 @@ struct PageReader: Sendable {
         },
         direct: DirectHTMLReader = DirectHTMLReader(),
         isScrapeEnabled: Bool = true,
+        isParallelMCPEnabled: Bool = false,
+        trafficClass: SearchTrafficClass = .manual,
+        searchQuota: SearchQuotaStore? = nil,
+        parallelMCP: ParallelMCPClient = ParallelMCPClient(),
         now: @escaping @Sendable () -> Date = { Date() }
     ) {
         self.cache = cache
         self.scrape = scrape
         self.direct = direct
         self.isScrapeEnabled = isScrapeEnabled
+        self.isParallelMCPEnabled = isParallelMCPEnabled
+        self.trafficClass = trafficClass
+        self.searchQuota = searchQuota
+        self.parallelMCP = parallelMCP
         self.now = now
     }
 
@@ -158,6 +170,9 @@ struct PageReader: Sendable {
            let cached = await load(canonicalURL: request.canonicalURL) {
             let text = cached.text.trimmingCharacters(in: .whitespacesAndNewlines)
             guard text.count >= Self.minScrapedCharacters else {
+                if let fallback = try await readWithParallelMCP(request, epoch: cacheEpoch) {
+                    return .document(fallback)
+                }
                 return .tooShort(text.count)
             }
             return .document(cached)
@@ -197,6 +212,9 @@ struct PageReader: Sendable {
             throw CancellationError()
         } catch {
             // A failed direct read is an unavailable page, not a failed run.
+            if let fallback = try await readWithParallelMCP(request, epoch: cacheEpoch) {
+                return .document(fallback)
+            }
             if let shortInline { return .tooShort(shortInline) }
             if let shortScraped { return .tooShort(shortScraped) }
             return .failed(Self.failure(from: error))
@@ -204,8 +222,45 @@ struct PageReader: Sendable {
         // Direct reads have their own 40-character floor. The evidence reader
         // applies the 200-character evidence floor; the research pipeline's
         // `read` keeps its historical behaviour and returns the document.
+        if document.text.trimmingCharacters(in: .whitespacesAndNewlines).count < Self.minScrapedCharacters,
+           let fallback = try await readWithParallelMCP(request, epoch: cacheEpoch) {
+            return .document(fallback)
+        }
         await store(document, epoch: cacheEpoch)
         return .document(document)
+    }
+
+    private func readWithParallelMCP(
+        _ request: PageReadRequest,
+        epoch: Int
+    ) async throws -> ResearchDocument? {
+        guard isParallelMCPEnabled,
+              let searchQuota,
+              SecurityPolicies.validatePublicHTTPURL(request.url).url != nil else { return nil }
+        do {
+            try Task.checkCancellation()
+            guard await searchQuota.consume(
+                for: .parallelMCP,
+                keyed: false,
+                trafficClass: trafficClass
+            ) else { return nil }
+            let text = try await parallelMCP.fetch(url: request.url, title: request.title)
+            guard text.count >= Self.minScrapedCharacters else { return nil }
+            let document = ResearchDocument(
+                url: request.url,
+                title: request.title,
+                text: String(text.prefix(DepthProfile.maxPageCharacters)),
+                publishedAt: request.publishedAt,
+                fetchedAt: now(),
+                source: .parallelMCP
+            )
+            await store(document, epoch: epoch)
+            return document
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            return nil
+        }
     }
 
     /// Cache-only lookup. Incremental research reuses a previously read page

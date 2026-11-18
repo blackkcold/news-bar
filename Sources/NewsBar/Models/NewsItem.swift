@@ -9,6 +9,9 @@ struct NewsItem: Identifiable, Hashable, Codable, Sendable {
     let rank: Int?
     let timestamp: Date
     var imageURL: String? = nil
+    /// Sanitized publisher excerpt carried by RSS/Atom when available.
+    /// It remains source text, not a verified claim.
+    var excerpt: String? = nil
     /// Weibo trending status: "爆" / "沸" / "热" / "新" (nil when none).
     var hotLabel: String? = nil
     /// Optional translated title (RSS only, when English UI + translation enabled).
@@ -25,6 +28,7 @@ struct NewsItem: Identifiable, Hashable, Codable, Sendable {
         source: NewsSource,
         rank: Int? = nil,
         imageURL: String? = nil,
+        excerpt: String? = nil,
         hotLabel: String? = nil,
         translatedTitle: String? = nil,
         publishedAt: Date? = nil,
@@ -41,6 +45,7 @@ struct NewsItem: Identifiable, Hashable, Codable, Sendable {
         self.rank = rank
         self.timestamp = Date()
         self.imageURL = imageURL
+        self.excerpt = excerpt
         self.hotLabel = hotLabel
         self.translatedTitle = translatedTitle
         self.publishedAt = publishedAt

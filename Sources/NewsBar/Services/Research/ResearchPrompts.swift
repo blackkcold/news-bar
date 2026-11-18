@@ -5,6 +5,8 @@ enum PageContentSource: String, Codable, Sendable, Hashable {
     case inline
     /// Firecrawl `/v2/scrape`.
     case firecrawl
+    /// Explicitly opted-in read-only Parallel MCP page fetch.
+    case parallelMCP
     /// This machine's direct HTTPS reader, used only as a last resort.
     case direct
     /// Search-result snippet; not a fetched page.

@@ -6,6 +6,7 @@ enum NewsEventIndependence: String, Codable, Sendable { case independent, samePu
 enum NewsEventCoreConsistency: String, Codable, Sendable { case consistent, contested, unknown }
 enum NewsEventClaimRisk: String, Codable, Sendable { case ordinary, highRisk }
 enum NewsEventClaimStatus: String, Codable, Sendable { case unverified, supported, contested, corrected }
+enum NewsEventVerificationBasis: String, Codable, Sendable { case officialOriginalFields }
 enum NewsEventClaimScope: String, Codable, Sendable { case core, detail }
 enum NewsEventLifecycle: String, Codable, Sendable { case queued, tracking, expired }
 enum NewsEventChangeKind: String, Codable, Sendable { case initial, routine, majorProgress, correction }
@@ -101,6 +102,9 @@ struct NewsEventEvidence: Codable, Equatable, Identifiable, Sendable {
     /// Set only for evidence ingested from a finalized research report. It ties
     /// an event notice to the exact report version that produced the evidence.
     var researchCausalToken: String? = nil
+    /// Narrow deterministic basis, e.g. a first-party official release field.
+    /// Optional so existing persisted event evidence remains decodable.
+    var verificationBasis: NewsEventVerificationBasis? = nil
 
     var publicationTimeUnknown: Bool { publishedAt == nil }
 
@@ -129,7 +133,8 @@ struct NewsEventEvidence: Codable, Equatable, Identifiable, Sendable {
         detailConflicts: [String]? = nil,
         timeline: [NewsEventTimelineNode] = [],
         publicSignal: Int? = nil,
-        researchCausalToken: String? = nil
+        researchCausalToken: String? = nil,
+        verificationBasis: NewsEventVerificationBasis? = nil
     ) {
         self.id = id
         self.title = title
@@ -156,6 +161,7 @@ struct NewsEventEvidence: Codable, Equatable, Identifiable, Sendable {
         self.timeline = timeline
         self.publicSignal = publicSignal
         self.researchCausalToken = researchCausalToken
+        self.verificationBasis = verificationBasis
     }
 }
 

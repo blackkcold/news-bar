@@ -13,6 +13,9 @@ struct ResearchPipelineConfiguration: Sendable {
     /// only gate; the research ledger keeps per-origin counts for display.
     var quotaPolicy: AIQuotaPolicy
     var taskDailyCap: Int
+    /// Request-count cap for automatic search dispatches. This is independent
+    /// of the currency-based AI quota policy.
+    var automaticSearchDailyLimit: Int
     var seedSourceName: String?
     /// Re-checked at every phase boundary so a cancelled or superseded run
     /// stops before spending another network request.
@@ -34,6 +37,7 @@ struct ResearchPipelineConfiguration: Sendable {
         firecrawlAPIKey: String,
         quotaPolicy: AIQuotaPolicy,
         taskDailyCap: Int,
+        automaticSearchDailyLimit: Int = 20,
         seedSourceName: String? = nil,
         incremental: ResearchIncrementalContext? = nil,
         forceRefresh: Bool = false,
@@ -48,6 +52,8 @@ struct ResearchPipelineConfiguration: Sendable {
         self.firecrawlAPIKey = firecrawlAPIKey
         self.quotaPolicy = quotaPolicy
         self.taskDailyCap = taskDailyCap
+        self.automaticSearchDailyLimit = AppSettings.validResearchAutoSearchDailyLimits
+            .contains(automaticSearchDailyLimit) ? automaticSearchDailyLimit : 20
         self.seedSourceName = seedSourceName
         self.incremental = incremental
         self.forceRefresh = forceRefresh
@@ -108,6 +114,7 @@ struct ResearchPipeline: Sendable {
         let startedAt = now()
         let state = ResearchRunState()
         let incremental = configuration.incremental
+        var progressFacts: [ResearchRunFact] = []
 
         var plannedQueries: [PlannedQuery] = []
         var plannedQueryCount = 0
@@ -126,10 +133,19 @@ struct ResearchPipeline: Sendable {
                 pagesRead: state.pagesRead,
                 aiCalls: state.aiCalls,
                 searchCalls: state.searchCalls,
+                progressFacts: progressFacts.isEmpty ? nil : progressFacts,
                 startedAt: configuration.record.run.startedAt ?? startedAt,
                 finishedAt: finished ? now() : nil,
                 lastError: error
             )
+        }
+
+        func appendProgressFact(_ fact: ResearchRunFact) {
+            guard !progressFacts.contains(where: { $0.id == fact.id }) else { return }
+            progressFacts.append(fact)
+            if progressFacts.count > 30 {
+                progressFacts.removeFirst(progressFacts.count - 30)
+            }
         }
 
         func fail(_ message: String) async -> ResearchExecution {
@@ -327,7 +343,12 @@ struct ResearchPipeline: Sendable {
                 // before it leaves the process; skips and cache hits cost nothing.
                 // The same ticket is read after success, failure and cancellation,
                 // so the pipeline never has to guess how many requests were sent.
-                let ticket = SearchAttemptTicket(limit: remainingCalls)
+                let ticket = SearchAttemptTicket(
+                    limit: remainingCalls,
+                    trafficClass: origin.isAutomatic ? .automaticSearch : .manual,
+                    automaticDailyLimit: origin.isAutomatic
+                        ? configuration.automaticSearchDailyLimit : nil
+                )
                 var settled = false
                 func settleSearchCalls() {
                     guard !settled else { return }
@@ -521,6 +542,20 @@ struct ResearchPipeline: Sendable {
             }
         }
 
+        for document in orderedDocuments where document.isFullText {
+            guard SecurityPolicies.validatePublicHTTPURL(document.url).url != nil else { continue }
+            let factID = "source:\(ContentIdentity.digest(document.canonicalURL))"
+            appendProgressFact(ResearchRunFact(
+                id: factID,
+                kind: .sourceLocated,
+                title: String(document.title.prefix(240)),
+                url: document.url,
+                quote: nil,
+                claim: nil,
+                recordedAt: now()
+            ))
+        }
+
         state.pagesRead = orderedDocuments.filter(\.isFullText).count
         orderedDocuments = Self.cappedDocuments(
             orderedDocuments,
@@ -681,6 +716,26 @@ struct ResearchPipeline: Sendable {
                 }
             }
         }
+
+        for candidate in candidates {
+            let canonicalURL = ContentIdentity.canonicalURL(candidate.url)
+            guard let document = documents[canonicalURL],
+                  document.isFullText,
+                  !candidate.quote.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  QuoteVerifier.verified(quote: candidate.quote, in: document.text),
+                  SecurityPolicies.validatePublicHTTPURL(candidate.url).url != nil else { continue }
+            let factID = "quote:\(ContentIdentity.digest("\(canonicalURL)\n\(candidate.quote)"))"
+            appendProgressFact(ResearchRunFact(
+                id: factID,
+                kind: .quoteVerified,
+                title: String(candidate.title.prefix(240)),
+                url: candidate.url,
+                quote: String(candidate.quote.prefix(300)),
+                claim: String(candidate.claim.prefix(300)),
+                recordedAt: now()
+            ))
+        }
+        if !progressFacts.isEmpty { await progress(snapshot(.extracting)) }
 
         // No readable page and no snippet means there is nothing to synthesize.
         // Failing here is what keeps a report made only of meta-commentary from
@@ -861,6 +916,55 @@ struct ResearchPipeline: Sendable {
         guard BurstResearchParser.hasUsableContent(report) else {
             return await fail(L10n.string("research.error.empty", language: language))
         }
+
+        let reportEvidence = Dictionary(
+            report.evidence.map { ($0.id, $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
+        let reportDocuments = Dictionary(
+            documents.values.map { ($0.canonicalURL, $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
+        for evidence in report.evidence where evidence.quoteVerified {
+            guard let document = reportDocuments[evidence.canonicalURL],
+                  document.isFullText,
+                  QuoteVerifier.verified(quote: evidence.quote, in: document.text),
+                  SecurityPolicies.validatePublicHTTPURL(evidence.url).url != nil else { continue }
+            let factID = "quote:\(ContentIdentity.digest("\(evidence.canonicalURL)\n\(evidence.quote)"))"
+            let claimText = report.verification?.claims
+                .first(where: { $0.evidenceIDs.contains(evidence.id) })
+                .map { String($0.claim.prefix(300)) }
+            appendProgressFact(ResearchRunFact(
+                id: factID,
+                kind: .quoteVerified,
+                title: String(evidence.title.prefix(240)),
+                url: evidence.url,
+                quote: String(evidence.quote.prefix(300)),
+                claim: claimText,
+                recordedAt: now()
+            ))
+        }
+        for claim in report.verification?.claims ?? [] where claim.status == .supports {
+            for evidenceID in claim.evidenceIDs {
+                guard let evidence = reportEvidence[evidenceID],
+                      evidence.quoteVerified,
+                      let document = reportDocuments[evidence.canonicalURL],
+                      document.isFullText,
+                      QuoteVerifier.verified(quote: evidence.quote, in: document.text),
+                      SecurityPolicies.validatePublicHTTPURL(evidence.url).url != nil else { continue }
+                let factID = "claim:\(ContentIdentity.digest("\(claim.claim)\n\(evidence.canonicalURL)\n\(evidence.quote)"))"
+                appendProgressFact(ResearchRunFact(
+                    id: factID,
+                    kind: .claimSupported,
+                    title: String(evidence.title.prefix(240)),
+                    url: evidence.url,
+                    quote: String(evidence.quote.prefix(300)),
+                    claim: String(claim.claim.prefix(300)),
+                    recordedAt: now()
+                ))
+            }
+        }
+        await progress(snapshot(.validating))
 
         // Stage 8 — persist (the coordinator does the write) and notify.
         await progress(snapshot(.done, finished: true))

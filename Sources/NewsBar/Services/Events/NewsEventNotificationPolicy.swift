@@ -3,6 +3,30 @@ import Foundation
 struct NewsEventSummaryBuilder: NewsEventSummaryBuilding {
     func make(event: NewsEvent) -> String {
         let language = L10n.currentLanguage
+        let hasOfficialEvidence = event.evidence.contains {
+            $0.verificationBasis == .officialOriginalFields
+        }
+        if hasOfficialEvidence {
+            guard let grounding = Self.officialGrounding(in: event, now: Date()) else {
+                return language == .en
+                    ? "An official source has an update; the related claim remains under review."
+                    : "官方来源有新信息；关联主张仍在核验。"
+            }
+            let claim = SecurityPolicies.sanitizeHTMLContent(grounding.claim.text)
+                .replacingOccurrences(of: "\n", with: " ")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let evidenceText = [grounding.evidence.title, grounding.evidence.excerpt].joined(separator: "\n")
+            guard !claim.isEmpty,
+                  !NewsEventRiskClassifier.isHighRisk(claim + "\n" + evidenceText) else {
+                return language == .en ? "A verified official-source update is ready." : "有新的官方来源核验进展。"
+            }
+            let source = Self.sanitizedSourceName(grounding.evidence.sourceName, language: language)
+            let sourceLine = language == .en
+                ? "Verified official field · \(source)"
+                : "已核验官方字段 · \(source)"
+            return "\(String(claim.prefix(180)))\n\(sourceLine)"
+        }
+
         if Self.containsHighRiskMaterial(event) {
             let subject = event.subjectAliases.first(where: { !Self.containsHighRiskMaterial($0) })
             let action = event.action.flatMap { Self.containsHighRiskMaterial($0) ? nil : $0 }
@@ -16,6 +40,47 @@ struct NewsEventSummaryBuilder: NewsEventSummaryBuilding {
         let cleaned = SecurityPolicies.sanitizeHTMLContent(event.title)
         let body = String(cleaned.prefix(180))
         return "\(body)\n\(Self.sourcePhrase(event, language: language))"
+    }
+
+    static func officialGrounding(
+        in event: NewsEvent,
+        evidenceID: String? = nil,
+        now: Date
+    ) -> (claim: NewsEventClaim, evidence: NewsEventEvidence)? {
+        let freshOfficialEvidence = event.evidence.filter { evidence in
+            guard evidence.inputKind != .trend,
+                  evidence.verificationBasis == .officialOriginalFields,
+                  evidenceID == nil || evidence.id == evidenceID,
+                  ReaderNavigationPolicy.allowedURL(evidence.url) != nil else { return false }
+            let effectiveDate = evidence.publishedAt ?? evidence.fetchedAt
+            return effectiveDate <= now.addingTimeInterval(5 * 60)
+                && now.timeIntervalSince(effectiveDate) <= 24 * 60 * 60
+        }
+        let supportedCoreClaims = event.claims.filter {
+            $0.scope != .detail && $0.status == .supported
+        }
+        for claim in supportedCoreClaims {
+            guard let evidence = freshOfficialEvidence
+                .filter({ claim.evidenceIDs.contains($0.id) })
+                .max(by: {
+                    ($0.publishedAt ?? $0.fetchedAt) < ($1.publishedAt ?? $1.fetchedAt)
+                }) else { continue }
+            return (claim, evidence)
+        }
+        return nil
+    }
+
+    static func hasOfficialOriginalEvidence(_ event: NewsEvent) -> Bool {
+        event.evidence.contains { $0.verificationBasis == .officialOriginalFields }
+    }
+
+    static func sanitizedSourceName(_ name: String, language: AppLanguage) -> String {
+        let sanitized = SecurityPolicies.sanitizeHTMLContent(name)
+            .replacingOccurrences(of: "\n", with: " ")
+            .replacingOccurrences(of: "\r", with: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if sanitized.isEmpty { return language == .en ? "official source" : "官方来源" }
+        return String(sanitized.prefix(80))
     }
 
     private static func sourcePhrase(_ event: NewsEvent, language: AppLanguage) -> String {
@@ -143,7 +208,12 @@ struct NewsEventNotificationPolicy: NewsEventNotificationPolicing {
         if event.coreConsistency == .unknown { return .coreUnknown }
         let recentEvidence = freshEvidence(in: event, now: now)
         if recentEvidence.isEmpty { return .staleEvidence }
-        if sourceResolver.countablePublisherCount(in: recentEvidence) < 3 { return .insufficientPublishers }
+        let supportedOfficialCoreClaim = NewsEventSummaryBuilder.hasOfficialOriginalEvidence(event)
+            && NewsEventSummaryBuilder.officialGrounding(in: event, now: now) != nil
+        if sourceResolver.countablePublisherCount(in: recentEvidence) < 3,
+           !supportedOfficialCoreClaim {
+            return .insufficientPublishers
+        }
         return .eligible
     }
 

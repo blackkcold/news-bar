@@ -31,6 +31,8 @@ final class QuickSearchModel {
     var mode: QuickSearchMode = .local
     private(set) var localResults: [QuickSearchResult] = []
     var workspaceResults: [WorkspaceSearchResult] = []
+    var workspaceSubjectTitles: [String: String] = [:]
+    var workspaceActiveResearchRuns: [WorkspaceSearchRunSnapshot] = []
     private(set) var webHits: [SearchHit] = []
     private(set) var isSearching = false
     private(set) var error: String?
@@ -40,10 +42,15 @@ final class QuickSearchModel {
         newsItems: [NewsItem],
         readingHistory: [ReaderHistoryEntry],
         archiveEntries: [AISearchArchiveEntry],
-        workspaceResults: [WorkspaceSearchResult] = []
+        workspaceResults: [WorkspaceSearchResult] = [],
+        workspaceSubjectTitles: [String: String] = [:],
+        workspaceActiveResearchRuns: [WorkspaceSearchRunSnapshot] = [],
+        allWorkspaceResults: [WorkspaceSearchResult]? = nil
     ) {
         self.query = query
-        self.workspaceResults = workspaceResults
+        self.workspaceResults = allWorkspaceResults ?? workspaceResults
+        self.workspaceSubjectTitles = workspaceSubjectTitles
+        self.workspaceActiveResearchRuns = workspaceActiveResearchRuns
         mode = .local
         error = nil
 
@@ -56,10 +63,17 @@ final class QuickSearchModel {
         var results: [QuickSearchResult] = []
         var seenContentURLs: Set<String> = []
 
-        for item in newsItems {
-            guard Self.matches(needle, in: [item.title, item.displayTitle, item.url, item.readerURL]) else {
-                continue
-            }
+        let matchingNewsItems = newsItems.enumerated().filter { _, item in
+            Self.matches(needle, in: [item.title, item.displayTitle, item.url, item.readerURL])
+        }.sorted { lhs, rhs in
+            let lhsExact = Self.normalized(lhs.element.title) == needle
+                || Self.normalized(lhs.element.displayTitle) == needle
+            let rhsExact = Self.normalized(rhs.element.title) == needle
+                || Self.normalized(rhs.element.displayTitle) == needle
+            if lhsExact != rhsExact { return lhsExact }
+            return lhs.offset < rhs.offset
+        }
+        for (_, item) in matchingNewsItems {
             let destination = item.readerURL ?? item.url
             let canonicalURL = ContentIdentity.canonicalURL(destination)
             if !canonicalURL.isEmpty, !seenContentURLs.insert(canonicalURL).inserted {

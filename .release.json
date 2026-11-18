@@ -6,14 +6,18 @@
   "test_command": "swift test",
   "docs": [
     "RELEASE_NOTES.md",
-    "README.md"
+    "README.md",
+    "README.zh-CN.md",
+    "README.zh-TW.md",
+    "README.ja.md",
+    "README.ko.md"
   ],
   "changelog_format": "keep-a-changelog",
   "ci_mode": "local",
   "release_branch": true,
   "auto_merge": false,
   "release_note_style": "structured-cn",
-  "summary": "关注页升级为三栏阅读器，博文评论自动加载、分页并支持缓存与错误回退",
-  "summary_en": "Upgrade the following feed into a three-column reader with automatic, paginated comments, caching and resilient errors",
-  "validation": "swift test 1940 项（5 项跳过，0 失败）+ 评论解析/请求/缓存/状态机 30 项回归 + 现代与复古主题渲染核查 + 构建通过"
+  "summary": "推出阅读研究、自动核验与可追溯通知，补充免费一手来源与有预算的搜索备援",
+  "summary_en": "Add research alongside reading, budgeted automatic verification, traceable notifications, free primary sources and an optional search fallback",
+  "validation": ""
 }

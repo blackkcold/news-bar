@@ -1161,7 +1161,7 @@ struct NewsReaderView: View {
     var readerPresented = true
     var isActiveTab = true
     var onOpenSettings: () -> Void = {}
-    var onOpenResearch: (String) -> Void = { _ in }
+    var onOpenResearch: (String, String?) -> Void = { _, _ in }
     var onConfigureAI: () -> Void = {}
     var onOpenWorkspaceResult: (WorkspaceSearchResult) -> Void = { _ in }
 
@@ -1171,7 +1171,7 @@ struct NewsReaderView: View {
         readerPresented: Bool = true,
         isActiveTab: Bool = true,
         onOpenSettings: @escaping () -> Void = {},
-        onOpenResearch: @escaping (String) -> Void = { _ in },
+        onOpenResearch: @escaping (String, String?) -> Void = { _, _ in },
         onConfigureAI: @escaping () -> Void = {},
         onOpenWorkspaceResult: @escaping (WorkspaceSearchResult) -> Void = { _ in }
     ) {
@@ -1219,7 +1219,7 @@ struct ReaderContentView: View {
     var isActiveTab = true
     var onClose: () -> Void
     var onOpenSettings: () -> Void = {}
-    var onOpenResearch: (String) -> Void = { _ in }
+    var onOpenResearch: (String, String?) -> Void = { _, _ in }
     var onConfigureAI: () -> Void = {}
     var onOpenWorkspaceResult: (WorkspaceSearchResult) -> Void = { _ in }
     @State private var lastFeedback: UUID?
@@ -1228,6 +1228,7 @@ struct ReaderContentView: View {
     @State private var showPrivacy = false
     @State private var showResearch = false
     @State private var research = ReaderResearchPanelModel()
+    @State private var researchReadingToken = UUID()
     @State private var explainModel = SelectionExplainModel()
     @State private var searchModel = AISearchPanelModel()
     @State private var quickSearchModel = QuickSearchModel()
@@ -1236,6 +1237,7 @@ struct ReaderContentView: View {
     @State private var browserData = BrowserDataController.shared
     @Environment(AppSettings.self) private var settings
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @AppStorage("researchReadingEnabled") private var researchReadingEnabled = true
 
     init(
         model: NewsReaderModel,
@@ -1244,7 +1246,7 @@ struct ReaderContentView: View {
         isActiveTab: Bool = true,
         onClose: @escaping () -> Void,
         onOpenSettings: @escaping () -> Void = {},
-        onOpenResearch: @escaping (String) -> Void = { _ in },
+        onOpenResearch: @escaping (String, String?) -> Void = { _, _ in },
         onConfigureAI: @escaping () -> Void = {},
         onOpenWorkspaceResult: @escaping (WorkspaceSearchResult) -> Void = { _ in },
         initialAuxiliaryTab: ReaderAuxiliaryTab? = nil
@@ -1449,8 +1451,17 @@ struct ReaderContentView: View {
         }
         .readerSurface(cornerRadius: 12)
         .disabled(!isActiveTab)
-        .task(id: model.currentURL + "\n" + model.pageTitle + "\n\(model.loading)") { await refreshResearch() }
+        .task(id: model.currentURL + "\n" + model.loading.description) { await refreshResearch() }
+        .onChange(of: research.association) { _, _ in updateResearchReadingContext() }
+        .onChange(of: readerPresented) { _, _ in updateResearchReadingContext() }
+        .onChange(of: isActiveTab) { _, _ in updateResearchReadingContext() }
+        .onChange(of: model.loading) { _, _ in updateResearchReadingContext() }
+        .onChange(of: researchReadingEnabled) { _, enabled in
+            if !enabled { showResearch = false }
+        }
+        .onDisappear { ResearchReadingContextRegistry.remove(token: researchReadingToken) }
         .onAppear {
+            updateResearchReadingContext()
             searchModel.pageContextProvider = { [model] in
                 if let document = model.readerModeDocument {
                     return AISearchPageContext(url: document.url, title: document.title, text: document.plainText)
@@ -1512,7 +1523,9 @@ struct ReaderContentView: View {
                 prepareOverviewIfNeeded()
             }
         }
-        .onReceive(NotificationCenter.default.publisher(for: .researchRecordsChanged)) { _ in
+        .onReceive(NotificationCenter.default.publisher(for: .researchRecordsChanged)) { notification in
+            let changedID = notification.userInfo?[ResearchChangeKey.recordID] as? String
+            guard changedID == nil || changedID == research.match?.id else { return }
             Task { await refreshResearch() }
         }
         .confirmationDialog(english ? "Open in your browser?" : "在系统浏览器打开？", isPresented: $askExternal) {
@@ -1758,13 +1771,14 @@ struct ReaderContentView: View {
                 Image(systemName: "sidebar.trailing")
                     .frame(width: 28, height: 28)
                     .overlay(alignment: .topTrailing) {
-                        if research.match != nil {
+                        if researchReadingEnabled && research.match != nil {
                             Circle().fill(Color.accentColor).frame(width: 6, height: 6)
                         }
                     }
             }
             .accessibilityLabel(english ? "Toggle research sidebar" : "切换研究侧栏")
             .help(english ? "Research for this page" : "查看当前页面的研究")
+            .disabled(!researchReadingEnabled)
             if let item = model.request.item {
                 Button {
                     lastFeedback = controller.toggleBookmark(item)
@@ -1886,7 +1900,18 @@ struct ReaderContentView: View {
     }
 
     private func refreshResearch() async {
-        await research.refresh(item: model.request.item, requestURL: model.request.url, currentURL: model.currentURL, title: model.loading ? "" : model.pageTitle)
+        await research.refresh(item: model.request.item, requestURL: model.request.url, currentURL: model.currentURL)
+        updateResearchReadingContext()
+    }
+
+    private func updateResearchReadingContext() {
+        let association = research.association
+        ResearchReadingContextRegistry.update(
+            token: researchReadingToken,
+            eventID: association?.eventID,
+            recordID: association?.recordID,
+            isVisible: readerPresented && isActiveTab && !model.loading
+        )
     }
 
     private func verifyCurrentPage() {

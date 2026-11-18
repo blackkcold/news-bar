@@ -28,12 +28,44 @@ struct NotificationDigest: Codable, Equatable, Sendable {
     let kind: String
     let generatedAt: Date
     let items: [NewsItem]
+    let researchItems: [NotificationDigestResearchItem]
 
-    init(kind: String, generatedAt: Date = Date(), items: [NewsItem]) {
+    var itemCount: Int {
+        let newsIDs = Set(items.map(\.id))
+        let attached = researchItems.filter { item in
+            guard let relatedID = item.relatedNewsItemID else { return false }
+            return newsIDs.contains(relatedID)
+        }.count
+        return items.count + researchItems.count - attached
+    }
+
+    init(
+        kind: String,
+        generatedAt: Date = Date(),
+        items: [NewsItem],
+        researchItems: [NotificationDigestResearchItem] = []
+    ) {
         self.version = Self.currentVersion
         self.kind = kind
         self.generatedAt = generatedAt
         self.items = items
+        self.researchItems = researchItems
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case version, kind, generatedAt, items, researchItems
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        version = try container.decodeIfPresent(Int.self, forKey: .version) ?? 1
+        kind = try container.decodeIfPresent(String.self, forKey: .kind) ?? "hourly"
+        generatedAt = try container.decodeIfPresent(Date.self, forKey: .generatedAt) ?? .distantPast
+        items = try container.decodeIfPresent([NewsItem].self, forKey: .items) ?? []
+        researchItems = try container.decodeIfPresent(
+            [NotificationDigestResearchItem].self,
+            forKey: .researchItems
+        ) ?? []
     }
 
     static func encode(_ digest: NotificationDigest) -> String? {
@@ -49,4 +81,36 @@ struct NotificationDigest: Codable, Equatable, Sendable {
         decoder.dateDecodingStrategy = .millisecondsSince1970
         return try? decoder.decode(NotificationDigest.self, from: data)
     }
+}
+
+enum NotificationDigestResearchKind: String, Codable, Sendable {
+    case eventUpdate
+    case reportReady
+    case correction
+}
+
+enum NotificationDigestUrgency: String, Codable, Sendable {
+    case ordinary
+    case major
+    case urgentCorrection
+}
+
+/// A compact report/event reference in an existing news digest. Detail text is
+/// present only after the user explicitly enables detailed notification preview.
+struct NotificationDigestResearchItem: Codable, Equatable, Identifiable, Sendable {
+    let id: String
+    let kind: NotificationDigestResearchKind
+    let title: String
+    let detail: String?
+    let eventID: String?
+    let recordID: String?
+    let versionID: String?
+    let compareFromVersionID: String?
+    let sourceURL: String?
+    let createdAt: Date
+    /// Optional so digests already scheduled by older app versions still decode.
+    var urgency: NotificationDigestUrgency? = nil
+    /// When the same event already occupies a digest news slot, the research
+    /// action is attached to that row and does not consume another slot.
+    var relatedNewsItemID: String? = nil
 }

@@ -29,6 +29,7 @@ struct DashboardWindow: View {
     var onOpenSettings: () -> Void = {}
     var onConfigureAI: (() -> Void)? = nil
     var onOpenResearchCenter: (String?) -> Void = { _ in }
+    var onOpenTransientResearch: (String?, String?) -> Void = { _, _ in }
     var onOpenEventMonitor: () -> Void = {}
     var onOpenWorkspaceResult: (WorkspaceSearchResult) -> Void = { _ in }
     var onOpenWeiboMonitorSettings: (() -> Void)? = nil
@@ -157,7 +158,7 @@ struct DashboardWindow: View {
                     readerPresented: readerPresented,
                     isActiveTab: active,
                     onOpenSettings: openInterestSettings,
-                    onOpenResearch: { onOpenResearchCenter($0) },
+                    onOpenResearch: { onOpenTransientResearch($0, $1) },
                     onConfigureAI: onConfigureAI ?? {},
                     onOpenWorkspaceResult: onOpenWorkspaceResult
                 )

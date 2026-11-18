@@ -78,6 +78,11 @@ actor WorkspaceSearchIndex {
             guard let report = record.report else { continue }
             let subjectID = subjectByRecord[record.id]
             let body = [
+                // Keep the source article discoverable from the same local
+                // query as its report. The news result remains a separate,
+                // higher-priority hit in the reader search surface.
+                record.seed.title,
+                record.aliases.joined(separator: " · "),
                 report.summary,
                 report.overview,
                 report.limitations,

@@ -266,9 +266,14 @@ struct RSSTextRow: View {
     let sourceName: String
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(AppSettings.self) private var settings
+    @AppStorage("researchReadingEnabled") private var researchReadingEnabled = true
     @State private var isHovering = false
+    @State private var researchMatch: WorkspaceReaderResearchMatch?
 
     private var isRetro: Bool { settings.appTheme == .retroEditorial }
+    private var hasResearchMatch: Bool {
+        researchMatch?.isVisibleToReaders == true && researchMatch?.recordID != nil
+    }
 
     private var sourceTint: Color {
         tint(for: item.source)
@@ -305,10 +310,14 @@ struct RSSTextRow: View {
 
                     Spacer(minLength: 0)
 
-                    Image(systemName: "arrow.up.forward")
-                        .font(.system(size: 8, weight: .semibold))
-                        .foregroundStyle(.tertiary)
-                        .opacity(isHovering ? 1 : 0.55)
+                    if researchReadingEnabled, hasResearchMatch {
+                        Color.clear.frame(width: 68, height: 16)
+                    } else {
+                        Image(systemName: "arrow.up.forward")
+                            .font(.system(size: 8, weight: .semibold))
+                            .foregroundStyle(.tertiary)
+                            .opacity(isHovering ? 1 : 0.55)
+                    }
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -330,6 +339,32 @@ struct RSSTextRow: View {
                 }
             }
         }
+        .overlay(alignment: .bottomTrailing) {
+            if researchReadingEnabled, hasResearchMatch {
+                ResearchAssociationBadge(item: item, match: researchMatch, compact: true)
+                    .padding(.trailing, 10)
+                    .padding(.bottom, 8)
+            }
+        }
+        .task(id: item.id + "\n" + (item.readerURL ?? item.url)) { await refreshResearchMatch() }
+        .onReceive(NotificationCenter.default.publisher(for: .researchRecordsChanged)) { notification in
+            let changedID = notification.userInfo?[ResearchChangeKey.recordID] as? String
+            guard changedID == nil || changedID == researchMatch?.recordID else { return }
+            Task { await refreshResearchMatch() }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .researchWorkspaceChanged)) { _ in
+            Task { await refreshResearchMatch() }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .newsEventsChanged)) { _ in
+            Task { await refreshResearchMatch() }
+        }
+    }
+
+    @MainActor
+    private func refreshResearchMatch() async {
+        let match = await WorkspaceReaderResearchMatcher.shared.match(item: item, url: item.readerURL ?? item.url)
+        guard !Task.isCancelled else { return }
+        researchMatch = match
     }
 
     private var cardBackground: some View {
@@ -428,6 +463,10 @@ struct RSSImageCard: View {
         .buttonStyle(.plain)
         .accessibilityLabel(L10n.string("rss.waterfall.accessibilityDash", item.displayTitle, sourceName))
         .accessibilityHint("news.openInBrowser".localized)
+        .overlay(alignment: .topTrailing) {
+            ResearchAssociationBadge(item: item, compact: true)
+                .padding(6)
+        }
         .onHover { hovering in
             if reduceMotion {
                 isHovering = hovering

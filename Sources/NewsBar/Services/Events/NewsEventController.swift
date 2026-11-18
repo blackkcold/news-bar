@@ -955,7 +955,47 @@ final class NewsEventController: NewsEventControlling {
                 event.notificationKeys.insert(alert.notificationID)
                 event.notificationMessage = "通知去重键已持久化，系统投递结果待确认。"
                 do {
-                    try await NotificationService.sendNewsEventAlert(alert, subjectID: subjectID)
+                    let reportLink = await reportLink(for: triggeringEvidence?.researchCausalToken)
+                    let usesDigest = alert.change != .correction
+                        && (settings.hourlyPushEnabled || settings.dailyPushEnabled)
+                    let accepted: Bool
+                    if usesDigest {
+                        let item = NotificationService.makeEventDigestItem(
+                            alert: alert,
+                            event: event,
+                            evidence: triggeringEvidence,
+                            recordID: reportLink?.recordID,
+                            versionID: reportLink?.versionID,
+                            compareFromVersionID: reportLink?.previousVersionID
+                        )
+                        accepted = await NotificationService.deliverSummaryItem(
+                            item,
+                            pushCount: settings.pushCount,
+                            hourlyEnabled: settings.hourlyPushEnabled,
+                            dailyEnabled: settings.dailyPushEnabled,
+                            dailyHour: settings.dailyPushHour,
+                            dailyMinute: settings.dailyPushMinute
+                        )
+                    } else {
+                        try await NotificationService.sendNewsEventAlert(
+                            alert,
+                            subjectID: subjectID,
+                            event: event,
+                            evidence: triggeringEvidence,
+                            recordID: reportLink?.recordID,
+                            versionID: reportLink?.versionID,
+                            compareFromVersionID: alert.change == .correction
+                                ? reportLink?.previousVersionID
+                                : nil
+                        )
+                        accepted = true
+                    }
+                    guard accepted else {
+                        event.notificationKeys.remove(alert.notificationID)
+                        event.notificationMessage = "通知请求未被系统接受；已保留有限重试机会。"
+                        try await store.upsert(event)
+                        return
+                    }
                     event.lastNotifiedAt = now
                     event.lastNotifiedFingerprint = alert.semanticFingerprint
                     event.notificationEligibility = notificationPolicy.eligibility(for: event)
@@ -966,7 +1006,8 @@ final class NewsEventController: NewsEventControlling {
                         causalToken: causalToken
                     )
                 } catch {
-                    event.notificationMessage = "系统未确认通知投递；去重键已保存，本事件不会自动重发。\(error.localizedDescription)"
+                    event.notificationKeys.remove(alert.notificationID)
+                    event.notificationMessage = "系统未接受通知请求；允许在预算内重试。\(error.localizedDescription)"
                 }
             } catch {
                 event.notificationMessage = "无法持久化通知去重键，未发送通知：\(error.localizedDescription)"
@@ -982,6 +1023,27 @@ final class NewsEventController: NewsEventControlling {
                 state = .failed(message: error.localizedDescription, hasCachedEvents: !events.isEmpty)
             }
         }
+    }
+
+    private func reportLink(for causalToken: String?) async -> (
+        recordID: String,
+        versionID: String?,
+        previousVersionID: String?
+    )? {
+        guard let causalToken else { return nil }
+        let parts = causalToken.split(separator: ":", omittingEmptySubsequences: false)
+        guard parts.count >= 4, parts[0] == "research" else { return nil }
+        let recordID = String(parts[1])
+        let digest = String(parts[parts.count - 1])
+        let versions = await WorkspaceSubjectStore.shared.versions(recordID: recordID)
+        guard let index = versions.lastIndex(where: { $0.digest == digest }) else {
+            return (recordID, nil, nil)
+        }
+        return (
+            recordID,
+            versions[index].id,
+            index > 0 ? versions[index - 1].id : nil
+        )
     }
 
     private static func consistency(for event: NewsEvent) -> NewsEventCoreConsistency {

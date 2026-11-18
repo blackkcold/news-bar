@@ -8,6 +8,15 @@ enum NotificationRoute: Equatable {
     case burst(eventID: String)
     case newsEvent(eventID: String)
     case research(recordID: String)
+    case researchReport(recordID: String, eventID: String?, versionID: String?, compareFromVersionID: String?)
+    case researchCorrection(
+        recordID: String?,
+        eventID: String?,
+        versionID: String?,
+        compareFromVersionID: String?,
+        sourceURL: String?,
+        title: String?
+    )
     case markResearchRead(recordID: String)
     case digest(NotificationDigest)
     case news(url: String, title: String)
@@ -23,8 +32,10 @@ enum NotificationRoute: Equatable {
         case .burst: return "burst"
         case .newsEvent: return "newsEvent"
         case .research: return "research"
+        case .researchReport: return "researchReport"
+        case .researchCorrection: return "researchCorrection"
         case .markResearchRead: return "markResearchRead"
-        case .digest(let digest): return "digest(\(digest.items.count))"
+        case .digest(let digest): return "digest(\(digest.itemCount))"
         case .news: return "news"
         case .weibo: return "weibo"
         case .muteWeibo: return "muteWeibo"
@@ -62,11 +73,46 @@ enum NotificationClickRouter {
             if actionIdentifier == NotificationIdentifier.markResearchReadAction {
                 return .markResearchRead(recordID: recordID)
             }
+            if userInfo["eventID"] is String
+                || userInfo["versionID"] is String
+                || userInfo["compareFromVersionID"] is String
+                || userInfo["semanticID"] is String {
+                return .researchReport(
+                    recordID: recordID,
+                    eventID: userInfo["eventID"] as? String,
+                    versionID: userInfo["versionID"] as? String,
+                    compareFromVersionID: userInfo["compareFromVersionID"] as? String
+                )
+            }
             return .research(recordID: recordID)
+        }
+
+        if let type = userInfo["type"] as? String, type == "researchCorrection" {
+            return .researchCorrection(
+                recordID: userInfo["recordID"] as? String,
+                eventID: userInfo["eventID"] as? String,
+                versionID: userInfo["versionID"] as? String,
+                compareFromVersionID: userInfo["compareFromVersionID"] as? String,
+                sourceURL: userInfo["sourceURL"] as? String ?? userInfo["url"] as? String,
+                title: userInfo["title"] as? String
+            )
         }
 
         if let type = userInfo["type"] as? String, type == "newsEvent",
            let eventID = userInfo["eventID"] as? String, !eventID.isEmpty {
+            if userInfo["change"] as? String == NewsEventChangeKind.correction.rawValue {
+                return .researchCorrection(
+                    recordID: userInfo["recordID"] as? String,
+                    eventID: eventID,
+                    versionID: userInfo["versionID"] as? String,
+                    compareFromVersionID: userInfo["compareFromVersionID"] as? String,
+                    sourceURL: userInfo["url"] as? String,
+                    title: userInfo["title"] as? String
+                )
+            }
+            if let url = userInfo["url"] as? String {
+                return .news(url: url, title: userInfo["title"] as? String ?? "")
+            }
             return .newsEvent(eventID: eventID)
         }
 
@@ -76,7 +122,8 @@ enum NotificationClickRouter {
         }
 
         let digest = NotificationDigest.decode(userInfo["digest"] as? String)
-        if let digest, !digest.items.isEmpty {
+        if let digest, !digest.items.isEmpty || !digest.researchItems.isEmpty {
+            if !digest.researchItems.isEmpty { return .digest(digest) }
             if digest.items.count > 1 || actionIdentifier == NotificationIdentifier.openDigestAction {
                 return .digest(digest)
             }

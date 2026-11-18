@@ -4,7 +4,7 @@ struct ReaderResearchPanel: View {
     let model: ReaderResearchPanelModel
     let language: AppLanguage
     let onClose: () -> Void
-    let onOpen: (String) -> Void
+    let onOpen: (String, String?) -> Void
     let onVerify: () -> Void
     let canVerify: Bool
 
@@ -40,7 +40,7 @@ struct ReaderResearchPanel: View {
                             .font(.caption).foregroundStyle(.secondary)
                     }
                     ForEach(model.recent) { entry in
-                        Button { onOpen(entry.id) } label: {
+                        Button { onOpen(entry.id, nil) } label: {
                             ResearchListRow(entry: entry, isSelected: false)
                         }
                         .buttonStyle(.plain)
@@ -71,16 +71,19 @@ struct ReaderResearchPanel: View {
     private func matchedCard(_ entry: ResearchIndexEntry, record: ResearchRecord) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .firstTextBaseline) {
-                Circle().fill(entry.status.isActive ? Color.orange : Color.accentColor)
+                Circle().fill(record.status.isActive ? Color.orange : Color.accentColor)
                     .frame(width: 7, height: 7).accessibilityHidden(true)
                 Text(entry.topic).font(.subheadline.weight(.semibold)).lineLimit(2)
                 Spacer(minLength: 0)
             }
-            Text(L10n.string("research.status.\(entry.status.rawValue)", language: language))
+            Text(L10n.string("research.status.\(record.status.rawValue)", language: language))
                 .font(.caption).foregroundStyle(.secondary)
             if let report = record.report {
                 Text(ResearchNotificationSummary.make(report: report, language: language))
                     .font(.callout).lineLimit(3)
+                Text((english ? "Verified as of " : "核验截至 ") +
+                     (report.generatedAt ?? record.updatedAt).formatted(date: .abbreviated, time: .shortened))
+                    .font(.caption2).foregroundStyle(.tertiary)
                 HStack {
                     if let verdict = entry.verdict {
                         Text(L10n.string("research.verdict.\(verdict.rawValue)", language: language))
@@ -90,14 +93,31 @@ struct ReaderResearchPanel: View {
                 }
                 .font(.caption).foregroundStyle(.secondary)
             }
-            if entry.status.isActive {
-                ProgressView().controlSize(.small)
-                Text(record.run.phase == .idle || record.run.phase == .done
-                     ? L10n.string("research.status.\(entry.status.rawValue)", language: language)
-                     : L10n.string("research.phase.\(record.run.phase.rawValue)", language: language))
-                    .font(.caption).foregroundStyle(.secondary)
+            if record.status.isActive {
+                DisclosureGroup(isExpanded: Binding(
+                    get: { model.showsProgress },
+                    set: { model.showsProgress = $0 }
+                )) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack(spacing: 6) {
+                            ProgressView().controlSize(.small)
+                            Text(record.run.phase == .idle || record.run.phase == .done
+                                 ? L10n.string("research.status.\(record.status.rawValue)", language: language)
+                                 : L10n.string("research.phase.\(record.run.phase.rawValue)", language: language))
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                        Text(english
+                             ? "\(record.run.queriesCompleted)/\(record.run.queriesPlanned) searches · \(record.run.pagesRead) sources read"
+                             : "已完成 \(record.run.queriesCompleted)/\(record.run.queriesPlanned) 次检索 · 已读 \(record.run.pagesRead) 个来源")
+                            .font(.caption2).foregroundStyle(.tertiary)
+                    }
+                    .padding(.top, 6)
+                } label: {
+                    Text(english ? "Show research progress" : "显示研究进度")
+                        .font(.caption)
+                }
             }
-            Button(english ? "Open report" : "打开报告") { onOpen(entry.id) }
+            Button(english ? "Open report" : "打开报告") { onOpen(entry.id, model.association?.eventID) }
                 .buttonStyle(.bordered)
         }
         .padding(12)

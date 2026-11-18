@@ -15,3 +15,9 @@ SIGNING_DIR="${NEWSBAR_SIGNING_DIR:-$HOME/.config/newsbar/signing}"
 # Sparkle feed + EdDSA public key. The private half never enters the repo.
 SU_FEED_URL="https://github.com/${REPO_SLUG}/releases/latest/download/appcast.xml"
 SU_PUBLIC_ED_KEY="pysGE+4GDqzPuFgK6lpOlTJuvfnqCdjyJ0bVdOiUHsY="
+
+# Generate the build timestamp once per build-script invocation and reuse the
+# same UTC ISO-8601 value for bundle metadata and console output.
+newsbar_generate_build_timestamp_utc() {
+    date -u '+%Y-%m-%dT%H:%M:%SZ'
+}

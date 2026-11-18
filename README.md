@@ -26,6 +26,7 @@ Zero dependencies. Pure Swift. Free & open source (MIT).
 
 ## ✨ Features
 
+- **📚 Research Reading & Verified Alerts** — Open traceable research from article cards or the reader sidebar, search reports and evidence locally, and use a closable report view without losing your reading position. Optional notifications link verified claims and corrections to the relevant report or version comparison.
 - **🔥 Weibo Trending** — Real-time Weibo hot search topics
 - **📺 Bilibili Trending** — Bilibili popular & trending content
 - **📡 Custom RSS Feeds** — Add any RSS/Atom source; fully extensible
@@ -44,6 +45,8 @@ Zero dependencies. Pure Swift. Free & open source (MIT).
 ---
 
 ## 📦 Install
+
+> Current version: **v3.3.0**
 
 Download the latest DMG from [Releases](../../releases) and drag it to **Applications**.
 

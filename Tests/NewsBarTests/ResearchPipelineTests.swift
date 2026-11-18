@@ -266,10 +266,13 @@ final class ResearchPipelineTests: XCTestCase {
         XCTAssertEqual(report.timeline.first?.evidenceIDs, ["E1", "E2"])
         XCTAssertEqual(report.method?.providers, ["tavily"])
         XCTAssertEqual(report.method?.queries, ["Event timeline"])
+        XCTAssertTrue(
+            progress.latest?.progressFacts?.contains(where: { $0.kind == .claimSupported }) == true
+        )
 
         XCTAssertEqual(
             progress.phases,
-            [.planning, .searching, .searching, .reading, .reading, .extracting, .extracting, .synthesizing, .validating, .done]
+            [.planning, .searching, .searching, .reading, .reading, .extracting, .extracting, .extracting, .synthesizing, .validating, .validating, .done]
         )
     }
 

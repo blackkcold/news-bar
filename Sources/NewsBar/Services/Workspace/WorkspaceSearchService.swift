@@ -12,6 +12,8 @@ final class WorkspaceSearchService {
     private let archiveStore: AISearchArchiveStore
     private let gateway: ManualSearchGateway
     private var subjectsByID: [String: WorkspaceSubject] = [:]
+    private var subjectsByRecordID: [String: String] = [:]
+    private var activeResearchRunsBySubjectID: [String: [WorkspaceSearchRunSnapshot]] = [:]
     private var didLoadIndex = false
     /// Monotonic dirty counter. A reload captures it and refuses to publish if
     /// anything changed (especially a history clear) while it was reading.
@@ -54,7 +56,23 @@ final class WorkspaceSearchService {
                 forName: name,
                 object: nil,
                 queue: .main
-            ) { [weak self] _ in
+            ) { [weak self] notification in
+                // Progress snapshots rewrite a record but do not change the
+                // searchable report. Final publication, history removal and
+                // workspace membership changes arrive through the workspace
+                // store notification and rebuild the index there.
+                if notification.name == .researchRecordsChanged,
+                   let recordID = notification.userInfo?[ResearchChangeKey.recordID] as? String {
+                    Task { @MainActor [weak self] in
+                        guard let self else { return }
+                        if self.didLoadIndex {
+                            await self.refreshActiveResearchRun(recordID: recordID)
+                        } else {
+                            self.markDirty()
+                        }
+                    }
+                    return
+                }
                 Task { @MainActor [weak self] in
                     self?.markDirty()
                 }
@@ -69,6 +87,8 @@ final class WorkspaceSearchService {
         revision += 1
         didLoadIndex = false
         subjectsByID.removeAll()
+        subjectsByRecordID.removeAll()
+        activeResearchRunsBySubjectID.removeAll()
     }
 
     func reloadIndex() async {
@@ -135,6 +155,21 @@ final class WorkspaceSearchService {
         subjectsByID = Dictionary(
             uniqueKeysWithValues: subjects.map { ($0.id, $0) }
         )
+        subjectsByRecordID = recordSubjects
+        activeResearchRunsBySubjectID = Dictionary(grouping: records.compactMap { record in
+            guard record.status.isActive, let subjectID = recordSubjects[record.id] else { return nil }
+            return WorkspaceSearchRunSnapshot(
+                recordID: record.id,
+                subjectID: subjectID,
+                topic: record.topic,
+                status: record.status,
+                phase: record.run.phase,
+                queriesCompleted: record.run.queriesCompleted,
+                queriesPlanned: record.run.queriesPlanned,
+                pagesRead: record.run.pagesRead,
+                progressFacts: record.run.progressFacts
+            )
+        }, by: \.subjectID)
         didLoadIndex = true
     }
 
@@ -159,11 +194,80 @@ final class WorkspaceSearchService {
                 isFollowed: subjectsByID[id]?.isFollowed ?? false
             )
         }
+        let subjectIDs = Set(enriched.compactMap(\.associatedSubjectID))
         return WorkspaceSearchResponse(
             results: enriched,
             isLocalOnly: true,
-            truncated: response.truncated
+            truncated: response.truncated,
+            subjectTitles: Dictionary(uniqueKeysWithValues: subjectIDs.compactMap { id in
+                guard let subject = subjectsByID[id] else { return nil }
+                return (id, subject.title)
+            }),
+            activeResearchRuns: subjectIDs.sorted().flatMap { activeResearchRunsBySubjectID[$0] ?? [] }
         )
+    }
+
+    private func refreshActiveResearchRun(recordID: String) async {
+        guard let subjectID = subjectsByRecordID[recordID] else { return }
+        let expectedRevision = revision
+        let record = await researchStore.record(id: recordID)
+        guard revision == expectedRevision, didLoadIndex else { return }
+        guard let record, record.status.isActive else {
+            activeResearchRunsBySubjectID[subjectID]?.removeAll { $0.recordID == recordID }
+            if activeResearchRunsBySubjectID[subjectID]?.isEmpty == true {
+                activeResearchRunsBySubjectID.removeValue(forKey: subjectID)
+            }
+            return
+        }
+        let snapshot = WorkspaceSearchRunSnapshot(
+            recordID: record.id,
+            subjectID: subjectID,
+            topic: record.topic,
+            status: record.status,
+            phase: record.run.phase,
+            queriesCompleted: record.run.queriesCompleted,
+            queriesPlanned: record.run.queriesPlanned,
+            pagesRead: record.run.pagesRead,
+            progressFacts: record.run.progressFacts
+        )
+        var runs = activeResearchRunsBySubjectID[subjectID] ?? []
+        if let index = runs.firstIndex(where: { $0.recordID == recordID }) {
+            runs[index] = snapshot
+        } else {
+            runs.append(snapshot)
+        }
+        activeResearchRunsBySubjectID[subjectID] = runs
+    }
+
+    /// Re-reads only the active records for one already-confirmed subject.
+    /// Search disclosures call this on expansion so progress is current at the
+    /// moment the reader asks to see it.
+    func refreshActiveResearchRuns(subjectID: String) async -> [WorkspaceSearchRunSnapshot] {
+        if !didLoadIndex { await reloadIfNeeded() }
+        guard didLoadIndex else { return [] }
+        let expectedRevision = revision
+        let recordIDs = subjectsByRecordID.compactMap { entry in
+            entry.value == subjectID ? entry.key : nil
+        }.sorted()
+        var snapshots: [WorkspaceSearchRunSnapshot] = []
+        for recordID in recordIDs {
+            guard let record = await researchStore.record(id: recordID), record.status.isActive else { continue }
+            snapshots.append(WorkspaceSearchRunSnapshot(
+                recordID: record.id,
+                subjectID: subjectID,
+                topic: record.topic,
+                status: record.status,
+                phase: record.run.phase,
+                queriesCompleted: record.run.queriesCompleted,
+                queriesPlanned: record.run.queriesPlanned,
+                pagesRead: record.run.pagesRead,
+                progressFacts: record.run.progressFacts
+            ))
+        }
+        guard revision == expectedRevision, didLoadIndex else { return [] }
+        if snapshots.isEmpty { activeResearchRunsBySubjectID.removeValue(forKey: subjectID) }
+        else { activeResearchRunsBySubjectID[subjectID] = snapshots }
+        return snapshots
     }
 
     /// Explicit `在网页中查找` only. Never called by `searchLocal`.

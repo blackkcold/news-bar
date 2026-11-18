@@ -48,6 +48,7 @@ actor SearchRouter {
             ExaSearchProvider(),
             ParallelSearchProvider(),
             BraveSearchProvider(),
+            ParallelMCPSearchProvider(),
         ]
         self.cache = cache
         self.now = now
@@ -97,7 +98,9 @@ actor SearchRouter {
 
         var failures: [SearchProviderFailure] = []
         var failovers = 0
-        var providerAttempts = 0
+        var providerDispatches = 0
+        let dispatchLimit = maxProviderAttempts
+            + (maxProviderAttempts > 0 && configuration.enabled.contains(.parallelMCP) ? 1 : 0)
 
         for provider in ordered {
             try Task.checkCancellation()
@@ -148,34 +151,72 @@ actor SearchRouter {
                 continue
             }
 
-            // A single query must not spend the whole task budget walking six
-            // providers. Skips above are free; this cap counts real dispatches.
-            guard providerAttempts < maxProviderAttempts else {
+            // A single query must not walk six providers. Skips above are free;
+            // this cap counts distinct providers, while the attempt ticket
+            // separately caps every HTTP dispatch including retries.
+            if provider.id == .parallelMCP {
+                guard providerDispatches < dispatchLimit else {
+                    failures.append(SearchProviderFailure(provider: nil, reason: .attemptLimit))
+                    break
+                }
+            } else if providerDispatches >= maxProviderAttempts {
+                if configuration.enabled.contains(.parallelMCP) { continue }
                 failures.append(SearchProviderFailure(provider: nil, reason: .attemptLimit))
                 break
             }
 
             let keyed = !key.isEmpty
-            if let quota {
-                let allowed = await quota.consume(for: provider.id, keyed: keyed)
-                if !allowed {
-                    record(.quotaExhausted, for: provider.id)
-                    failures.append(
-                        SearchProviderFailure(provider: provider.id, reason: .quotaExhausted)
-                    )
-                    continue
-                }
-            }
-            providerAttempts += 1
-
             var retried = false
+            var countedProvider = false
             while true {
                 try Task.checkCancellation()
+                guard attempts.remaining > 0 else {
+                    failures.append(
+                        SearchProviderFailure(provider: nil, reason: .budgetExhausted)
+                    )
+                    throw SearchUnavailableError(failures: failures)
+                }
+                if attempts.trafficClass.countsTowardAutomaticSearchCap,
+                   let quota,
+                   let dailyLimit = attempts.automaticDailyLimit,
+                   await quota.automaticSearchLimitReached(limit: dailyLimit) {
+                    failures.append(
+                        SearchProviderFailure(provider: nil, reason: .automaticDailyCap)
+                    )
+                    throw SearchUnavailableError(failures: failures)
+                }
+                if let quota {
+                    let allowed = await quota.consume(
+                        for: provider.id,
+                        keyed: keyed,
+                        trafficClass: attempts.trafficClass,
+                        automaticDailyLimit: attempts.automaticDailyLimit
+                    )
+                    if !allowed {
+                        if attempts.trafficClass.countsTowardAutomaticSearchCap,
+                           let dailyLimit = attempts.automaticDailyLimit,
+                           await quota.automaticSearchLimitReached(limit: dailyLimit) {
+                            failures.append(
+                                SearchProviderFailure(provider: nil, reason: .automaticDailyCap)
+                            )
+                            throw SearchUnavailableError(failures: failures)
+                        }
+                        record(.quotaExhausted, for: provider.id)
+                        failures.append(
+                            SearchProviderFailure(provider: provider.id, reason: .quotaExhausted)
+                        )
+                        break
+                    }
+                }
                 guard attempts.consume() else {
                     failures.append(
                         SearchProviderFailure(provider: nil, reason: .budgetExhausted)
                     )
                     throw SearchUnavailableError(failures: failures)
+                }
+                if !countedProvider {
+                    providerDispatches += 1
+                    countedProvider = true
                 }
 
                 do {
@@ -187,6 +228,15 @@ actor SearchRouter {
                     let limited = Array(
                         SearchResultRanking.deduplicated(hits).prefix(query.maxResults)
                     )
+                    if limited.isEmpty,
+                       provider.id != .parallelMCP,
+                       configuration.enabled.contains(.parallelMCP) {
+                        failures.append(
+                            SearchProviderFailure(provider: provider.id, reason: .emptyResults)
+                        )
+                        failovers += 1
+                        break
+                    }
                     let batch = SearchBatch(
                         hits: limited,
                         providers: [provider.id],

@@ -339,6 +339,7 @@ final class ResearchCoordinator {
         record.run.pagesRead = 0
         record.run.aiCalls = 0
         record.run.searchCalls = 0
+        record.run.progressFacts = nil
         if job.trigger.isAutomatic {
             let isLegacyFailure = job.previousStatus == .failed && record.lastAutomaticAttemptAt == nil
             let previousAttempts = isLegacyFailure ? max(1, record.automaticAttempts) : record.automaticAttempts

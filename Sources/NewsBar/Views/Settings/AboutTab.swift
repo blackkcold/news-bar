@@ -55,6 +55,17 @@ struct AboutTab: View {
     private let version = AppVersion.current
     private let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "1"
 
+    private var buildTimeText: String? {
+        guard let date = AppVersion.buildDateUTC else { return nil }
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: settings.appLanguage == .en ? "en_US" : "zh_CN")
+        formatter.timeZone = .current
+        formatter.setLocalizedDateFormatFromTemplate("yMMMdjmmss")
+        let localDate = formatter.string(from: date)
+        let zone = TimeZone.current.abbreviation(for: date) ?? TimeZone.current.identifier
+        return "\(localDate) (\(zone))"
+    }
+
     var body: some View {
         Form {
             Section {
@@ -69,6 +80,11 @@ struct AboutTab: View {
                             Text(L10n.string("about.versionText", version, build))
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
+                            if let buildTimeText {
+                                Text("\("about.buildTime".localized): \(buildTimeText)")
+                                    .font(.caption2)
+                                    .foregroundStyle(.tertiary)
+                            }
                         }
                     }
 

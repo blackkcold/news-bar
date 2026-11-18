@@ -20,6 +20,8 @@ enum SearchProviderID: String, Codable, Sendable, CaseIterable, Identifiable {
     case tinyfish
     case exa
     case parallel
+    /// Anonymous, separately opted-in read-only Parallel MCP route.
+    case parallelMCP
     case brave
 
     var id: String { rawValue }
@@ -31,6 +33,7 @@ enum SearchProviderID: String, Codable, Sendable, CaseIterable, Identifiable {
         case .tinyfish: return "TinyFish"
         case .exa: return "Exa"
         case .parallel: return "Parallel"
+        case .parallelMCP: return "Parallel MCP"
         case .brave: return "Brave"
         }
     }
@@ -46,6 +49,7 @@ enum SearchProviderID: String, Codable, Sendable, CaseIterable, Identifiable {
         .exa,
         .parallel,
         .brave,
+        .parallelMCP,
     ]
 
     var authMode: SearchAuthMode {
@@ -56,8 +60,23 @@ enum SearchProviderID: String, Codable, Sendable, CaseIterable, Identifiable {
             return .optionalKey
         case .tinyfish, .exa, .parallel, .brave:
             return .requiredKey
+        case .parallelMCP:
+            return .keyless
         }
     }
+
+    var isStandaloneOptIn: Bool { self == .parallelMCP }
+}
+
+/// Search dispatches are split by user intent so automatic work cannot spend
+/// the local allowance held for manual research.
+enum SearchTrafficClass: Sendable, Equatable {
+    case manual
+    case automaticSearch
+    case automaticFetch
+
+    var isAutomatic: Bool { self != .manual }
+    var countsTowardAutomaticSearchCap: Bool { self == .automaticSearch }
 }
 
 enum SearchRecency: String, Codable, Sendable, CaseIterable {
@@ -253,12 +272,14 @@ enum SearchFailureReason: Sendable, Equatable {
     case quotaExhausted
     case coolingDown(until: Date)
     case budgetExhausted
+    case automaticDailyCap
     case attemptLimit
     case server(Int)
     case timeout
     case transport
     case malformedResponse
     case emptyQuery
+    case emptyResults
 }
 
 struct SearchProviderFailure: Sendable, Equatable {
@@ -277,12 +298,14 @@ struct SearchProviderFailure: Sendable, Equatable {
         case .quotaExhausted: return "\(name): quota exhausted"
         case .coolingDown: return "\(name): cooling down"
         case .budgetExhausted: return "HTTP budget exhausted"
+        case .automaticDailyCap: return "Automatic daily search request cap reached"
         case .attemptLimit: return "Per-query provider attempt limit reached"
         case .server(let status): return "\(name): HTTP \(status)"
         case .timeout: return "\(name): timeout"
         case .transport: return "\(name): transport failed"
         case .malformedResponse: return "\(name): malformed response"
         case .emptyQuery: return "\(name): empty query"
+        case .emptyResults: return "\(name): no usable results"
         }
     }
 }
@@ -305,10 +328,18 @@ struct SearchUnavailableError: Error, LocalizedError, Equatable {
 final class SearchAttemptTicket: @unchecked Sendable {
     private let lock = NSLock()
     private let limit: Int
+    let trafficClass: SearchTrafficClass
+    let automaticDailyLimit: Int?
     private var consumed = 0
 
-    init(limit: Int) {
+    init(
+        limit: Int,
+        trafficClass: SearchTrafficClass = .manual,
+        automaticDailyLimit: Int? = nil
+    ) {
         self.limit = max(0, limit)
+        self.trafficClass = trafficClass
+        self.automaticDailyLimit = automaticDailyLimit
     }
 
     var used: Int {
