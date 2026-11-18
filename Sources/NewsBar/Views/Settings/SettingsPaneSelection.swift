@@ -1,14 +1,46 @@
+import Dispatch
 import Observation
 
-/// Observable source of truth shared by the Settings sidebar, detail pane, and
-/// route tests. Keeping pane selection explicit also lets non-UI entry points
-/// drive the same state as a sidebar selection.
+/// Observable selection state shared by the Settings sidebar and detail pane.
+/// The sidebar commits synchronously; expensive detail construction is queued
+/// for the next main-loop turn and only the latest generation is allowed through.
+@MainActor
 @Observable
 final class SettingsPaneSelection {
-    var selectedPane: SettingsPane
+    typealias DetailCommitAction = @MainActor () -> Void
+    typealias DetailCommitScheduler = @MainActor (@escaping DetailCommitAction) -> Void
 
-    init(initialPane: SettingsPane = .general) {
+    private(set) var selectedPane: SettingsPane
+    private(set) var presentedPane: SettingsPane
+
+    @ObservationIgnored private var generation: UInt64 = 0
+    @ObservationIgnored private let scheduleDetailCommit: DetailCommitScheduler
+
+    init(
+        initialPane: SettingsPane = .general,
+        scheduleDetailCommit: @escaping DetailCommitScheduler = { action in
+            DispatchQueue.main.async(execute: action)
+        }
+    ) {
         self.selectedPane = initialPane
+        self.presentedPane = initialPane
+        self.scheduleDetailCommit = scheduleDetailCommit
+    }
+
+    func select(_ pane: SettingsPane) {
+        selectedPane = pane
+        generation &+= 1
+        let requestedGeneration = generation
+
+        // Incrementing the generation cancels any queued older commit. The
+        // callback is deliberately deferred so the List can publish its new
+        // selection before the right pane constructs the selected Settings form.
+        scheduleDetailCommit { [weak self] in
+            guard let self,
+                  self.generation == requestedGeneration,
+                  self.selectedPane == pane else { return }
+            self.presentedPane = pane
+        }
     }
 }
 
@@ -18,6 +50,7 @@ final class SettingsPaneSelection {
 final class SettingsPaneRenderSnapshot {
     private(set) var renderedHeaderTitle: String?
     private(set) var renderedContentPane: SettingsPane?
+    private(set) var renderedContentHistory: [SettingsPane] = []
 
     func recordHeader(for pane: SettingsPane) {
         renderedHeaderTitle = L10n.string(pane.headingKey)
@@ -25,5 +58,6 @@ final class SettingsPaneRenderSnapshot {
 
     func recordContent(for pane: SettingsPane) {
         renderedContentPane = pane
+        renderedContentHistory.append(pane)
     }
 }

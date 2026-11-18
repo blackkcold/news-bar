@@ -18,7 +18,7 @@ final class SettingsWindowInteractionTests: XCTestCase {
             _ = try await waitForRender(.about, selection: selection, snapshot: renderSnapshot, host: host)
             let sidebar = try XCTUnwrap(sidebarTable(in: host), "Settings sidebar table was not hosted")
             for pane in SettingsPane.allCases {
-                let selectionStartedAt = try selectSidebarRow(pane, in: host, table: sidebar)
+                let selectionStartedAt = try selectSidebarRow(pane, in: host, table: sidebar, selection: selection)
                 let selectionElapsed = try await waitForSelection(
                     pane,
                     selection: selection,
@@ -34,8 +34,7 @@ final class SettingsWindowInteractionTests: XCTestCase {
                 )
                 selectionDelays.append(selectionElapsed)
                 detailDelays.append(renderTiming.endToEnd)
-                let selectedTable = try XCTUnwrap(sidebarTable(in: host))
-                let selectedRow = try XCTUnwrap(selectedTable.selectedRowIndexes.first)
+                let selectedRow = try XCTUnwrap(sidebar.selectedRowIndexes.first)
                 let expectedRow = try XCTUnwrap(SettingsPane.allCases.firstIndex(of: pane))
 
                 XCTAssertEqual(selection.selectedPane, pane, "selection model did not track the AppKit List selection")
@@ -83,6 +82,45 @@ final class SettingsWindowInteractionTests: XCTestCase {
         }
     }
 
+    func testRapidSidebarSelectionsCommitOnlyTheLatestDetailPane() async throws {
+        let settings = makeSettings(theme: .modern)
+        let commitQueue = DeferredPaneCommitQueue()
+        let selection = SettingsPaneSelection(initialPane: .about) { action in
+            commitQueue.enqueue(action)
+        }
+        let renderSnapshot = SettingsPaneRenderSnapshot()
+        let (window, host) = makeHost(settings: settings, selection: selection, renderSnapshot: renderSnapshot)
+        defer { window.contentView = nil }
+
+        _ = try await waitForRender(.about, selection: selection, snapshot: renderSnapshot, host: host)
+        let sidebar = try XCTUnwrap(sidebarTable(in: host), "Settings sidebar table was not hosted")
+
+        _ = try selectSidebarRow(.ai, in: host, table: sidebar, selection: selection)
+        XCTAssertEqual(selection.selectedPane, .ai, "sidebar binding should commit the first choice synchronously")
+        XCTAssertEqual(try XCTUnwrap(sidebar.selectedRowIndexes.first), try XCTUnwrap(SettingsPane.allCases.firstIndex(of: .ai)))
+        XCTAssertEqual(selection.presentedPane, .about, "the detail pane must remain unchanged until the deferred commit")
+
+        _ = try selectSidebarRow(.notifications, in: host, table: sidebar, selection: selection)
+        XCTAssertEqual(selection.selectedPane, .notifications, "sidebar binding should accept the next choice immediately")
+        XCTAssertEqual(try XCTUnwrap(sidebar.selectedRowIndexes.first), try XCTUnwrap(SettingsPane.allCases.firstIndex(of: .notifications)))
+        XCTAssertEqual(selection.presentedPane, .about, "rapid selection must not construct an intermediate detail")
+        XCTAssertEqual(commitQueue.count, 2)
+        XCTAssertFalse(renderSnapshot.renderedContentHistory.contains(.ai))
+
+        commitQueue.run(at: 1)
+        host.layoutSubtreeIfNeeded()
+        _ = try await waitForRender(.notifications, selection: selection, snapshot: renderSnapshot, host: host)
+        XCTAssertEqual(selection.presentedPane, .notifications)
+        XCTAssertTrue(renderSnapshot.renderedContentHistory.contains(.notifications))
+        XCTAssertFalse(renderSnapshot.renderedContentHistory.contains(.ai), "only the latest detail should appear")
+
+        // Deliver the older deferred callback after the new pane has appeared.
+        commitQueue.run(at: 0)
+        host.layoutSubtreeIfNeeded()
+        XCTAssertEqual(selection.presentedPane, .notifications, "an obsolete generation must not restore an old detail")
+        XCTAssertFalse(renderSnapshot.renderedContentHistory.contains(.ai))
+    }
+
     func testAlreadyOpenSettingsWindowRoutesAITabNotificationToLeftAndRight() async throws {
         let settings = makeSettings(theme: .modern)
         let selection = SettingsPaneSelection(initialPane: .about)
@@ -124,7 +162,7 @@ final class SettingsWindowInteractionTests: XCTestCase {
         // The AI pane subscribes to research updates. Flood its local observer
         // while the store actor remains suspended, then switch panes before release.
         let sidebar = try XCTUnwrap(sidebarTable(in: host), "Settings sidebar table was not hosted")
-        let aiSelectionStartedAt = try selectSidebarRow(.ai, in: host, table: sidebar)
+        let aiSelectionStartedAt = try selectSidebarRow(.ai, in: host, table: sidebar, selection: selection)
         _ = try await waitForSelection(.ai, selection: selection, table: sidebar, startedAt: aiSelectionStartedAt)
         _ = try await waitForRender(
             .ai,
@@ -137,7 +175,7 @@ final class SettingsWindowInteractionTests: XCTestCase {
             await store.noteLocalUpdate()
             NotificationCenter.default.post(name: .researchRecordsChanged, object: nil)
         }
-        let selectionStartedAt = try selectSidebarRow(.notifications, in: host, table: sidebar)
+        let selectionStartedAt = try selectSidebarRow(.notifications, in: host, table: sidebar, selection: selection)
         _ = try await waitForSelection(
             .notifications,
             selection: selection,
@@ -213,7 +251,8 @@ final class SettingsWindowInteractionTests: XCTestCase {
     private func selectSidebarRow(
         _ pane: SettingsPane,
         in host: NSHostingView<AnyView>,
-        table: NSTableView
+        table: NSTableView,
+        selection: SettingsPaneSelection
     ) throws -> TimeInterval {
         let rowIndex = try XCTUnwrap(SettingsPane.allCases.firstIndex(of: pane))
         let row = try XCTUnwrap(table.rowView(atRow: rowIndex, makeIfNecessary: true))
@@ -230,10 +269,12 @@ final class SettingsWindowInteractionTests: XCTestCase {
         // This exercises the SwiftUI List binding without posting system input.
         let selectionStartedAt = ProcessInfo.processInfo.systemUptime
         table.selectRowIndexes(IndexSet(integer: rowIndex), byExtendingSelection: false)
-        table.delegate?.tableViewSelectionDidChange?(Notification(
-            name: Notification.Name("NSTableViewSelectionDidChangeNotification"),
-            object: table
-        ))
+        if selection.selectedPane != pane {
+            table.delegate?.tableViewSelectionDidChange?(Notification(
+                name: Notification.Name("NSTableViewSelectionDidChangeNotification"),
+                object: table
+            ))
+        }
         return selectionStartedAt
     }
 
@@ -286,6 +327,7 @@ final class SettingsWindowInteractionTests: XCTestCase {
         while ProcessInfo.processInfo.systemUptime < deadline {
             host.layoutSubtreeIfNeeded()
             if selection.selectedPane == pane,
+               selection.presentedPane == pane,
                snapshot.renderedContentPane == pane,
                snapshot.renderedHeaderTitle == L10n.string(pane.headingKey, language: .en) {
                 let now = ProcessInfo.processInfo.systemUptime
@@ -327,6 +369,21 @@ final class SettingsWindowInteractionTests: XCTestCase {
             )
             return (Data(body.utf8), response)
         })
+    }
+}
+
+@MainActor
+private final class DeferredPaneCommitQueue {
+    private(set) var actions: [SettingsPaneSelection.DetailCommitAction] = []
+
+    var count: Int { actions.count }
+
+    func enqueue(_ action: @escaping SettingsPaneSelection.DetailCommitAction) {
+        actions.append(action)
+    }
+
+    func run(at index: Int) {
+        actions[index]()
     }
 }
 

@@ -10,6 +10,8 @@
 - 只读核验显示安装包版本 `3.3.0`、bundle id `com.newsbar.app`、bundle `/Applications/NewsBar.app`；不对该进程做现场操作或采样。
 - `SettingsWindow` 用共享的可观察 pane selection；左栏 `List(selection:)` 与 detail 共用该选择，detail 用它切换八个 tab。AppDelegate 复用窗口时通过 NotificationCenter 请求 AI pane。仅这些源码结构不是卡顿证据。
 - 已安装包的屏幕诊断被主任务明确改为严格代码测试；后续不打开、点击、切换或安装本机 app。
+- 第一次 PR CI 的左栏等待函数在检查 binding 前强制执行 `host.layoutSubtreeIfNeeded()` 并重新遍历整棵视图树；因此该次 334/485ms 不能直接归因真实的左栏输入或单一生产函数。移除该布局/遍历后，左栏采样与右页耗时已分开；第二次 CI 仍有 retro 通知页一个 243.4ms 样本。它反映测试宿主中选择回调到共享绑定可见的延迟，不能单独证明系统鼠标表现或 AppKit 绘制卡顿。
+- 独立源码证据显示通知设置首次出现会调用 `NewsEventController.reload(now:)`，同步在主 actor 逐项归一化、分组、计分所有事件，并可能回写；该设置只展示预算，属于可去除的全量历史工作。首屏预算已改为调用 tracker 的只读预算快照，并用 500 条假事件及存储调用计数覆盖。
 
 ## 自动化诊断与因果门槛
 
