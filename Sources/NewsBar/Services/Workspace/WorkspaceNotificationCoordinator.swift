@@ -133,6 +133,13 @@ final class WorkspaceNotificationCoordinator {
     // MARK: - Research completion
 
     func claimResearch(recordID: String, at date: Date) async -> WorkspaceNotificationDecision {
+        let decision = await authorizeResearch(recordID: recordID, at: date)
+        guard decision.isAllowed else { return decision }
+        await recordResearchNotified(recordID: recordID, at: date)
+        return decision
+    }
+
+    func authorizeResearch(recordID: String, at date: Date) async -> WorkspaceNotificationDecision {
         let record = await researchStore.record(id: recordID)
         return await serialized {
             guard let subject = await store.subject(containingResearchID: recordID) else {
@@ -150,7 +157,16 @@ final class WorkspaceNotificationCoordinator {
             if let state, state.reference == reference {
                 return .suppressed(reason: L10n.string("workspace.notify.sameReport"))
             }
+            return .allowed(subjectID: subject.id)
+        }
+    }
 
+    func recordResearchNotified(recordID: String, at date: Date) async {
+        let record = await researchStore.record(id: recordID)
+        let reference = record.flatMap { WorkspaceResearchCausalToken.make(record: $0) }
+            ?? Self.fallbackReference(for: record)
+        await serialized {
+            guard let subject = await store.subject(containingResearchID: recordID) else { return }
             do {
                 try await store.updateSubject(id: subject.id) { latest in
                     if date >= (latest.lastNotifiedAt ?? .distantPast) {
@@ -165,14 +181,18 @@ final class WorkspaceNotificationCoordinator {
                     reference: reference
                 )
             } catch {
-                // Fail open: the report notice is unrelated to the workspace
-                // index write failure and must not be silently lost.
+                // Delivery has already been accepted by the system. Keep the
+                // in-memory causal state so a later event ingest does not echo it.
+                recentBySubject[subject.id] = Recent(
+                    at: date,
+                    kind: .researchCompleted,
+                    reference: reference
+                )
                 NSLog(
                     "[WorkspaceNotificationCoordinator] research notice state not persisted: %@",
                     error.localizedDescription
                 )
             }
-            return .allowed(subjectID: subject.id)
         }
     }
 

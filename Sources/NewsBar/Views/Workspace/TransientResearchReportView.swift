@@ -12,8 +12,16 @@ final class TransientResearchReportModel {
 
     private(set) var recordID: String?
     private(set) var eventID: String?
+    private(set) var fallbackSourceURL: String?
+    private(set) var fallbackTitle: String?
     private(set) var record: ResearchRecord?
     private(set) var event: NewsEvent?
+    private(set) var selectedVersion: WorkspaceReportVersion?
+    private(set) var previousVersion: WorkspaceReportVersion?
+    private(set) var availableRecord: ResearchRecord?
+    private(set) var availableVersion: WorkspaceReportVersion?
+    private(set) var availablePreviousVersion: WorkspaceReportVersion?
+    private(set) var isShowingChanges = false
     private(set) var isLoading = false
     private(set) var didLoad = false
     var showsProgress = UserDefaults.standard.bool(forKey: "reader.research.progressExpanded") {
@@ -30,8 +38,22 @@ final class TransientResearchReportModel {
         self.eventStore = eventStore
     }
 
-    func open(recordID: String?, eventID: String?, markReadOnOpen: Bool = false) async {
-        if self.recordID == recordID, self.eventID == eventID, didLoad {
+    func open(
+        recordID: String?,
+        eventID: String?,
+        versionID: String? = nil,
+        compareFromVersionID: String? = nil,
+        fallbackSourceURL: String? = nil,
+        fallbackTitle: String? = nil,
+        markReadOnOpen: Bool = false
+    ) async {
+        if self.recordID == recordID,
+           self.eventID == eventID,
+           self.selectedVersion?.id == versionID,
+           self.previousVersion?.id == compareFromVersionID,
+           self.fallbackSourceURL == fallbackSourceURL,
+           self.fallbackTitle == fallbackTitle,
+           didLoad {
             await reload()
             return
         }
@@ -39,10 +61,23 @@ final class TransientResearchReportModel {
         let currentRevision = revision
         self.recordID = recordID
         self.eventID = eventID
+        self.fallbackSourceURL = fallbackSourceURL
+        self.fallbackTitle = fallbackTitle
         record = nil
         event = nil
+        selectedVersion = nil
+        previousVersion = nil
+        availableRecord = nil
+        availableVersion = nil
+        availablePreviousVersion = nil
+        isShowingChanges = false
         didLoad = false
-        await reload(expectedRevision: currentRevision, markReadOnOpen: markReadOnOpen)
+        await reload(
+            expectedRevision: currentRevision,
+            markReadOnOpen: markReadOnOpen,
+            requestedVersionID: versionID,
+            requestedComparisonVersionID: compareFromVersionID
+        )
     }
 
     func reload() async {
@@ -50,7 +85,29 @@ final class TransientResearchReportModel {
         await reload(expectedRevision: revision)
     }
 
-    private func reload(expectedRevision: Int, markReadOnOpen: Bool = false) async {
+    func showAvailableChanges() {
+        guard let latest = availableRecord else { return }
+        record = latest
+        selectedVersion = availableVersion
+        previousVersion = availablePreviousVersion
+        availableRecord = nil
+        availableVersion = nil
+        availablePreviousVersion = nil
+        isShowingChanges = previousVersion != nil && selectedVersion != nil
+    }
+
+    func closeChanges() {
+        isShowingChanges = false
+        previousVersion = nil
+        selectedVersion = nil
+    }
+
+    private func reload(
+        expectedRevision: Int,
+        markReadOnOpen: Bool = false,
+        requestedVersionID: String? = nil,
+        requestedComparisonVersionID: String? = nil
+    ) async {
         isLoading = true
         defer {
             if revision == expectedRevision {
@@ -59,24 +116,27 @@ final class TransientResearchReportModel {
             }
         }
 
-        var resolvedRecord = recordID.flatMap { _ in record }
-        if let recordID {
-            resolvedRecord = await researchStore.record(id: recordID)
-        } else if let eventID,
-                  let subject = await workspaceStore.subject(containingEventID: eventID) {
+        let requestedRecordID = recordID
+        let requestedEventID = eventID
+        var resolvedRecord: ResearchRecord?
+        var resolvedRecordID = requestedRecordID
+        if let requestedRecordID {
+            resolvedRecord = await researchStore.record(id: requestedRecordID)
+        } else if let requestedEventID,
+                  let subject = await workspaceStore.subject(containingEventID: requestedEventID) {
             let index = await researchStore.index()
             let linked = index
                 .filter { subject.contains(recordID: $0.id) && $0.issue == nil && $0.status != .corrupt }
                 .sorted(by: Self.preferredRecord)
             if let entry = linked.first {
                 resolvedRecord = await researchStore.record(id: entry.id)
-                recordID = entry.id
+                resolvedRecordID = entry.id
             }
         }
 
         var resolvedEvent: NewsEvent?
-        if let eventID {
-            resolvedEvent = try? await eventStore.event(id: eventID)
+        if let requestedEventID {
+            resolvedEvent = try? await eventStore.event(id: requestedEventID)
         }
         if resolvedEvent == nil,
            let record = resolvedRecord,
@@ -89,6 +149,11 @@ final class TransientResearchReportModel {
             }
         }
 
+        let versions = if let resolvedRecordID {
+            await workspaceStore.versions(recordID: resolvedRecordID)
+        } else {
+            []
+        }
         guard revision == expectedRevision, !Task.isCancelled else { return }
         if markReadOnOpen,
            let resolvedRecord,
@@ -96,9 +161,52 @@ final class TransientResearchReportModel {
             _ = await researchStore.markReadOnOpen(id: resolvedRecord.id, at: Date())
             guard revision == expectedRevision, !Task.isCancelled else { return }
         }
-        record = resolvedRecord
+
+        // IDs resolved from stores are written only after every async lookup
+        // has proved that this request is still current.
+        recordID = resolvedRecordID
+        if requestedEventID == nil { eventID = resolvedEvent?.id }
         event = resolvedEvent
-        if eventID == nil { self.eventID = resolvedEvent?.id }
+
+        if let requestedVersionID {
+            selectedVersion = versions.first { $0.id == requestedVersionID }
+            if let requestedComparisonVersionID {
+                previousVersion = versions.first { $0.id == requestedComparisonVersionID }
+                isShowingChanges = selectedVersion != nil && previousVersion != nil
+            }
+            record = resolvedRecord
+            availableRecord = nil
+            availableVersion = nil
+            availablePreviousVersion = nil
+            return
+        }
+
+        if let existing = record,
+           existing.id == resolvedRecord?.id,
+           let resolvedRecord,
+           Self.reportDigest(existing) != Self.reportDigest(resolvedRecord) {
+            availableRecord = resolvedRecord
+            availableVersion = versions.last(where: { $0.digest == Self.reportDigest(resolvedRecord) })
+            let visibleDigest = Self.reportDigest(existing)
+            availablePreviousVersion = versions.last(where: { $0.digest == visibleDigest })
+            if availablePreviousVersion == nil,
+               let newest = availableVersion,
+               let index = versions.firstIndex(where: { $0.id == newest.id }),
+               index > 0 {
+                availablePreviousVersion = versions[index - 1]
+            }
+            var refreshedProgress = existing
+            refreshedProgress.run = resolvedRecord.run
+            refreshedProgress.status = resolvedRecord.status
+            refreshedProgress.updatedAt = resolvedRecord.updatedAt
+            record = refreshedProgress
+        } else {
+            record = resolvedRecord
+            availableRecord = nil
+            availableVersion = nil
+            availablePreviousVersion = nil
+            if selectedVersion == nil { isShowingChanges = false }
+        }
     }
 
     func matches(eventID: String?, recordID: String?) -> Bool {
@@ -113,6 +221,10 @@ final class TransientResearchReportModel {
         if lhs.updatedAt != rhs.updatedAt { return lhs.updatedAt > rhs.updatedAt }
         return lhs.id < rhs.id
     }
+
+    private static func reportDigest(_ record: ResearchRecord) -> String? {
+        record.report.map(WorkspaceReportDigest.make)
+    }
 }
 
 struct TransientResearchReportView: View {
@@ -121,12 +233,16 @@ struct TransientResearchReportView: View {
     let onClose: () -> Void
 
     private var english: Bool { settings.appLanguage == .en }
-    private var report: BurstResearch? { model.record?.report }
+    private var report: BurstResearch? { model.selectedVersion?.report ?? model.record?.report }
 
     var body: some View {
         VStack(spacing: 0) {
             header
             Divider()
+            if model.availableRecord != nil {
+                updateAvailableBanner
+                Divider()
+            }
             if !model.didLoad {
                 ProgressView(english ? "Loading research…" : "正在载入研究报告…")
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -187,6 +303,12 @@ struct TransientResearchReportView: View {
         if let report = record.report {
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
+                    if model.isShowingChanges,
+                       let previousVersion = model.previousVersion,
+                       let currentVersion = model.selectedVersion {
+                        versionComparison(previous: previousVersion, current: currentVersion)
+                    }
+
                     VStack(alignment: .leading, spacing: 8) {
                         Text(english ? "Current conclusion" : "当前结论")
                             .font(.headline)
@@ -216,7 +338,7 @@ struct TransientResearchReportView: View {
 
                     WorkspaceReportBody(
                         report: report,
-                        isHistorical: false,
+                        isHistorical: model.isShowingChanges == false && model.selectedVersion != nil,
                         onOpenURL: openEvidenceURL
                     )
                 }
@@ -233,6 +355,9 @@ struct TransientResearchReportView: View {
                 if record.status.isActive { progressDisclosure(record) }
                 if let lastError = record.run.lastError, !lastError.isEmpty {
                     Text(lastError).font(.caption).foregroundStyle(.orange)
+                }
+                if let fallbackSourceURL {
+                    sourceFallbackButton(fallbackSourceURL, title: fallbackTitle)
                 }
                 Spacer()
             }
@@ -256,6 +381,33 @@ struct TransientResearchReportView: View {
                      : "已完成 \(record.run.queriesCompleted)/\(record.run.queriesPlanned) 次检索 · 已读 \(record.run.pagesRead) 个来源")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+
+                if let facts = record.run.progressFacts, !facts.isEmpty {
+                    ForEach(facts) { fact in
+                        HStack(alignment: .top, spacing: 7) {
+                            Image(systemName: fact.kind == .claimSupported ? "checkmark.seal" : "quote.bubble")
+                                .font(.caption)
+                                .foregroundStyle(fact.kind == .claimSupported ? .green : .secondary)
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(fact.claim ?? fact.title)
+                                    .font(.caption)
+                                    .fixedSize(horizontal: false, vertical: true)
+                                if let quote = fact.quote, !quote.isEmpty {
+                                    Text("“\(quote)”")
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                }
+                                Button(fact.title.isEmpty ? (english ? "Open source" : "打开来源") : fact.title) {
+                                    openEvidenceURL(fact.url, title: fact.title)
+                                }
+                                .font(.caption2)
+                                .buttonStyle(.link)
+                            }
+                        }
+                        .padding(.top, 5)
+                    }
+                }
             }
             .padding(.top, 8)
         } label: {
@@ -264,6 +416,102 @@ struct TransientResearchReportView: View {
         }
         .padding(12)
         .background(.quaternary.opacity(0.28), in: RoundedRectangle(cornerRadius: 10))
+    }
+
+    private var updateAvailableBanner: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "arrow.triangle.2.circlepath")
+                .foregroundStyle(.orange)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(english ? "A newer report is ready" : "新版报告已就绪")
+                    .font(.subheadline.weight(.semibold))
+                Text(english ? "Your current version stays open until you switch." : "当前版本会保持打开，直到你选择查看新版。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 6)
+            Button(english ? "View changes" : "查看变化") {
+                model.showAvailableChanges()
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.small)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .background(.orange.opacity(0.08))
+    }
+
+    private func versionComparison(
+        previous: WorkspaceReportVersion,
+        current: WorkspaceReportVersion
+    ) -> some View {
+        let oldEvidence = Set(previous.report.evidence.map(\.canonicalURL))
+        let addedEvidence = current.report.evidence.filter { !oldEvidence.contains($0.canonicalURL) }
+        let refutedClaims = current.report.verification?.claims.filter { $0.status == .refutes } ?? []
+        return VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Label(english ? "What changed" : "本次变化", systemImage: "arrow.left.arrow.right")
+                    .font(.headline)
+                Spacer()
+                Button(english ? "Hide" : "收起") { model.closeChanges() }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.secondary)
+            }
+            HStack(alignment: .top, spacing: 10) {
+                comparisonColumn(
+                    title: english ? "Previous version" : "此前结论",
+                    value: previous.report.summary
+                )
+                comparisonColumn(
+                    title: english ? "Current version" : "当前结论",
+                    value: current.report.summary
+                )
+            }
+            if !refutedClaims.isEmpty {
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(english ? "Claims now refuted" : "本版已驳斥的主张")
+                        .font(.subheadline.weight(.semibold))
+                    ForEach(refutedClaims) { claim in
+                        Text("• \(claim.claim)")
+                            .font(.callout)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+            }
+            if !addedEvidence.isEmpty {
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(english ? "New evidence" : "新增依据")
+                        .font(.subheadline.weight(.semibold))
+                    ForEach(addedEvidence, id: \.canonicalURL) { evidence in
+                        Button(evidence.title.isEmpty ? evidence.url : evidence.title) {
+                            openEvidenceURL(evidence.url, title: evidence.title)
+                        }
+                        .buttonStyle(.link)
+                        .font(.caption)
+                    }
+                }
+            }
+            Text(english
+                 ? "Version \(previous.sequence) → \(current.sequence)"
+                 : "版本 \(previous.sequence) → \(current.sequence)")
+                .font(.caption2.monospaced())
+                .foregroundStyle(.tertiary)
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.orange.opacity(0.08), in: RoundedRectangle(cornerRadius: 12))
+    }
+
+    private func comparisonColumn(title: String, value: String) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text(title).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+            Text(value.isEmpty ? (english ? "No summary." : "暂无摘要。") : value)
+                .font(.callout)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(10)
+        .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 8))
     }
 
     private func eventContent(_ event: NewsEvent) -> some View {
@@ -286,6 +534,9 @@ struct TransientResearchReportView: View {
                 Text(english ? "No research report is available yet." : "该事件暂时还没有研究报告。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                if let fallbackSourceURL {
+                    sourceFallbackButton(fallbackSourceURL, title: fallbackTitle)
+                }
             }
             .padding(18)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -299,6 +550,9 @@ struct TransientResearchReportView: View {
             Text(english ? "The reading window and your search position are still available." : "关闭此窗口即可回到原来的阅读位置或搜索。")
                 .font(.callout)
                 .foregroundStyle(.secondary)
+            if let fallbackSourceURL {
+                sourceFallbackButton(fallbackSourceURL, title: fallbackTitle)
+            }
             Spacer()
         }
         .padding(20)
@@ -308,5 +562,12 @@ struct TransientResearchReportView: View {
     private func openEvidenceURL(_ rawURL: String, title: String) {
         guard let url = ReaderNavigationPolicy.allowedURL(rawURL) else { return }
         NewsNavigationRouter.shared.open(url: url.absoluteString, title: title, surface: "researchReport")
+    }
+
+    private func sourceFallbackButton(_ rawURL: String, title: String?) -> some View {
+        Button(english ? "Open original source" : "打开原文来源") {
+            openEvidenceURL(rawURL, title: title ?? (english ? "Original source" : "原文来源"))
+        }
+        .buttonStyle(.link)
     }
 }

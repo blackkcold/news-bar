@@ -135,6 +135,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         Task { _ = await NotificationService.requestAuthorization() }
         NotificationService.registerCategories()
         UNUserNotificationCenter.current().delegate = self
+        Task { await NotificationDeliveryLedger.shared.recoverSystemState() }
         Task { @MainActor [weak self] in
             await self?.weiboMonitor?.start()
             self?.updateWeiboBadge(force: true)
@@ -437,8 +438,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         NotificationCenter.default.addObserver(forName: .transientResearchRequested, object: nil, queue: .main) { [weak self] notification in
             let recordID = notification.userInfo?["recordID"] as? String
             let eventID = notification.userInfo?["eventID"] as? String
+            let versionID = notification.userInfo?["versionID"] as? String
+            let compareFromVersionID = notification.userInfo?["compareFromVersionID"] as? String
+            let sourceURL = notification.userInfo?["sourceURL"] as? String
+            let title = notification.userInfo?["title"] as? String
             Task { @MainActor [weak self] in
-                self?.openTransientResearch(recordID: recordID, eventID: eventID)
+                self?.openTransientResearch(
+                    recordID: recordID,
+                    eventID: eventID,
+                    versionID: versionID,
+                    compareFromVersionID: compareFromVersionID,
+                    fallbackSourceURL: sourceURL,
+                    fallbackTitle: title
+                )
             }
         }
         NotificationCenter.default.addObserver(forName: .interestDataCleared, object: nil, queue: .main) { [weak self] _ in
@@ -1183,7 +1195,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     /// Shows a single non-modal report window and leaves the reader, Dashboard
     /// search, and workspace management state in place underneath it.
     @MainActor
-    func openTransientResearch(recordID: String? = nil, eventID: String? = nil) {
+    func openTransientResearch(
+        recordID: String? = nil,
+        eventID: String? = nil,
+        versionID: String? = nil,
+        compareFromVersionID: String? = nil,
+        fallbackSourceURL: String? = nil,
+        fallbackTitle: String? = nil
+    ) {
         guard recordID != nil || eventID != nil else { return }
 
         if transientResearchWindow?.isVisible != true {
@@ -1239,6 +1258,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             await model.open(
                 recordID: recordID,
                 eventID: eventID,
+                versionID: versionID,
+                compareFromVersionID: compareFromVersionID,
+                fallbackSourceURL: fallbackSourceURL,
+                fallbackTitle: fallbackTitle,
                 markReadOnOpen: settings.researchMarkReadOnOpen
             )
         }
@@ -1509,10 +1532,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         let payloadSubjectID = (userInfo["subjectID"] as? String).flatMap {
             $0.isEmpty ? nil : $0
         }
-        let digestCount = NotificationDigest.decode(userInfo["digest"] as? String)?.items.count ?? -1
+        let parsedDigest = NotificationDigest.decode(userInfo["digest"] as? String)
+        let digestCount = parsedDigest?.items.count ?? -1
+        let digestResearchCount = parsedDigest?.researchItems.count ?? -1
         notificationLog.notice(
-            "[Notify] action=\(response.actionIdentifier, privacy: .public) type=\((userInfo["type"] as? String) ?? "-", privacy: .public) digestItems=\(digestCount, privacy: .public) route=\(route.label, privacy: .public)"
+            "[Notify] action=\(response.actionIdentifier, privacy: .public) type=\((userInfo["type"] as? String) ?? "-", privacy: .public) digestNews=\(digestCount, privacy: .public) digestResearch=\(digestResearchCount, privacy: .public) route=\(route.label, privacy: .public)"
         )
+        if response.actionIdentifier != UNNotificationDismissActionIdentifier,
+           let semanticID = userInfo["semanticID"] as? String {
+            Task { await NotificationDeliveryLedger.shared.markRead(semanticID: semanticID) }
+        }
         switch route {
         case .dismiss:
             break
@@ -1541,6 +1570,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                     subjectID: payloadSubjectID,
                     researchID: recordID
                 )
+            }
+        case let .researchReport(recordID, eventID, versionID, compareFromVersionID):
+            let sourceURL = userInfo["sourceURL"] as? String ?? userInfo["url"] as? String
+            let title = userInfo["title"] as? String
+            Task { @MainActor [weak self] in
+                self?.openTransientResearch(
+                    recordID: recordID,
+                    eventID: eventID,
+                    versionID: versionID,
+                    compareFromVersionID: compareFromVersionID,
+                    fallbackSourceURL: sourceURL,
+                    fallbackTitle: title
+                )
+            }
+        case let .researchCorrection(recordID, eventID, versionID, compareFromVersionID, sourceURL, title):
+            let safeSourceURL = sourceURL.flatMap { ReaderNavigationPolicy.allowedURL($0)?.absoluteString }
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                if recordID != nil || eventID != nil {
+                    self.openTransientResearch(
+                        recordID: recordID,
+                        eventID: eventID,
+                        versionID: versionID,
+                        compareFromVersionID: compareFromVersionID,
+                        fallbackSourceURL: safeSourceURL,
+                        fallbackTitle: title
+                    )
+                } else if let safeSourceURL {
+                    NewsNavigationRouter.shared.open(
+                        url: safeSourceURL,
+                        title: title ?? "",
+                        surface: "notificationCorrection"
+                    )
+                } else {
+                    self.openDashboard(refresh: false)
+                }
             }
         case .markResearchRead(let recordID):
             Task { @MainActor [weak self] in
@@ -1619,8 +1684,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         willPresent notification: UNNotification,
         withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
     ) {
-        if let type = notification.request.content.userInfo["type"] as? String,
-           type == "weibo",
+        let userInfo = notification.request.content.userInfo
+        let type = userInfo["type"] as? String
+        let eventID = userInfo["eventID"] as? String
+        let recordID = userInfo["recordID"] as? String
+        let semanticID = userInfo["semanticID"] as? String
+        let digestResearchItems = NotificationDigest.decode(userInfo["digest"] as? String)?.researchItems ?? []
+        if type == "weibo",
            WeiboFeedPresence.isVisible,
            WeiboFeedPresence.isAppActive {
             // The user is looking at the following feed; insert the post and
@@ -1628,7 +1698,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             completionHandler([])
             return
         }
-        completionHandler([.banner, .sound])
+        Task { @MainActor [weak self] in
+            guard let self else {
+                completionHandler([.banner, .sound])
+                return
+            }
+            var matchedItems: [NotificationDigestResearchItem] = []
+            if !digestResearchItems.isEmpty {
+                matchedItems = digestResearchItems.filter { item in
+                    self.isResearchTargetVisibleAndAppActive(eventID: item.eventID, recordID: item.recordID)
+                }
+            } else if self.isResearchTargetVisibleAndAppActive(eventID: eventID, recordID: recordID) {
+                completionHandler([])
+                if let semanticID {
+                    await NotificationDeliveryLedger.shared.markSuppressed(semanticID: semanticID)
+                }
+                return
+            }
+            guard !matchedItems.isEmpty else {
+                completionHandler([.banner, .sound])
+                return
+            }
+            completionHandler([])
+            for item in matchedItems {
+                await NotificationDeliveryLedger.shared.markSuppressed(item)
+            }
+        }
     }
 
     func applicationDidBecomeActive(_ notification: Notification) {

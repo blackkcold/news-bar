@@ -55,14 +55,11 @@ final class WorkspaceAutomationService {
             let expected = runGeneration
             Task { @MainActor [weak self] in
                 guard let self, self.isRunning, self.generation == expected else { return }
-                let decision = await self.notificationCoordinator.claimResearch(
-                    recordID: record.id,
-                    at: Date()
-                )
-                guard case let .allowed(subjectID) = decision else { return }
-                NotificationService.sendResearchNotification(
-                    record: record,
-                    subjectID: subjectID
+                guard let settings = self.settings else { return }
+                _ = await ResearchNotificationDeliveryService.shared.deliver(
+                    record,
+                    settings: settings,
+                    notificationCoordinator: self.notificationCoordinator
                 )
             }
         }
