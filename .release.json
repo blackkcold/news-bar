@@ -17,7 +17,7 @@
   "release_branch": true,
   "auto_merge": false,
   "release_note_style": "structured-cn",
-  "summary": "推出阅读研究、自动核验与可追溯通知，补充免费一手来源与有预算的搜索备援",
-  "summary_en": "Add research alongside reading, budgeted automatic verification, traceable notifications, free primary sources and an optional search fallback",
+  "summary": "修复设置页切换与阅读研究关联刷新，防止旧异步结果覆盖当前关联",
+  "summary_en": "Fix Settings pane routing and reader-research refresh races to keep current associations responsive",
   "validation": ""
 }

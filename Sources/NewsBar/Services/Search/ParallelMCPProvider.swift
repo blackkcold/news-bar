@@ -96,7 +96,7 @@ struct ParallelMCPClient: Sendable {
                 "arguments": arguments,
                 "_meta": [
                     "io.modelcontextprotocol/protocolVersion": "2026-07-28",
-                    "io.modelcontextprotocol/clientInfo": ["name": "NewsBar", "version": "3.3.0"],
+                    "io.modelcontextprotocol/clientInfo": ["name": "NewsBar", "version": AppVersion.current],
                     "io.modelcontextprotocol/clientCapabilities": [String: String](),
                 ],
             ],
