@@ -16,12 +16,13 @@ final class SettingsWindowInteractionTests: XCTestCase {
             defer { window.contentView = nil }
 
             _ = try await waitForRender(.about, selection: selection, snapshot: renderSnapshot, host: host)
+            let sidebar = try XCTUnwrap(sidebarTable(in: host), "Settings sidebar table was not hosted")
             for pane in SettingsPane.allCases {
-                let selectionStartedAt = try selectSidebarRow(pane, in: host)
+                let selectionStartedAt = try selectSidebarRow(pane, in: host, table: sidebar)
                 let selectionElapsed = try await waitForSelection(
                     pane,
                     selection: selection,
-                    host: host,
+                    table: sidebar,
                     startedAt: selectionStartedAt
                 )
                 let renderTiming = try await waitForRender(
@@ -122,8 +123,9 @@ final class SettingsWindowInteractionTests: XCTestCase {
 
         // The AI pane subscribes to research updates. Flood its local observer
         // while the store actor remains suspended, then switch panes before release.
-        let aiSelectionStartedAt = try selectSidebarRow(.ai, in: host)
-        _ = try await waitForSelection(.ai, selection: selection, host: host, startedAt: aiSelectionStartedAt)
+        let sidebar = try XCTUnwrap(sidebarTable(in: host), "Settings sidebar table was not hosted")
+        let aiSelectionStartedAt = try selectSidebarRow(.ai, in: host, table: sidebar)
+        _ = try await waitForSelection(.ai, selection: selection, table: sidebar, startedAt: aiSelectionStartedAt)
         _ = try await waitForRender(
             .ai,
             selection: selection,
@@ -135,11 +137,11 @@ final class SettingsWindowInteractionTests: XCTestCase {
             await store.noteLocalUpdate()
             NotificationCenter.default.post(name: .researchRecordsChanged, object: nil)
         }
-        let selectionStartedAt = try selectSidebarRow(.notifications, in: host)
+        let selectionStartedAt = try selectSidebarRow(.notifications, in: host, table: sidebar)
         _ = try await waitForSelection(
             .notifications,
             selection: selection,
-            host: host,
+            table: sidebar,
             startedAt: selectionStartedAt
         )
         let renderTiming = try await waitForRender(
@@ -210,10 +212,9 @@ final class SettingsWindowInteractionTests: XCTestCase {
 
     private func selectSidebarRow(
         _ pane: SettingsPane,
-        in host: NSHostingView<AnyView>
+        in host: NSHostingView<AnyView>,
+        table: NSTableView
     ) throws -> TimeInterval {
-        host.layoutSubtreeIfNeeded()
-        let table = try XCTUnwrap(sidebarTable(in: host), "Settings sidebar table was not hosted")
         let rowIndex = try XCTUnwrap(SettingsPane.allCases.firstIndex(of: pane))
         let row = try XCTUnwrap(table.rowView(atRow: rowIndex, makeIfNecessary: true))
         let pointInHost = row.convert(NSPoint(x: row.bounds.midX, y: row.bounds.midY), to: host)
@@ -257,14 +258,12 @@ final class SettingsWindowInteractionTests: XCTestCase {
     private func waitForSelection(
         _ pane: SettingsPane,
         selection: SettingsPaneSelection,
-        host: NSHostingView<AnyView>,
+        table: NSTableView,
         startedAt: TimeInterval
     ) async throws -> TimeInterval {
         let deadline = startedAt + 1.0
         let rowIndex = try XCTUnwrap(SettingsPane.allCases.firstIndex(of: pane))
         while ProcessInfo.processInfo.systemUptime < deadline {
-            host.layoutSubtreeIfNeeded()
-            let table = try XCTUnwrap(sidebarTable(in: host))
             if selection.selectedPane == pane, table.selectedRowIndexes.contains(rowIndex) {
                 return ProcessInfo.processInfo.systemUptime - startedAt
             }
