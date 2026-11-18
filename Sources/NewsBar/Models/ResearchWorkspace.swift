@@ -584,12 +584,47 @@ enum WorkspaceSearchResult: Identifiable, Sendable {
         case let .answer(id, _, _, _): return "answer:\(id)"
         }
     }
+
+    var associatedSubjectID: String? {
+        switch self {
+        case .subject(let id, _, _, _): return id
+        case .report(_, let subjectID, _, _, _), .evidence(_, let subjectID, _, _, _):
+            return subjectID.isEmpty ? nil : subjectID
+        case .answer:
+            return nil
+        }
+    }
+
+    var isResearchMatch: Bool {
+        switch self {
+        case .report, .evidence: return true
+        case .subject, .answer: return false
+        }
+    }
+}
+
+/// A read-only projection of an already active run. It is returned only with
+/// local search results and is displayed only after the reader expands its row.
+struct WorkspaceSearchRunSnapshot: Sendable, Identifiable {
+    let recordID: String
+    let subjectID: String
+    let topic: String
+    let status: ResearchStatus
+    let phase: ResearchRun.Phase
+    let queriesCompleted: Int
+    let queriesPlanned: Int
+    let pagesRead: Int
+    let progressFacts: [ResearchRunFact]?
+
+    var id: String { recordID }
 }
 
 struct WorkspaceSearchResponse: Sendable {
     var results: [WorkspaceSearchResult]
     var isLocalOnly: Bool
     var truncated: Bool
+    var subjectTitles: [String: String] = [:]
+    var activeResearchRuns: [WorkspaceSearchRunSnapshot] = []
 }
 
 enum WorkspaceSearchDocumentKind: String, Codable, Sendable {

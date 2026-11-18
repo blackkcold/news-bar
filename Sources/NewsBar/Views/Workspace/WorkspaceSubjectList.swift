@@ -202,15 +202,16 @@ struct WorkspaceSubjectList: View {
     }
 
     private enum WorkspaceResultKind: String, CaseIterable, Identifiable {
-        case subject, report, evidence, answer
+        case subject, research, answer
 
         var id: String { rawValue }
-        var titleKey: String { "workspace.result.\(rawValue)" }
+        var titleKey: String {
+            self == .research ? "workspace.result.researchRecords" : "workspace.result.\(rawValue)"
+        }
         var symbol: String {
             switch self {
             case .subject: return "square.stack.3d.up"
-            case .report: return "doc.text"
-            case .evidence: return "quote.bubble"
+            case .research: return "doc.text.magnifyingglass"
             case .answer: return "bubble.left.and.text.bubble.right"
             }
         }
@@ -220,8 +221,7 @@ struct WorkspaceSubjectList: View {
         let dict = Dictionary(grouping: model.searchResults) { result -> WorkspaceResultKind in
             switch result {
             case .subject: return .subject
-            case .report: return .report
-            case .evidence: return .evidence
+            case .report, .evidence: return .research
             case .answer: return .answer
             }
         }
@@ -234,8 +234,20 @@ struct WorkspaceSubjectList: View {
     private func resultSection(_ group: ResultGroup) -> some View {
         VStack(alignment: .leading, spacing: 5) {
             sectionHeader(group.kind.titleKey.localized, count: group.results.count)
-            ForEach(group.results) { result in
-                searchResultRow(result)
+            if group.kind == .research {
+                WorkspaceResearchSearchDisclosureList(
+                    results: group.results,
+                    subjectTitles: model.searchSubjectTitles,
+                    activeRuns: model.searchActiveResearchRuns,
+                    language: settings.appLanguage,
+                    onOpenResult: { result in Task { await model.openSearchResult(result) } },
+                    onOpenSource: { url, title in model.openEvidenceURL(url.absoluteString, title: title) },
+                    onExpandSubject: { subjectID in Task { await model.refreshSearchRuns(subjectID: subjectID) } }
+                )
+            } else {
+                ForEach(group.results) { result in
+                    searchResultRow(result)
+                }
             }
         }
     }

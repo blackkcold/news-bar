@@ -158,6 +158,8 @@ final class ResearchWorkspaceModel {
     var sort: WorkspaceSort = .followUp
     var searchText = ""
     var searchResults: [WorkspaceSearchResult] = []
+    var searchSubjectTitles: [String: String] = [:]
+    var searchActiveResearchRuns: [WorkspaceSearchRunSnapshot] = []
     var webResults: [SearchHit] = []
     var isSearchingWeb = false
     var isLoading = false
@@ -646,6 +648,8 @@ final class ResearchWorkspaceModel {
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !query.isEmpty else {
             searchResults = []
+            searchSubjectTitles = [:]
+            searchActiveResearchRuns = []
             isSearchingWeb = false
             webResults = []
             return
@@ -663,6 +667,8 @@ final class ResearchWorkspaceModel {
                   self.searchText.trimmingCharacters(in: .whitespacesAndNewlines) == query
             else { return }
             self.searchResults = response.results
+            self.searchSubjectTitles = response.subjectTitles
+            self.searchActiveResearchRuns = response.activeResearchRuns
         }
     }
 
@@ -670,6 +676,8 @@ final class ResearchWorkspaceModel {
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !query.isEmpty else {
             searchResults = []
+            searchSubjectTitles = [:]
+            searchActiveResearchRuns = []
             return
         }
         searchRevision += 1
@@ -679,6 +687,14 @@ final class ResearchWorkspaceModel {
               searchText.trimmingCharacters(in: .whitespacesAndNewlines) == query
         else { return }
         searchResults = response.results
+        searchSubjectTitles = response.subjectTitles
+        searchActiveResearchRuns = response.activeResearchRuns
+    }
+
+    func refreshSearchRuns(subjectID: String) async {
+        let current = await searchService.refreshActiveResearchRuns(subjectID: subjectID)
+        searchActiveResearchRuns.removeAll { $0.subjectID == subjectID }
+        searchActiveResearchRuns.append(contentsOf: current)
     }
 
     func searchWeb() async {
