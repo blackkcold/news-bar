@@ -9,7 +9,7 @@ struct NewsItemRow: View, Equatable {
     @Environment(AppSettings.self) private var settings
     @AppStorage("researchReadingEnabled") private var researchReadingEnabled = true
     @State private var isHovering = false
-    @State private var researchMatch: WorkspaceReaderResearchMatch?
+    @State private var researchSignal = WorkspaceReaderResearchAssociationSignal()
 
     private var isRetro: Bool { settings.appTheme == .retroEditorial }
 
@@ -24,7 +24,16 @@ struct NewsItemRow: View, Equatable {
     }
 
     private var hasResearchMatch: Bool {
-        researchMatch?.isVisibleToReaders == true && researchMatch?.recordID != nil
+        researchSignal.match?.isVisibleToReaders == true && researchSignal.match?.recordID != nil
+    }
+
+    private var researchURLs: [String] { [item.url, item.readerURL].compactMap { $0 } }
+    private var researchTaskKey: WorkspaceReaderResearchTaskKey {
+        WorkspaceReaderResearchMatcher.shared.taskKey(
+            itemID: item.id,
+            urls: researchURLs,
+            enabled: researchReadingEnabled
+        )
     }
 
     private var rowHorizontalPadding: CGFloat { isCompactPresentation ? 8 : 10 }
@@ -56,18 +65,15 @@ struct NewsItemRow: View, Equatable {
 
     private var observedRow: some View {
         interactiveRow
-            .task(id: item.id + "\n" + (item.readerURL ?? item.url)) { await refreshResearchMatch() }
-            .onReceive(NotificationCenter.default.publisher(for: .researchRecordsChanged)) { notification in
-                let changedID = notification.userInfo?[ResearchChangeKey.recordID] as? String
-                guard changedID == nil || changedID == researchMatch?.recordID else { return }
-                Task { await refreshResearchMatch() }
+            .task(id: researchTaskKey) {
+                await WorkspaceReaderResearchMatcher.shared.observe(
+                    researchSignal,
+                    itemID: item.id,
+                    urls: researchURLs,
+                    enabled: researchReadingEnabled
+                )
             }
-            .onReceive(NotificationCenter.default.publisher(for: .researchWorkspaceChanged)) { _ in
-                Task { await refreshResearchMatch() }
-            }
-            .onReceive(NotificationCenter.default.publisher(for: .newsEventsChanged)) { _ in
-                Task { await refreshResearchMatch() }
-            }
+            .onDisappear { WorkspaceReaderResearchMatcher.shared.removeObserver(researchSignal) }
     }
 
     private var interactiveRow: some View {
@@ -96,7 +102,7 @@ struct NewsItemRow: View, Equatable {
     @ViewBuilder
     private var associationBadge: some View {
         if !isCompactPresentation, researchReadingEnabled, hasResearchMatch {
-            ResearchAssociationBadge(item: item, match: researchMatch, compact: true)
+            ResearchAssociationBadge(item: item, match: researchSignal.match, compact: true)
                 .padding(.top, rowVerticalPadding + 1)
                 .padding(.trailing, rowHorizontalPadding + 1)
         }
@@ -155,13 +161,6 @@ struct NewsItemRow: View, Equatable {
                 .foregroundStyle(.tertiary)
                 .opacity(isHovering ? 1 : 0.55)
         }
-    }
-
-    @MainActor
-    private func refreshResearchMatch() async {
-        let match = await WorkspaceReaderResearchMatcher.shared.match(item: item, url: item.readerURL ?? item.url)
-        guard !Task.isCancelled else { return }
-        researchMatch = match
     }
 
     private var accessibilityLabel: String {

@@ -61,24 +61,28 @@ enum SettingsPane: String, CaseIterable, Identifiable {
 
 struct SettingsWindow: View {
     @Environment(AppSettings.self) private var settings
-    @State private var pane: SettingsPane
+    @State private var paneSelection: SettingsPaneSelection
     /// Owned by `AppDelegate` in the app and handed to the AppKit toolbar item,
     /// so the button and the columns always agree. The default instance keeps
     /// previews and the rendering tests self-contained.
     private let sidebarState: SettingsSidebarState
     private let weiboMonitor: WeiboMonitorViewModel?
     private let updater: SparkleUpdater?
+    private let renderSnapshot: SettingsPaneRenderSnapshot?
 
     init(
         initialPane: SettingsPane = .general,
+        paneSelection: SettingsPaneSelection? = nil,
         sidebarState: SettingsSidebarState = SettingsSidebarState(),
         weiboMonitor: WeiboMonitorViewModel? = nil,
-        updater: SparkleUpdater? = nil
+        updater: SparkleUpdater? = nil,
+        renderSnapshot: SettingsPaneRenderSnapshot? = nil
     ) {
-        _pane = State(initialValue: initialPane)
+        _paneSelection = State(initialValue: paneSelection ?? SettingsPaneSelection(initialPane: initialPane))
         self.sidebarState = sidebarState
         self.weiboMonitor = weiboMonitor
         self.updater = updater
+        self.renderSnapshot = renderSnapshot
     }
 
     var body: some View {
@@ -101,16 +105,19 @@ struct SettingsWindow: View {
         // Rebuild after a language change so every `.localized` label refreshes.
         .id(settings.appLanguage)
         .onReceive(NotificationCenter.default.publisher(for: .switchToWeiboMonitor)) { _ in
-            pane = .weiboMonitor
+            paneSelection.select(.weiboMonitor)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .switchToAITab)) { _ in
+            paneSelection.select(.ai)
         }
         .onReceive(NotificationCenter.default.publisher(for: .switchToReminder)) { _ in
-            pane = .notifications
+            paneSelection.select(.notifications)
         }
         .onReceive(NotificationCenter.default.publisher(for: .switchToRSSTab)) { _ in
-            pane = .reading
+            paneSelection.select(.reading)
         }
         .onReceive(NotificationCenter.default.publisher(for: .switchToInterestSettings)) { _ in
-            pane = .privacy
+            paneSelection.select(.privacy)
         }
     }
 
@@ -159,6 +166,8 @@ struct SettingsWindow: View {
                     Label(L10n.string(item.titleKey), systemImage: item.symbol)
                         .font(.system(size: 12.5))
                         .padding(.vertical, 2)
+                        .accessibilityIdentifier("settings.sidebar.\(item.rawValue)")
+                        .accessibilityAddTraits(selectedPane == item ? .isSelected : [])
                         .tag(item)
                 }
             }
@@ -179,14 +188,18 @@ struct SettingsWindow: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
+    private var selectedPane: SettingsPane { paneSelection.selectedPane }
+
+    private var presentedPane: SettingsPane { paneSelection.presentedPane }
+
     private var isRetro: Bool {
         settings.appTheme == .retroEditorial
     }
 
     private var selection: Binding<SettingsPane?> {
         Binding(
-            get: { pane },
-            set: { if let next = $0 { pane = next } }
+            get: { paneSelection.selectedPane },
+            set: { if let next = $0 { paneSelection.select(next) } }
         )
     }
 
@@ -224,6 +237,12 @@ struct SettingsWindow: View {
             paneHeader
 
             content
+                .id(presentedPane)
+                .onAppear { renderSnapshot?.recordContent(for: presentedPane) }
+                .onChange(of: presentedPane, initial: true) { _, selectedPane in
+                    renderSnapshot?.recordContent(for: selectedPane)
+                }
+                .accessibilityIdentifier("settings.pane.content.\(presentedPane.rawValue)")
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
 
             Divider()
@@ -234,7 +253,7 @@ struct SettingsWindow: View {
 
     @ViewBuilder
     private var content: some View {
-        switch pane {
+        switch presentedPane {
         case .general: GeneralTab(updater: updater)
         case .reading: RSSTab()
         case .ai: AITab()
@@ -248,11 +267,11 @@ struct SettingsWindow: View {
 
     private var paneHeader: some View {
         HStack(spacing: 10) {
-            if pane == .reading {
+            if presentedPane == .reading {
                 EditorialSourceBadge(mark: .rss, fallbackTint: .blue, size: 32, rotation: -1)
             } else {
                 EditorialSymbolBadge(
-                    symbol: pane.symbol,
+                    symbol: presentedPane.symbol,
                     fallbackTint: .accentColor,
                     size: 32,
                     rotation: -1
@@ -260,10 +279,10 @@ struct SettingsWindow: View {
             }
 
             VStack(alignment: .leading, spacing: 1) {
-                Text(L10n.string(pane.headingKey))
+                Text(L10n.string(presentedPane.headingKey))
                     .editorialHeading(size: 16)
                     .lineLimit(1)
-                Text(L10n.string(pane.subtitleKey))
+                Text(L10n.string(presentedPane.subtitleKey))
                     .font(.system(size: 10))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -280,7 +299,13 @@ struct SettingsWindow: View {
         .padding(.horizontal, 16)
         .padding(.vertical, 9)
         .editorialMasthead()
+        .id(presentedPane)
+        .onAppear { renderSnapshot?.recordHeader(for: presentedPane) }
+        .onChange(of: presentedPane, initial: true) { _, selectedPane in
+            renderSnapshot?.recordHeader(for: selectedPane)
+        }
         .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("settings.pane.header.\(presentedPane.rawValue)")
     }
 
     private var footer: some View {

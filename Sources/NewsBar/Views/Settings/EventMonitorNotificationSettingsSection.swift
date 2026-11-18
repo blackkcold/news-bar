@@ -1,11 +1,18 @@
 import SwiftUI
-import UserNotifications
 
 struct EventMonitorNotificationSettingsSection: View {
     @Environment(AppSettings.self) private var settings
 
-    @State private var authorizationGranted = false
     @State private var controller: NewsEventController?
+    @State private var displayedBudgetSnapshot = NewsEventBudgetSnapshot()
+
+    private let authorizationGranted: Bool
+    private let suppliedController: NewsEventController?
+
+    init(authorizationGranted: Bool, controller: NewsEventController? = nil) {
+        self.authorizationGranted = authorizationGranted
+        self.suppliedController = controller
+    }
 
     var body: some View {
         Section {
@@ -15,9 +22,10 @@ struct EventMonitorNotificationSettingsSection: View {
             ))
             .onChange(of: settings.newsEventMonitoringEnabled) { _, _ in
                 Task { @MainActor in
-                    let controller = NewsEventController.shared(settings: settings)
+                    let controller = suppliedController ?? NewsEventController.shared(settings: settings)
                     await controller.recoverAndTick(now: Date(), sources: settings.activeSources)
                     self.controller = controller
+                    displayedBudgetSnapshot = controller.budgetSnapshot
                 }
             }
 
@@ -58,16 +66,16 @@ struct EventMonitorNotificationSettingsSection: View {
             Text("event.settings.footer".localized)
         }
         .task {
-            let status = await NotificationService.authorizationStatus()
-            authorizationGranted = status == .authorized || status == .provisional
-            controller = NewsEventController.shared(settings: settings)
-            await controller?.reload(now: Date())
+            let controller = suppliedController ?? NewsEventController.shared(settings: settings)
+            self.controller = controller
+            displayedBudgetSnapshot = await controller.sharedFeedBudgetSnapshot(now: Date())
+                ?? controller.budgetSnapshot
         }
     }
 
     @ViewBuilder
     private var budgetSummary: some View {
-        let snapshot = controller?.budgetSnapshot ?? NewsEventBudgetSnapshot()
+        let snapshot = displayedBudgetSnapshot
         VStack(alignment: .leading, spacing: 7) {
             Label("event.budget.title".localized, systemImage: "gauge.with.dots.needle.67percent")
                 .font(.subheadline.weight(.semibold))

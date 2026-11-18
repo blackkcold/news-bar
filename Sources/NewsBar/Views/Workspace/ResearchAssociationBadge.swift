@@ -11,7 +11,7 @@ struct ResearchAssociationBadge: View {
     var compact = false
     let matchOverride: WorkspaceReaderResearchMatch?
 
-    @State private var resolvedMatch: WorkspaceReaderResearchMatch?
+    @State private var researchSignal = WorkspaceReaderResearchAssociationSignal()
 
     init(
         item: NewsItem,
@@ -23,7 +23,16 @@ struct ResearchAssociationBadge: View {
         self.compact = compact
     }
 
-    private var match: WorkspaceReaderResearchMatch? { matchOverride ?? resolvedMatch }
+    private var match: WorkspaceReaderResearchMatch? { matchOverride ?? researchSignal.match }
+    private var researchURLs: [String] { [item.url, item.readerURL].compactMap { $0 } }
+    private var researchTaskKey: WorkspaceReaderResearchTaskKey? {
+        guard matchOverride == nil else { return nil }
+        return WorkspaceReaderResearchMatcher.shared.taskKey(
+            itemID: item.id,
+            urls: researchURLs,
+            enabled: researchReadingEnabled
+        )
+    }
 
     private var english: Bool { settings.appLanguage == .en }
     private var label: String {
@@ -67,27 +76,20 @@ struct ResearchAssociationBadge: View {
                 .help(english ? "Open the related research report" : "打开关联研究报告")
             }
         }
-        .task(id: item.id + "\n" + (item.readerURL ?? item.url)) {
-            if matchOverride == nil { await refreshMatch() }
+        .task(id: researchTaskKey) {
+            guard matchOverride == nil else {
+                WorkspaceReaderResearchMatcher.shared.removeObserver(researchSignal)
+                return
+            }
+            await WorkspaceReaderResearchMatcher.shared.observe(
+                researchSignal,
+                itemID: item.id,
+                urls: researchURLs,
+                enabled: researchReadingEnabled
+            )
         }
-        .onReceive(NotificationCenter.default.publisher(for: .researchRecordsChanged)) { notification in
-            let changedID = notification.userInfo?[ResearchChangeKey.recordID] as? String
-            guard matchOverride == nil,
-                  changedID == nil || changedID == match?.recordID else { return }
-            Task { await refreshMatch() }
+        .onDisappear {
+            if matchOverride == nil { WorkspaceReaderResearchMatcher.shared.removeObserver(researchSignal) }
         }
-        .onReceive(NotificationCenter.default.publisher(for: .researchWorkspaceChanged)) { _ in
-            if matchOverride == nil { Task { await refreshMatch() } }
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .newsEventsChanged)) { _ in
-            if matchOverride == nil { Task { await refreshMatch() } }
-        }
-    }
-
-    @MainActor
-    private func refreshMatch() async {
-        let match = await WorkspaceReaderResearchMatcher.shared.match(item: item, url: item.readerURL ?? item.url)
-        guard !Task.isCancelled else { return }
-        resolvedMatch = match
     }
 }

@@ -1229,6 +1229,8 @@ struct ReaderContentView: View {
     @State private var showResearch = false
     @State private var research = ReaderResearchPanelModel()
     @State private var researchReadingToken = UUID()
+    @State private var researchRefreshTask: Task<Void, Never>?
+    @State private var researchRefreshPending = false
     @State private var explainModel = SelectionExplainModel()
     @State private var searchModel = AISearchPanelModel()
     @State private var quickSearchModel = QuickSearchModel()
@@ -1238,6 +1240,20 @@ struct ReaderContentView: View {
     @Environment(AppSettings.self) private var settings
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @AppStorage("researchReadingEnabled") private var researchReadingEnabled = true
+
+    private var canRefreshResearch: Bool {
+        researchReadingEnabled && readerPresented && isActiveTab && !model.loading
+    }
+
+    private var researchRefreshKey: String {
+        [
+            model.currentURL,
+            model.loading.description,
+            researchReadingEnabled.description,
+            readerPresented.description,
+            isActiveTab.description
+        ].joined(separator: "\u{1F}")
+    }
 
     init(
         model: NewsReaderModel,
@@ -1451,7 +1467,7 @@ struct ReaderContentView: View {
         }
         .readerSurface(cornerRadius: 12)
         .disabled(!isActiveTab)
-        .task(id: model.currentURL + "\n" + model.loading.description) { await refreshResearch() }
+        .task(id: researchRefreshKey) { await refreshResearch() }
         .onChange(of: research.association) { _, _ in updateResearchReadingContext() }
         .onChange(of: readerPresented) { _, _ in updateResearchReadingContext() }
         .onChange(of: isActiveTab) { _, _ in updateResearchReadingContext() }
@@ -1459,7 +1475,13 @@ struct ReaderContentView: View {
         .onChange(of: researchReadingEnabled) { _, enabled in
             if !enabled { showResearch = false }
         }
-        .onDisappear { ResearchReadingContextRegistry.remove(token: researchReadingToken) }
+        .onDisappear {
+            researchRefreshTask?.cancel()
+            researchRefreshTask = nil
+            researchRefreshPending = false
+            research.clear()
+            ResearchReadingContextRegistry.remove(token: researchReadingToken)
+        }
         .onAppear {
             updateResearchReadingContext()
             searchModel.pageContextProvider = { [model] in
@@ -1523,11 +1545,9 @@ struct ReaderContentView: View {
                 prepareOverviewIfNeeded()
             }
         }
-        .onReceive(NotificationCenter.default.publisher(for: .researchRecordsChanged)) { notification in
-            let changedID = notification.userInfo?[ResearchChangeKey.recordID] as? String
-            guard changedID == nil || changedID == research.match?.id else { return }
-            Task { await refreshResearch() }
-        }
+        .onReceive(NotificationCenter.default.publisher(for: .researchRecordsChanged)) { _ in requestResearchRefresh() }
+        .onReceive(NotificationCenter.default.publisher(for: .researchWorkspaceChanged)) { _ in requestResearchRefresh() }
+        .onReceive(NotificationCenter.default.publisher(for: .newsEventsChanged)) { _ in requestResearchRefresh() }
         .confirmationDialog(english ? "Open in your browser?" : "在系统浏览器打开？", isPresented: $askExternal) {
             Button(english ? "Open" : "打开") {
                 let url = model.currentURL
@@ -1900,8 +1920,30 @@ struct ReaderContentView: View {
     }
 
     private func refreshResearch() async {
+        guard !Task.isCancelled else { return }
+        guard canRefreshResearch else {
+            research.clear()
+            updateResearchReadingContext()
+            return
+        }
         await research.refresh(item: model.request.item, requestURL: model.request.url, currentURL: model.currentURL)
         updateResearchReadingContext()
+    }
+
+    private func requestResearchRefresh() {
+        guard canRefreshResearch else { return }
+        if researchRefreshTask != nil {
+            researchRefreshPending = true
+            return
+        }
+        researchRefreshTask = Task { @MainActor in
+            await Task.yield()
+            repeat {
+                researchRefreshPending = false
+                await refreshResearch()
+            } while researchRefreshPending && !Task.isCancelled
+            researchRefreshTask = nil
+        }
     }
 
     private func updateResearchReadingContext() {

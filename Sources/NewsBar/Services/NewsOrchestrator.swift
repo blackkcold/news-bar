@@ -1473,7 +1473,11 @@ final class NewsOrchestrator {
         guard !record.isRead else { return }
         record.isRead = true
         try? await researchStore.save(record)
-        NotificationCenter.default.post(name: .researchRecordsChanged, object: nil)
+        NotificationCenter.default.post(
+            name: .researchRecordsChanged,
+            object: nil,
+            userInfo: [ResearchChangeKey.recordID: recordID]
+        )
         await refreshResearchSummary()
     }
 

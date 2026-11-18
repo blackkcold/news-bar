@@ -36,7 +36,7 @@ struct RecommendationCardView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @AppStorage("researchReadingEnabled") private var researchReadingEnabled = true
     @State private var controller = InterestController.shared
-    @State private var researchMatch: WorkspaceReaderResearchMatch?
+    @State private var researchSignal = WorkspaceReaderResearchAssociationSignal()
     @State private var imagePhase: RecommendationImagePhase = .idle
     /// The URL currently represented by `imagePhase`. Without it a recycled
     /// card that receives a new article keeps the previous cover forever.
@@ -61,6 +61,15 @@ struct RecommendationCardView: View {
         }
     }
     private var effectiveReduceMotion: Bool { reduceMotion }
+    private var researchMatch: WorkspaceReaderResearchMatch? { researchSignal.match }
+    private var researchURLs: [String] { [row.item.url, row.item.readerURL].compactMap { $0 } }
+    private var researchTaskKey: WorkspaceReaderResearchTaskKey {
+        WorkspaceReaderResearchMatcher.shared.taskKey(
+            itemID: row.item.id,
+            urls: researchURLs,
+            enabled: researchReadingEnabled
+        )
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -108,20 +117,15 @@ struct RecommendationCardView: View {
         .task(id: imageURL) {
             await loadImage()
         }
-        .task(id: row.item.id + "\n" + (row.item.readerURL ?? row.item.url)) {
-            await refreshResearchMatch()
+        .task(id: researchTaskKey) {
+            await WorkspaceReaderResearchMatcher.shared.observe(
+                researchSignal,
+                itemID: row.item.id,
+                urls: researchURLs,
+                enabled: researchReadingEnabled
+            )
         }
-        .onReceive(NotificationCenter.default.publisher(for: .researchRecordsChanged)) { notification in
-            let changedID = notification.userInfo?[ResearchChangeKey.recordID] as? String
-            guard changedID == nil || changedID == researchMatch?.recordID else { return }
-            Task { await refreshResearchMatch() }
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .researchWorkspaceChanged)) { _ in
-            Task { await refreshResearchMatch() }
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .newsEventsChanged)) { _ in
-            Task { await refreshResearchMatch() }
-        }
+        .onDisappear { WorkspaceReaderResearchMatcher.shared.removeObserver(researchSignal) }
     }
 
     private var openableContent: some View {
@@ -400,16 +404,6 @@ struct RecommendationCardView: View {
         case "exploration": return english ? "Source rotation" : "来源补位"
         default: return english ? "Recently discovered" : "近期采集内容"
         }
-    }
-
-    @MainActor
-    private func refreshResearchMatch() async {
-        let match = await WorkspaceReaderResearchMatcher.shared.match(
-            item: row.item,
-            url: row.item.readerURL ?? row.item.url
-        )
-        guard !Task.isCancelled else { return }
-        researchMatch = match
     }
 
     private var explanation: String {

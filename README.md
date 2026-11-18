@@ -46,7 +46,7 @@ Zero dependencies. Pure Swift. Free & open source (MIT).
 
 ## 📦 Install
 
-> Current version: **v3.3.0**
+> Current version: **v3.3.1**
 
 Download the latest DMG from [Releases](../../releases) and drag it to **Applications**.
 
