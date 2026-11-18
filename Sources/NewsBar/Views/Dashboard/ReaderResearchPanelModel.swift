@@ -17,10 +17,10 @@ final class ReaderResearchPanelModel {
 
     init(
         store: ResearchStore = .shared,
-        matcher: WorkspaceReaderResearchMatcher = .shared
+        matcher: WorkspaceReaderResearchMatcher? = nil
     ) {
         self.store = store
-        self.matcher = matcher
+        self.matcher = matcher ?? .shared
     }
 
     static func verificationItem(original: NewsItem?, requestURL: String, currentURL: String, title: String) -> NewsItem? {
@@ -38,16 +38,25 @@ final class ReaderResearchPanelModel {
         match = nil
         association = nil
         record = nil
+        recent = []
         let isOriginalPage = ContentIdentity.canonicalURL(requestURL) == ContentIdentity.canonicalURL(currentURL)
         let matchingItem = isOriginalPage ? item : nil
         let matchedAssociation = await matcher.match(item: matchingItem, url: currentURL)
         let matched = matchedAssociation?.entry
-        let entries = await store.index()
+        let entries = await matcher.recentEntries(excluding: matched?.id, limit: 5)
         let loadedRecord: ResearchRecord? = if let matched { await store.record(id: matched.id) } else { nil }
         guard revision == currentRevision, !Task.isCancelled else { return }
         match = matched
         association = matchedAssociation
         record = loadedRecord
-        recent = Array(entries.filter { $0.id != matched?.id }.prefix(5))
+        recent = entries
+    }
+
+    func clear() {
+        revision += 1
+        match = nil
+        association = nil
+        record = nil
+        recent = []
     }
 }
