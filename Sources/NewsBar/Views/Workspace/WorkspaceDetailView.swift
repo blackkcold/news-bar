@@ -59,11 +59,19 @@ struct WorkspaceDetailView: View {
     }
 
     private func applySegmentRequestIfPossible() {
-        guard let request = model.segmentRequest,
-              !subjectID.isEmpty,
-              handledSegmentRequestID != request.id else { return }
-        handledSegmentRequestID = request.id
-        model.presentation.setSegment(request.segment, for: subjectID)
+        guard !subjectID.isEmpty else { return }
+        // An explicit request (a notification, a pane action) always wins, and is
+        // handled once so it cannot override the user's own tab switch later.
+        if let request = model.segmentRequest, handledSegmentRequestID != request.id {
+            handledSegmentRequestID = request.id
+            model.presentation.setSegment(request.segment, for: subjectID)
+            return
+        }
+        // A subject with a report opens on 报告 until the user picks a tab.
+        guard !model.presentation.hasChosenSegment(for: subjectID),
+              let detail = model.detail,
+              detail.research?.report != nil else { return }
+        model.presentation.setSegment(.research, for: subjectID)
     }
 
     // MARK: - Header
@@ -431,7 +439,8 @@ struct WorkspaceDetailView: View {
                             depth: depth
                         )
                     }
-                }
+                },
+                onRequestSegment: { model.presentation.setSegment($0, for: detail.subject.id) }
             )
             .opacity(segment == .research ? 1 : 0)
             .allowsHitTesting(segment == .research)

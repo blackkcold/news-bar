@@ -76,6 +76,59 @@ final class LocalizationParityTests: XCTestCase {
         )
     }
 
+    /// The English reader counts must not pluralise: "1 nodes" is a bug, and a
+    /// count-neutral "Nodes: 1" reads correctly for every value.
+    func testReaderEnglishCountsAreCountNeutral() {
+        XCTAssertEqual(
+            L10n.string("research.report.meta.timeline", language: .en, 1, 2),
+            "Nodes: 1 · 2-day span"
+        )
+        XCTAssertEqual(
+            L10n.string("research.report.meta.timelineNoSpan", language: .en, 1),
+            "Nodes: 1"
+        )
+        XCTAssertEqual(
+            L10n.string("research.report.timeline.count", language: .en, 1, 2),
+            "Nodes: 1 · 2-day span"
+        )
+        XCTAssertEqual(
+            L10n.string("research.report.meta.sources", language: .en, 1, 1),
+            "Sources: 1 · Domains: 1"
+        )
+        XCTAssertEqual(
+            L10n.string("research.report.meta.quotes", language: .en, 1, 3),
+            "Quotes verified: 1/3"
+        )
+        XCTAssertEqual(
+            L10n.string("research.report.meta.independentSources", language: .en, 1),
+            "Independent sources: 1"
+        )
+        XCTAssertEqual(
+            L10n.string("research.report.timeline.coverage", language: .en, 1, 2),
+            "Nodes verified: 1/2"
+        )
+        XCTAssertEqual(
+            L10n.string("research.report.timeline.unsourced", language: .en, 1),
+            "Unsourced nodes: 1"
+        )
+        XCTAssertEqual(
+            L10n.string("research.report.timeline.citations", language: .en, 1),
+            "Citations: 1"
+        )
+        XCTAssertEqual(
+            L10n.string("research.report.claims.count", language: .en, 1),
+            "Citations: 1"
+        )
+        XCTAssertEqual(
+            L10n.string("research.report.claimsSummary", language: .en, 1, 2, 3),
+            "Claims: 1 · With verified quotes: 2 · Needs evidence: 3"
+        )
+        XCTAssertEqual(
+            L10n.string("research.report.sources.summary", language: .en, 1, 2, 3),
+            "Sources: 1 · Domains: 2 · Verified quotes: 3"
+        )
+    }
+
     func testPricedModelCostLineUsesThreeAmounts() {
         let text = L10n.string(
             "ai.cost.perCall",

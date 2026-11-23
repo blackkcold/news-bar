@@ -61,6 +61,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private var transientResearchWindow: NSPanel?
     private var transientResearchModel: TransientResearchReportModel?
     private weak var transientResearchReturnWindow: NSWindow?
+    /// True while the report panel is closing because the workspace took over,
+    /// so the close path does not restore the window behind it or hide the Dock.
+    private var isHandingOffTransientReport = false
     private var researchCenterWindow: NSWindow?
     private var researchCenterModel: ResearchCenterModel?
     private var newsEventCenterWindow: NSWindow?
@@ -1099,7 +1102,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         eventID: String? = nil,
         answerID: String? = nil,
         startResearchDepth: ResearchDepth? = nil,
-        evidenceHint: WorkspaceEvidenceFocus? = nil
+        evidenceHint: WorkspaceEvidenceFocus? = nil,
+        segment: WorkspaceSegment? = nil
     ) {
         popover?.performClose(nil)
 
@@ -1126,6 +1130,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                         answerID: answerID,
                         evidenceHint: evidenceHint
                     )
+                }
+                if let segment, resolved != nil {
+                    model.requestSegment(segment)
                 }
                 if let startResearchDepth, let resolved {
                     await model.startResearch(
@@ -1182,6 +1189,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                     evidenceHint: evidenceHint
                 )
             }
+            if let segment, resolved != nil {
+                model.requestSegment(segment)
+            }
             if let startResearchDepth, let resolved {
                 await model.startResearch(
                     id: resolved,
@@ -1227,13 +1237,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             window = existing
         } else {
             let panel = NSPanel(
-                contentRect: NSRect(origin: .zero, size: NSSize(width: 680, height: 720)),
+                contentRect: NSRect(origin: .zero, size: NSSize(width: 760, height: 760)),
                 styleMask: [.titled, .closable, .miniaturizable, .resizable, .utilityWindow],
                 backing: .buffered,
                 defer: false
             )
             panel.title = settings.appLanguage == .en ? "Research report" : "研究报告"
-            panel.minSize = NSSize(width: 560, height: 460)
+            // The content floor is what the SwiftUI view pins (`.frame(minHeight: 560)`);
+            // `minSize` includes the titlebar, so it would clip 28pt of content.
+            panel.contentMinSize = NSSize(width: 620, height: 560)
             panel.isReleasedWhenClosed = false
             panel.hidesOnDeactivate = false
             panel.becomesKeyOnlyIfNeeded = false
@@ -1242,7 +1254,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             panel.contentViewController = NSHostingController(
                 rootView: TransientResearchReportView(
                     model: model,
-                    onClose: { [weak self] in self?.transientResearchWindow?.performClose(nil) }
+                    onClose: { [weak self] in self?.transientResearchWindow?.performClose(nil) },
+                    onOpenWorkspace: { [weak self] in
+                        self?.handOffTransientReportToWorkspace(segment: nil)
+                    },
+                    onOpenEventTimeline: { [weak self] in
+                        self?.handOffTransientReportToWorkspace(segment: .timeline)
+                    }
                 )
                 .environment(settings)
                 .id(settings.appLanguage)
@@ -1296,7 +1314,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         if let returnWindow, returnWindow.isVisible {
             DispatchQueue.main.async { returnWindow.makeKeyAndOrderFront(nil) }
         }
-        if settingsWindow?.isVisible != true,
+        if !isHandingOffTransientReport,
+           settingsWindow?.isVisible != true,
            dashboardWindow?.isVisible != true,
            researchWorkspaceWindow?.isVisible != true,
            researchCenterWindow?.isVisible != true,
@@ -1304,6 +1323,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
            popover?.isShown != true {
             DockPresence.hide()
         }
+    }
+
+    /// Hands the report panel's record over to the workspace and closes the
+    /// panel. Opening the workspace is asynchronous, so the close is immediate:
+    /// the panel must not linger beside the workspace on the same record.
+    @MainActor
+    private func handOffTransientReportToWorkspace(segment: WorkspaceSegment?) {
+        guard let model = transientResearchModel else { return }
+        guard model.recordID != nil || model.eventID != nil else { return }
+        // The workspace is the destination, not the window the panel came from.
+        transientResearchReturnWindow = nil
+        if let recordID = model.recordID {
+            openResearchWorkspace(researchID: recordID, segment: segment)
+        } else {
+            // Event-only panels have no record to open; route by the event.
+            openResearchWorkspace(eventID: model.eventID, segment: segment)
+        }
+        isHandingOffTransientReport = true
+        transientResearchWindow?.performClose(nil)
+        isHandingOffTransientReport = false
     }
 
     /// Compatibility wrapper for the old research-center call sites and both
