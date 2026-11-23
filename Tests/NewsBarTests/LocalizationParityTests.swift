@@ -81,7 +81,7 @@ final class LocalizationParityTests: XCTestCase {
     func testReaderEnglishCountsAreCountNeutral() {
         XCTAssertEqual(
             L10n.string("research.report.meta.timeline", language: .en, 1, 2),
-            "Nodes: 1 · Span: 2 days"
+            "Nodes: 1 · 2-day span"
         )
         XCTAssertEqual(
             L10n.string("research.report.meta.timelineNoSpan", language: .en, 1),
@@ -89,7 +89,7 @@ final class LocalizationParityTests: XCTestCase {
         )
         XCTAssertEqual(
             L10n.string("research.report.timeline.count", language: .en, 1, 2),
-            "Nodes: 1 · Span: 2 days"
+            "Nodes: 1 · 2-day span"
         )
         XCTAssertEqual(
             L10n.string("research.report.meta.sources", language: .en, 1, 1),
@@ -105,7 +105,7 @@ final class LocalizationParityTests: XCTestCase {
         )
         XCTAssertEqual(
             L10n.string("research.report.timeline.coverage", language: .en, 1, 2),
-            "Nodes with citations: 1/2"
+            "Nodes verified: 1/2"
         )
         XCTAssertEqual(
             L10n.string("research.report.timeline.unsourced", language: .en, 1),

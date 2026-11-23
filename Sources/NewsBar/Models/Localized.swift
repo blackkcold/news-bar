@@ -3746,7 +3746,7 @@ enum L10n {
         "research.report.copy": "Copy Markdown",
         "research.report.historical": "Historical",
         "research.report.actions.a11y": "Report actions",
-        "research.report.meta.timeline": "Nodes: %1$ld · Span: %2$ld days",
+        "research.report.meta.timeline": "Nodes: %1$ld · %2$ld-day span",
         "research.report.meta.timelineNoSpan": "Nodes: %1$ld",
         "research.report.meta.sources": "Sources: %1$ld · Domains: %2$ld",
         "research.report.meta.quotes": "Quotes verified: %1$ld/%2$ld",
@@ -3757,8 +3757,8 @@ enum L10n {
         "research.report.missing.more": "+%ld",
         // `timeline.count` and `meta.timeline` intentionally share one format;
         // `meta.timelineNoSpan` is the fallback when there is no date span.
-        "research.report.timeline.count": "Nodes: %1$ld · Span: %2$ld days",
-        "research.report.timeline.coverage": "Nodes with citations: %1$ld/%2$ld",
+        "research.report.timeline.count": "Nodes: %1$ld · %2$ld-day span",
+        "research.report.timeline.coverage": "Nodes verified: %1$ld/%2$ld",
         "research.report.timeline.unsourced": "Unsourced nodes: %1$ld",
         "research.report.timeline.citations": "Citations: %1$ld",
         "research.report.timeline.empty.title": "This report has no timeline",

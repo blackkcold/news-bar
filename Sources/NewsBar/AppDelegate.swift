@@ -1131,7 +1131,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                         evidenceHint: evidenceHint
                     )
                 }
-                if let segment {
+                if let segment, resolved != nil {
                     model.requestSegment(segment)
                 }
                 if let startResearchDepth, let resolved {
@@ -1189,7 +1189,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                     evidenceHint: evidenceHint
                 )
             }
-            if let segment {
+            if let segment, resolved != nil {
                 model.requestSegment(segment)
             }
             if let startResearchDepth, let resolved {
