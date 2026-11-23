@@ -377,3 +377,514 @@ struct ResearchReportTimelineSection: View {
         .newsCardSurface(cornerRadius: 10)
     }
 }
+
+// MARK: - Verification
+
+/// Chapter 03 keeps two questions apart on purpose: whether each quote was
+/// found in the fetched page (evidence) and whether each claim has at least one
+/// verified quote behind it (claim support). A claim that cites nothing is not
+/// shown as supported; a quote that failed the check is not shown as verified.
+struct ResearchReportVerificationSection: View {
+    @Environment(AppSettings.self) private var settings
+
+    let report: BurstResearch
+    var isLegacy: Bool = false
+    var contextID: String? = nil
+
+    @State private var expandedClaims: Set<String> = []
+    @State private var showsConflicts = false
+    @State private var showsMissing = false
+
+    private var isRetro: Bool { settings.appTheme == .retroEditorial }
+    private var evidenceByID: [String: EvidenceItem] {
+        Dictionary(report.evidence.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+    }
+    private var trimmedLimitations: String {
+        report.limitations.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    var body: some View {
+        Group {
+            if let verification = report.verification {
+                verificationBody(verification)
+            } else if isLegacy {
+                VStack(alignment: .leading, spacing: 9) {
+                    header
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                        Image(systemName: "info.circle")
+                            .font(.system(size: 9, weight: .semibold))
+                            .accessibilityHidden(true)
+                        Text("research.report.legacy.note".localized)
+                            .font(.system(size: 10.5, design: isRetro ? .serif : .default))
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    .foregroundStyle(.secondary)
+                }
+                .accessibilityElement(children: .contain)
+            }
+        }
+        // Attached outside the branches so a version swap still resets the
+        // expansion state when the new report has a verification block.
+        .onChange(of: WorkspaceReportDigest.make(report)) {
+            expandedClaims = []
+            showsConflicts = false
+            showsMissing = false
+        }
+    }
+
+    private var header: some View {
+        WorkspaceSectionHeader(
+            symbol: "checklist",
+            title: "\(ResearchReportSection.verification.index) \(ResearchReportSection.verification.title)"
+        )
+    }
+
+    private func verificationBody(_ verification: VerificationReport) -> some View {
+        let metrics = ResearchReportMetrics(report: report)
+        return VStack(alignment: .leading, spacing: 11) {
+            header
+            verdictRow(verification, metrics: metrics)
+
+            if !verification.claims.isEmpty {
+                VStack(alignment: .leading, spacing: 5) {
+                    ForEach(Array(verification.claims.enumerated()), id: \.offset) { _, claim in
+                        claimDisclosure(claim)
+                    }
+                }
+            }
+
+            if !verification.conflicts.isEmpty {
+                conflictsDisclosure(verification.conflicts)
+            }
+
+            if !verification.missing.isEmpty {
+                missingDisclosure(verification.missing)
+            }
+
+            if !trimmedLimitations.isEmpty {
+                limitationsBlock
+            }
+        }
+        .accessibilityElement(children: .contain)
+    }
+
+    private func verdictRow(
+        _ verification: VerificationReport,
+        metrics: ResearchReportMetrics
+    ) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 7) {
+            EditorialTag(
+                text: L10n.string(
+                    "research.verdict.\(verification.verdict.rawValue)",
+                    language: settings.appLanguage
+                ),
+                fallbackTint: verdictTint(verification.verdict)
+            )
+
+            if metrics.claimCount > 0 {
+                Text(L10n.string(
+                    "research.report.claimsSummary",
+                    language: settings.appLanguage,
+                    metrics.claimCount,
+                    metrics.claimsWithVerifiedEvidenceCount,
+                    metrics.claimsNeedingEvidenceCount
+                ))
+                .font(.system(size: 10.5, weight: .medium, design: isRetro ? .serif : .default))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            }
+
+            if verification.verdict == .unverified {
+                Image(systemName: "info.circle")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .help("research.report.verdict.unverifiedHelp".localized)
+                    .accessibilityLabel("research.report.verdict.unverifiedHelp".localized)
+            }
+
+            Spacer(minLength: 0)
+        }
+    }
+
+    private func claimDisclosure(_ claim: ClaimCheck) -> some View {
+        DisclosureGroup(isExpanded: expansionBinding(for: claim)) {
+            VStack(alignment: .leading, spacing: 6) {
+                if !claim.note.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    Text(claim.note)
+                        .font(.system(size: 10.5, design: isRetro ? .serif : .default))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                if !claim.evidenceIDs.isEmpty {
+                    HStack(spacing: 4) {
+                        ForEach(Array(claim.evidenceIDs.enumerated()), id: \.offset) { _, id in
+                            ResearchEvidenceChip(
+                                id: id,
+                                evidence: evidenceByID[id],
+                                contextID: contextID
+                            )
+                        }
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.top, 6)
+        } label: {
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Image(systemName: claimSymbol(claim.status))
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(claimTint(claim.status))
+                    .accessibilityHidden(true)
+                Text(claim.claim)
+                    .font(.system(size: 11.5, weight: .medium, design: isRetro ? .serif : .default))
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 6)
+                Text(claimCountText(claim))
+                    .font(.system(size: 9, weight: .medium, design: .monospaced))
+                    .foregroundStyle(.tertiary)
+                    .fixedSize()
+            }
+        }
+        .padding(9)
+        .background(.quaternary.opacity(0.16))
+        .editorialClipShape(cornerRadius: 7)
+    }
+
+    private func expansionBinding(for claim: ClaimCheck) -> Binding<Bool> {
+        Binding(
+            get: { expandedClaims.contains(claim.id) },
+            set: { isExpanded in
+                if isExpanded {
+                    expandedClaims.insert(claim.id)
+                } else {
+                    expandedClaims.remove(claim.id)
+                }
+            }
+        )
+    }
+
+    private func claimCountText(_ claim: ClaimCheck) -> String {
+        claim.evidenceIDs.isEmpty
+            ? "research.report.claims.noEvidence".localized
+            : L10n.string(
+                "research.report.claims.count",
+                language: settings.appLanguage,
+                claim.evidenceIDs.count
+            )
+    }
+
+    private func conflictsDisclosure(_ conflicts: [String]) -> some View {
+        DisclosureGroup(isExpanded: $showsConflicts) {
+            bulletList(conflicts, tint: .orange)
+                .padding(.top, 6)
+        } label: {
+            disclosureLabel(
+                "research.report.conflicts".localized,
+                symbol: "arrow.triangle.branch",
+                count: conflicts.count,
+                tint: .orange
+            )
+        }
+        .padding(9)
+        .background(Color.orange.opacity(0.08))
+        .editorialClipShape(cornerRadius: 7)
+    }
+
+    private func missingDisclosure(_ missing: [String]) -> some View {
+        DisclosureGroup(isExpanded: $showsMissing) {
+            bulletList(missing, tint: .secondary)
+                .padding(.top, 6)
+        } label: {
+            disclosureLabel(
+                "research.report.missing.title".localized,
+                symbol: "questionmark.circle",
+                count: missing.count,
+                tint: .secondary
+            )
+        }
+        .padding(9)
+        .background(.quaternary.opacity(0.14))
+        .editorialClipShape(cornerRadius: 7)
+    }
+
+    private func disclosureLabel(
+        _ title: String,
+        symbol: String,
+        count: Int,
+        tint: Color
+    ) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+            Image(systemName: symbol)
+                .font(.system(size: 9, weight: .semibold))
+                .foregroundStyle(tint)
+                .accessibilityHidden(true)
+            Text(title)
+                .font(.system(size: 11, weight: .semibold, design: isRetro ? .serif : .default))
+            Spacer(minLength: 6)
+            Text("\(count)")
+                .font(.system(size: 9, weight: .medium, design: .monospaced))
+                .foregroundStyle(.tertiary)
+                .fixedSize()
+        }
+    }
+
+    private func bulletList(_ items: [String], tint: Color) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            ForEach(Array(items.enumerated()), id: \.offset) { _, text in
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Circle()
+                        .fill(tint)
+                        .frame(width: 4, height: 4)
+                        .padding(.top, 4)
+                        .accessibilityHidden(true)
+                    Text(text)
+                        .font(.system(size: 10.5, design: isRetro ? .serif : .default))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+    }
+
+    private var limitationsBlock: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text("research.report.limitations".localized.uppercased())
+                .font(.system(size: 9, weight: .bold, design: isRetro ? .serif : .default))
+                .tracking(isRetro ? 0.6 : 0)
+                .foregroundStyle(.tertiary)
+            Text(trimmedLimitations)
+                .font(.system(size: 10.5, design: isRetro ? .serif : .default))
+                .foregroundStyle(.secondary)
+                .lineSpacing(2)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private func claimSymbol(_ status: EvidenceStance?) -> String {
+        switch status {
+        case .supports: return "checkmark.circle.fill"
+        case .refutes: return "xmark.octagon.fill"
+        case .unclear, nil: return "questionmark.circle"
+        }
+    }
+
+    private func claimTint(_ status: EvidenceStance?) -> Color {
+        switch status {
+        case .supports: return .green
+        case .refutes: return .red
+        case .unclear: return .orange
+        case nil: return .secondary
+        }
+    }
+
+    private func verdictTint(_ verdict: VerificationReport.Verdict) -> Color {
+        switch verdict {
+        case .confirmed, .mostlyConfirmed: return .green
+        case .mixed: return .orange
+        case .unverified: return .secondary
+        case .refuted: return .red
+        }
+    }
+}
+
+// MARK: - Sources
+
+/// Chapter 04 is an index, not a wall of cards: collapsed by default, grouped
+/// by domain in the metrics' own order, and every row opens its own source.
+struct ResearchReportSourceSection: View {
+    @Environment(AppSettings.self) private var settings
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    let report: BurstResearch
+    let onOpenURL: (String, String) -> Void
+
+    @State private var isExpanded = false
+    @State private var expandedSources: Set<String> = []
+
+    private var isRetro: Bool { settings.appTheme == .retroEditorial }
+    private var groups: [ResearchSourceGroup] {
+        ResearchSourceGrouping.groups(for: report.evidence)
+    }
+
+    var body: some View {
+        let metrics = ResearchReportMetrics(report: report)
+        return VStack(alignment: .leading, spacing: 10) {
+            WorkspaceSectionHeader(
+                symbol: "quote.bubble",
+                title: "\(ResearchReportSection.sources.index) \(ResearchReportSection.sources.title)",
+                trailing: "\(metrics.evidenceCount)"
+            )
+            summaryButton(metrics: metrics)
+            if isExpanded {
+                sourceIndex
+            }
+        }
+        .onChange(of: WorkspaceReportDigest.make(report)) {
+            isExpanded = false
+            expandedSources = []
+        }
+        .accessibilityElement(children: .contain)
+    }
+
+    private func summaryButton(metrics: ResearchReportMetrics) -> some View {
+        let summary = L10n.string(
+            "research.report.sources.summary",
+            language: settings.appLanguage,
+            metrics.evidenceCount,
+            metrics.domainCount,
+            metrics.verifiedQuoteCount
+        )
+        return Button {
+            withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.18)) {
+                isExpanded.toggle()
+            }
+        } label: {
+            HStack(spacing: 7) {
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 8, weight: .bold))
+                    .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                    .accessibilityHidden(true)
+                Text(summary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .buttonStyle(EditorialActionButtonStyle(tone: .secondary, compact: true))
+        .accessibilityLabel(summary)
+        .accessibilityValue(
+            isExpanded
+                ? "research.report.sources.expand".localized
+                : "research.report.sources.collapse".localized
+        )
+    }
+
+    /// Evidence without a domain cannot form a group, so it is listed flat
+    /// instead of disappearing behind an empty index.
+    @ViewBuilder
+    private var sourceIndex: some View {
+        if groups.isEmpty {
+            VStack(alignment: .leading, spacing: 5) {
+                ForEach(report.evidence) { item in
+                    sourceRow(item)
+                }
+            }
+        } else {
+            VStack(alignment: .leading, spacing: 12) {
+                ForEach(groups) { group in
+                    VStack(alignment: .leading, spacing: 5) {
+                        HStack(spacing: 6) {
+                            Text(group.domain)
+                                .font(.system(size: 10, weight: .semibold, design: isRetro ? .serif : .default))
+                            Text("\(group.items.count)")
+                                .font(.system(size: 9, weight: .medium, design: .monospaced))
+                                .foregroundStyle(.tertiary)
+                            Spacer(minLength: 0)
+                        }
+                        VStack(alignment: .leading, spacing: 5) {
+                            ForEach(group.items) { item in
+                                sourceRow(item)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func sourceRow(_ item: EvidenceItem) -> some View {
+        ResearchSourceRow(
+            item: item,
+            isExpanded: sourceBinding(item.id),
+            onOpenURL: onOpenURL
+        )
+    }
+
+    private func sourceBinding(_ id: String) -> Binding<Bool> {
+        Binding(
+            get: { expandedSources.contains(id) },
+            set: { isExpanded in
+                if isExpanded {
+                    expandedSources.insert(id)
+                } else {
+                    expandedSources.remove(id)
+                }
+            }
+        )
+    }
+}
+
+/// One source in the index. The label stays a plain row so the whole width
+/// toggles; the open action lives in the content, never inside the label.
+struct ResearchSourceRow: View {
+    @Environment(AppSettings.self) private var settings
+
+    let item: EvidenceItem
+    @Binding var isExpanded: Bool
+    let onOpenURL: (String, String) -> Void
+
+    private var isRetro: Bool { settings.appTheme == .retroEditorial }
+    private var displayTitle: String { item.title.isEmpty ? item.domain : item.title }
+
+    var body: some View {
+        DisclosureGroup(isExpanded: $isExpanded) {
+            VStack(alignment: .leading, spacing: 6) {
+                if !item.quote.isEmpty {
+                    Text("“\(item.quote)”")
+                        .font(.system(size: 10.5, design: isRetro ? .serif : .default))
+                        .foregroundStyle(.secondary)
+                        .lineSpacing(2)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .textSelection(.enabled)
+                }
+
+                HStack(spacing: 5) {
+                    Text(item.domain)
+                    Text("·")
+                        .foregroundStyle(.tertiary)
+                    Text(L10n.string(
+                        "research.stance.\(item.stance.rawValue)",
+                        language: settings.appLanguage
+                    ))
+                    Text("·")
+                        .foregroundStyle(.tertiary)
+                    Text("T\(item.tier.rawValue)")
+                    Spacer(minLength: 0)
+                }
+                .font(.system(size: 8.5, design: .monospaced))
+                .foregroundStyle(.tertiary)
+
+                HStack {
+                    Spacer(minLength: 0)
+                    Button("research.report.source.open".localized) {
+                        onOpenURL(item.url, displayTitle)
+                    }
+                    .buttonStyle(EditorialActionButtonStyle(tone: .secondary, compact: true))
+                    .accessibilityLabel(L10n.string(
+                        "workspace.evidence.openLabel",
+                        language: settings.appLanguage,
+                        item.domain
+                    ))
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.top, 6)
+        } label: {
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Text(item.id)
+                    .font(.system(size: 8, weight: .bold, design: .monospaced))
+                    .foregroundStyle(.tertiary)
+                Text(displayTitle)
+                    .font(.system(size: 11.5, weight: .medium, design: isRetro ? .serif : .default))
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 6)
+                WorkspaceVerificationBadge(
+                    verification: item.quoteVerified ? .verifiedQuote : .unverifiedQuote
+                )
+            }
+        }
+        .padding(9)
+        .background(.quaternary.opacity(0.16))
+        .editorialClipShape(cornerRadius: 7)
+    }
+}

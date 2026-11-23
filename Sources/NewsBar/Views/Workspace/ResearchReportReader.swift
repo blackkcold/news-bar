@@ -88,10 +88,17 @@ struct ResearchReportReader: View {
     @State private var isAtContentEnd = false
     @State private var lastOffsets: [ResearchReportSection: CGFloat] = [:]
 
-    /// Internal so later tasks can extend the reading order without touching
-    /// the navigator. Task 3 appends verification and sources.
+    /// Chapters that actually have data. An empty verification block or an
+    /// empty source list is never shown as a blank chapter.
     var sections: [ResearchReportSection] {
-        [.conclusion, .timeline]
+        var result: [ResearchReportSection] = [.conclusion, .timeline]
+        if report.verification != nil || !report.evidence.isEmpty {
+            result.append(.verification)
+        }
+        if showsSourceSection && !report.evidence.isEmpty {
+            result.append(.sources)
+        }
+        return result
     }
 
     var body: some View {
@@ -147,6 +154,10 @@ struct ResearchReportReader: View {
                     hasScrolled = false
                     isAtContentEnd = false
                     lastOffsets = [:]
+                    // Resetting the highlight is not enough: a reader that was
+                    // mid-report would keep the old scroll position and land on
+                    // a chapter that no longer means the same thing.
+                    proxy.scrollTo(ResearchReportSection.conclusion.id, anchor: .top)
                 }
             }
         }
@@ -188,9 +199,17 @@ struct ResearchReportReader: View {
                 isLegacy: isLegacy,
                 onOpenEventTimeline: onOpenEventTimeline
             )
-        case .verification, .sources:
-            // Filled in by Task 3.
-            EmptyView()
+        case .verification:
+            ResearchReportVerificationSection(
+                report: report,
+                isLegacy: isLegacy,
+                contextID: contextID
+            )
+        case .sources:
+            ResearchReportSourceSection(
+                report: report,
+                onOpenURL: onOpenURL
+            )
         }
     }
 }
