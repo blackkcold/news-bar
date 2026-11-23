@@ -391,9 +391,21 @@ struct ResearchReportVerificationSection: View {
     var isLegacy: Bool = false
     var contextID: String? = nil
 
-    @State private var expandedClaims: Set<String> = []
+    @State private var expandedClaims: Set<String>
     @State private var showsConflicts = false
     @State private var showsMissing = false
+
+    init(
+        report: BurstResearch,
+        isLegacy: Bool = false,
+        contextID: String? = nil,
+        initiallyExpandedClaimIDs: Set<String> = []
+    ) {
+        self.report = report
+        self.isLegacy = isLegacy
+        self.contextID = contextID
+        _expandedClaims = State(initialValue: initiallyExpandedClaimIDs)
+    }
 
     private var isRetro: Bool { settings.appTheme == .retroEditorial }
     private var evidenceByID: [String: EvidenceItem] {
@@ -403,16 +415,24 @@ struct ResearchReportVerificationSection: View {
         report.limitations.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
+    /// Which note explains a missing verification block, or nil when the block
+    /// exists. Chapter 03 draws its gap state from this key, so a blank chapter
+    /// and a silent regression are the same failure: the key is the contract.
+    var gapNoteKey: String? {
+        guard report.verification == nil else { return nil }
+        return isLegacy
+            ? "research.report.legacy.note"
+            : "research.report.verification.none"
+    }
+
     var body: some View {
         Group {
             if let verification = report.verification {
                 verificationBody(verification)
-            } else {
+            } else if let gapNoteKey {
                 VStack(alignment: .leading, spacing: 9) {
                     header
-                    note(isLegacy
-                         ? "research.report.legacy.note"
-                         : "research.report.verification.none")
+                    note(gapNoteKey)
                 }
                 .accessibilityElement(children: .contain)
             }
@@ -833,6 +853,21 @@ struct ResearchSourceRow: View {
     private var isRetro: Bool { settings.appTheme == .retroEditorial }
     private var displayTitle: String { item.title.isEmpty ? item.domain : item.title }
 
+    /// `domain · stance · T2`, with the domain dropped when it is blank so the
+    /// line cannot start with a dangling separator.
+    static func metaText(for item: EvidenceItem, language: AppLanguage) -> String {
+        var parts: [String] = []
+        if !item.domain.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            parts.append(item.domain)
+        }
+        parts.append(L10n.string(
+            "research.stance.\(item.stance.rawValue)",
+            language: language
+        ))
+        parts.append("T\(item.tier.rawValue)")
+        return parts.joined(separator: " · ")
+    }
+
     var body: some View {
         DisclosureGroup(isExpanded: $isExpanded) {
             VStack(alignment: .leading, spacing: 6) {
@@ -845,21 +880,10 @@ struct ResearchSourceRow: View {
                         .textSelection(.enabled)
                 }
 
-                HStack(spacing: 5) {
-                    Text(item.domain)
-                    Text("·")
-                        .foregroundStyle(.tertiary)
-                    Text(L10n.string(
-                        "research.stance.\(item.stance.rawValue)",
-                        language: settings.appLanguage
-                    ))
-                    Text("·")
-                        .foregroundStyle(.tertiary)
-                    Text("T\(item.tier.rawValue)")
-                    Spacer(minLength: 0)
-                }
-                .font(.system(size: 8.5, design: .monospaced))
-                .foregroundStyle(.tertiary)
+                Text(Self.metaText(for: item, language: settings.appLanguage))
+                    .font(.system(size: 8.5, design: .monospaced))
+                    .foregroundStyle(.tertiary)
+                    .fixedSize(horizontal: false, vertical: true)
 
                 HStack {
                     Spacer(minLength: 0)

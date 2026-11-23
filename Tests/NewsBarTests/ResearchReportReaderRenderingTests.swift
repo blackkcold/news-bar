@@ -188,6 +188,105 @@ final class ResearchReportReaderRenderingTests: XCTestCase {
         }
     }
 
+    /// The chapter's gap state must be observable, not inferred from a render:
+    /// a blank body still produces a PNG well over the byte floor.
+    func testVerificationGapNoteKeyTracksLegacyAndVerifiedReports() {
+        let gapReport = BurstResearch(
+            summary: "来源已保留，但这次运行没有生成逐条核验。",
+            searchStatus: .succeeded,
+            evidence: makeEvidence(),
+            verification: nil
+        )
+
+        XCTAssertEqual(
+            ResearchReportVerificationSection(report: gapReport, isLegacy: false).gapNoteKey,
+            "research.report.verification.none"
+        )
+        XCTAssertEqual(
+            ResearchReportVerificationSection(report: gapReport, isLegacy: true).gapNoteKey,
+            "research.report.legacy.note"
+        )
+        XCTAssertNil(
+            ResearchReportVerificationSection(report: makeReportWithClaimsAndEvidence()).gapNoteKey
+        )
+        XCTAssertNil(
+            ResearchReportVerificationSection(report: makeReportWithClaimsAndEvidence(), isLegacy: true)
+                .gapNoteKey
+        )
+    }
+
+    /// Expanded claim content (note + evidence chips) only exists inside the
+    /// disclosure, which no reader render can reach.
+    func testVerificationSectionRendersExpandedClaim() throws {
+        let output = try researchTestDirectory()
+            .appendingPathComponent("report-reader-render-matrix", isDirectory: true)
+        try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+
+        let report = makeReportWithClaimsAndEvidence()
+        let expandedClaim = "渠道已开始备货"
+
+        for theme in AppTheme.allCases {
+            for size in sizes {
+                let collapsed = try render(
+                    state: "verification-claim-collapsed",
+                    theme: theme,
+                    size: size,
+                    output: output,
+                    content: ResearchReportVerificationSection(
+                        report: report,
+                        isLegacy: false,
+                        contextID: "record-1"
+                    )
+                )
+                let expanded = try render(
+                    state: "verification-claim-expanded",
+                    theme: theme,
+                    size: size,
+                    output: output,
+                    content: ResearchReportVerificationSection(
+                        report: report,
+                        isLegacy: false,
+                        contextID: "record-1",
+                        initiallyExpandedClaimIDs: [expandedClaim]
+                    )
+                )
+                // The note and its two evidence chips add real content; a body
+                // that ignored the seeded expansion would render both states
+                // identically.
+                XCTAssertGreaterThan(
+                    expanded.count,
+                    collapsed.count + 500,
+                    "verification-claim-\(theme.rawValue)-\(Int(size.width))x\(Int(size.height))"
+                )
+            }
+        }
+    }
+
+    func testSourceRowMetaOmitsBlankDomain() {
+        let blankDomain = evidenceItem(
+            id: "E9",
+            domain: "",
+            quoteVerified: false,
+            stance: .supports
+        )
+        XCTAssertEqual(
+            ResearchSourceRow.metaText(for: blankDomain, language: .zh),
+            "支持 · T2"
+        )
+        XCTAssertEqual(
+            ResearchSourceRow.metaText(
+                for: evidenceItem(
+                    id: "E2",
+                    domain: "a.example",
+                    quoteVerified: false,
+                    stance: .unclear
+                ),
+                language: .zh
+            ),
+            "a.example · 存疑 · T2"
+        )
+    }
+
     /// The reader keeps the source index collapsed, so the expanded row and the
     /// two chapters are rendered on their own to prove they draw in both themes.
     func testReaderRendersVerificationAndSourceSections() throws {
@@ -290,6 +389,28 @@ final class ResearchReportReaderRenderingTests: XCTestCase {
                     sectionData.count,
                     2_000,
                     "verification-gap-section-\(theme.rawValue)-\(Int(size.width))x\(Int(size.height))"
+                )
+
+                // Pixels, not bytes: the binary must differ from a header-only
+                // chapter, otherwise the gap note is not being drawn at all.
+                let headerOnly = try render(
+                    state: "verification-gap-header-only",
+                    theme: theme,
+                    size: size,
+                    output: output,
+                    content: VStack(alignment: .leading, spacing: 9) {
+                        WorkspaceSectionHeader(
+                            symbol: "checklist",
+                            title: "\(ResearchReportSection.verification.index) "
+                                + ResearchReportSection.verification.title
+                        )
+                    }
+                )
+                XCTAssertNotEqual(
+                    sectionData,
+                    headerOnly,
+                    "verification-gap-\(theme.rawValue)-\(Int(size.width))x\(Int(size.height)): "
+                        + "the gap note must draw below the header"
                 )
             }
         }
