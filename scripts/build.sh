@@ -199,6 +199,28 @@ else
     newsbar_sign_app "${BUNDLE_DIR}"
 fi
 
+echo "🧪 Verifying the packaged app..."
+PROBE_FILE="$(mktemp "${TMPDIR:-/tmp}/${APP_NAME}-launch-probe.XXXXXX")"
+rm -f "$PROBE_FILE"
+if ! perl -e 'alarm 45; exec @ARGV' -- "${BUNDLE_DIR}/Contents/MacOS/NewsBar" --launch-probe "$PROBE_FILE"; then
+    echo "❌ Launch probe failed: the app entry did not run a main-actor task." >&2
+    rm -f "$PROBE_FILE"
+    exit 1
+fi
+if ! bash "${PROJECT_DIR}/scripts/check-launch-probe.sh" "$PROBE_FILE"; then
+    rm -f "$PROBE_FILE"
+    exit 1
+fi
+rm -f "$PROBE_FILE"
+if ! "${BUNDLE_DIR}/Contents/MacOS/NewsBar" --verify-recommendation-guide; then
+    echo "❌ Recommendation guide resource missing from the app bundle." >&2
+    exit 1
+fi
+if ! "${BUNDLE_DIR}/Contents/MacOS/NewsBar" --verify-reader-script; then
+    echo "❌ reader-mode.js missing from the app bundle." >&2
+    exit 1
+fi
+
 echo "📦 Creating DMG..."
 
 DMG_PATH="${RELEASE_DIR}/${APP_NAME}-${VERSION}.dmg"

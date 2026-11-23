@@ -9,20 +9,35 @@ enum ReaderModeScript {
     static let fileName = "reader-mode"
     static let bundleName = "NewsBar_NewsBar.bundle"
 
+    private final class BundleFinder {}
+
     private static var cached: String?
 
     static func source() -> String? {
         if let cached { return cached }
-        var candidates: [URL] = []
-        if let url = Bundle.module.url(forResource: fileName, withExtension: "js") {
-            candidates.append(url)
+
+        var directories: [URL] = []
+        func add(_ url: URL?) {
+            guard let url, !directories.contains(url) else { return }
+            directories.append(url)
         }
-        if let resources = Bundle.main.resourceURL {
-            candidates.append(resources
+        // Packaged app: Contents/Resources holds the copied SPM bundle.
+        add(Bundle.main.resourceURL)
+        // SwiftPM build and test layout: bundle sits next to the executable.
+        add(Bundle.main.bundleURL)
+        add(Bundle.main.bundleURL.deletingLastPathComponent())
+        add(Bundle.main.executableURL?.deletingLastPathComponent())
+        add(Bundle(for: BundleFinder.self).resourceURL)
+        add(Bundle(for: BundleFinder.self).bundleURL.deletingLastPathComponent())
+
+        var candidates: [URL] = []
+        for directory in directories {
+            candidates.append(directory
                 .appendingPathComponent(bundleName)
                 .appendingPathComponent("\(fileName).js"))
-            candidates.append(resources.appendingPathComponent("\(fileName).js"))
+            candidates.append(directory.appendingPathComponent("\(fileName).js"))
         }
+
         for url in candidates {
             guard let text = try? String(contentsOf: url, encoding: .utf8), !text.isEmpty else { continue }
             cached = text

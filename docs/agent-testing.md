@@ -6,8 +6,9 @@
 
 ```bash
 bash scripts/agent-test.sh --tier headless   # 默认；不开窗口
-bash scripts/agent-test.sh --tier render     # 离屏快照 + render-reader
-bash scripts/agent-test.sh --tier all        # 全量 swift test + 所有 CLI 检查
+bash scripts/agent-test.sh --tier render     # 离屏快照
+bash scripts/agent-test.sh --tier launch     # 同步入口 / 主 actor 探针
+bash scripts/agent-test.sh --tier all        # 全量 swift test + render + launch
 bash scripts/agent-test.sh --tier all --json # 机器可读报告
 ```
 
@@ -17,35 +18,39 @@ bash scripts/agent-test.sh --tier all --json # 机器可读报告
 
 | 层 | 内容 | 是否开窗口 | 是否碰运行实例 |
 |---|---|---|---|
-| `headless` | `AgentHeadlessTests`、评论解析/缓存/控制器、Feed 过滤、`--agent check`、`store-summary`、`doctor` | 否 | 否 |
-| `render` | `FollowingReaderRenderingTests`、`WeiboMonitorRenderingTests`、`render-reader` 的 modern / retro / 960 三张图 | 仅离屏，不 makeKey | 否 |
-| `all` | 完整 `swift test`（含渲染） + headless 与 render 的 CLI 步骤 | 仅离屏 | 否 |
+| `headless` | `AgentHeadlessTests`、评论解析/缓存/控制器、Feed 过滤；v3.4.1 的 agent CLI 暂时移出 App | 否 | 否 |
+| `render` | `FollowingReaderRenderingTests`、`WeiboMonitorRenderingTests` 的离屏快照 | 仅离屏，不 makeKey | 否 |
+| `launch` | `--launch-probe`：进入 AppKit run loop，并断言主 actor 任务能执行 | 不显示窗口，`.prohibited` | 否 |
+| `all` | 完整 `swift test` + render + launch | 仅离屏 | 否 |
 
-`NEWSBAR_TEST_HEADLESS=1` 会跳过唯一需要 key window 的 AX 树测试，避免抢焦点。
+`NEWSBAR_TEST_HEADLESS=1` 会跳过唯一需要 key window 的 AX 树测试，避免抢焦点。`launch` 是 v3.4.0 主 actor 饿死事故的回归门禁：v3.4.0 的 async 入口会让探针只写出 `enteredRun`、缺少 `mainActorTask`，45 秒后超时失败。
 
-## CLI
+## Agent CLI（v3.4.1 暂时移出 App）
+
+v3.4.1 的 App 入口必须保持同步，`--agent` 已移出 App：`NewsBar --agent <command>` 会打印提示并以 exit 2 明确失败，不会静默启动 GUI。`AgentHeadlessTests` 仍直接测试解析、缓存和控制器；独立的 `NewsBarAgent` 可执行文件在 **v3.4.2** 回归，届时命令为：
 
 ```bash
-.build/debug/NewsBar --agent check
-.build/debug/NewsBar --agent parse-comments <file|->
-.build/debug/NewsBar --agent store-summary [--root <dir>]
-.build/debug/NewsBar --agent render-reader <fixture> [--out <png>] \
+.build/debug/NewsBarAgent check
+.build/debug/NewsBarAgent parse-comments <file|->
+.build/debug/NewsBarAgent store-summary [--root <dir>]
+.build/debug/NewsBarAgent render-reader <fixture> [--out <png>] \
   [--width <pt>] [--height <pt>] [--theme modern|retroEditorial] [--language zh|en]
-.build/debug/NewsBar --agent doctor
+.build/debug/NewsBarAgent doctor
 ```
 
 - `check`：6 条内置不变量（链接两侧空白、mention/topic 的 href、sinaurl 只解一层、http 降级、`data-href` 不误判、大写 `<A>`）。
 - `parse-comments`：跑生产解析器，输出 `text` 与 `runs`，用于核对真实 payload。
-- `store-summary`：**先复制** store 到临时目录再读，输出 users / posts / unread / comments / latestMid / issues；原目录不会被 `load()` 的归档或重建写入。
-- `render-reader`：离屏渲染 `FollowingReaderPane` 到 PNG，进程使用 `.prohibited` 激活策略，不显示窗口。
-- `doctor`：输出 bundle id、版本、agent 根目录、store 根目录、是否隔离、正在运行的实例数。它只读，不会启动第二个 App。
+- `store-summary`：**先复制** store 到临时目录再读；原目录不会被 `load()` 的归档或重建写入。
+- `render-reader`：离屏渲染 `FollowingReaderPane` 到 PNG，进程使用 `.prohibited` 激活策略。
+- `doctor`：输出 bundle id、版本、store 根目录、是否隔离、正在运行的实例数；只读，不启动第二个 App。
 
 ## 隔离模型
 
-- CLI：`NEWSBAR_AGENT_ROOT` 指向临时目录；`NEWSBAR_AGENT_ISOLATED=1` 让 `TestIsolation.isActive` 为真，`AppSettings` 的读写落在按进程隔离的 UserDefaults suite，不碰真实偏好。
+- v3.4.1 的 launch probe 不构造 `AppSettings`、不碰任何 store；它只验证 AppKit run loop 与主 actor。
 - 测试：`TestIsolation` 在 XCTest 下自动启用，store、缓存、ImageCache、偏好都走临时目录。
 - 渲染：窗口不 `makeKeyAndOrderFront`，AX 树测试在 headless 模式下跳过。
 - 脚本只报告正在运行的实例数，从不退出或重启它。
+- v3.4.2 的 `NewsBarAgent` 会在入口显式激活 `TestIsolation`，不依赖外部 env。
 
 ## 覆盖边界（明确不做自动化）
 
@@ -86,10 +91,10 @@ bash scripts/agent-test.sh --tier all --json # 机器可读报告
 
 ## 已知抖动
 
-全量层包含既有的 `RecommendationTests.testFiveHundredCandidateRankingTiming`（debug 构建下 500 候选排序的 P95 上限 200ms）。机器负载高时偶发超过阈值；它与关注阅读器无关，干净环境复跑通常通过。`all` 档若只因这一条失败，先确认 full-tests 日志中没有其他失败，再单独复跑：
+全量层包含既有的 `RecommendationTests.testFiveHundredCandidateRankingTiming`（debug 构建下 500 候选排序的 P95 上限，v3.4.1 从 200ms 调整为 600ms：稳态约 150ms，负载抖动曾到 430ms）。它仍能拦住 4 倍的真实回归；`all` 档若只因这一条失败，先确认 full-tests 日志中没有其他失败，再单独复跑：
 
 ```bash
 swift test --filter RecommendationTests/testFiveHundredCandidateRankingTiming
 ```
 
-发版证据以干净全量结果为准（本次全量为 1984 tests / 6 skipped / 0 failures）。
+发版证据以干净全量结果为准。

@@ -23,3 +23,6 @@ jobs:
 
       - name: Build
         run: swift build -c release 2>&1
+
+      - name: Launch probe
+        run: bash scripts/agent-test.sh --tier launch
