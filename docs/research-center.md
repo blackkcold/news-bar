@@ -20,6 +20,20 @@ The research workspace keeps a topic, its events, its evidence and its reports o
 - **Versions**: every successful report replacement archives a version. Failed or partial runs do not fabricate a version. If archiving the previous report fails, the old report is kept and the run is marked failed.
 - **Archive** stops new lead collection and notifications while keeping all evidence, reports and versions. Unarchiving resumes collection. Nothing is deleted.
 
+## Report reader
+
+The popup and the workspace's research record share one reader, in a fixed four-chapter order:
+
+1. **Conclusion** — the full summary, never truncated and never repeated by the 80-character notification line. A data strip follows (timeline nodes and span, sources and domains, verified quotes, independent sources), then the first two "still to confirm" items and a collapsed "Background".
+2. **Timeline** — the report's own event order, with each node's source state (verified / unverified / no source). A report without one offers an "open event timeline" action instead of a blank chapter.
+3. **Verification** — the claim ledger, conflicts, gaps and limitations, keeping quote verification and claim support apart instead of hiding them behind a 0/4 score.
+4. **Sources** — collapsed into an index grouped by domain. Expanding a row reveals the quote, stance, tier and an "open original" action.
+
+- An `E1` chip opens that source's card (title, domain, verbatim quote, verification state, open original); it never switches tab.
+- The popup is 760×760 by default and 620×560 minimum, with a fixed header and 01–04 navigation; only the body scrolls.
+- The workspace's research-record tab is called "Report". A subject with a report opens there when no tab has been chosen yet; historical versions come from the version menu in the run strip and stay read-only.
+- At a detail width of 820 pt or more (roughly a 1380 pt window) the sources become a 220 pt index column on the right and the reader stops drawing chapter 04; below that the column disappears and the collapsed sources chapter returns.
+
 ## Linking and "no automatic AI"
 
 - New research records and events link locally by explicit ID, normalized title/alias and report evidence URLs. Two events with the same subject but different times are not merged by title alone.
