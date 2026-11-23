@@ -10,6 +10,9 @@ import Observation
 final class WorkspacePresentationStore {
     struct State: Equatable {
         var segment: WorkspaceSegment = .overview
+        /// Whether the user has picked a segment for this subject. A subject the
+        /// user has never opened can still be steered to its default tab.
+        var hasChosenSegment = false
         var selectedVersionID: String?
         var depth: ResearchDepth?
         var anchors: [WorkspaceSegment: String] = [:]
@@ -29,9 +32,17 @@ final class WorkspacePresentationStore {
     func setSegment(_ segment: WorkspaceSegment, for subjectID: String) {
         guard !subjectID.isEmpty else { return }
         var current = state(for: subjectID)
-        guard current.segment != segment else { return }
+        // Tapping the already-selected tab still counts as a choice: otherwise a
+        // subject that defaults to the report would snap back on the next load.
+        let changed = current.segment != segment || !current.hasChosenSegment
         current.segment = segment
+        current.hasChosenSegment = true
+        guard changed else { return }
         states[subjectID] = current
+    }
+
+    func hasChosenSegment(for subjectID: String) -> Bool {
+        state(for: subjectID).hasChosenSegment
     }
 
     func selectedVersionID(for subjectID: String) -> String? {
