@@ -51,10 +51,11 @@ struct WorkspaceResearchPane: View {
             Divider()
 
             if let report = displayedReport {
-                // The reader owns the only scroll view in the pane; the run
-                // strip and the action bar stay fixed around it. At wide
-                // widths the source index moves to its own column, so the
-                // reader drops chapter 04 instead of drawing it twice.
+                // The reader owns the pane's reading scroll view; the run strip
+                // and the action bar stay fixed around it. At wide widths the
+                // source index moves to its own column with its own index
+                // scroll, so the reader drops chapter 04 instead of drawing it
+                // twice.
                 let groups = ResearchSourceGrouping.groups(for: report.evidence)
                 let railVisible = showsSourceRail && !groups.isEmpty
                 HStack(spacing: 0) {
@@ -107,6 +108,10 @@ struct WorkspaceResearchPane: View {
                 statusDot
                 Text(statusLine)
                     .font(.system(size: 11, weight: .medium))
+                    // The origin meta and the version menu share this row at
+                    // ~630pt; the status must never push them off the line.
+                    .lineLimit(1)
+                    .truncationMode(.tail)
                 Spacer(minLength: 0)
                 if let record {
                     Text(originMeta(record))
@@ -224,8 +229,19 @@ struct WorkspaceResearchPane: View {
         }
         .menuStyle(.borderlessButton)
         .fixedSize()
-        .help("workspace.research.versions".localized)
-        .accessibilityLabel("workspace.research.versions".localized)
+        .help(versionMenuTitle)
+        .accessibilityLabel(versionMenuTitle)
+    }
+
+    /// "历史版本 V3" rather than a bare "历史版本": the menu is the only place
+    /// that says which version is on screen, and VoiceOver cannot see the `V3`
+    /// label inside the menu.
+    private var versionMenuTitle: String {
+        let name = L10n.string("workspace.research.versions", language: settings.appLanguage)
+        guard let displayedVersion else {
+            return "\(name) \(L10n.string("workspace.report.legacy", language: settings.appLanguage))"
+        }
+        return "\(name) V\(displayedVersion.sequence)"
     }
 
     private func versionTitle(_ version: WorkspaceReportVersion) -> String {

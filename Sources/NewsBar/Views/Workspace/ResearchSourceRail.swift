@@ -5,6 +5,9 @@ import SwiftUI
 /// click opens the source the same way chapter 04 does. Cross-column
 /// highlighting is deliberately absent: the reader's `E1` chip still owns the
 /// quote popover.
+///
+/// The rail keeps its own index scroll, which is the only reason the reader can
+/// give up chapter 04 without losing access to the sources.
 struct ResearchSourceRail: View {
     @Environment(AppSettings.self) private var settings
 
@@ -17,7 +20,6 @@ struct ResearchSourceRail: View {
     let onOpenURL: (String, String) -> Void
 
     private var isRetro: Bool { settings.appTheme == .retroEditorial }
-    private var accent: Color { isRetro ? RetroEditorialTokens.brick : .accentColor }
 
     var body: some View {
         HStack(spacing: 0) {
@@ -85,6 +87,9 @@ struct ResearchSourceRail: View {
                 Spacer(minLength: 0)
             }
             .accessibilityElement(children: .combine)
+            // Each domain is a group header for the rows beneath it, not only
+            // the count line at the top of the rail.
+            .accessibilityAddTraits(.isHeader)
 
             VStack(alignment: .leading, spacing: 4) {
                 ForEach(group.items) { item in
@@ -97,7 +102,11 @@ struct ResearchSourceRail: View {
     /// One compact source: `E1`, a single-line title, and whether its quote was
     /// verified. The whole row is the button.
     private func row(_ item: EvidenceItem) -> some View {
-        let title = displayTitle(for: item)
+        let title = ResearchSourceRow.displayTitle(for: item)
+        let state = ResearchSourceRow.verificationStateText(
+            for: item,
+            language: settings.appLanguage
+        )
         return Button {
             onOpenURL(item.url, title)
         } label: {
@@ -116,40 +125,39 @@ struct ResearchSourceRail: View {
             .padding(.horizontal, 7)
             .padding(.vertical, 5)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(.quaternary.opacity(0.14))
+            .background(.quaternary.opacity(ResearchSourceRow.backgroundOpacity))
             .editorialClipShape(cornerRadius: 6)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .help(title)
-        .accessibilityLabel(L10n.string(
-            "workspace.evidence.openLabel",
-            language: settings.appLanguage,
-            title
+        // The dot is colour-only, so the state it stands for has to be in the
+        // tooltip and the label too.
+        .help("\(title) · \(state)")
+        .accessibilityLabel(ResearchSourceRow.accessibilityDescription(
+            for: item,
+            language: settings.appLanguage
         ))
-        .accessibilityValue(item.quoteVerified
-            ? "workspace.evidence.verified".localized
-            : "workspace.evidence.unverified".localized)
+        .accessibilityHint(L10n.string(
+            "research.report.source.open",
+            language: settings.appLanguage
+        ))
     }
 
-    /// A filled dot means the quote was found in the page; a hollow one means
-    /// it was not. It is never coloured to imply more than that.
+    /// A filled green dot means the quote was found in the page; a hollow orange
+    /// one means it was not. The pair matches the green/orange badge in chapter
+    /// 04, so the two indexes read the same state the same way.
     @ViewBuilder
     private func verifiedDot(_ verified: Bool) -> some View {
         if verified {
             Circle()
-                .fill(accent)
+                .fill(Color.green)
                 .frame(width: 5, height: 5)
                 .accessibilityHidden(true)
         } else {
             Circle()
-                .strokeBorder(Color.secondary.opacity(0.6), lineWidth: 1)
+                .strokeBorder(Color.orange.opacity(0.85), lineWidth: 1)
                 .frame(width: 5, height: 5)
                 .accessibilityHidden(true)
         }
-    }
-
-    private func displayTitle(for item: EvidenceItem) -> String {
-        item.title.isEmpty ? item.domain : item.title
     }
 }

@@ -339,6 +339,121 @@ final class ResearchReportReaderRenderingTests: XCTestCase {
         )
     }
 
+    /// The rail and the source index must describe one source the same way. The
+    /// chip key is part of the label: without it, two rows on the same domain
+    /// are indistinguishable to VoiceOver.
+    func testSourceAccessibilityDescriptionCarriesKeyTitleDomainAndState() {
+        let item = evidenceItem(
+            id: "E7",
+            domain: "a.example",
+            quoteVerified: true,
+            stance: .supports
+        )
+        XCTAssertEqual(
+            ResearchSourceRow.accessibilityDescription(for: item, language: .zh),
+            "E7 · Story E7 · a.example · 支持 · T2 · 引文已核"
+        )
+        XCTAssertEqual(
+            ResearchSourceRow.accessibilityDescription(for: item, language: .en),
+            "E7 · Story E7 · a.example · Supports · T2 · Quote verified"
+        )
+        XCTAssertEqual(
+            ResearchSourceRow.accessibilityDescription(
+                for: evidenceItem(id: "E2", domain: "", quoteVerified: false, stance: .unclear),
+                language: .zh
+            ),
+            "E2 · Story E2 · 存疑 · T2 · 引文未核"
+        )
+    }
+
+    /// A timeline node is one VoiceOver stop: date, title, state and citation
+    /// count. The chips stay separate buttons inside the node.
+    func testTimelineNodeAccessibilityLabelCombinesDateTitleStateAndCitations() {
+        let verified = BurstResearch(
+            summary: "summary",
+            timeline: [
+                TimelineNode(
+                    date: "2026-10-01",
+                    title: "发布预告",
+                    detail: "公司释放预告。",
+                    evidenceIDs: ["E1", "E2"],
+                    confidence: .high
+                )
+            ],
+            evidence: makeEvidence()
+        )
+        let verifiedNode = ReportPresentation(report: verified).nodes[0]
+        XCTAssertEqual(
+            ResearchReportTimelineSection.nodeAccessibilityLabel(for: verifiedNode, language: .zh),
+            "2026-10-01 · 发布预告 · 已核验 · 2 条引文"
+        )
+
+        let unsourced = BurstResearch(
+            summary: "summary",
+            timeline: [
+                TimelineNode(date: "", title: "尚未落地的传闻", detail: "", confidence: .low)
+            ]
+        )
+        let unsourcedNode = ReportPresentation(report: unsourced).nodes[0]
+        XCTAssertEqual(
+            ResearchReportTimelineSection.nodeAccessibilityLabel(for: unsourcedNode, language: .zh),
+            "尚未落地的传闻 · 无来源 · 无引文"
+        )
+    }
+
+    /// No evidence is a real state: chapter 04 disappears, but the conclusion
+    /// still says "0 sources" instead of silently dropping the count line.
+    func testConclusionMetaShowsZeroSourcesWhenEvidenceIsEmpty() {
+        let report = BurstResearch(summary: "只有结论。", searchStatus: .succeeded)
+        XCTAssertEqual(
+            ResearchReportConclusionSection.metaText(report: report, language: .zh),
+            "0 个来源 · 0 个域名"
+        )
+        XCTAssertEqual(
+            ResearchReportConclusionSection.metaText(report: report, language: .en),
+            "0 sources · 0 domains"
+        )
+
+        let reader = ResearchReportReader(
+            report: report,
+            contextID: nil,
+            onOpenURL: { _, _ in }
+        )
+        XCTAssertFalse(reader.sections.contains(.sources))
+        XCTAssertFalse(reader.sections.contains(.verification))
+    }
+
+    func testConclusionMetaCountsTimelineSourcesAndQuotes() {
+        // The date label alone is prose; a span needs `sortDate`.
+        XCTAssertEqual(
+            ResearchReportConclusionSection.metaText(
+                report: makeReportWithClaimsAndEvidence(),
+                language: .zh
+            ),
+            "2 个节点 · 3 个来源 · 2 个域名 · 2 条引文已核验 · 2 个独立来源"
+        )
+
+        var dated = makeReportWithClaimsAndEvidence()
+        dated.timeline = [
+            TimelineNode(
+                date: "10月1日",
+                title: "发布预告",
+                detail: "",
+                sortDate: Date(timeIntervalSince1970: 1_790_000_000)
+            ),
+            TimelineNode(
+                date: "10月8日",
+                title: "渠道备货",
+                detail: "",
+                sortDate: Date(timeIntervalSince1970: 1_790_604_800)
+            ),
+        ]
+        XCTAssertEqual(
+            ResearchReportConclusionSection.metaText(report: dated, language: .zh),
+            "2 个节点 · 跨 7 天 · 3 个来源 · 2 个域名 · 2 条引文已核验 · 2 个独立来源"
+        )
+    }
+
     /// The reader keeps the source index collapsed, so the expanded row and the
     /// two chapters are rendered on their own to prove they draw in both themes.
     func testReaderRendersVerificationAndSourceSections() throws {

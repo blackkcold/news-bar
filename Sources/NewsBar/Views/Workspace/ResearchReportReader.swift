@@ -68,7 +68,9 @@ private struct ScrollMetrics: Equatable {
 }
 
 /// The shared report reader. The popup and the workspace both host it, so it
-/// owns its navigation and the only `ScrollView`; sections must not scroll.
+/// owns its navigation and its own `ScrollView`; sections must not scroll. The
+/// workspace's wide source rail is a separate column with its own index scroll,
+/// which is why chapter 04 can be handed over to the rail.
 struct ResearchReportReader: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -243,7 +245,11 @@ struct ResearchReportNavigator: View {
                 selection: Binding(get: { active }, set: { onSelect($0) }),
                 content: {
                     ForEach(sections) { section in
-                        Text("\(section.index) \(section.title)").tag(section)
+                        // The index is a visual ordinal, not something VoiceOver
+                        // should read as "zero one".
+                        Text("\(section.index) \(section.title)")
+                            .tag(section)
+                            .accessibilityLabel(section.title)
                     }
                 },
                 label: { EmptyView() }

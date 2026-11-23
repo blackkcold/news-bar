@@ -47,9 +47,9 @@ struct ResearchReportConclusionSection: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
 
-            if !metaText.isEmpty {
-                metaStrip
-            }
+            // The meta strip always exists: it carries the source count even
+            // when that count is zero.
+            metaStrip
 
             if metrics.missingCount > 0, let missing = report.verification?.missing, !missing.isEmpty {
                 missingStrip(missing)
@@ -75,49 +75,54 @@ struct ResearchReportConclusionSection: View {
         .accessibilityElement(children: .contain)
     }
 
-    /// One honest count per line of the report. Pieces with nothing to count
-    /// are omitted instead of rendered as zero.
-    private var metaText: String {
+    /// One honest count per line of the report. The source count is always
+    /// drawn, including zero, so a report with no evidence says so here instead
+    /// of leaving the reader to wonder whether sources exist elsewhere. Counts
+    /// that would only repeat "nothing to verify" are omitted.
+    static func metaText(report: BurstResearch, language: AppLanguage) -> String {
+        let metrics = ResearchReportMetrics(report: report)
         var parts: [String] = []
         if metrics.timelineNodeCount > 0 {
             if let span = metrics.timelineSpanDays {
                 parts.append(L10n.string(
                     "research.report.meta.timeline",
-                    language: settings.appLanguage,
+                    language: language,
                     metrics.timelineNodeCount,
                     span
                 ))
             } else {
                 parts.append(L10n.string(
                     "research.report.meta.timelineNoSpan",
-                    language: settings.appLanguage,
+                    language: language,
                     metrics.timelineNodeCount
                 ))
             }
         }
-        if metrics.evidenceCount > 0 {
-            parts.append(L10n.string(
-                "research.report.meta.sources",
-                language: settings.appLanguage,
-                metrics.evidenceCount,
-                metrics.domainCount
-            ))
-        }
+        parts.append(L10n.string(
+            "research.report.meta.sources",
+            language: language,
+            metrics.evidenceCount,
+            metrics.domainCount
+        ))
         if metrics.verifiedQuoteCount > 0 {
             parts.append(L10n.string(
                 "research.report.meta.quotes",
-                language: settings.appLanguage,
+                language: language,
                 metrics.verifiedQuoteCount
             ))
         }
         if metrics.independentSourceCount > 0 {
             parts.append(L10n.string(
                 "research.report.meta.independentSources",
-                language: settings.appLanguage,
+                language: language,
                 metrics.independentSourceCount
             ))
         }
         return parts.joined(separator: " · ")
+    }
+
+    private var metaText: String {
+        Self.metaText(report: report, language: settings.appLanguage)
     }
 
     private var metaStrip: some View {
@@ -291,6 +296,40 @@ struct ResearchReportTimelineSection: View {
         .foregroundStyle(.secondary)
     }
 
+    /// One VoiceOver stop per node: date, title, state and citation count. The
+    /// detail stays a separate reading element and the chips stay buttons, so
+    /// the combined line never swallows the quote popovers.
+    static func nodeAccessibilityLabel(
+        for item: ReportPresentation.Node,
+        language: AppLanguage
+    ) -> String {
+        var parts: [String] = []
+        if !item.node.date.isEmpty {
+            parts.append(item.node.date)
+        }
+        parts.append(item.node.title)
+        parts.append(stateText(item.state, language: language))
+        parts.append(citationCountText(item.evidence.count, language: language))
+        return parts.joined(separator: " · ")
+    }
+
+    private static func stateText(
+        _ state: ReportPresentation.NodeState,
+        language: AppLanguage
+    ) -> String {
+        switch state {
+        case .verified: return L10n.string("research.node.verified", language: language)
+        case .citedUnverified: return L10n.string("research.node.unverified", language: language)
+        case .unsourced: return L10n.string("research.node.unsourced", language: language)
+        }
+    }
+
+    private static func citationCountText(_ count: Int, language: AppLanguage) -> String {
+        count == 0
+            ? L10n.string("research.report.claims.noEvidence", language: language)
+            : L10n.string("research.report.timeline.citations", language: language, count)
+    }
+
     private func nodeRow(_ item: ReportPresentation.Node) -> some View {
         HStack(alignment: .top, spacing: 9) {
             stateDot(item.state)
@@ -308,6 +347,11 @@ struct ResearchReportTimelineSection: View {
                         .fixedSize(horizontal: false, vertical: true)
                     Spacer(minLength: 0)
                 }
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(Self.nodeAccessibilityLabel(
+                    for: item,
+                    language: settings.appLanguage
+                ))
 
                 if !item.node.detail.isEmpty {
                     Text(item.node.detail)
@@ -315,6 +359,7 @@ struct ResearchReportTimelineSection: View {
                         .foregroundStyle(.secondary)
                         .lineSpacing(2)
                         .fixedSize(horizontal: false, vertical: true)
+                        .textSelection(.enabled)
                 }
 
                 if !item.evidence.isEmpty {
@@ -333,6 +378,8 @@ struct ResearchReportTimelineSection: View {
         }
     }
 
+    /// Decorative: the node's combined accessibility label already carries the
+    /// state, so the dot must not be announced a second time.
     @ViewBuilder
     private func stateDot(_ state: ReportPresentation.NodeState) -> some View {
         switch state {
@@ -340,7 +387,7 @@ struct ResearchReportTimelineSection: View {
             Circle()
                 .fill(accent)
                 .frame(width: 7, height: 7)
-                .accessibilityLabel("research.node.verified".localized)
+                .accessibilityHidden(true)
         case .citedUnverified:
             Circle()
                 .strokeBorder(
@@ -348,12 +395,12 @@ struct ResearchReportTimelineSection: View {
                     style: StrokeStyle(lineWidth: 1.2, dash: [2, 2])
                 )
                 .frame(width: 7, height: 7)
-                .accessibilityLabel("research.node.unverified".localized)
+                .accessibilityHidden(true)
         case .unsourced:
             Circle()
                 .fill(Color.secondary.opacity(0.5))
                 .frame(width: 7, height: 7)
-                .accessibilityLabel("research.node.unsourced".localized)
+                .accessibilityHidden(true)
         }
     }
 
@@ -572,6 +619,10 @@ struct ResearchReportVerificationSection: View {
                     .foregroundStyle(.tertiary)
                     .fixedSize()
             }
+            // One stop per claim: the claim and how much evidence backs it. The
+            // disclosure itself still reports expanded/collapsed.
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("\(claim.claim) · \(claimCountText(claim))")
         }
         .padding(9)
         .background(.quaternary.opacity(0.16))
@@ -685,6 +736,7 @@ struct ResearchReportVerificationSection: View {
                 .foregroundStyle(.secondary)
                 .lineSpacing(2)
                 .fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
         }
     }
 
@@ -808,6 +860,8 @@ struct ResearchReportSourceSection: View {
                                 .foregroundStyle(.tertiary)
                             Spacer(minLength: 0)
                         }
+                        .accessibilityElement(children: .combine)
+                        .accessibilityAddTraits(.isHeader)
                         VStack(alignment: .leading, spacing: 5) {
                             ForEach(group.items) { item in
                                 sourceRow(item)
@@ -843,6 +897,10 @@ struct ResearchReportSourceSection: View {
 
 /// One source in the index. The label stays a plain row so the whole width
 /// toggles; the open action lives in the content, never inside the label.
+///
+/// The display rules here are shared with `ResearchSourceRail`: a title
+/// fallback, the row background and the VoiceOver description live in one
+/// place so the two indexes cannot drift apart.
 struct ResearchSourceRow: View {
     @Environment(AppSettings.self) private var settings
 
@@ -851,7 +909,19 @@ struct ResearchSourceRow: View {
     let onOpenURL: (String, String) -> Void
 
     private var isRetro: Bool { settings.appTheme == .retroEditorial }
-    private var displayTitle: String { item.title.isEmpty ? item.domain : item.title }
+    private var displayTitle: String { Self.displayTitle(for: item) }
+
+    /// Row background strength. The rail draws the same source, so it uses the
+    /// same tone instead of inventing its own.
+    static let backgroundOpacity: Double = 0.16
+
+    /// A blank title would render an empty row; the domain is the honest
+    /// fallback in both indexes.
+    static func displayTitle(for item: EvidenceItem) -> String {
+        item.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? item.domain
+            : item.title
+    }
 
     /// `domain · stance · T2`, with the domain dropped when it is blank so the
     /// line cannot start with a dangling separator.
@@ -866,6 +936,30 @@ struct ResearchSourceRow: View {
         ))
         parts.append("T\(item.tier.rawValue)")
         return parts.joined(separator: " · ")
+    }
+
+    static func verificationStateText(for item: EvidenceItem, language: AppLanguage) -> String {
+        L10n.string(
+            item.quoteVerified
+                ? "workspace.evidence.verified"
+                : "workspace.evidence.unverified",
+            language: language
+        )
+    }
+
+    /// What VoiceOver reads for one source: the chip key, the title, the domain
+    /// line and whether the quote was verified. The key is part of the label
+    /// because two rows on one domain would otherwise sound identical.
+    static func accessibilityDescription(
+        for item: EvidenceItem,
+        language: AppLanguage
+    ) -> String {
+        [
+            item.id,
+            displayTitle(for: item),
+            metaText(for: item, language: language),
+            verificationStateText(for: item, language: language),
+        ].joined(separator: " · ")
     }
 
     var body: some View {
@@ -914,9 +1008,14 @@ struct ResearchSourceRow: View {
                     verification: item.quoteVerified ? .verifiedQuote : .unverifiedQuote
                 )
             }
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(Self.accessibilityDescription(
+                for: item,
+                language: settings.appLanguage
+            ))
         }
         .padding(9)
-        .background(.quaternary.opacity(0.16))
+        .background(.quaternary.opacity(Self.backgroundOpacity))
         .editorialClipShape(cornerRadius: 7)
     }
 }
