@@ -66,36 +66,44 @@ struct FollowingReaderPane: View {
 
     var body: some View {
         ScrollViewReader { proxy in
-            ScrollView(.vertical) {
-                VStack(alignment: .leading, spacing: 18) {
-                    byline
-                    bodyBlock
-                    if let original = quotedText {
-                        quoteBlock(original)
+            VStack(spacing: 0) {
+                // The author bar stays put. It carries the only original-post
+                // entry, and a long post used to scroll that entry away at
+                // exactly the depth where it is needed.
+                bylineBar
+                Rectangle()
+                    .fill(dividerColor)
+                    .frame(height: 1)
+                ScrollView(.vertical) {
+                    VStack(alignment: .leading, spacing: 18) {
+                        bodyBlock
+                        if let original = quotedText {
+                            quoteBlock(original)
+                        }
+                        if entry.post.isLongText {
+                            longTextHint
+                        }
+                        mediaGrid
+                        metricsRow { scrollToDiscussion(proxy) }
+                        Rectangle()
+                            .fill(dividerColor)
+                            .frame(height: 1)
+                        discussionHeader
+                        newCommentsBanner
+                        commentTree
+                        commentFooter
+                        if let issue = thread.loadMoreError, !thread.comments.isEmpty {
+                            inlineError(issue)
+                        }
                     }
-                    if entry.post.isLongText {
-                        longTextHint
-                    }
-                    mediaGrid
-                    metricsRow { scrollToDiscussion(proxy) }
-                    Rectangle()
-                        .fill(dividerColor)
-                        .frame(height: 1)
-                    discussionHeader
-                    newCommentsBanner
-                    commentTree
-                    commentFooter
-                    if let issue = thread.loadMoreError, !thread.comments.isEmpty {
-                        inlineError(issue)
-                    }
+                    .frame(maxWidth: FollowingReaderMetrics.contentMax, alignment: .leading)
+                    .padding(.horizontal, FollowingReaderMetrics.horizontalPadding)
+                    .padding(.top, 20)
+                    .padding(.bottom, 30)
+                    .frame(maxWidth: .infinity, alignment: .top)
                 }
-                .frame(maxWidth: FollowingReaderMetrics.contentMax, alignment: .leading)
-                .padding(.horizontal, FollowingReaderMetrics.horizontalPadding)
-                .padding(.top, 20)
-                .padding(.bottom, 30)
-                .frame(maxWidth: .infinity, alignment: .top)
+                .id(entry.id)
             }
-            .id(entry.id)
         }
         .background(retro ? RetroEditorialTokens.raisedPaper : Color(nsColor: .controlBackgroundColor))
         .task(id: entry.id) {
@@ -145,6 +153,17 @@ struct FollowingReaderPane: View {
             .help(copy("在微博中打开这条博文", "Open this post on Weibo"))
             .accessibilityLabel(copy("在微博中打开这条博文", "Open this post on Weibo"))
         }
+    }
+
+    /// Pinned above the scroll view so the author and the original-post entry
+    /// survive a long read. It aligns with the prose column instead of
+    /// stretching across a wide pane.
+    private var bylineBar: some View {
+        byline
+            .frame(maxWidth: FollowingReaderMetrics.contentMax, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, FollowingReaderMetrics.horizontalPadding)
+            .padding(.vertical, 11)
     }
 
     private var bodyBlock: some View {
