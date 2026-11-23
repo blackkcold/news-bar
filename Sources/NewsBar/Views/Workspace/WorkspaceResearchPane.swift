@@ -8,6 +8,10 @@ struct WorkspaceResearchPane: View {
     let onStart: (_ forceRefresh: Bool, _ depth: ResearchDepth) -> Void
     let onRequestSegment: (WorkspaceSegment) -> Void
 
+    /// Wide layout: the source index moves into its own column. Hidden by
+    /// default so the 1180 window keeps a readable report width.
+    @State private var showsSourceRail = false
+
     private var record: ResearchRecord? { detail.research }
     private var versions: [WorkspaceReportVersion] { detail.versions }
 
@@ -47,18 +51,34 @@ struct WorkspaceResearchPane: View {
             Divider()
 
             if let report = displayedReport {
-                // The reader owns the only scroll view in this pane; the run
-                // strip and the action bar stay fixed around it.
-                ResearchReportReader(
-                    report: report,
-                    contextID: record?.id,
-                    isHistorical: isHistorical,
-                    isLegacy: record?.reportVersion == 0,
-                    onOpenURL: { url, title in
-                        model.openEvidenceURL(url, title: title)
-                    },
-                    onOpenEventTimeline: { onRequestSegment(.timeline) }
-                )
+                // The reader owns the only scroll view in the pane; the run
+                // strip and the action bar stay fixed around it. At wide
+                // widths the source index moves to its own column, so the
+                // reader drops chapter 04 instead of drawing it twice.
+                let groups = ResearchSourceGrouping.groups(for: report.evidence)
+                let railVisible = showsSourceRail && !groups.isEmpty
+                HStack(spacing: 0) {
+                    ResearchReportReader(
+                        report: report,
+                        contextID: record?.id,
+                        isHistorical: isHistorical,
+                        isLegacy: record?.reportVersion == 0,
+                        showsSourceSection: !railVisible,
+                        onOpenURL: { url, title in
+                            model.openEvidenceURL(url, title: title)
+                        },
+                        onOpenEventTimeline: { onRequestSegment(.timeline) }
+                    )
+                    if railVisible {
+                        ResearchSourceRail(
+                            groups: groups,
+                            metrics: ResearchReportMetrics(report: report),
+                            onOpenURL: { url, title in
+                                model.openEvidenceURL(url, title: title)
+                            }
+                        )
+                    }
+                }
             } else {
                 emptyReportState
             }
@@ -67,6 +87,13 @@ struct WorkspaceResearchPane: View {
             footer
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        // Measured after the flexible frame: this is the width the detail pane
+        // was actually given, not the window's width.
+        .onGeometryChange(for: CGFloat.self) { proxy in
+            proxy.size.width
+        } action: { width in
+            showsSourceRail = width >= 820
+        }
         .onChange(of: chosenDepth) { _, depth in
             Task { await model.refreshReusePreview(depth: depth) }
         }

@@ -169,6 +169,58 @@ final class ResearchReportReaderRenderingTests: XCTestCase {
         XCTAssertEqual(reader.sections, [.conclusion, .timeline, .verification])
     }
 
+    /// The wide layout's source index. It is a 220pt column with its own
+    /// scroll view, so the rail must draw its groups and compact rows without
+    /// the reader beside it.
+    func testSourceRailRendersAtWideLayoutWidth() throws {
+        let output = try researchTestDirectory()
+            .appendingPathComponent("report-reader-render-matrix", isDirectory: true)
+        try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+
+        let report = makeReportWithClaimsAndEvidence()
+        let groups = ResearchSourceGrouping.groups(for: report.evidence)
+        XCTAssertEqual(groups.count, 2, "fixture keeps two domains")
+        let metrics = ResearchReportMetrics(report: report)
+
+        for theme in AppTheme.allCases {
+            let rail = try render(
+                state: "source-rail",
+                theme: theme,
+                size: NSSize(width: 220, height: 600),
+                output: output,
+                content: ResearchSourceRail(
+                    groups: groups,
+                    metrics: metrics,
+                    onOpenURL: { _, _ in }
+                )
+            )
+            XCTAssertGreaterThan(
+                rail.count,
+                2_000,
+                "source-rail-\(theme.rawValue)"
+            )
+
+            // Header-only rail: the same chrome without any group. The data
+            // must differ, otherwise the rows are not being drawn at all.
+            let headerOnly = try render(
+                state: "source-rail-no-groups",
+                theme: theme,
+                size: NSSize(width: 220, height: 600),
+                output: output,
+                content: ResearchSourceRail(
+                    groups: [],
+                    metrics: metrics,
+                    onOpenURL: { _, _ in }
+                )
+            )
+            XCTAssertNotEqual(
+                rail,
+                headerOnly,
+                "source-rail-\(theme.rawValue): groups and rows must draw below the header"
+            )
+        }
+    }
+
     func testReaderRendersClaimsAndCollapsedSources() throws {
         let output = try researchTestDirectory()
             .appendingPathComponent("report-reader-render-matrix", isDirectory: true)

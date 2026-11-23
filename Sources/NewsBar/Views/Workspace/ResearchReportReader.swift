@@ -160,7 +160,20 @@ struct ResearchReportReader: View {
                     // a chapter that no longer means the same thing.
                     proxy.scrollTo(ResearchReportSection.conclusion.id, anchor: .top)
                 }
+                .onChange(of: showsSourceSection) { _, _ in
+                    clampActiveSection()
+                }
             }
+        }
+    }
+
+    /// The navigator must never highlight a chapter it does not offer: when the
+    /// rail takes over chapter 04 (or gives it back), a stale `.sources`
+    /// selection falls back to the last visible chapter. Called from
+    /// `onChange`, never from `body`, so view evaluation stays pure.
+    private func clampActiveSection() {
+        if !sections.contains(activeSection) {
+            activeSection = sections.last ?? .conclusion
         }
     }
 
