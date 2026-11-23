@@ -1227,13 +1227,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             window = existing
         } else {
             let panel = NSPanel(
-                contentRect: NSRect(origin: .zero, size: NSSize(width: 680, height: 720)),
+                contentRect: NSRect(origin: .zero, size: NSSize(width: 760, height: 760)),
                 styleMask: [.titled, .closable, .miniaturizable, .resizable, .utilityWindow],
                 backing: .buffered,
                 defer: false
             )
             panel.title = settings.appLanguage == .en ? "Research report" : "研究报告"
-            panel.minSize = NSSize(width: 560, height: 460)
+            panel.minSize = NSSize(width: 620, height: 560)
             panel.isReleasedWhenClosed = false
             panel.hidesOnDeactivate = false
             panel.becomesKeyOnlyIfNeeded = false
@@ -1242,7 +1242,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             panel.contentViewController = NSHostingController(
                 rootView: TransientResearchReportView(
                     model: model,
-                    onClose: { [weak self] in self?.transientResearchWindow?.performClose(nil) }
+                    onClose: { [weak self] in self?.transientResearchWindow?.performClose(nil) },
+                    onOpenWorkspace: { [weak self] in
+                        guard let self, let recordID = self.transientResearchModel?.recordID else { return }
+                        self.openResearchWorkspace(researchID: recordID)
+                    }
                 )
                 .environment(settings)
                 .id(settings.appLanguage)
