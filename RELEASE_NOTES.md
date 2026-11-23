@@ -1,3 +1,20 @@
+## [v3.4.1] - 2026-11-23
+
+### 🐛 修复
+
+- **启动后数据全部不加载**：恢复同步 App 入口。v3.4.0 的 async 入口占满主 actor，Weibo 监控、RSS 调度与启动刷新全部不执行。
+- **阅读模式资源崩溃**：移除 `Bundle.module` 的构建机路径依赖，改为显式搜索 App 的 `Contents/Resources`；打包后的阅读模式不再 `fatalError`。
+
+### 🔧 改进
+
+- **启动探针**：新增 `--launch-probe` 与 `scripts/agent-test.sh --tier launch`；`build.sh` 与 CI 都会运行。agent CLI 暂时移出 App，v3.4.2 以独立 `NewsBarAgent` 回归。
+
+### 🧪 回归覆盖
+
+- 全量测试 + launch 探针；入口不变量测试（`main.swift` 不含 `await` / `AgentHeadless` / `Task`）；阅读模式 JS 资源存在性测试。
+
+---
+
 ## [v3.4.0] - 2026-11-23
 
 ### ✨ 新功能

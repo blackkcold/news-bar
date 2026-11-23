@@ -1,10 +1,20 @@
 import AppKit
 
-// Headless agent commands: no window, no store, no network. They must run
-// before the process writes preferences and before the single-instance
-// check, so an agent never disturbs the copy that is already running.
-if let status = await AgentHeadless.runIfRequested(arguments: CommandLine.arguments) {
-    exit(status)
+// v3.4.1: the app entry must stay synchronous. A top-level `await` turned the
+// whole entry into a main-actor task; `NSApplication.run()` then held the main
+// queue forever and every `Task { @MainActor }` in the app starved.
+if let probePath = LaunchProbe.requestedPath(arguments: CommandLine.arguments) {
+    LaunchProbe.run(path: probePath)
+    exit(0)
+}
+
+// The agent CLI used to run here. It moves out of the app in v3.4.2; making
+// this a loud failure keeps old scripts from accidentally launching the GUI.
+if CommandLine.arguments.dropFirst().first == "--agent" {
+    FileHandle.standardError.write(Data(
+        "agent commands moved out of the app; use NewsBarAgent in v3.4.2.\n".utf8
+    ))
+    exit(2)
 }
 
 // The in-app language setting decides what every surface speaks: the app's
@@ -27,6 +37,19 @@ if let status = RecommendationGuideDiagnostic.runIfRequested(
     output: { FileHandle.standardOutput.write(Data(($0 + "\n").utf8)) }
 ) {
     exit(status)
+}
+
+// Packaged-app check: reader-mode.js must be readable from the app bundle.
+// The old `Bundle.module` accessor embedded the build-machine path and would
+// `fatalError` on a user's Mac; this check fails the package instead.
+if CommandLine.arguments.contains("--verify-reader-script") {
+    let source = MainActor.assumeIsolated { ReaderModeScript.source() }
+    if source != nil {
+        print("reader-mode OK")
+        exit(0)
+    }
+    FileHandle.standardError.write(Data("reader-mode.js missing\n".utf8))
+    exit(1)
 }
 
 // Single-instance check: prevent running multiple copies

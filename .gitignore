@@ -41,3 +41,6 @@ sparkle_ed_key*
 sparkle_ed_pub
 NewsBar.pem
 release/appcast/
+
+# Build-time local pointer; release.sh requires a clean worktree.
+release/latest

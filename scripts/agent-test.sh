@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Background checks for agents and CI. Nothing here launches an App window or
-# touches the store of a running NewsBar: tests use TestIsolation, CLI calls use
-# a temporary NEWSBAR_AGENT_ROOT and a prohibited activation policy.
+# Background checks for agents and CI. Nothing here launches a visible App
+# window or touches the store of a running NewsBar: tests use TestIsolation and
+# the launch probe runs with a prohibited activation policy.
 
 PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$PROJECT_DIR"
@@ -14,13 +14,15 @@ NO_BUILD=0
 
 usage() {
     cat <<'TEXT'
-Usage: scripts/agent-test.sh [--tier headless|render|all] [--json] [--no-build]
+Usage: scripts/agent-test.sh [--tier headless|render|launch|all] [--json] [--no-build]
 
-  headless   Logic + parser + cache + controller tests and CLI checks.
-             Opens no window. This is the default.
-  render     Reader/monitor snapshots plus the off-screen render-reader command.
-             Windows stay off-screen and are never made key.
-  all        Full swift test suite plus every CLI check and render variant.
+  headless   Logic + parser + cache + controller tests. Opens no window.
+             This is the default.
+  render     Reader/monitor snapshots. Windows stay off-screen and are never
+             made key.
+  launch     Runs the packaged app entry through --launch-probe and proves the
+             main actor is still schedulable while AppKit's run loop runs.
+  all        Full swift test suite plus render and launch checks.
 
   --json     Print one JSON report at the end.
   --no-build Skip the initial swift build and use .build/debug/NewsBar as is.
@@ -56,7 +58,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 case "$TIER" in
-    headless|render|all) ;;
+    headless|render|launch|all) ;;
     *)
         echo "Unknown tier: $TIER" >&2
         usage
@@ -72,13 +74,13 @@ FIXTURE="$PROJECT_DIR/Tests/NewsBarHeadlessTests/Fixtures/reader.json"
 mkdir -p "$LOG_DIR"
 : > "$STEPS_FILE"
 
-# Isolate the CLI's agent queue. The store summary reads a copy of the real
-# store; only render-reader turns on full preference isolation.
+# Isolate any agent queue. The v3.4.1 app no longer exposes --agent; the
+# variable stays so the v3.4.2 agent executable inherits the same convention.
 export NEWSBAR_AGENT_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/newsbar-agent.XXXXXX")"
 export NEWSBAR_TEST_HEADLESS=1
 trap 'rm -rf "$NEWSBAR_AGENT_ROOT"' EXIT
 
-RUNNING="$(pgrep -x NewsBar 2>/dev/null | wc -l | tr -d ' ')"
+RUNNING="$(pgrep -x NewsBar 2>/dev/null | wc -l | tr -d ' ' || true)"
 echo "NewsBar instances running: $RUNNING (left untouched)"
 
 FAILED=0
@@ -117,19 +119,19 @@ RENDER_FILTER='FollowingReaderRenderingTests|WeiboMonitorRenderingTests'
 
 if [[ "$TIER" == "headless" || "$TIER" == "all" ]]; then
     run_step headless-tests swift test --filter "$HEADLESS_FILTER"
-    run_step agent-check "$BIN" --agent check
-    run_step agent-store-summary "$BIN" --agent store-summary
-    run_step agent-doctor "$BIN" --agent doctor
 fi
 
 if [[ "$TIER" == "render" || "$TIER" == "all" ]]; then
     run_step render-tests swift test --filter "$RENDER_FILTER"
-    run_step render-modern env NEWSBAR_AGENT_ISOLATED=1 "$BIN" --agent render-reader "$FIXTURE" \
-        --out "$LOG_DIR/reader-modern-zh.png"
-    run_step render-retro env NEWSBAR_AGENT_ISOLATED=1 "$BIN" --agent render-reader "$FIXTURE" \
-        --theme retroEditorial --out "$LOG_DIR/reader-retro-zh.png"
-    run_step render-narrow env NEWSBAR_AGENT_ISOLATED=1 "$BIN" --agent render-reader "$FIXTURE" \
-        --width 579 --height 860 --out "$LOG_DIR/reader-960-modern-zh.png"
+fi
+
+if [[ "$TIER" == "launch" || "$TIER" == "all" ]]; then
+    # 45s covers a cold debug launch; the alarm remains active across exec.
+    run_step launch-probe \
+        perl -e 'alarm 45; exec @ARGV' -- \
+        "$BIN" --launch-probe "$LOG_DIR/launch-probe.json"
+    run_step launch-probe-assert \
+        bash scripts/check-launch-probe.sh "$LOG_DIR/launch-probe.json"
 fi
 
 if [[ "$TIER" == "all" ]]; then
