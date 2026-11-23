@@ -14,6 +14,9 @@ struct CachedRemoteImage<Placeholder: View>: View {
     let url: URL
     /// Decoded thumbnail size in pixels; see `ImageCache.pixelSize(forPoints:displayScale:)`.
     let maxPixelSize: Int
+    /// `.fill` crops to the caller's frame. `.fit` is for a single wide image
+    /// that must stay whole, such as a screenshot in a post body.
+    var contentMode: ContentMode = .fill
     @ViewBuilder var placeholder: () -> Placeholder
 
     /// The last decoded image and the URL it belongs to. Pixel size is not part
@@ -34,7 +37,7 @@ struct CachedRemoteImage<Placeholder: View>: View {
             if let image, imageURL == url {
                 Image(nsImage: image)
                     .resizable()
-                    .scaledToFill()
+                    .aspectRatio(contentMode: contentMode)
                     // The card owns the frame; this only keeps the decoded
                     // image from painting outside it before the caller clips.
                     .clipped()

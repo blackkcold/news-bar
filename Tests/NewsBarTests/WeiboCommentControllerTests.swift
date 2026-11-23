@@ -36,6 +36,13 @@ final class WeiboCommentControllerTests: XCTestCase {
     private var controller: WeiboCommentController!
     private let now = WeiboMonitorTestSupport.date(2026, 11, 12, 12, 0)
 
+    /// The cache compares `fetchedAt` against the real clock, so a hard-coded
+    /// fixture date goes stale seven days after it was written. Round to a
+    /// whole second so an encode/decode round-trip compares equal.
+    private var recent: Date {
+        Date(timeIntervalSince1970: Date().timeIntervalSince1970.rounded(.down))
+    }
+
     override func setUp() async throws {
         try await super.setUp()
         root = FileManager.default.temporaryDirectory
@@ -80,7 +87,7 @@ final class WeiboCommentControllerTests: XCTestCase {
         cursor: String?,
         fetchedAt: Date? = nil
     ) -> WeiboCommentPage {
-        let date = fetchedAt ?? now
+        let date = fetchedAt ?? recent
         let comments = ids.enumerated().map { index, id in
             WeiboComment(
                 id: id,
@@ -238,7 +245,7 @@ final class WeiboCommentControllerTests: XCTestCase {
             ids: ["old"],
             total: 1,
             cursor: nil,
-            fetchedAt: now.addingTimeInterval(-20 * 60)
+            fetchedAt: recent.addingTimeInterval(-20 * 60)
         )
         await cache.save(mid: "9001", thread: CachedWeiboCommentThread(page: stale, pagesLoaded: 1))
         await fetcher.setOutcome(

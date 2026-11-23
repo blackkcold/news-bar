@@ -93,6 +93,13 @@ actor ImageCache {
         return nil
     }
 
+    /// Clears the remembered failure for one URL so an explicit user retry
+    /// actually reaches the network. Every other request keeps the TTL.
+    func clearFailure(for url: URL, maxPixelSize: Int = thumbnailMaxPixelSize) {
+        let pixelSize = min(2_048, max(64, maxPixelSize))
+        failedUntil[Self.cacheKey(for: url, maxPixelSize: pixelSize)] = nil
+    }
+
     /// Pure validation seam — no I/O, safe for unit testing.
     static func isAcceptableResponse(httpResponse: HTTPURLResponse, data: Data) -> Bool {
         guard (200..<300).contains(httpResponse.statusCode) else { return false }

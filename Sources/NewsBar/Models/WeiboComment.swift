@@ -7,6 +7,27 @@ enum WeiboCommentTier: String, Codable, Sendable, Equatable {
     case mobile
 }
 
+/// One styled span of a comment body. The comment payload is HTML; parsing it
+/// on the fetch actor keeps `AttributedString` construction out of layout.
+///
+/// `.mention` and `.topic` carry the href Weibo supplied for them, so they stay
+/// clickable while keeping their own accent styling (no underline). The URL is
+/// always the platform's own, never a guessed profile or search route.
+struct WeiboCommentRun: Codable, Equatable, Sendable {
+    enum Kind: String, Codable, Sendable {
+        case text
+        case link
+        case mention
+        case topic
+    }
+
+    var kind: Kind
+    var text: String
+    /// Only for `.link`, `.mention` and `.topic`, and already checked against
+    /// `ReaderNavigationPolicy`.
+    var url: String?
+}
+
 /// One comment as shown under a post. Optional fields are deliberately
 /// optional: a missing like count is not zero, and a missing reply target must
 /// not be invented from the parent comment body.
@@ -21,6 +42,11 @@ struct WeiboComment: Codable, Identifiable, Equatable, Sendable {
     var likeCount: Int?
     var replyToName: String?
     var isAuthor: Bool
+    /// Parsed spans of the raw body. `nil` means the payload carried no markup
+    /// (or the comment came from a cache written before this field existed).
+    /// Optional on purpose: `comments/*.json` from an older build has no such
+    /// key and must still decode, because a decode failure deletes the file.
+    var runs: [WeiboCommentRun]?
 }
 
 /// One successful page of a comment thread.

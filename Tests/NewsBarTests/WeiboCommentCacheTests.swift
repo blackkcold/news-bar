@@ -4,7 +4,18 @@ import XCTest
 final class WeiboCommentCacheTests: XCTestCase {
     private var root: URL!
     private var cache: WeiboCommentCache!
-    private let now = WeiboMonitorTestSupport.date(2026, 11, 12, 12, 0)
+
+    /// The cache compares `fetchedAt` against the real clock, so a fixture with
+    /// a hard-coded date turns into a stale thread seven days after it was
+    /// written. Round to a whole second: the encoder writes ISO-8601 without
+    /// fractions, and a round-trip must compare equal.
+    private var recent: Date {
+        Date(timeIntervalSince1970: Date().timeIntervalSince1970.rounded(.down))
+    }
+
+    private var recentISO: String {
+        ISO8601DateFormatter().string(from: recent)
+    }
 
     override func setUp() async throws {
         try await super.setUp()
@@ -22,7 +33,7 @@ final class WeiboCommentCacheTests: XCTestCase {
     }
 
     private func page(mid: String, count: Int, fetchedAt: Date? = nil, cursor: String? = "next") -> WeiboCommentPage {
-        let date = fetchedAt ?? now
+        let date = fetchedAt ?? recent
         let comments = (0..<count).map { index in
             WeiboComment(
                 id: "\(mid)-\(index)",
@@ -66,7 +77,7 @@ final class WeiboCommentCacheTests: XCTestCase {
     }
 
     func testExpiredThreadIsDropped() async throws {
-        let stale = page(mid: "9002", count: 1, fetchedAt: now.addingTimeInterval(-8 * 24 * 3600))
+        let stale = page(mid: "9002", count: 1, fetchedAt: recent.addingTimeInterval(-8 * 24 * 3600))
         await cache.save(mid: "9002", thread: CachedWeiboCommentThread(page: stale, pagesLoaded: 1))
 
         let loaded = await cache.load(mid: "9002")
@@ -99,5 +110,58 @@ final class WeiboCommentCacheTests: XCTestCase {
         await cache.clear()
         let loaded = await cache.load(mid: "9004")
         XCTAssertNil(loaded)
+    }
+
+    func testLegacyJSONWithoutRunsStillDecodes() async throws {
+        let directory = root.appendingPathComponent("comments", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        // Written by a build that predates `runs`. No such key exists anywhere,
+        // which is the case a non-optional field would break.
+        let stamp = recentISO
+        let legacy = """
+        {
+          "page": {
+            "comments": [
+              {
+                "id": "1",
+                "mid": "9005",
+                "uid": "7",
+                "screenName": "读者",
+                "text": "旧评论",
+                "createdAt": "\(stamp)",
+                "isAuthor": false
+              }
+            ],
+            "fetchedAt": "\(stamp)",
+            "tier": "desktop"
+          },
+          "pagesLoaded": 1
+        }
+        """
+        let file = directory.appendingPathComponent("9005.json")
+        try Data(legacy.utf8).write(to: file)
+
+        let loaded = await cache.load(mid: "9005")
+        let thread = try XCTUnwrap(loaded)
+        XCTAssertEqual(thread.page.comments.count, 1)
+        XCTAssertEqual(thread.page.comments[0].text, "旧评论")
+        XCTAssertNil(thread.page.comments[0].runs)
+        XCTAssertTrue(
+            FileManager.default.fileExists(atPath: file.path),
+            "A decode failure deletes the cache file; adding an optional field must not trigger that"
+        )
+    }
+
+    func testRunsRoundTripThroughCache() async throws {
+        var original = page(mid: "9006", count: 1)
+        original.comments[0].runs = [
+            WeiboCommentRun(kind: .text, text: "看这个", url: nil),
+            WeiboCommentRun(kind: .link, text: "链接", url: "https://example.com/a"),
+            WeiboCommentRun(kind: .mention, text: "@某人", url: nil),
+        ]
+        await cache.save(mid: "9006", thread: CachedWeiboCommentThread(page: original, pagesLoaded: 1))
+
+        let loaded = await cache.load(mid: "9006")
+        XCTAssertEqual(loaded?.page.comments[0].runs, original.comments[0].runs)
     }
 }
