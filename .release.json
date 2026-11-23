@@ -17,7 +17,7 @@
   "release_branch": true,
   "auto_merge": false,
   "release_note_style": "structured-cn",
-  "summary": "修复 v3.4.0 启动后数据不加载与阅读模式资源崩溃；新增启动探针门禁",
-  "summary_en": "Fix the v3.4.0 startup main-actor regression and the packaged reader-mode resource crash; add a launch probe gate",
+  "summary": "将 agent CLI 拆为独立 NewsBarAgent 进程，App 入口只保留同步 runApp()；agent 显式隔离，store-summary 读真实副本，doctor 报告真实/隔离根",
+  "summary_en": "Move the agent CLI into a separate NewsBarAgent process; keep the app entry synchronous, isolate the agent explicitly, and report real versus effective store roots",
   "validation": ""
 }

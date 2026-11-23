@@ -1,3 +1,16 @@
+## [v3.4.2] - 2026-11-23
+
+### 🔧 改进
+
+- **agent 入口独立**：`NewsBarAgent` 成为独立可执行文件；App 入口只保留同步 `runApp()`，agent 命令不再和 `NSApplication.run()` 共用进程。保留 `NewsBar` 模块名与资源 bundle 名，196 个测试导入不变。
+- **隔离与诊断**：agent 进程显式激活 `TestIsolation`；`store-summary` 读真实 store 的副本，`doctor` 分开报告真实根与隔离根。
+
+### 🧪 回归覆盖
+
+- 全量 + headless + render + launch；agent CLI 与三张离屏阅读器快照。
+
+---
+
 ## [v3.4.1] - 2026-11-23
 
 ### 🐛 修复
