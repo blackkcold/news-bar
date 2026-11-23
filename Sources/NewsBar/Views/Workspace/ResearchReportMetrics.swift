@@ -55,6 +55,14 @@ struct ResearchReportMetrics: Equatable, Sendable {
             .day ?? 0
         return max(0, days)
     }
+
+    /// The span worth writing down. `timelineSpanDays == 0` is a real value —
+    /// every dated node falls on one day — but "span 0 days" reads like a bug,
+    /// so the display layer falls back to a plain node count instead.
+    var displaySpanDays: Int? {
+        guard let timelineSpanDays, timelineSpanDays > 0 else { return nil }
+        return timelineSpanDays
+    }
 }
 
 // MARK: - Source grouping

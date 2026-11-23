@@ -256,7 +256,7 @@ final class ResearchReportReaderRenderingTests: XCTestCase {
         )
         XCTAssertEqual(
             ResearchReportVerificationSection(report: gapReport, isLegacy: true).gapNoteKey,
-            "research.report.legacy.note"
+            "research.legacy.noVerification"
         )
         XCTAssertNil(
             ResearchReportVerificationSection(report: makeReportWithClaimsAndEvidence()).gapNoteKey
@@ -264,6 +264,51 @@ final class ResearchReportReaderRenderingTests: XCTestCase {
         XCTAssertNil(
             ResearchReportVerificationSection(report: makeReportWithClaimsAndEvidence(), isLegacy: true)
                 .gapNoteKey
+        )
+    }
+
+    /// A legacy record is `reportVersion == 0`, not "no evidence": imported
+    /// reports keep their sources and verification. Chapter 01 must not claim
+    /// the report lacks evidence when chapter 04 lists it.
+    func testLegacyNotesOnlyMentionEvidenceWhenThereIsNone() {
+        let withEvidence = makeReportWithClaimsAndEvidence()
+        XCTAssertEqual(
+            ResearchReportConclusionSection.noteKeys(report: withEvidence, isLegacy: true),
+            ["research.oldReport"]
+        )
+
+        let withoutEvidence = BurstResearch(summary: "旧版结论。", searchStatus: .succeeded)
+        XCTAssertEqual(
+            ResearchReportConclusionSection.noteKeys(report: withoutEvidence, isLegacy: true),
+            ["research.oldReport", "research.report.legacy.note"]
+        )
+        XCTAssertEqual(
+            ResearchReportConclusionSection.noteKeys(report: withoutEvidence, isLegacy: false),
+            []
+        )
+
+        var failed = withoutEvidence
+        failed.searchStatus = .failed
+        XCTAssertEqual(
+            ResearchReportConclusionSection.noteKeys(report: failed, isLegacy: false),
+            ["research.report.searchFailed"]
+        )
+    }
+
+    func testLegacyEmptyEvidenceHidesTheSourceCountLine() {
+        let report = BurstResearch(summary: "旧版结论。", searchStatus: .succeeded)
+        // Modern zero is a finding; legacy zero is an artifact with no list.
+        XCTAssertEqual(
+            ResearchReportConclusionSection.metaText(report: report, language: .zh),
+            "0 个来源 · 0 个域名"
+        )
+        XCTAssertEqual(
+            ResearchReportConclusionSection.metaText(
+                report: report,
+                language: .zh,
+                isLegacy: true
+            ),
+            ""
         )
     }
 
@@ -411,7 +456,7 @@ final class ResearchReportReaderRenderingTests: XCTestCase {
         )
         XCTAssertEqual(
             ResearchReportConclusionSection.metaText(report: report, language: .en),
-            "0 sources · 0 domains"
+            "Sources: 0 · Domains: 0"
         )
 
         let reader = ResearchReportReader(
@@ -430,7 +475,7 @@ final class ResearchReportReaderRenderingTests: XCTestCase {
                 report: makeReportWithClaimsAndEvidence(),
                 language: .zh
             ),
-            "2 个节点 · 3 个来源 · 2 个域名 · 2 条引文已核验 · 2 个独立来源"
+            "2 个节点 · 3 个来源 · 2 个域名 · 已核验 2/3 条引文 · 2 个独立来源"
         )
 
         var dated = makeReportWithClaimsAndEvidence()
@@ -450,8 +495,66 @@ final class ResearchReportReaderRenderingTests: XCTestCase {
         ]
         XCTAssertEqual(
             ResearchReportConclusionSection.metaText(report: dated, language: .zh),
-            "2 个节点 · 跨 7 天 · 3 个来源 · 2 个域名 · 2 条引文已核验 · 2 个独立来源"
+            "2 个节点 · 跨 7 天 · 3 个来源 · 2 个域名 · 已核验 2/3 条引文 · 2 个独立来源"
         )
+    }
+
+    /// Two nodes on one day have a span of zero days; "跨 0 天" reads like a
+    /// bug, so the display falls back to the node count and keeps it.
+    func testSameDayTimelineShowsNodeCountInsteadOfZeroDaySpan() {
+        var sameDay = makeReportWithClaimsAndEvidence()
+        let day = Date(timeIntervalSince1970: 1_790_000_000)
+        sameDay.timeline = [
+            TimelineNode(date: "10月1日", title: "上午", detail: "", sortDate: day),
+            TimelineNode(date: "10月1日", title: "下午", detail: "", sortDate: day),
+        ]
+        let metrics = ResearchReportMetrics(report: sameDay)
+        XCTAssertEqual(metrics.timelineSpanDays, 0)
+        XCTAssertNil(metrics.displaySpanDays)
+        XCTAssertEqual(
+            ResearchReportConclusionSection.metaText(report: sameDay, language: .zh),
+            "2 个节点 · 3 个来源 · 2 个域名 · 已核验 2/3 条引文 · 2 个独立来源"
+        )
+    }
+
+    /// The historical tag sits at the trailing edge of the full-width tab bar;
+    /// it must keep drawing without squeezing the four chapters away.
+    func testReaderRendersHistoricalTagBesideTheFullWidthNavigator() throws {
+        let output = try researchTestDirectory()
+            .appendingPathComponent("report-reader-render-matrix", isDirectory: true)
+        try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+
+        let report = makeReportWithClaimsAndEvidence()
+        for theme in AppTheme.allCases {
+            for size in sizes {
+                let tagged = try render(
+                    state: "historical-nav",
+                    report: report,
+                    theme: theme,
+                    size: size,
+                    output: output,
+                    isHistorical: true
+                )
+                let plain = try render(
+                    state: "historical-nav-off",
+                    report: report,
+                    theme: theme,
+                    size: size,
+                    output: output
+                )
+                XCTAssertNotEqual(
+                    tagged,
+                    plain,
+                    "historical tag must draw: \(theme.rawValue) \(Int(size.width))"
+                )
+            }
+        }
+    }
+
+    /// The wide rail is gated on the detail pane's own width, not the window's.
+    func testSourceRailGateIs820() {
+        XCTAssertFalse(ResearchSourceRail.isVisible(detailWidth: 819))
+        XCTAssertTrue(ResearchSourceRail.isVisible(detailWidth: 820))
     }
 
     /// The reader keeps the source index collapsed, so the expanded row and the
@@ -717,11 +820,13 @@ final class ResearchReportReaderRenderingTests: XCTestCase {
         size: NSSize,
         output: URL,
         isLegacy: Bool = false,
+        isHistorical: Bool = false,
         onOpenEventTimeline: (() -> Void)? = nil
     ) throws -> Data {
         let view = ResearchReportReader(
             report: report,
             contextID: nil,
+            isHistorical: isHistorical,
             isLegacy: isLegacy,
             onOpenURL: { _, _ in },
             onOpenEventTimeline: onOpenEventTimeline
@@ -748,8 +853,18 @@ final class ResearchReportReaderRenderingTests: XCTestCase {
 
         let view = content
             .frame(width: size.width, height: size.height, alignment: .topLeading)
-            .background(Color(nsColor: .windowBackgroundColor))
+            // Paint each theme's real surface: the reader itself is transparent,
+            // so a window-colored harness would hide retro palette regressions.
+            .background(
+                theme == .retroEditorial
+                    ? RetroEditorialTokens.paper
+                    : Color(nsColor: .windowBackgroundColor)
+            )
             .environment(settings)
+            // Retro paints light paper, so the app pins a light appearance for
+            // it (`AppSettings.resolvedColorScheme`). Without the same pin the
+            // harness draws light text on cream and hides palette regressions.
+            .environment(\.colorScheme, theme == .retroEditorial ? .light : .dark)
 
         let host = NSHostingView(rootView: view)
         let window = NSWindow(

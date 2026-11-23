@@ -47,9 +47,12 @@ struct ResearchReportConclusionSection: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
 
-            // The meta strip always exists: it carries the source count even
-            // when that count is zero.
-            metaStrip
+            // The meta strip is hidden only for a legacy report with no sources:
+            // an explicit "0 sources" on an imported artifact that never had a
+            // source list is noise, while a modern 0 is a real finding.
+            if !metaText.isEmpty {
+                metaStrip
+            }
 
             if metrics.missingCount > 0, let missing = report.verification?.missing, !missing.isEmpty {
                 missingStrip(missing)
@@ -59,11 +62,8 @@ struct ResearchReportConclusionSection: View {
                 overviewDisclosure
             }
 
-            if isLegacy {
-                note("info.circle", "research.report.legacy.note")
-            }
-            if report.searchStatus == .failed {
-                note("wifi.exclamationmark", "research.report.searchFailed")
+            ForEach(Self.noteKeys(report: report, isLegacy: isLegacy), id: \.self) { key in
+                note(Self.noteSymbol(key), key)
             }
         }
         .onChange(of: WorkspaceReportDigest.make(report)) {
@@ -75,15 +75,41 @@ struct ResearchReportConclusionSection: View {
         .accessibilityElement(children: .contain)
     }
 
-    /// One honest count per line of the report. The source count is always
-    /// drawn, including zero, so a report with no evidence says so here instead
-    /// of leaving the reader to wonder whether sources exist elsewhere. Counts
-    /// that would only repeat "nothing to verify" are omitted.
-    static func metaText(report: BurstResearch, language: AppLanguage) -> String {
+    /// What chapter 01 must say out loud. A legacy report always gets the
+    /// "re-run" note; the missing-evidence sentence is added only when there
+    /// really is no evidence, because legacy imports usually keep theirs and a
+    /// blanket note would contradict chapters 03 and 04.
+    static func noteKeys(report: BurstResearch, isLegacy: Bool) -> [String] {
+        var keys: [String] = []
+        if isLegacy {
+            keys.append("research.oldReport")
+            if report.evidence.isEmpty {
+                keys.append("research.report.legacy.note")
+            }
+        }
+        if report.searchStatus == .failed {
+            keys.append("research.report.searchFailed")
+        }
+        return keys
+    }
+
+    private static func noteSymbol(_ key: String) -> String {
+        key == "research.report.searchFailed" ? "wifi.exclamationmark" : "info.circle"
+    }
+
+    /// One honest count per line of the report. A modern report always shows its
+    /// source count, including zero, so an empty evidence set is stated rather
+    /// than silently dropped. A legacy report without evidence hides the line:
+    /// it never had a source list, and "0 sources" would read like a finding.
+    static func metaText(
+        report: BurstResearch,
+        language: AppLanguage,
+        isLegacy: Bool = false
+    ) -> String {
         let metrics = ResearchReportMetrics(report: report)
         var parts: [String] = []
         if metrics.timelineNodeCount > 0 {
-            if let span = metrics.timelineSpanDays {
+            if let span = metrics.displaySpanDays {
                 parts.append(L10n.string(
                     "research.report.meta.timeline",
                     language: language,
@@ -98,17 +124,20 @@ struct ResearchReportConclusionSection: View {
                 ))
             }
         }
-        parts.append(L10n.string(
-            "research.report.meta.sources",
-            language: language,
-            metrics.evidenceCount,
-            metrics.domainCount
-        ))
+        if !(isLegacy && metrics.evidenceCount == 0) {
+            parts.append(L10n.string(
+                "research.report.meta.sources",
+                language: language,
+                metrics.evidenceCount,
+                metrics.domainCount
+            ))
+        }
         if metrics.verifiedQuoteCount > 0 {
             parts.append(L10n.string(
                 "research.report.meta.quotes",
                 language: language,
-                metrics.verifiedQuoteCount
+                metrics.verifiedQuoteCount,
+                metrics.evidenceCount
             ))
         }
         if metrics.independentSourceCount > 0 {
@@ -122,7 +151,7 @@ struct ResearchReportConclusionSection: View {
     }
 
     private var metaText: String {
-        Self.metaText(report: report, language: settings.appLanguage)
+        Self.metaText(report: report, language: settings.appLanguage, isLegacy: isLegacy)
     }
 
     private var metaStrip: some View {
@@ -259,7 +288,8 @@ struct ResearchReportTimelineSection: View {
         metrics: ResearchReportMetrics
     ) -> String {
         let count = presentation.nodes.count
-        if let span = metrics.timelineSpanDays {
+        // A zero-day span means "same day", which is not worth a span phrase.
+        if let span = metrics.displaySpanDays {
             return L10n.string(
                 "research.report.timeline.count",
                 language: settings.appLanguage,
@@ -468,7 +498,7 @@ struct ResearchReportVerificationSection: View {
     var gapNoteKey: String? {
         guard report.verification == nil else { return nil }
         return isLegacy
-            ? "research.report.legacy.note"
+            ? "research.legacy.noVerification"
             : "research.report.verification.none"
     }
 
@@ -997,8 +1027,8 @@ struct ResearchSourceRow: View {
         } label: {
             HStack(alignment: .firstTextBaseline, spacing: 6) {
                 Text(item.id)
-                    .font(.system(size: 8, weight: .bold, design: .monospaced))
-                    .foregroundStyle(.tertiary)
+                    .font(.system(size: 9, weight: .bold, design: .monospaced))
+                    .foregroundStyle(.secondary)
                 Text(displayTitle)
                     .font(.system(size: 11.5, weight: .medium, design: isRetro ? .serif : .default))
                     .lineLimit(2)

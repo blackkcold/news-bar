@@ -15,6 +15,12 @@ struct ResearchSourceRail: View {
     /// wide enough to keep the report readable next to it.
     static let width: CGFloat = 220
 
+    /// The rail's single gate. 820pt of detail width keeps the report readable
+    /// at the default 1180 window, which gives a ~630pt detail pane and no rail.
+    static func isVisible(detailWidth: CGFloat) -> Bool {
+        detailWidth >= 820
+    }
+
     let groups: [ResearchSourceGroup]
     let metrics: ResearchReportMetrics
     let onOpenURL: (String, String) -> Void
@@ -112,8 +118,8 @@ struct ResearchSourceRail: View {
         } label: {
             HStack(spacing: 6) {
                 Text(item.id)
-                    .font(.system(size: 8, weight: .bold, design: .monospaced))
-                    .foregroundStyle(.tertiary)
+                    .font(.system(size: 9, weight: .bold, design: .monospaced))
+                    .foregroundStyle(.secondary)
                     .fixedSize()
                 Text(title)
                     .font(.system(size: 10.5, weight: .medium, design: isRetro ? .serif : .default))

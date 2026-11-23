@@ -233,6 +233,7 @@ struct TransientResearchReportView: View {
     @Bindable var model: TransientResearchReportModel
     let onClose: () -> Void
     let onOpenWorkspace: () -> Void
+    let onOpenEventTimeline: () -> Void
 
     private var english: Bool { settings.appLanguage == .en }
     /// The report on screen. A selected version wins over the record's latest
@@ -279,7 +280,7 @@ struct TransientResearchReportView: View {
                     isHistorical: isHistoricalReport,
                     isLegacy: record.reportVersion == 0,
                     onOpenURL: openEvidenceURL,
-                    onOpenEventTimeline: onOpenWorkspace,
+                    onOpenEventTimeline: onOpenEventTimeline,
                     topContent: changes
                 )
             } else if let event = model.event {
@@ -329,8 +330,6 @@ struct TransientResearchReportView: View {
                         copyMarkdown()
                     }
                     .disabled(displayedReport == nil)
-                    Divider()
-                    Button(L10n.string("research.report.actions.close", language: settings.appLanguage), action: onClose)
                 } label: {
                     Image(systemName: "ellipsis.circle")
                         .frame(width: 22, height: 22)
@@ -352,21 +351,19 @@ struct TransientResearchReportView: View {
         .padding(18)
     }
 
-    /// Status plus the report's own timestamp. "Verified" only when the report
-    /// carries a generation date; otherwise it is the record's last update.
+    /// Status plus the report's timestamp. The date is always "更新于" (updated):
+    /// a generated date does not mean every quote was verified, so "核验于"
+    /// claimed more than the report can back.
     private func headerMeta(_ record: ResearchRecord) -> String {
         let status = ResearchStatusPresentation.label(record.status, language: settings.appLanguage)
         guard let report = displayedReport else { return status }
         let date = (report.generatedAt ?? record.updatedAt)
             .formatted(date: .abbreviated, time: .shortened)
-        // Literal keys keep the localization lint and the format-contract test
-        // able to see both strings.
-        let time: String
-        if report.generatedAt != nil {
-            time = L10n.string("research.report.meta.verified", language: settings.appLanguage, date)
-        } else {
-            time = L10n.string("research.report.meta.updated", language: settings.appLanguage, date)
-        }
+        let time = L10n.string(
+            "research.report.meta.updated",
+            language: settings.appLanguage,
+            date
+        )
         return "\(status) · \(time)"
     }
 

@@ -233,6 +233,11 @@ struct ResearchReportReader: View {
 /// Fixed chapter navigation above the scrolling body. A historical report is
 /// marked here rather than in each host's chrome, so the popup and the
 /// workspace cannot disagree about which report is on screen.
+///
+/// Four equal-width tabs instead of a native segmented `Picker`: the picker
+/// refuses to fill the bar and leaves a dead half-row at 760pt, while this bar
+/// keeps the same contract — the accessible label is the chapter title (no
+/// ordinal) and the active chapter is marked selected.
 struct ResearchReportNavigator: View {
     let sections: [ResearchReportSection]
     let active: ResearchReportSection
@@ -240,33 +245,39 @@ struct ResearchReportNavigator: View {
     var isHistorical: Bool = false
 
     var body: some View {
-        HStack(spacing: 0) {
-            Picker(
-                selection: Binding(get: { active }, set: { onSelect($0) }),
-                content: {
-                    ForEach(sections) { section in
-                        // The index is a visual ordinal, not something VoiceOver
-                        // should read as "zero one".
-                        Text("\(section.index) \(section.title)")
-                            .tag(section)
-                            .accessibilityLabel(section.title)
-                    }
-                },
-                label: { EmptyView() }
-            )
-            .pickerStyle(.segmented)
-            .labelsHidden()
+        HStack(spacing: 8) {
+            HStack(spacing: 4) {
+                ForEach(sections) { section in
+                    tab(section)
+                }
+            }
+            .frame(maxWidth: .infinity)
             if isHistorical {
                 EditorialTag(
                     text: "research.report.historical".localized,
                     fallbackTint: .orange,
                     filled: true
                 )
-                .padding(.leading, 10)
             }
-            Spacer(minLength: 0)
         }
         .padding(.horizontal, 18)
         .padding(.vertical, 9)
+    }
+
+    private func tab(_ section: ResearchReportSection) -> some View {
+        let isActive = section == active
+        return Button {
+            onSelect(section)
+        } label: {
+            Text("\(section.index) \(section.title)")
+                .lineLimit(1)
+                .frame(maxWidth: .infinity)
+        }
+        .buttonStyle(EditorialActionButtonStyle(
+            tone: isActive ? .selected : .secondary,
+            compact: true
+        ))
+        .accessibilityLabel(section.title)
+        .accessibilityAddTraits(isActive ? .isSelected : [])
     }
 }

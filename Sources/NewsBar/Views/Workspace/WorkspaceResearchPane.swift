@@ -93,7 +93,7 @@ struct WorkspaceResearchPane: View {
         .onGeometryChange(for: CGFloat.self) { proxy in
             proxy.size.width
         } action: { width in
-            showsSourceRail = width >= 820
+            showsSourceRail = ResearchSourceRail.isVisible(detailWidth: width)
         }
         .onChange(of: chosenDepth) { _, depth in
             Task { await model.refreshReusePreview(depth: depth) }
