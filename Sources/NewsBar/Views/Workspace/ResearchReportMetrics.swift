@@ -1,5 +1,11 @@
 import Foundation
 
+/// A domain that can be shown as a source group. Whitespace-only domains are
+/// treated as missing so the metrics and the source index agree.
+private func hasSourceDomain(_ domain: String) -> Bool {
+    !domain.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+}
+
 /// Read-only counts shown in the report's conclusion header. Every value is
 /// derived from the report itself; nothing is estimated or inferred.
 struct ResearchReportMetrics: Equatable, Sendable {
@@ -25,8 +31,8 @@ struct ResearchReportMetrics: Equatable, Sendable {
 
         evidenceCount = report.evidence.count
         verifiedQuoteCount = report.evidence.filter(\.quoteVerified).count
-        // An empty domain cannot be shown as a source group, so it is not a domain.
-        domainCount = Set(report.evidence.map(\.domain).filter { !$0.isEmpty }).count
+        // A missing domain cannot be shown as a source group, so it is not a domain.
+        domainCount = Set(report.evidence.map(\.domain).filter(hasSourceDomain)).count
         claimCount = claims.count
         claimsWithVerifiedEvidenceCount = claims.filter { claim in
             claim.evidenceIDs.contains { evidenceByID[$0]?.quoteVerified == true }
@@ -63,9 +69,10 @@ struct ResearchSourceGroup: Identifiable, Equatable, Hashable, Sendable {
 
 enum ResearchSourceGrouping {
     /// Groups evidence by domain. Groups with more items come first; ties are
-    /// broken by domain so the index is stable across runs.
+    /// broken by domain so the index is stable across runs. Evidence without a
+    /// domain is skipped: it would otherwise render a blank group.
     static func groups(for evidence: [EvidenceItem]) -> [ResearchSourceGroup] {
-        Dictionary(grouping: evidence, by: \.domain)
+        Dictionary(grouping: evidence.filter { hasSourceDomain($0.domain) }, by: \.domain)
             .map { domain, items in
                 ResearchSourceGroup(domain: domain, items: items.sorted(by: itemOrder))
             }

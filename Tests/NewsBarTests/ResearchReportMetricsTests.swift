@@ -53,23 +53,63 @@ final class ResearchReportMetricsTests: XCTestCase {
     func testHistoricalVersionUsesSelectedReportAndDigest() {
         let latest = researchTestRecord(title: "topic", report: BurstResearch(summary: "new"))
         let oldReport = BurstResearch(summary: "old")
-        let version = WorkspaceReportVersion(
-            id: "\(latest.id)#1",
-            recordID: latest.id,
-            subjectID: "subject-1",
-            sequence: 1,
-            createdAt: Date(timeIntervalSince1970: 1_700_000_000),
-            trigger: .manual,
-            report: oldReport,
-            digest: WorkspaceReportDigest.make(oldReport)
-        )
+        let version = makeVersion(for: latest, report: oldReport)
         XCTAssertEqual(ResearchReportDisplay.report(selectedVersion: version, record: latest)?.summary, "old")
         XCTAssertTrue(ResearchReportDisplay.isHistorical(selectedVersion: version, record: latest))
         XCTAssertEqual(ResearchReportDisplay.report(selectedVersion: nil, record: latest)?.summary, "new")
         XCTAssertFalse(ResearchReportDisplay.isHistorical(selectedVersion: nil, record: latest))
     }
 
+    func testHistoricalVersionWithoutRecordIsNotHistorical() {
+        let report = BurstResearch(summary: "old")
+        let record = researchTestRecord(title: "topic", report: report)
+        let version = makeVersion(for: record, report: report)
+        XCTAssertFalse(ResearchReportDisplay.isHistorical(selectedVersion: version, record: nil))
+    }
+
+    func testHistoricalVersionWithMatchingDigestIsNotHistorical() {
+        let report = BurstResearch(summary: "same")
+        let record = researchTestRecord(title: "topic", report: report)
+        let version = makeVersion(for: record, report: report)
+        XCTAssertFalse(ResearchReportDisplay.isHistorical(selectedVersion: version, record: record))
+    }
+
+    func testSourceGroupsSkipEvidenceWithoutDomain() {
+        let evidence = makeEvidence()
+            + [makeEvidenceItem(id: "E4", domain: "", quoteVerified: false)]
+        let groups = ResearchSourceGrouping.groups(for: evidence)
+        XCTAssertEqual(groups.map(\.domain), ["a.example", "b.example"])
+        XCTAssertFalse(groups.contains { $0.domain.isEmpty })
+        XCTAssertEqual(ResearchReportMetrics(report: BurstResearch(evidence: evidence)).domainCount, 2)
+        XCTAssertEqual(ResearchReportMetrics(report: BurstResearch(evidence: evidence)).evidenceCount, 4)
+    }
+
+    func testSourceGroupTiesSortByDomainAscending() {
+        let evidence = [
+            makeEvidenceItem(id: "E5", domain: "z.example", quoteVerified: false),
+            makeEvidenceItem(id: "E6", domain: "a.example", quoteVerified: false),
+        ]
+        let groups = ResearchSourceGrouping.groups(for: evidence)
+        XCTAssertEqual(groups.map(\.domain), ["a.example", "z.example"])
+    }
+
     // MARK: - Fixtures
+
+    private func makeVersion(
+        for record: ResearchRecord,
+        report: BurstResearch
+    ) -> WorkspaceReportVersion {
+        WorkspaceReportVersion(
+            id: "\(record.id)#1",
+            recordID: record.id,
+            subjectID: "subject-1",
+            sequence: 1,
+            createdAt: Date(timeIntervalSince1970: 1_700_000_000),
+            trigger: .manual,
+            report: report,
+            digest: WorkspaceReportDigest.make(report)
+        )
+    }
 
     private func makeEvidence() -> [EvidenceItem] {
         [
