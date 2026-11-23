@@ -598,10 +598,10 @@ enum ResearchNotificationPreferences {
     static let detailedPreviewKey = "researchNotificationDetailedPreviewEnabled"
 
     static var enabled: Bool {
-        UserDefaults.standard.object(forKey: enabledKey) as? Bool ?? true
+        TestIsolation.defaults.object(forKey: enabledKey) as? Bool ?? true
     }
 
     static var detailedPreviewEnabled: Bool {
-        UserDefaults.standard.bool(forKey: detailedPreviewKey)
+        TestIsolation.defaults.bool(forKey: detailedPreviewKey)
     }
 }

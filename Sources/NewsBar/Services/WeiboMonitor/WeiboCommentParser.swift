@@ -78,7 +78,8 @@ enum WeiboCommentParser {
                     createdAt: date(item["created_at"] as? String, now: fetchedAt, calendar: calendar) ?? fetchedAt,
                     likeCount: count(item["like_counts"] ?? item["like_count"]),
                     replyToName: replyName?.trimmingCharacters(in: .whitespacesAndNewlines),
-                    isAuthor: authorUID.map { !uid.isEmpty && uid == $0 } ?? false
+                    isAuthor: authorUID.map { !uid.isEmpty && uid == $0 } ?? false,
+                    runs: parseRuns(rawText)
                 )
             )
         }
@@ -145,9 +146,162 @@ enum WeiboCommentParser {
         return result
     }
 
+    // MARK: - Styled runs
+
+    /// Splits the raw HTML body into plain text and link spans.
+    ///
+    /// Returns `nil` when the body has no anchor at all, so a plain-text
+    /// comment keeps using `text` and pays nothing. Images never become runs:
+    /// the only `<img>` a comment carries is an emoji face, which `cleanText`
+    /// already turns into its `alt` text.
+    static func parseRuns(_ raw: String) -> [WeiboCommentRun]? {
+        guard raw.range(of: "<a", options: .caseInsensitive) != nil else { return nil }
+        guard let regex = try? NSRegularExpression(
+            // The lookbehind keeps `data-href="…"` from being read as the
+            // anchor's href; it is not a link the reader can follow.
+            pattern: "<a\\s+[^>]*(?<![\\w-])href\\s*=\\s*['\"]([^'\"]*)['\"][^>]*>(.*?)</a>",
+            options: [.caseInsensitive, .dotMatchesLineSeparators]
+        ) else { return nil }
+
+        let source = raw as NSString
+        let matches = regex.matches(in: raw, range: NSRange(location: 0, length: source.length))
+        guard !matches.isEmpty else { return nil }
+
+        var runs: [WeiboCommentRun] = []
+        var cursor = 0
+
+        func appendPlain(_ range: NSRange) {
+            guard range.length > 0, range.location != NSNotFound else { return }
+            // No edge trim here: the whitespace around an anchor is the space
+            // that separates it from its neighbours. "Nice shot <a>this</a>
+            // is great" must not collapse to "Nice shotthisis great".
+            let plain = cleanText(source.substring(with: range), trim: false)
+            guard !plain.isEmpty else { return }
+            runs.append(WeiboCommentRun(kind: .text, text: plain, url: nil))
+        }
+
+        for match in matches {
+            let whole = match.range
+            guard whole.location != NSNotFound else { continue }
+            if whole.location > cursor {
+                appendPlain(NSRange(location: cursor, length: whole.location - cursor))
+            }
+
+            let hrefRange = match.range(at: 1)
+            let labelRange = match.range(at: 2)
+            guard hrefRange.location != NSNotFound, labelRange.location != NSNotFound else {
+                appendPlain(whole)
+                cursor = whole.location + whole.length
+                continue
+            }
+
+            let href = decodeLinkEntities(source.substring(with: hrefRange))
+            let label = cleanText(source.substring(with: labelRange))
+            if !label.isEmpty {
+                runs.append(classify(href: href, label: label))
+            }
+            cursor = whole.location + whole.length
+        }
+
+        if cursor < source.length {
+            appendPlain(NSRange(location: cursor, length: source.length - cursor))
+        }
+
+        // Trim only the two ends of the whole body. Fragment-level trimming
+        // would delete the space that separates an anchor from its neighbours.
+        while let first = runs.first, first.text.allSatisfy(\.isWhitespace) {
+            runs.removeFirst()
+        }
+        while let last = runs.last, last.text.allSatisfy(\.isWhitespace) {
+            runs.removeLast()
+        }
+        if let firstIndex = runs.indices.first {
+            runs[firstIndex].text = runs[firstIndex].text.replacingOccurrences(
+                of: "^\\s+",
+                with: "",
+                options: .regularExpression
+            )
+        }
+        if let lastIndex = runs.indices.last {
+            runs[lastIndex].text = runs[lastIndex].text.replacingOccurrences(
+                of: "\\s+$",
+                with: "",
+                options: .regularExpression
+            )
+        }
+        runs.removeAll { $0.text.isEmpty }
+        return runs.isEmpty ? nil : runs
+    }
+
+    private static func classify(href: String, label: String) -> WeiboCommentRun {
+        let resolved = unwrapSinaURL(href) ?? href
+        guard let url = ReaderNavigationPolicy.allowedURL(resolved) else {
+            // Not something the reader can open. Keep the anchor text as plain
+            // text rather than rendering something that looks tappable.
+            return WeiboCommentRun(kind: .text, text: label, url: nil)
+        }
+        // A mention or a topic keeps its accent styling, but it carries the
+        // href Weibo itself supplied, so it is genuinely clickable. Guessing a
+        // profile route would be worse than nothing; reusing the given one is
+        // not guessing.
+        if isMention(href: resolved, label: label) {
+            return WeiboCommentRun(kind: .mention, text: label, url: url.absoluteString)
+        }
+        if isTopic(label) {
+            return WeiboCommentRun(kind: .topic, text: label, url: url.absoluteString)
+        }
+        return WeiboCommentRun(kind: .link, text: label, url: url.absoluteString)
+    }
+
+    /// `https://weibo.cn/sinaurl?u=<encoded>` is a redirector. Unwrap one layer
+    /// locally so the reader opens the destination directly. A `t.cn` short
+    /// link needs the network to resolve and stays as it is.
+    private static func unwrapSinaURL(_ href: String) -> String? {
+        guard let components = URLComponents(string: href),
+              let host = components.host?.lowercased(),
+              isWeiboHost(host),
+              components.path.lowercased().contains("sinaurl"),
+              let value = components.queryItems?.first(where: { $0.name == "u" })?.value,
+              !value.isEmpty
+        else { return nil }
+        // `queryItems` already decodes once. Decode again only when the value
+        // still has no scheme; testing for `%3A` instead would mangle a target
+        // that legitimately carries an encoded colon in its own query.
+        let lower = value.lowercased()
+        if lower.hasPrefix("http://") || lower.hasPrefix("https://") {
+            return value
+        }
+        return value.removingPercentEncoding ?? value
+    }
+
+    private static func isWeiboHost(_ host: String) -> Bool {
+        host == "weibo.com" || host.hasSuffix(".weibo.com")
+            || host == "weibo.cn" || host.hasSuffix(".weibo.cn")
+    }
+
+    private static func isMention(href: String, label: String) -> Bool {
+        // Both parts matter: an anchor labelled "@name" that points somewhere
+        // else is a normal link, not a mention.
+        guard label.hasPrefix("@") else { return false }
+        guard let components = URLComponents(string: href),
+              let host = components.host?.lowercased(),
+              isWeiboHost(host)
+        else { return false }
+        let path = components.path
+        return path.contains("/n/") || path.contains("/u/")
+    }
+
+    private static func isTopic(_ label: String) -> Bool {
+        label.hasPrefix("#") && label.hasSuffix("#") && label.count > 2
+    }
+
+    private static func decodeLinkEntities(_ value: String) -> String {
+        value.replacingOccurrences(of: "&amp;", with: "&")
+    }
+
     // MARK: - Text
 
-    static func cleanText(_ raw: String) -> String {
+    static func cleanText(_ raw: String, trim: Bool = true) -> String {
         var text = raw
         // Emoji arrive as <img alt="[吃瓜]">. Keep the alt text before tags go.
         text = replacingImagesWithAltText(text)
@@ -184,7 +338,7 @@ enum WeiboCommentParser {
         text = text.replacingOccurrences(of: "[ \\t]+", with: " ", options: .regularExpression)
         text = text.replacingOccurrences(of: " *\\n *", with: "\n", options: .regularExpression)
         text = text.replacingOccurrences(of: "\\n{3,}", with: "\n\n", options: .regularExpression)
-        return text.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trim ? text.trimmingCharacters(in: .whitespacesAndNewlines) : text
     }
 
     private static func replacingImagesWithAltText(_ text: String) -> String {

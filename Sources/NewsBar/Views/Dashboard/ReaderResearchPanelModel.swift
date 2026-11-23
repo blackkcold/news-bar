@@ -11,8 +11,8 @@ final class ReaderResearchPanelModel {
     private(set) var association: WorkspaceReaderResearchMatch?
     private(set) var record: ResearchRecord?
     private(set) var recent: [ResearchIndexEntry] = []
-    var showsProgress = UserDefaults.standard.bool(forKey: "reader.research.progressExpanded") {
-        didSet { UserDefaults.standard.set(showsProgress, forKey: "reader.research.progressExpanded") }
+    var showsProgress = TestIsolation.defaults.bool(forKey: "reader.research.progressExpanded") {
+        didSet { TestIsolation.defaults.set(showsProgress, forKey: "reader.research.progressExpanded") }
     }
 
     init(

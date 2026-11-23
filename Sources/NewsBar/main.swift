@@ -1,5 +1,12 @@
 import AppKit
 
+// Headless agent commands: no window, no store, no network. They must run
+// before the process writes preferences and before the single-instance
+// check, so an agent never disturbs the copy that is already running.
+if let status = await AgentHeadless.runIfRequested(arguments: CommandLine.arguments) {
+    exit(status)
+}
+
 // The in-app language setting decides what every surface speaks: the app's
 // own strings via `L10n`, and — through the process preference — Sparkle's
 // update window and AppKit's standard buttons. This has to run before the

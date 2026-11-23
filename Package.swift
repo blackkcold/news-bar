@@ -38,5 +38,15 @@ let package = Package(
             // keeps the build free of "unhandled resource" warnings.
             exclude: ["Fixtures"]
         ),
+        // Headless checks an agent can run without opening a window or
+        // touching the running app's stores. Kept in its own target so
+        // `swift test --filter AgentHeadlessTests` never runs the rendering
+        // suite by accident.
+        .testTarget(
+            name: "NewsBarHeadlessTests",
+            dependencies: ["NewsBar"],
+            path: "Tests/NewsBarHeadlessTests",
+            exclude: ["Fixtures"]
+        ),
     ]
 )

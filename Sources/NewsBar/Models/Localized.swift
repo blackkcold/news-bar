@@ -2098,6 +2098,9 @@ enum L10n {
         "weibo.feed.accountUnread": "%ld 条未读",
         "weibo.feed.noMatch": "没有匹配的动态",
         "weibo.feed.clearFilters": "清除筛选",
+        "weibo.comments.copyLink": "复制链接",
+        "weibo.comments.copyText": "复制评论",
+        "weibo.comments.openOriginal": "在微博打开",
         "weibo.popover.chip": "关注 %ld",
         "weibo.popover.chipHint": "打开关注流",
     ]
@@ -4166,6 +4169,9 @@ enum L10n {
         "weibo.feed.accountUnread": "%ld unread",
         "weibo.feed.noMatch": "No matching posts",
         "weibo.feed.clearFilters": "Clear filters",
+        "weibo.comments.copyLink": "Copy link",
+        "weibo.comments.copyText": "Copy comment",
+        "weibo.comments.openOriginal": "Open in Weibo",
         "weibo.popover.chip": "Following %ld",
         "weibo.popover.chipHint": "Open following feed",
     ]

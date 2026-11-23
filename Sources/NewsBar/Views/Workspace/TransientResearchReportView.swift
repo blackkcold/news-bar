@@ -24,8 +24,8 @@ final class TransientResearchReportModel {
     private(set) var isShowingChanges = false
     private(set) var isLoading = false
     private(set) var didLoad = false
-    var showsProgress = UserDefaults.standard.bool(forKey: "reader.research.progressExpanded") {
-        didSet { UserDefaults.standard.set(showsProgress, forKey: "reader.research.progressExpanded") }
+    var showsProgress = TestIsolation.defaults.bool(forKey: "reader.research.progressExpanded") {
+        didSet { TestIsolation.defaults.set(showsProgress, forKey: "reader.research.progressExpanded") }
     }
 
     init(

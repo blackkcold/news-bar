@@ -46,7 +46,7 @@ Zero dependencies. Pure Swift. Free & open source (MIT).
 
 ## 📦 Install
 
-> Current version: **v3.3.1**
+> Current version: **v3.4.0**
 
 Download the latest DMG from [Releases](../../releases) and drag it to **Applications**.
 
@@ -123,6 +123,8 @@ bash scripts/release.sh       # GitHub Release + DMG/SHA256 upload
 ```
 
 See [docs/release-conventions.md](docs/release-conventions.md) for the complete PR, CI, merge, tagging and verification workflow.
+
+Background checks that open no window and leave a running copy untouched: see [docs/agent-testing.md](docs/agent-testing.md).
 
 ---
 

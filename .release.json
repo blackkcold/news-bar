@@ -17,7 +17,7 @@
   "release_branch": true,
   "auto_merge": false,
   "release_note_style": "structured-cn",
-  "summary": "修复设置页切换与阅读研究关联刷新，防止旧异步结果覆盖当前关联",
-  "summary_en": "Fix Settings pane routing and reader-research refresh races to keep current associations responsive",
+  "summary": "重做关注阅读器并新增后台 agent 测试：评论链接与图片可读、作者栏固定、新评论可见；测试不启动窗口、不碰运行实例",
+  "summary_en": "Rebuild the following reader with clickable comment links and an image lightbox, pin the author bar, and add windowless agent checks that never touch a running copy",
   "validation": ""
 }

@@ -46,7 +46,7 @@
 
 ## 📦 安装
 
-> 当前版本：**v3.3.1**
+> 当前版本：**v3.4.0**
 
 从 [Releases](../../releases) 下载最新 DMG，拖入 **Applications** 即可。
 
@@ -123,6 +123,8 @@ bash scripts/release.sh       # GitHub Release + DMG/SHA256 上传
 ```
 
 完整的 PR、CI、合并、打标签与验证流程见 [docs/release-conventions.md](docs/release-conventions.md)。
+
+不启动窗口、不碰运行实例的后台检查见 [docs/agent-testing.md](docs/agent-testing.md)。
 
 ---
 
