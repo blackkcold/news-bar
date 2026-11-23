@@ -79,26 +79,6 @@ struct WorkspaceVerificationBadge: View {
     }
 }
 
-// MARK: - Full report reading
-
-/// Temporary compatibility wrapper. The reader owns navigation and scrolling,
-/// so Task 4/5 replace both call sites with `ResearchReportReader` directly and
-/// this type is deleted. It exists only to keep the intermediate build whole.
-struct WorkspaceReportBody: View {
-    let report: BurstResearch
-    var isHistorical = false
-    let onOpenURL: (String, String) -> Void
-
-    var body: some View {
-        ResearchReportReader(
-            report: report,
-            contextID: nil,
-            isHistorical: isHistorical,
-            onOpenURL: onOpenURL
-        )
-    }
-}
-
 // MARK: - Markdown
 
 enum WorkspaceReportMarkdown {

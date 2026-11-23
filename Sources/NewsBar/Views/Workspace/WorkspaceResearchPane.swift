@@ -6,83 +6,67 @@ struct WorkspaceResearchPane: View {
     @Bindable var model: ResearchWorkspaceModel
     let detail: WorkspaceDetail
     let onStart: (_ forceRefresh: Bool, _ depth: ResearchDepth) -> Void
+    let onRequestSegment: (WorkspaceSegment) -> Void
 
-    private var isRetro: Bool { settings.appTheme == .retroEditorial }
     private var record: ResearchRecord? { detail.research }
     private var versions: [WorkspaceReportVersion] { detail.versions }
-    private var selectedVersionID: String? {
-        model.presentation.selectedVersionID(for: detail.subject.id)
-    }
-    private var displayedVersion: WorkspaceReportVersion? {
-        if let selectedVersionID,
-           let selected = versions.first(where: { $0.id == selectedVersionID }) {
-            return selected
+
+    /// The explicitly selected version, if it still exists. Nil means "latest",
+    /// which is also what the record's report holds.
+    private var selectedVersion: WorkspaceReportVersion? {
+        guard let selectedVersionID = model.presentation.selectedVersionID(for: detail.subject.id) else {
+            return nil
         }
-        return versions.first
+        return versions.first { $0.id == selectedVersionID }
     }
+
+    private var displayedVersion: WorkspaceReportVersion? {
+        selectedVersion ?? versions.first
+    }
+
     private var displayedReport: BurstResearch? {
-        displayedVersion?.report ?? record?.report
+        ResearchReportDisplay.report(selectedVersion: selectedVersion, record: record)
     }
+
     private var isHistorical: Bool {
-        guard let displayedVersion else { return false }
-        return displayedVersion.id != versions.first?.id
+        ResearchReportDisplay.isHistorical(selectedVersion: selectedVersion, record: record)
     }
+
     private var chosenDepth: ResearchDepth {
         model.presentation.depth(for: detail.subject.id) ?? model.defaultDepth
     }
 
-    private var anchorBinding: Binding<String?> {
-        Binding(
-            get: { model.presentation.anchor(for: detail.subject.id, segment: .research) ?? "research.top" },
-            set: { model.presentation.setAnchor($0, for: detail.subject.id, segment: .research) }
-        )
-    }
-
     var body: some View {
-        ScrollView(.vertical, showsIndicators: true) {
-            VStack(alignment: .leading, spacing: 16) {
-                Color.clear
-                    .frame(height: 1)
-                    .id("research.top")
+        VStack(spacing: 0) {
+            VStack(alignment: .leading, spacing: 8) {
                 runSection
-                    .id("research.run")
-                if !versions.isEmpty {
-                    versionSection
-                        .id("research.versions")
-                }
-                if let report = displayedReport {
-                    WorkspaceSectionHeader(
-                        symbol: "doc.text",
-                        title: displayedVersion.map { "V\($0.sequence)" }
-                            ?? "workspace.report.legacy".localized,
-                        trailing: displayedVersion?.createdAt.formatted(
-                            date: .abbreviated,
-                            time: .shortened
-                        )
-                    )
-                    WorkspaceReportBody(
-                        report: report,
-                        isHistorical: isHistorical,
-                        onOpenURL: { url, title in
-                            model.openEvidenceURL(url, title: title)
-                        }
-                    )
-                    .id("research.report")
-                } else {
-                    Text("workspace.research.noReport".localized)
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                footer
-                    .id("research.footer")
             }
-            .scrollTargetLayout()
             .padding(.horizontal, 18)
-            .padding(.vertical, 16)
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.vertical, 10)
+
+            Divider()
+
+            if let report = displayedReport {
+                // The reader owns the only scroll view in this pane; the run
+                // strip and the action bar stay fixed around it.
+                ResearchReportReader(
+                    report: report,
+                    contextID: record?.id,
+                    isHistorical: isHistorical,
+                    isLegacy: record?.reportVersion == 0,
+                    onOpenURL: { url, title in
+                        model.openEvidenceURL(url, title: title)
+                    },
+                    onOpenEventTimeline: { onRequestSegment(.timeline) }
+                )
+            } else {
+                emptyReportState
+            }
+
+            Divider()
+            footer
         }
-        .scrollPosition(id: anchorBinding)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .onChange(of: chosenDepth) { _, depth in
             Task { await model.refreshReusePreview(depth: depth) }
         }
@@ -101,6 +85,9 @@ struct WorkspaceResearchPane: View {
                     Text(originMeta(record))
                         .font(.system(size: 8.5))
                         .foregroundStyle(.tertiary)
+                }
+                if !versions.isEmpty {
+                    versionMenu
                 }
             }
 
@@ -179,102 +166,67 @@ struct WorkspaceResearchPane: View {
 
     // MARK: - Versions
 
-    private var versionSection: some View {
-        VStack(alignment: .leading, spacing: 7) {
-            HStack(spacing: 8) {
-                WorkspaceSectionHeader(
-                    symbol: "clock.arrow.circlepath",
-                    title: "workspace.research.versions".localized,
-                    trailing: "\(versions.count)"
-                )
-                if isHistorical {
-                    Button("workspace.research.viewLatest".localized) {
-                        model.presentation.setSelectedVersionID(nil, for: detail.subject.id)
-                        model.presentation.setAnchor("research.report", for: detail.subject.id, segment: .research)
+    /// The version list collapsed into the run strip. Selecting a version shows
+    /// that report read-only; "view latest" returns to `selectedVersionID == nil`.
+    private var versionMenu: some View {
+        Menu {
+            ForEach(versions) { version in
+                Button {
+                    model.presentation.setSelectedVersionID(version.id, for: detail.subject.id)
+                } label: {
+                    if displayedVersion?.id == version.id {
+                        Label(versionTitle(version), systemImage: "checkmark")
+                    } else {
+                        Text(versionTitle(version))
                     }
-                    .buttonStyle(EditorialActionButtonStyle(compact: true))
-                    .accessibilityLabel("workspace.research.viewLatest".localized)
                 }
             }
-            VStack(alignment: .leading, spacing: 3) {
-                ForEach(versions) { version in
-                    versionRow(version)
+            if isHistorical {
+                Divider()
+                Button("workspace.research.viewLatest".localized) {
+                    model.presentation.setSelectedVersionID(nil, for: detail.subject.id)
                 }
             }
+        } label: {
+            Label(
+                displayedVersion.map { "V\($0.sequence)" }
+                    ?? "workspace.report.legacy".localized,
+                systemImage: "clock.arrow.circlepath"
+            )
+            .font(.system(size: 10))
         }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .help("workspace.research.versions".localized)
+        .accessibilityLabel("workspace.research.versions".localized)
     }
 
-    private func versionRow(_ version: WorkspaceReportVersion) -> some View {
-        let selected = (displayedVersion?.id == version.id)
-        return Button {
-            model.presentation.setSelectedVersionID(version.id, for: detail.subject.id)
-        } label: {
-            HStack(spacing: 7) {
-                Text("V\(version.sequence)")
-                    .font(.system(size: 9, weight: .black, design: .monospaced))
-                    .foregroundStyle(selected ? Color.white : Color.secondary)
-                    .padding(.horizontal, 5)
-                    .padding(.vertical, 2)
-                    .background(selected ? Color.accentColor : Color.secondary.opacity(0.12))
-                    .editorialClipShape(cornerRadius: 4)
+    private func versionTitle(_ version: WorkspaceReportVersion) -> String {
+        "V\(version.sequence) · \(version.createdAt.formatted(date: .abbreviated, time: .shortened))"
+    }
 
-                Text(version.createdAt.formatted(date: .abbreviated, time: .shortened))
-                    .font(.system(size: 9.5))
-                    .foregroundStyle(.secondary)
+    // MARK: - Empty report
 
-                Text(triggerLabel(version.trigger))
-                    .font(.system(size: 8.5))
-                    .foregroundStyle(.tertiary)
-
-                if let verdict = version.report.verification?.verdict {
-                    Text(L10n.string(
-                        "research.verdict.short.\(verdict.rawValue)",
-                        language: settings.appLanguage
-                    ))
-                    .font(.system(size: 8.5, weight: .semibold))
-                    .foregroundStyle(verdictColor(verdict))
-                }
-
-                Text(L10n.string(
-                    "workspace.research.evidenceCount",
-                    language: settings.appLanguage,
-                    version.report.evidence.count
-                ))
-                .font(.system(size: 8.5))
+    private var emptyReportState: some View {
+        VStack(spacing: 7) {
+            Image(systemName: "doc.text.magnifyingglass")
+                .font(.system(size: 22))
                 .foregroundStyle(.tertiary)
-
-                Spacer(minLength: 0)
-
-                if version.id == versions.first?.id {
-                    Text("workspace.research.latest".localized)
-                        .font(.system(size: 8))
-                        .foregroundStyle(.secondary)
-                } else {
-                    Text("workspace.research.readOnly".localized)
-                        .font(.system(size: 8))
-                        .foregroundStyle(.tertiary)
-                }
-            }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 6)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(selected ? Color.accentColor.opacity(0.10) : Color.clear)
-            .editorialClipShape(cornerRadius: 6)
-            .contentShape(Rectangle())
+            Text("workspace.research.noReport".localized)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
         }
-        .buttonStyle(.plain)
-        .accessibilityLabel("V\(version.sequence)")
-        .accessibilityAddTraits(selected ? .isSelected : [])
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(24)
     }
 
     // MARK: - Footer
 
+    /// Fixed action bar below the reader. It stays put while the report scrolls.
     private var footer: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Rectangle()
-                .fill(Color(nsColor: .separatorColor).opacity(0.45))
-                .frame(height: 1)
-
+        VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 7) {
                 Button(primaryButtonTitle) {
                     onStart(false, chosenDepth)
@@ -319,6 +271,9 @@ struct WorkspaceResearchPane: View {
                     .foregroundStyle(.tertiary)
             }
         }
+        .padding(.horizontal, 18)
+        .padding(.vertical, 10)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var primaryButtonTitle: String {
@@ -387,29 +342,11 @@ struct WorkspaceResearchPane: View {
         }
     }
 
-    private func triggerLabel(_ origin: ResearchOrigin) -> String {
-        switch origin {
-        case .burst: return "workspace.origin.burst".localized
-        case .keyword: return "workspace.origin.keyword".localized
-        case .interest: return "workspace.origin.interest".localized
-        case .manual: return "workspace.origin.manual".localized
-        }
-    }
-
     private func depthLabel(_ depth: ResearchDepth) -> String {
         L10n.string("workspace.research.depth.\(depth.rawValue)", language: settings.appLanguage)
     }
 
     private func phaseLabel(_ phase: ResearchRun.Phase) -> String {
         L10n.string("research.phase.\(phase.rawValue)", language: settings.appLanguage)
-    }
-
-    private func verdictColor(_ verdict: VerificationReport.Verdict) -> Color {
-        switch verdict {
-        case .confirmed, .mostlyConfirmed: return .green
-        case .mixed: return .orange
-        case .unverified: return .secondary
-        case .refuted: return .red
-        }
     }
 }
