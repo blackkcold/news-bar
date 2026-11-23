@@ -45,7 +45,8 @@ let package = Package(
         .testTarget(
             name: "NewsBarHeadlessTests",
             dependencies: ["NewsBar"],
-            path: "Tests/NewsBarHeadlessTests"
+            path: "Tests/NewsBarHeadlessTests",
+            exclude: ["Fixtures"]
         ),
     ]
 )

@@ -12,8 +12,15 @@ enum AgentHeadless {
     NewsBar --agent <command>
 
     COMMANDS
+      check                     Run the built-in comment invariants.
       parse-comments <file|->   Parse a Weibo comment payload (desktop or
                                 mobile shape) and print styled runs as JSON.
+      store-summary [--root <dir>]
+                                Read a copy of a monitor store and print
+                                counts. The given store is never written.
+      render-reader <fixture> [--out <png>] [--width <pt>] [--height <pt>]
+                              [--theme modern|retroEditorial] [--language zh|en]
+                                Render the reader off-screen to a PNG.
       doctor                    Print identity and isolation facts as JSON.
       help                      Show this help.
 
@@ -25,14 +32,21 @@ enum AgentHeadless {
         arguments: [String],
         stdout: (String) -> Void = { print($0) },
         stderr: (String) -> Void = { FileHandle.standardError.write(Data(($0 + "\n").utf8)) }
-    ) -> Int32? {
+    ) async -> Int32? {
         guard arguments.dropFirst().first == "--agent" else { return nil }
         let rest = Array(arguments.dropFirst(2))
         let command = rest.first ?? "help"
+        let commandArguments = Array(rest.dropFirst())
 
         switch command {
+        case "check":
+            return runChecks(stdout: stdout, stderr: stderr)
         case "parse-comments":
-            return parseComments(Array(rest.dropFirst()), stdout: stdout, stderr: stderr)
+            return parseComments(commandArguments, stdout: stdout, stderr: stderr)
+        case "store-summary":
+            return await AgentStoreSummary.run(commandArguments, stdout: stdout, stderr: stderr)
+        case "render-reader":
+            return await AgentReaderRender.run(commandArguments, stdout: stdout, stderr: stderr)
         case "doctor":
             return doctor(stdout: stdout, stderr: stderr)
         case "help", "--help", "-h":
@@ -41,6 +55,23 @@ enum AgentHeadless {
         default:
             stderr("Unknown agent command: \(command)")
             stderr(usage)
+            return 2
+        }
+    }
+
+    // MARK: - check
+
+    private static func runChecks(
+        stdout: (String) -> Void,
+        stderr: (String) -> Void
+    ) -> Int32 {
+        let checks = AgentChecks.run()
+        let report = AgentCheckReport(ok: checks.allSatisfy(\.passed), checks: checks)
+        do {
+            stdout(String(decoding: try encodeJSON(report), as: UTF8.self))
+            return report.ok ? 0 : 2
+        } catch {
+            stderr("Could not encode result: \(error.localizedDescription)")
             return 2
         }
     }
@@ -94,10 +125,7 @@ enum AgentHeadless {
             comments: page.comments
         )
         do {
-            let encoder = JSONEncoder()
-            encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
-            encoder.dateEncodingStrategy = .iso8601
-            stdout(String(decoding: try encoder.encode(output), as: UTF8.self))
+            stdout(String(decoding: try encodeJSON(output), as: UTF8.self))
             return 0
         } catch {
             stderr("Could not encode result: \(error.localizedDescription)")
@@ -134,9 +162,7 @@ enum AgentHeadless {
             runningInstances: NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).count
         )
         do {
-            let encoder = JSONEncoder()
-            encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
-            stdout(String(decoding: try encoder.encode(report), as: UTF8.self))
+            stdout(String(decoding: try encodeJSON(report), as: UTF8.self))
             return 0
         } catch {
             stderr("Could not encode report: \(error.localizedDescription)")
@@ -153,4 +179,32 @@ enum AgentHeadless {
         let storeRoot: String
         let runningInstances: Int
     }
+
+    // MARK: - Shared
+
+    static func encodeJSON<T: Encodable>(_ value: T) throws -> Data {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+        encoder.dateEncodingStrategy = .iso8601
+        return try encoder.encode(value)
+    }
+
+    static func emit<T: Encodable>(
+        _ value: T,
+        stdout: (String) -> Void,
+        stderr: (String) -> Void
+    ) -> Int32 {
+        do {
+            stdout(String(decoding: try encodeJSON(value), as: UTF8.self))
+            return 0
+        } catch {
+            stderr("Could not encode result: \(error.localizedDescription)")
+            return 2
+        }
+    }
+}
+
+struct AgentCheckReport: Encodable {
+    let ok: Bool
+    let checks: [AgentChecks.Check]
 }

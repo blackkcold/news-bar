@@ -242,8 +242,27 @@ final class FollowingReaderRenderingTests: XCTestCase {
 
     // MARK: - New comments entry point
 
+    /// Pure check: the banner decision and wording, no window needed. The
+    /// accessibility test below adds the tree assertion when a key window is
+    /// available; this one runs in headless mode too.
+    func testPendingCommentsBannerTitleMatchesCount() throws {
+        XCTAssertNil(FollowingDiscussionBanner.title(newComments: 0, language: .zh))
+        let title = try XCTUnwrap(FollowingDiscussionBanner.title(newComments: 3, language: .zh))
+        XCTAssertTrue(title.contains("3"))
+        XCTAssertTrue(title.contains("新评论"))
+        XCTAssertTrue(
+            FollowingDiscussionBanner.accessibilityLabel(newComments: 3, language: .zh).contains("新评论")
+        )
+        XCTAssertTrue(
+            FollowingDiscussionBanner.title(newComments: 3, language: .en)?.contains("new comments") == true
+        )
+    }
+
     @MainActor
     func testRefreshedCommentsAreReachableFromTheReader() async throws {
+        if ProcessInfo.processInfo.environment["NEWSBAR_TEST_HEADLESS"] == "1" {
+            throw XCTSkip("Headless run: the accessibility tree needs a key window")
+        }
         let settings = AppSettings()
         settings.appLanguage = .zh
         // Keep the pane's own `.task` from issuing a third request; the test

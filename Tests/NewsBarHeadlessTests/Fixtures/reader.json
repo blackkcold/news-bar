@@ -1,0 +1,62 @@
+{
+  "width": 558,
+  "height": 900,
+  "theme": "modern",
+  "language": "zh",
+  "post": {
+    "mid": "9001",
+    "bid": "B9001",
+    "uid": "77",
+    "screenName": "李蘑菇",
+    "text": "夜景样张对比：主摄在 1/15s 下的噪点控制比上一代好一档，长焦的锐度在 5x 之后开始下降。这段正文用来验证 560pt 的阅读量宽，大约每行 36 个汉字。",
+    "createdAt": "2026-11-23T07:00:00Z",
+    "isRetweet": true,
+    "retweetText": "上一代在 5x 就开始软，这一代把可用区间推到了 8x。",
+    "commentCount": 128,
+    "repostCount": 36,
+    "likeCount": 356
+  },
+  "user": {
+    "uid": "77",
+    "screenName": "李蘑菇",
+    "priority": "p0"
+  },
+  "comments": [
+    {
+      "id": "c1",
+      "mid": "9001",
+      "uid": "1",
+      "screenName": "读者甲",
+      "text": "夜景那张的高光压得住，参考这份样张里 5x 之后的锐度掉了。",
+      "createdAt": "2026-11-23T08:45:00Z",
+      "likeCount": 12,
+      "isAuthor": false,
+      "runs": [
+        { "kind": "text", "text": "夜景那张的高光压得住，参考" },
+        { "kind": "link", "text": "这份样张", "url": "https://example.com/gallery" },
+        { "kind": "text", "text": "里 5x 之后的锐度掉了。" }
+      ]
+    },
+    {
+      "id": "c2",
+      "mid": "9001",
+      "uid": "77",
+      "screenName": "李蘑菇",
+      "text": "5x 之后确实会软一点，我补一组 raw 到评论区。",
+      "createdAt": "2026-11-23T08:50:00Z",
+      "likeCount": 34,
+      "replyToName": "读者甲",
+      "isAuthor": true
+    },
+    {
+      "id": "c3",
+      "mid": "9001",
+      "uid": "3",
+      "screenName": "摄影爱好者",
+      "text": "抓拍成功率确实比参数更重要，等一个夜景长焦的对比。[吃瓜]",
+      "createdAt": "2026-11-23T08:55:00Z",
+      "likeCount": 3,
+      "isAuthor": false
+    }
+  ]
+}

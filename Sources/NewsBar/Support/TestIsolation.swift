@@ -4,6 +4,9 @@ import Foundation
 /// preferences and machine identity. Production behavior is unchanged.
 enum TestIsolation {
     static let isActive: Bool = {
+        // Agent CLI runs are isolated on request: they render or read without
+        // touching the running app's preferences and caches.
+        if ProcessInfo.processInfo.environment["NEWSBAR_AGENT_ISOLATED"] == "1" { return true }
         if NSClassFromString("XCTestCase") != nil { return true }
         if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil { return true }
         return ProcessInfo.processInfo.processName.contains("Tests")

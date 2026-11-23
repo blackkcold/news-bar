@@ -413,7 +413,7 @@ final class ResearchWorkspaceModel {
         await refreshFromStores(reconcile: true, initial: true)
         hasLoaded = true
 
-        let remembered = UserDefaults.standard.string(forKey: Self.selectionKey)
+        let remembered = TestIsolation.defaults.string(forKey: Self.selectionKey)
         var target = visibleSubjects.first(where: { $0.id == remembered })
             ?? visibleSubjects.first
         if let remembered,
@@ -562,7 +562,7 @@ final class ResearchWorkspaceModel {
             selectedSubjectID = nil
             detail = nil
             reusePreview = nil
-            UserDefaults.standard.removeObject(forKey: Self.selectionKey)
+            TestIsolation.defaults.removeObject(forKey: Self.selectionKey)
             return
         }
         guard let subject = await resolvedSubject(id: id) else {
@@ -576,7 +576,7 @@ final class ResearchWorkspaceModel {
             presentation.migrate(from: id, to: subject.id)
         }
         selectedSubjectID = subject.id
-        UserDefaults.standard.set(subject.id, forKey: Self.selectionKey)
+        TestIsolation.defaults.set(subject.id, forKey: Self.selectionKey)
         await loadDetail(for: subject, preferringRecordID: recordID)
     }
 

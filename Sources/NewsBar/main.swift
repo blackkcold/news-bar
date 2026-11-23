@@ -3,7 +3,7 @@ import AppKit
 // Headless agent commands: no window, no store, no network. They must run
 // before the process writes preferences and before the single-instance
 // check, so an agent never disturbs the copy that is already running.
-if let status = AgentHeadless.runIfRequested(arguments: CommandLine.arguments) {
+if let status = await AgentHeadless.runIfRequested(arguments: CommandLine.arguments) {
     exit(status)
 }
 
