@@ -1172,6 +1172,7 @@ enum L10n {
         "research.limitation.noEvidence": "未获得可核验证据；本报告只做背景梳理，不作为事实结论。",
         "research.error.searchFailed": "未联网检索：搜索服务不可用。",
         "research.error.noSources": "未找到可读取的公开来源。",
+        "research.node.verified": "已核验",
         "research.node.unverified": "未核实",
         "research.node.unsourced": "无来源",
         "research.verification.summary": "%1$ld 条结论 · %2$ld 条证据",
@@ -1642,6 +1643,8 @@ enum L10n {
         "research.report.overview": "背景与经过",
         "research.report.missing.summary": "仍待确认 %ld 项",
         "research.report.missing.more": "+%ld",
+        // `timeline.count` and `meta.timeline` intentionally share one format;
+        // `meta.timelineNoSpan` is the fallback when there is no date span.
         "research.report.timeline.count": "%ld 个节点 · 跨 %ld 天",
         "research.report.timeline.coverage": "已核验 %1$ld/%2$ld 个节点",
         "research.report.timeline.unsourced": "%ld 个节点无来源",
@@ -3262,6 +3265,7 @@ enum L10n {
         "research.limitation.noEvidence": "No verifiable evidence was obtained; this report is background only and not a factual conclusion.",
         "research.error.searchFailed": "Web search unavailable; nothing could be verified.",
         "research.error.noSources": "No readable public sources were found.",
+        "research.node.verified": "Verified",
         "research.node.unverified": "Unverified",
         "research.node.unsourced": "No source",
         "research.verification.summary": "%1$ld claims · %2$ld evidence",
@@ -3732,6 +3736,8 @@ enum L10n {
         "research.report.overview": "Background",
         "research.report.missing.summary": "%ld still unconfirmed",
         "research.report.missing.more": "+%ld",
+        // `timeline.count` and `meta.timeline` intentionally share one format;
+        // `meta.timelineNoSpan` is the fallback when there is no date span.
         "research.report.timeline.count": "%ld nodes · spans %ld days",
         "research.report.timeline.coverage": "%1$ld of %2$ld nodes verified",
         "research.report.timeline.unsourced": "%ld nodes without a source",

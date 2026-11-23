@@ -40,15 +40,33 @@ final class ResearchReportReaderRenderingTests: XCTestCase {
             ],
             searchStatus: .succeeded
         )
+        // Same summary, no timeline and no background: the PNG must be smaller
+        // than the full report's, so the size assertion still means something.
+        let summaryOnly = BurstResearch(
+            summary: report.summary,
+            searchStatus: .succeeded
+        )
 
         for theme in AppTheme.allCases {
             for size in sizes {
-                try render(
+                let fullData = try render(
                     state: "full",
                     report: report,
                     theme: theme,
                     size: size,
                     output: output
+                )
+                let emptyData = try render(
+                    state: "summary-only",
+                    report: summaryOnly,
+                    theme: theme,
+                    size: size,
+                    output: output
+                )
+                XCTAssertGreaterThan(
+                    fullData.count,
+                    emptyData.count + 1_000,
+                    "full-\(theme.rawValue)-\(Int(size.width))x\(Int(size.height))"
                 )
             }
         }
@@ -73,26 +91,73 @@ final class ResearchReportReaderRenderingTests: XCTestCase {
                     report: report,
                     theme: theme,
                     size: size,
-                    output: output
+                    output: output,
+                    onOpenEventTimeline: {}
                 )
             }
         }
     }
 
+    func testReaderRendersLegacyFailedReport() throws {
+        let output = try researchTestDirectory()
+            .appendingPathComponent("report-reader-render-matrix", isDirectory: true)
+        try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+
+        var verification = VerificationReport()
+        verification.verdict = .unverified
+        verification.missing = [
+            "发布时间尚未得到厂商确认",
+            "备货规模没有公开数据",
+            "渠道价格仍未知",
+        ]
+        let report = BurstResearch(
+            summary: "旧版报告只保留了有限结论，联网检索也失败了。",
+            overview: "来源不足，只能整理已知线索。",
+            timeline: [
+                TimelineNode(
+                    date: "2026-10-01",
+                    title: "线索出现在社交平台",
+                    detail: "尚未得到第二方确认。",
+                    confidence: .low
+                ),
+            ],
+            searchStatus: .failed,
+            verification: verification
+        )
+
+        for theme in AppTheme.allCases {
+            for size in sizes {
+                try render(
+                    state: "legacy-failed",
+                    report: report,
+                    theme: theme,
+                    size: size,
+                    output: output,
+                    isLegacy: true
+                )
+            }
+        }
+    }
+
+    @discardableResult
     private func render(
         state: String,
         report: BurstResearch,
         theme: AppTheme,
         size: NSSize,
-        output: URL
-    ) throws {
+        output: URL,
+        isLegacy: Bool = false,
+        onOpenEventTimeline: (() -> Void)? = nil
+    ) throws -> Data {
         let settings = AppSettings()
         settings.appTheme = theme
 
         let view = ResearchReportReader(
             report: report,
             contextID: nil,
-            onOpenURL: { _, _ in }
+            isLegacy: isLegacy,
+            onOpenURL: { _, _ in },
+            onOpenEventTimeline: onOpenEventTimeline
         )
         .background(Color(nsColor: .windowBackgroundColor))
         .environment(settings)
@@ -120,5 +185,6 @@ final class ResearchReportReaderRenderingTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(bitmap.pixelsHigh, Int(size.height), name)
 
         window.contentView = nil
+        return data
     }
 }

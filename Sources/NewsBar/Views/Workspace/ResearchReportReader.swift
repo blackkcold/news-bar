@@ -59,29 +59,12 @@ private struct ResearchReportSectionOffsetReader: View {
     }
 }
 
-/// True while the end of the content is inside the viewport. A short last
-/// section can never cross the top threshold, so the navigator needs this to
-/// still select it once the reader is scrolled all the way down.
-private struct ResearchReportContentEndKey: PreferenceKey {
-    static let defaultValue: Bool = false
-
-    static func reduce(value: inout Bool, nextValue: () -> Bool) {
-        value = value || nextValue()
-    }
-}
-
-private struct ResearchReportContentEndReader: View {
+/// Scroll metrics that drive the navigator. `onScrollGeometryChange` only fires
+/// when one of these values changes, so the handler is not run on every tick.
+private struct ScrollMetrics: Equatable {
+    let offsetY: CGFloat
+    let contentHeight: CGFloat
     let viewportHeight: CGFloat
-
-    var body: some View {
-        GeometryReader { proxy in
-            Color.clear.preference(
-                key: ResearchReportContentEndKey.self,
-                value: proxy.frame(in: .named(ResearchReportReader.scrollSpace)).maxY
-                    <= viewportHeight + 1
-            )
-        }
-    }
 }
 
 /// The shared report reader. The popup and the workspace both host it, so it
@@ -101,7 +84,9 @@ struct ResearchReportReader: View {
     var topContent: AnyView? = nil
 
     @State private var activeSection: ResearchReportSection = .conclusion
+    @State private var hasScrolled = false
     @State private var isAtContentEnd = false
+    @State private var lastOffsets: [ResearchReportSection: CGFloat] = [:]
 
     /// Internal so later tasks can extend the reading order without touching
     /// the navigator. Task 3 appends verification and sources.
@@ -123,52 +108,63 @@ struct ResearchReportReader: View {
                     }
                 )
                 Divider()
-                GeometryReader { viewport in
-                    ScrollView {
-                        VStack(alignment: .leading, spacing: 20) {
-                            if let topContent {
-                                topContent
-                            }
-                            ForEach(sections) { section in
-                                sectionContent(section)
-                                    .id(section.id)
-                                    .background(alignment: .top) {
-                                        ResearchReportSectionOffsetReader(section: section)
-                                    }
-                            }
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 20) {
+                        if let topContent {
+                            topContent
                         }
-                        .padding(.horizontal, 18)
-                        .padding(.vertical, 16)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .background {
-                            ResearchReportContentEndReader(viewportHeight: viewport.size.height)
+                        ForEach(sections) { section in
+                            sectionContent(section)
+                                .id(section.id)
+                                .background(alignment: .top) {
+                                    ResearchReportSectionOffsetReader(section: section)
+                                }
                         }
                     }
-                    .coordinateSpace(name: Self.scrollSpace)
-                    .onPreferenceChange(ResearchReportSectionOffsetKey.self) { offsets in
-                        updateActiveSection(offsets)
-                    }
-                    .onPreferenceChange(ResearchReportContentEndKey.self) { atEnd in
-                        guard isAtContentEnd != atEnd else { return }
-                        isAtContentEnd = atEnd
-                    }
+                    .padding(.horizontal, 18)
+                    .padding(.vertical, 16)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .coordinateSpace(name: Self.scrollSpace)
+                .onPreferenceChange(ResearchReportSectionOffsetKey.self) { offsets in
+                    lastOffsets = offsets
+                    updateActiveSection(lastOffsets)
+                }
+                .onScrollGeometryChange(for: ScrollMetrics.self) { geometry in
+                    ScrollMetrics(
+                        offsetY: geometry.contentOffset.y,
+                        contentHeight: geometry.contentSize.height,
+                        viewportHeight: geometry.containerSize.height
+                    )
+                } action: { _, metrics in
+                    hasScrolled = metrics.offsetY > 1
+                    isAtContentEnd = metrics.contentHeight > metrics.viewportHeight + 1
+                        && metrics.offsetY + metrics.viewportHeight >= metrics.contentHeight - 2
+                    updateActiveSection(lastOffsets)
+                }
+                .onChange(of: WorkspaceReportDigest.make(report)) {
+                    activeSection = .conclusion
+                    hasScrolled = false
+                    isAtContentEnd = false
+                    lastOffsets = [:]
                 }
             }
         }
     }
 
     /// Keeps the highlighted chapter on the last section whose top has passed
-    /// the navigation bar. Before any section reaches it the first stays active.
-    /// The end of the content only picks the last section once the reader has
-    /// actually scrolled; a report that fits the viewport opens on the first.
+    /// the navigation bar. An unscrolled reader always shows the first section,
+    /// so a report that fits the viewport opens on the conclusion.
     private func updateActiveSection(_ offsets: [ResearchReportSection: CGFloat]) {
         guard !offsets.isEmpty else { return }
-        let passed = sections.filter { (offsets[$0] ?? .greatestFiniteMagnitude) <= 12 }
-        let hasScrolled = sections.contains { (offsets[$0] ?? 0) < -1 }
         let next: ResearchReportSection
-        if isAtContentEnd, hasScrolled, let last = sections.last {
+        if !hasScrolled {
+            next = sections.first ?? .conclusion
+        } else if isAtContentEnd, let last = sections.last {
             next = last
-        } else if let last = passed.last {
+        } else if let last = sections.last(where: {
+            (offsets[$0] ?? .greatestFiniteMagnitude) <= 12
+        }) {
             next = last
         } else {
             next = sections.first ?? .conclusion
@@ -183,7 +179,6 @@ struct ResearchReportReader: View {
         case .conclusion:
             ResearchReportConclusionSection(
                 report: report,
-                contextID: contextID,
                 isLegacy: isLegacy
             )
         case .timeline:

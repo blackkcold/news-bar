@@ -9,14 +9,12 @@ struct ResearchReportConclusionSection: View {
     @Environment(AppSettings.self) private var settings
 
     let report: BurstResearch
-    let contextID: String?
     var isLegacy: Bool = false
 
     @State private var showsOverview: Bool
 
-    init(report: BurstResearch, contextID: String?, isLegacy: Bool = false) {
+    init(report: BurstResearch, isLegacy: Bool = false) {
         self.report = report
-        self.contextID = contextID
         self.isLegacy = isLegacy
         // Background is only open by default when there is no summary to read.
         let summaryIsEmpty = report.summary
@@ -67,6 +65,12 @@ struct ResearchReportConclusionSection: View {
             if report.searchStatus == .failed {
                 note("wifi.exclamationmark", "research.report.searchFailed")
             }
+        }
+        .onChange(of: WorkspaceReportDigest.make(report)) {
+            // A swapped report must not inherit the previous overview state.
+            showsOverview = report.summary
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .isEmpty
         }
         .accessibilityElement(children: .contain)
     }
@@ -219,23 +223,22 @@ struct ResearchReportTimelineSection: View {
     var onOpenEventTimeline: (() -> Void)? = nil
 
     private var isRetro: Bool { settings.appTheme == .retroEditorial }
-    private var presentation: ReportPresentation {
-        ReportPresentation(report: report, isLegacy: isLegacy)
-    }
     private var accent: Color { isRetro ? RetroEditorialTokens.brick : .accentColor }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        let metrics = ResearchReportMetrics(report: report)
+        let presentation = ReportPresentation(report: report, isLegacy: isLegacy)
+        return VStack(alignment: .leading, spacing: 10) {
             WorkspaceSectionHeader(
                 symbol: "clock",
                 title: "\(ResearchReportSection.timeline.index) \(ResearchReportSection.timeline.title)",
-                trailing: trailingCount
+                trailing: trailingCount(presentation: presentation, metrics: metrics)
             )
 
             if presentation.nodes.isEmpty {
                 emptyState
             } else {
-                coverageLine
+                coverageLine(presentation)
                 VStack(alignment: .leading, spacing: 13) {
                     ForEach(presentation.nodes) { node in
                         nodeRow(node)
@@ -246,9 +249,12 @@ struct ResearchReportTimelineSection: View {
         .accessibilityElement(children: .contain)
     }
 
-    private var trailingCount: String {
+    private func trailingCount(
+        presentation: ReportPresentation,
+        metrics: ResearchReportMetrics
+    ) -> String {
         let count = presentation.nodes.count
-        if let span = ResearchReportMetrics(report: report).timelineSpanDays {
+        if let span = metrics.timelineSpanDays {
             return L10n.string(
                 "research.report.timeline.count",
                 language: settings.appLanguage,
@@ -263,7 +269,7 @@ struct ResearchReportTimelineSection: View {
         )
     }
 
-    private var coverageLine: some View {
+    private func coverageLine(_ presentation: ReportPresentation) -> some View {
         HStack(spacing: 6) {
             Text(L10n.string(
                 "research.report.timeline.coverage",
@@ -334,7 +340,7 @@ struct ResearchReportTimelineSection: View {
             Circle()
                 .fill(accent)
                 .frame(width: 7, height: 7)
-                .accessibilityLabel("research.quoteVerified".localized)
+                .accessibilityLabel("research.node.verified".localized)
         case .citedUnverified:
             Circle()
                 .strokeBorder(
@@ -362,9 +368,7 @@ struct ResearchReportTimelineSection: View {
                 .fixedSize(horizontal: false, vertical: true)
             if let onOpenEventTimeline {
                 Button("research.report.timeline.empty.action".localized, action: onOpenEventTimeline)
-                    .buttonStyle(.plain)
-                    .font(.system(size: 10.5, weight: .semibold))
-                    .foregroundStyle(accent)
+                    .buttonStyle(EditorialActionButtonStyle(tone: .secondary, compact: true))
                     .padding(.top, 1)
             }
         }
