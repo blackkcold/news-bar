@@ -16,10 +16,10 @@ usage() {
     cat <<'TEXT'
 Usage: scripts/agent-test.sh [--tier headless|render|launch|all] [--json] [--no-build]
 
-  headless   Logic + parser + cache + controller tests. Opens no window.
-             This is the default.
-  render     Reader/monitor snapshots. Windows stay off-screen and are never
-             made key.
+  headless   Logic + parser + cache + controller tests and CLI checks.
+             Opens no window. This is the default.
+  render     Reader/monitor snapshots plus the off-screen render-reader.
+             Windows stay off-screen and are never made key.
   launch     Runs the packaged app entry through --launch-probe and proves the
              main actor is still schedulable while AppKit's run loop runs.
   all        Full swift test suite plus render and launch checks.
@@ -70,6 +70,7 @@ STAMP="$(date +%Y%m%d-%H%M%S)"
 LOG_DIR="$PROJECT_DIR/.build/agent-test/$STAMP"
 STEPS_FILE="$LOG_DIR/steps.tsv"
 BIN="$PROJECT_DIR/.build/debug/NewsBar"
+AGENT_BIN="$PROJECT_DIR/.build/debug/NewsBarAgent"
 FIXTURE="$PROJECT_DIR/Tests/NewsBarHeadlessTests/Fixtures/reader.json"
 mkdir -p "$LOG_DIR"
 : > "$STEPS_FILE"
@@ -119,10 +120,19 @@ RENDER_FILTER='FollowingReaderRenderingTests|WeiboMonitorRenderingTests'
 
 if [[ "$TIER" == "headless" || "$TIER" == "all" ]]; then
     run_step headless-tests swift test --filter "$HEADLESS_FILTER"
+    run_step agent-check "$AGENT_BIN" check
+    run_step agent-store-summary "$AGENT_BIN" store-summary
+    run_step agent-doctor "$AGENT_BIN" doctor
 fi
 
 if [[ "$TIER" == "render" || "$TIER" == "all" ]]; then
     run_step render-tests swift test --filter "$RENDER_FILTER"
+    run_step render-modern "$AGENT_BIN" render-reader "$FIXTURE" \
+        --out "$LOG_DIR/reader-modern-zh.png"
+    run_step render-retro "$AGENT_BIN" render-reader "$FIXTURE" \
+        --theme retroEditorial --out "$LOG_DIR/reader-retro-zh.png"
+    run_step render-narrow "$AGENT_BIN" render-reader "$FIXTURE" \
+        --width 579 --height 860 --out "$LOG_DIR/reader-960-modern-zh.png"
 fi
 
 if [[ "$TIER" == "launch" || "$TIER" == "all" ]]; then

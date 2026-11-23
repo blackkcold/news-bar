@@ -9,7 +9,7 @@ import NewsBarAgentProtocol
 /// already running. Inputs are explicit files or stdin; nothing is written.
 enum AgentHeadless {
     static let usage = """
-    NewsBar --agent <command>
+    NewsBarAgent <command>
 
     COMMANDS
       check                     Run the built-in comment invariants.
@@ -27,14 +27,14 @@ enum AgentHeadless {
     The headless mode opens no window, sends no request and writes no store.
     """
 
-    /// Returns nil for a normal launch, leaving startup untouched.
-    static func runIfRequested(
+    /// Runs one agent command. The executable calls this directly; there is no
+    /// `--agent` guard because the agent process never launches AppKit's loop.
+    static func run(
         arguments: [String],
         stdout: (String) -> Void = { print($0) },
         stderr: (String) -> Void = { FileHandle.standardError.write(Data(($0 + "\n").utf8)) }
-    ) async -> Int32? {
-        guard arguments.dropFirst().first == "--agent" else { return nil }
-        let rest = Array(arguments.dropFirst(2))
+    ) async -> Int32 {
+        let rest = Array(arguments.dropFirst())
         let command = rest.first ?? "help"
         let commandArguments = Array(rest.dropFirst())
 
@@ -158,7 +158,8 @@ enum AgentHeadless {
             agentProtocolVersion: AgentProtocol.version,
             agentRoot: AgentPaths.root.path,
             testIsolation: TestIsolation.isActive,
-            storeRoot: WeiboMonitorStore.defaultRoot().path,
+            storeRoot: WeiboMonitorStore.applicationRoot().path,
+            effectiveRoot: WeiboMonitorStore.defaultRoot().path,
             runningInstances: NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).count
         )
         do {
@@ -177,6 +178,7 @@ enum AgentHeadless {
         let agentRoot: String
         let testIsolation: Bool
         let storeRoot: String
+        let effectiveRoot: String
         let runningInstances: Int
     }
 

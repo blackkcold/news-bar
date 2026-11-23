@@ -10,7 +10,7 @@ final class MainEntryInvariantTests: XCTestCase {
             .deletingLastPathComponent()
             .deletingLastPathComponent()
             .deletingLastPathComponent()
-        let main = root.appendingPathComponent("Sources/NewsBar/main.swift")
+        let main = root.appendingPathComponent("Sources/NewsBarMain/main.swift")
         let text = try String(contentsOf: main, encoding: .utf8)
         let code = text
             .split(separator: "\n", omittingEmptySubsequences: false)
@@ -20,6 +20,6 @@ final class MainEntryInvariantTests: XCTestCase {
         XCTAssertFalse(code.contains("await "), "The app entry must not be async")
         XCTAssertFalse(code.contains("AgentHeadless"), "Agent commands must not run in the app entry")
         XCTAssertFalse(code.contains("Task {"), "No top-level Task in the app entry")
-        XCTAssertTrue(code.contains("LaunchProbe"), "The launch probe must stay wired")
+        XCTAssertTrue(code.contains("runApp()"), "The thin entry must call the synchronous runApp")
     }
 }

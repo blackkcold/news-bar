@@ -57,10 +57,9 @@ actor WeiboMonitorStore {
         self.postsDirectory = root.appendingPathComponent("posts", isDirectory: true)
     }
 
-    static func defaultRoot() -> URL {
-        if TestIsolation.isActive {
-            return TestIsolation.directory("WeiboMonitor")
-        }
+    /// The real application-support root. Pure path, never isolated: the agent
+    /// uses it to read a copy of the live store for diagnostics.
+    static func applicationRoot() -> URL {
         let appSupport = FileManager.default.urls(
             for: .applicationSupportDirectory,
             in: .userDomainMask
@@ -69,6 +68,13 @@ actor WeiboMonitorStore {
         return appSupport
             .appendingPathComponent("com.newsbar.app", isDirectory: true)
             .appendingPathComponent("WeiboMonitor", isDirectory: true)
+    }
+
+    static func defaultRoot() -> URL {
+        if TestIsolation.isActive {
+            return TestIsolation.directory("WeiboMonitor")
+        }
+        return applicationRoot()
     }
 
     func load(now: Date = Date()) async -> WeiboMonitorLoadResult {

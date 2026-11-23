@@ -4,6 +4,11 @@ import PackageDescription
 let package = Package(
     name: "NewsBar",
     platforms: [.macOS("15.0")],
+    products: [
+        // The app product keeps the historical binary name. Its target is a
+        // thin synchronous entry; all app code lives in the `NewsBar` library.
+        .executable(name: "NewsBar", targets: ["NewsBarMain"]),
+    ],
     dependencies: [
         // Sparkle 2 drives in-place updates: appcast discovery, EdDSA
         // verification, delta application and the standard update UI.
@@ -15,11 +20,24 @@ let package = Package(
             name: "NewsBarAgentProtocol",
             path: "Sources/NewsBarAgentProtocol"
         ),
-        .executableTarget(
+        // The app code is a library so both the thin AppKit entry and the
+        // headless agent executable can share it. Keeping the module name
+        // `NewsBar` preserves @testable imports and the resource bundle name.
+        .target(
             name: "NewsBar",
             dependencies: ["CSQLite", "NewsBarAgentProtocol", .product(name: "Sparkle", package: "Sparkle")],
             path: "Sources/NewsBar",
             resources: [.process("Resources")]
+        ),
+        .executableTarget(
+            name: "NewsBarMain",
+            dependencies: ["NewsBar"],
+            path: "Sources/NewsBarMain"
+        ),
+        .executableTarget(
+            name: "NewsBarAgent",
+            dependencies: ["NewsBar"],
+            path: "Sources/NewsBarAgent"
         ),
         .executableTarget(
             name: "WeiboLabelCLI",
