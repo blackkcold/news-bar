@@ -11,7 +11,7 @@ enum AgentStoreSummary {
         stdout: (String) -> Void,
         stderr: (String) -> Void
     ) async -> Int32 {
-        let rootPath = value("--root", in: arguments) ?? WeiboMonitorStore.defaultRoot().path
+        let rootPath = value("--root", in: arguments) ?? WeiboMonitorStore.applicationRoot().path
         let source = URL(fileURLWithPath: rootPath)
         var isDirectory: ObjCBool = false
         let exists = FileManager.default.fileExists(atPath: source.path, isDirectory: &isDirectory)

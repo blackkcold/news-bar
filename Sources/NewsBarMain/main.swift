@@ -1,0 +1,3 @@
+import NewsBar
+
+runApp()

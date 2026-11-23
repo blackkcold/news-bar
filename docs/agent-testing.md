@@ -18,16 +18,16 @@ bash scripts/agent-test.sh --tier all --json # 机器可读报告
 
 | 层 | 内容 | 是否开窗口 | 是否碰运行实例 |
 |---|---|---|---|
-| `headless` | `AgentHeadlessTests`、评论解析/缓存/控制器、Feed 过滤；v3.4.1 的 agent CLI 暂时移出 App | 否 | 否 |
-| `render` | `FollowingReaderRenderingTests`、`WeiboMonitorRenderingTests` 的离屏快照 | 仅离屏，不 makeKey | 否 |
+| `headless` | `AgentHeadlessTests`、评论解析/缓存/控制器、Feed 过滤；`NewsBarAgent check / store-summary / doctor` | 否 | 否 |
+| `render` | `FollowingReaderRenderingTests`、`WeiboMonitorRenderingTests` 的离屏快照；`render-reader` 三张 | 仅离屏，不 makeKey | 否 |
 | `launch` | `--launch-probe`：进入 AppKit run loop，并断言主 actor 任务能执行 | 不显示窗口，`.prohibited` | 否 |
-| `all` | 完整 `swift test` + render + launch | 仅离屏 | 否 |
+| `all` | 完整 `swift test` + headless + render + launch | 仅离屏 | 否 |
 
 `NEWSBAR_TEST_HEADLESS=1` 会跳过唯一需要 key window 的 AX 树测试，避免抢焦点。`launch` 是 v3.4.0 主 actor 饿死事故的回归门禁：v3.4.0 的 async 入口会让探针只写出 `enteredRun`、缺少 `mainActorTask`，45 秒后超时失败。
 
-## Agent CLI（v3.4.1 暂时移出 App）
+## Agent CLI
 
-v3.4.1 的 App 入口必须保持同步，`--agent` 已移出 App：`NewsBar --agent <command>` 会打印提示并以 exit 2 明确失败，不会静默启动 GUI。`AgentHeadlessTests` 仍直接测试解析、缓存和控制器；独立的 `NewsBarAgent` 可执行文件在 **v3.4.2** 回归，届时命令为：
+v3.4.2 起 agent 命令由独立可执行文件 `NewsBarAgent` 提供；App 入口只保留同步 `runApp()`。`NewsBar --agent ...` 会以 exit 2 明确失败，不会启动 GUI。
 
 ```bash
 .build/debug/NewsBarAgent check
@@ -40,9 +40,9 @@ v3.4.1 的 App 入口必须保持同步，`--agent` 已移出 App：`NewsBar --a
 
 - `check`：6 条内置不变量（链接两侧空白、mention/topic 的 href、sinaurl 只解一层、http 降级、`data-href` 不误判、大写 `<A>`）。
 - `parse-comments`：跑生产解析器，输出 `text` 与 `runs`，用于核对真实 payload。
-- `store-summary`：**先复制** store 到临时目录再读；原目录不会被 `load()` 的归档或重建写入。
-- `render-reader`：离屏渲染 `FollowingReaderPane` 到 PNG，进程使用 `.prohibited` 激活策略。
-- `doctor`：输出 bundle id、版本、store 根目录、是否隔离、正在运行的实例数；只读，不启动第二个 App。
+- `store-summary`：**先复制**真实 store 到临时目录再读；原目录不会被 `load()` 的归档或重建写入。
+- `render-reader`：离屏渲染 `FollowingReaderPane` 到 PNG；agent 进程显式激活 `TestIsolation`，使用 `.prohibited` 激活策略。
+- `doctor`：分别报告真实 store 根（`storeRoot`）与隔离后的有效根（`effectiveRoot`）、agent 根目录、是否隔离、正在运行的实例数；只读，不启动第二个 App。
 
 ## 隔离模型
 

@@ -5,20 +5,10 @@ import XCTest
 /// hits the network or writes the real stores: the suite is safe to run while
 /// the app is in use.
 final class AgentHeadlessTests: XCTestCase {
-    func testNormalLaunchIsNotIntercepted() async {
-        let normal = await AgentHeadless.runIfRequested(
-            arguments: ["/Applications/NewsBar.app/Contents/MacOS/NewsBar"]
-        )
-        XCTAssertNil(normal)
-
-        let helpWithoutAgent = await AgentHeadless.runIfRequested(arguments: ["NewsBar", "--help"])
-        XCTAssertNil(helpWithoutAgent)
-    }
-
     func testHelpListsTheCommands() async throws {
         var out: [String] = []
-        let status = try required(await AgentHeadless.runIfRequested(
-            arguments: ["NewsBar", "--agent", "help"],
+        let status = try required(await AgentHeadless.run(
+            arguments: ["NewsBarAgent", "help"],
             stdout: { out.append($0) },
             stderr: { _ in }
         ))
@@ -40,8 +30,8 @@ final class AgentHeadlessTests: XCTestCase {
 
         var out: [String] = []
         var err: [String] = []
-        let status = try required(await AgentHeadless.runIfRequested(
-            arguments: ["NewsBar", "--agent", "parse-comments", file.path],
+        let status = try required(await AgentHeadless.run(
+            arguments: ["NewsBarAgent", "parse-comments", file.path],
             stdout: { out.append($0) },
             stderr: { err.append($0) }
         ))
@@ -62,8 +52,8 @@ final class AgentHeadlessTests: XCTestCase {
 
     func testParseCommentsRejectsUnreadableInput() async throws {
         var err: [String] = []
-        let status = try required(await AgentHeadless.runIfRequested(
-            arguments: ["NewsBar", "--agent", "parse-comments", "/nonexistent/\(UUID().uuidString).json"],
+        let status = try required(await AgentHeadless.run(
+            arguments: ["NewsBarAgent", "parse-comments", "/nonexistent/\(UUID().uuidString).json"],
             stdout: { _ in },
             stderr: { err.append($0) }
         ))
@@ -78,8 +68,8 @@ final class AgentHeadlessTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: file) }
 
         var err: [String] = []
-        let status = try required(await AgentHeadless.runIfRequested(
-            arguments: ["NewsBar", "--agent", "parse-comments", file.path],
+        let status = try required(await AgentHeadless.run(
+            arguments: ["NewsBarAgent", "parse-comments", file.path],
             stdout: { _ in },
             stderr: { err.append($0) }
         ))
@@ -89,8 +79,8 @@ final class AgentHeadlessTests: XCTestCase {
 
     func testDoctorReportsIsolation() async throws {
         var out: [String] = []
-        let status = try required(await AgentHeadless.runIfRequested(
-            arguments: ["NewsBar", "--agent", "doctor"],
+        let status = try required(await AgentHeadless.run(
+            arguments: ["NewsBarAgent", "doctor"],
             stdout: { out.append($0) },
             stderr: { _ in }
         ))
@@ -101,15 +91,23 @@ final class AgentHeadlessTests: XCTestCase {
         XCTAssertEqual(json["agentProtocolVersion"] as? Int, 1)
         XCTAssertEqual(json["testIsolation"] as? Bool, true, "XCTest must resolve to the isolated root")
         let storeRoot = try XCTUnwrap(json["storeRoot"] as? String)
-        XCTAssertTrue(storeRoot.contains("NewsBarTestIsolation"))
+        let effectiveRoot = try XCTUnwrap(json["effectiveRoot"] as? String)
+        XCTAssertFalse(
+            storeRoot.contains("NewsBarTestIsolation"),
+            "storeRoot must be the real application root"
+        )
+        XCTAssertTrue(
+            effectiveRoot.contains("NewsBarTestIsolation"),
+            "effectiveRoot must be the isolated root"
+        )
         XCTAssertNotNil(json["bundleIdentifier"] as? String)
         XCTAssertNotNil(json["runningInstances"] as? Int)
     }
 
     func testUnknownCommandFailsWithUsage() async throws {
         var err: [String] = []
-        let status = try required(await AgentHeadless.runIfRequested(
-            arguments: ["NewsBar", "--agent", "nope"],
+        let status = try required(await AgentHeadless.run(
+            arguments: ["NewsBarAgent", "nope"],
             stdout: { _ in },
             stderr: { err.append($0) }
         ))
@@ -122,8 +120,8 @@ final class AgentHeadlessTests: XCTestCase {
     func testCheckPassesAllInvariants() async throws {
         var out: [String] = []
         var err: [String] = []
-        let status = try required(await AgentHeadless.runIfRequested(
-            arguments: ["NewsBar", "--agent", "check"],
+        let status = try required(await AgentHeadless.run(
+            arguments: ["NewsBarAgent", "check"],
             stdout: { out.append($0) },
             stderr: { err.append($0) }
         ))
@@ -143,8 +141,8 @@ final class AgentHeadlessTests: XCTestCase {
         let missing = FileManager.default.temporaryDirectory
             .appendingPathComponent("missing-store-\(UUID().uuidString)", isDirectory: true)
         var out: [String] = []
-        let status = try required(await AgentHeadless.runIfRequested(
-            arguments: ["NewsBar", "--agent", "store-summary", "--root", missing.path],
+        let status = try required(await AgentHeadless.run(
+            arguments: ["NewsBarAgent", "store-summary", "--root", missing.path],
             stdout: { out.append($0) },
             stderr: { _ in }
         ))
@@ -185,8 +183,8 @@ final class AgentHeadlessTests: XCTestCase {
         try await store.savePosts(uid: "1", posts: [post], now: now)
 
         var out: [String] = []
-        let status = try required(await AgentHeadless.runIfRequested(
-            arguments: ["NewsBar", "--agent", "store-summary", "--root", root.path],
+        let status = try required(await AgentHeadless.run(
+            arguments: ["NewsBarAgent", "store-summary", "--root", root.path],
             stdout: { out.append($0) },
             stderr: { _ in }
         ))
@@ -219,9 +217,9 @@ final class AgentHeadlessTests: XCTestCase {
 
         var outLines: [String] = []
         var err: [String] = []
-        let status = try required(await AgentHeadless.runIfRequested(
+        let status = try required(await AgentHeadless.run(
             arguments: [
-                "NewsBar", "--agent", "render-reader", fixture.path,
+                "NewsBarAgent", "render-reader", fixture.path,
                 "--out", out.path, "--width", "558", "--height", "900",
             ],
             stdout: { outLines.append($0) },
@@ -247,8 +245,8 @@ final class AgentHeadlessTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: file) }
 
         var err: [String] = []
-        let status = try required(await AgentHeadless.runIfRequested(
-            arguments: ["NewsBar", "--agent", "render-reader", file.path],
+        let status = try required(await AgentHeadless.run(
+            arguments: ["NewsBarAgent", "render-reader", file.path],
             stdout: { _ in },
             stderr: { err.append($0) }
         ))
