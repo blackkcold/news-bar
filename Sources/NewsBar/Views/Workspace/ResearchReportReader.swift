@@ -112,7 +112,8 @@ struct ResearchReportReader: View {
                         withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.18)) {
                             proxy.scrollTo(section.id, anchor: .top)
                         }
-                    }
+                    },
+                    isHistorical: isHistorical
                 )
                 Divider()
                 ScrollView {
@@ -214,11 +215,14 @@ struct ResearchReportReader: View {
     }
 }
 
-/// Fixed chapter navigation above the scrolling body.
+/// Fixed chapter navigation above the scrolling body. A historical report is
+/// marked here rather than in each host's chrome, so the popup and the
+/// workspace cannot disagree about which report is on screen.
 struct ResearchReportNavigator: View {
     let sections: [ResearchReportSection]
     let active: ResearchReportSection
     let onSelect: (ResearchReportSection) -> Void
+    var isHistorical: Bool = false
 
     var body: some View {
         HStack(spacing: 0) {
@@ -233,6 +237,14 @@ struct ResearchReportNavigator: View {
             )
             .pickerStyle(.segmented)
             .labelsHidden()
+            if isHistorical {
+                EditorialTag(
+                    text: "research.report.historical".localized,
+                    fallbackTint: .orange,
+                    filled: true
+                )
+                .padding(.leading, 10)
+            }
             Spacer(minLength: 0)
         }
         .padding(.horizontal, 18)

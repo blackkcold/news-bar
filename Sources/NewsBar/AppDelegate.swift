@@ -1233,7 +1233,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 defer: false
             )
             panel.title = settings.appLanguage == .en ? "Research report" : "研究报告"
-            panel.minSize = NSSize(width: 620, height: 560)
+            // The content floor is what the SwiftUI view pins (`.frame(minHeight: 560)`);
+            // `minSize` includes the titlebar, so it would clip 28pt of content.
+            panel.contentMinSize = NSSize(width: 620, height: 560)
             panel.isReleasedWhenClosed = false
             panel.hidesOnDeactivate = false
             panel.becomesKeyOnlyIfNeeded = false

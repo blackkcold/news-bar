@@ -243,11 +243,10 @@ struct TransientResearchReportView: View {
     private var isHistoricalReport: Bool {
         ResearchReportDisplay.isHistorical(selectedVersion: model.selectedVersion, record: model.record)
     }
-    /// Only a genuinely loaded historical version carries a version label; the
-    /// panel does not load version history and must not imply one.
+    /// The label of the version actually on screen, if the model loaded one.
+    /// The popup never invents a version when none was selected.
     private var copyVersionLabel: String? {
-        guard isHistoricalReport, let sequence = model.selectedVersion?.sequence else { return nil }
-        return "V\(sequence)"
+        model.selectedVersion.map { "V\($0.sequence)" }
     }
     private var fallbackSourceURL: String? { model.fallbackSourceURL }
     private var fallbackTitle: String? { model.fallbackTitle }
@@ -318,7 +317,7 @@ struct TransientResearchReportView: View {
             }
             Spacer(minLength: 0)
             HStack(spacing: 6) {
-                Button("research.report.openWorkspace".localized) {
+                Button(L10n.string("research.report.openWorkspace", language: settings.appLanguage)) {
                     onOpenWorkspace()
                 }
                 .buttonStyle(.bordered)
@@ -326,12 +325,12 @@ struct TransientResearchReportView: View {
                 .disabled(model.recordID == nil)
 
                 Menu {
-                    Button("research.report.copy".localized) {
+                    Button(L10n.string("research.report.copy", language: settings.appLanguage)) {
                         copyMarkdown()
                     }
                     .disabled(displayedReport == nil)
                     Divider()
-                    Button(english ? "Close" : "关闭", action: onClose)
+                    Button(L10n.string("research.report.actions.close", language: settings.appLanguage), action: onClose)
                 } label: {
                     Image(systemName: "ellipsis.circle")
                         .frame(width: 22, height: 22)
@@ -339,7 +338,7 @@ struct TransientResearchReportView: View {
                 .menuStyle(.borderlessButton)
                 .menuIndicator(.hidden)
                 .fixedSize()
-                .accessibilityLabel(english ? "Report actions" : "报告操作")
+                .accessibilityLabel(L10n.string("research.report.actions.a11y", language: settings.appLanguage))
 
                 Button(action: onClose) {
                     Image(systemName: "xmark")
@@ -360,11 +359,13 @@ struct TransientResearchReportView: View {
         guard let report = displayedReport else { return status }
         let date = (report.generatedAt ?? record.updatedAt)
             .formatted(date: .abbreviated, time: .shortened)
+        // Literal keys keep the localization lint and the format-contract test
+        // able to see both strings.
         let time: String
         if report.generatedAt != nil {
-            time = english ? "Verified \(date)" : "核验于 \(date)"
+            time = L10n.string("research.report.meta.verified", language: settings.appLanguage, date)
         } else {
-            time = english ? "Updated \(date)" : "更新于 \(date)"
+            time = L10n.string("research.report.meta.updated", language: settings.appLanguage, date)
         }
         return "\(status) · \(time)"
     }
@@ -549,6 +550,14 @@ struct TransientResearchReportView: View {
                 Text(english ? "No research report is available yet." : "该事件暂时还没有研究报告。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                // An event with a failed active run stays diagnosable from here;
+                // `unavailable` is a different branch, so this cannot duplicate it.
+                if let lastError = model.record?.run.lastError, !lastError.isEmpty {
+                    Text(lastError)
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
                 if let fallbackSourceURL {
                     sourceFallbackButton(fallbackSourceURL, title: fallbackTitle)
                 }
