@@ -407,18 +407,12 @@ struct ResearchReportVerificationSection: View {
         Group {
             if let verification = report.verification {
                 verificationBody(verification)
-            } else if isLegacy {
+            } else {
                 VStack(alignment: .leading, spacing: 9) {
                     header
-                    HStack(alignment: .firstTextBaseline, spacing: 6) {
-                        Image(systemName: "info.circle")
-                            .font(.system(size: 9, weight: .semibold))
-                            .accessibilityHidden(true)
-                        Text("research.report.legacy.note".localized)
-                            .font(.system(size: 10.5, design: isRetro ? .serif : .default))
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                    .foregroundStyle(.secondary)
+                    note(isLegacy
+                         ? "research.report.legacy.note"
+                         : "research.report.verification.none")
                 }
                 .accessibilityElement(children: .contain)
             }
@@ -430,6 +424,20 @@ struct ResearchReportVerificationSection: View {
             showsConflicts = false
             showsMissing = false
         }
+    }
+
+    /// The chapter must never draw a header over nothing: without a
+    /// verification block it explains which kind of gap the reader is seeing.
+    private func note(_ key: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+            Image(systemName: "info.circle")
+                .font(.system(size: 9, weight: .semibold))
+                .accessibilityHidden(true)
+            Text(key.localized)
+                .font(.system(size: 10.5, design: isRetro ? .serif : .default))
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .foregroundStyle(.secondary)
     }
 
     private var header: some View {

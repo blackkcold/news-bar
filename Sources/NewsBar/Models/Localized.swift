@@ -1664,6 +1664,7 @@ enum L10n {
         "research.report.sources.collapse": "已收起",
         "research.report.source.open": "打开原文",
         "research.report.verdict.unverifiedHelp": "「未证实」表示没有足够的已核验引文支撑这条结论，并不等于结论为假。",
+        "research.report.verification.none": "本次报告没有逐条核验数据。",
 
         // About
         "about.version": "版本",
@@ -3768,6 +3769,7 @@ enum L10n {
         "research.report.sources.collapse": "Collapsed",
         "research.report.source.open": "Open original",
         "research.report.verdict.unverifiedHelp": "\"Unverified\" means the conclusion lacks enough checked quotes behind it. It does not mean the conclusion is false.",
+        "research.report.verification.none": "No claim-level verification is available for this report.",
 
         // About
         "about.version": "Version",

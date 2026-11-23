@@ -237,6 +237,64 @@ final class ResearchReportReaderRenderingTests: XCTestCase {
         }
     }
 
+    /// Evidence without a verification block is a real state: chapter 03 must
+    /// explain the gap instead of listing a chapter that draws nothing.
+    func testReaderRendersVerificationGapNote() throws {
+        let output = try researchTestDirectory()
+            .appendingPathComponent("report-reader-render-matrix", isDirectory: true)
+        try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+
+        let report = BurstResearch(
+            summary: "来源已保留，但这次运行没有生成逐条核验。",
+            overview: "",
+            timeline: [],
+            searchStatus: .succeeded,
+            evidence: makeEvidence(),
+            verification: nil
+        )
+
+        let reader = ResearchReportReader(
+            report: report,
+            contextID: nil,
+            onOpenURL: { _, _ in }
+        )
+        XCTAssertEqual(reader.sections, [.conclusion, .timeline, .verification, .sources])
+
+        for theme in AppTheme.allCases {
+            for size in sizes {
+                let data = try render(
+                    state: "verification-gap",
+                    report: report,
+                    theme: theme,
+                    size: size,
+                    output: output
+                )
+                XCTAssertGreaterThan(
+                    data.count,
+                    2_000,
+                    "verification-gap-\(theme.rawValue)-\(Int(size.width))x\(Int(size.height))"
+                )
+
+                let sectionData = try render(
+                    state: "verification-gap-section",
+                    theme: theme,
+                    size: size,
+                    output: output,
+                    content: ResearchReportVerificationSection(
+                        report: report,
+                        isLegacy: false,
+                        contextID: nil
+                    )
+                )
+                XCTAssertGreaterThan(
+                    sectionData.count,
+                    2_000,
+                    "verification-gap-section-\(theme.rawValue)-\(Int(size.width))x\(Int(size.height))"
+                )
+            }
+        }
+    }
+
     func testReaderRendersLegacyReport() throws {
         let output = try researchTestDirectory()
             .appendingPathComponent("report-reader-render-matrix", isDirectory: true)
