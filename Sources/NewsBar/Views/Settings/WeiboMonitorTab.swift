@@ -101,9 +101,9 @@ struct WeiboMonitorTab: View {
         }
 
         Section {
-            badgeSettingsSection
+            followAlertSection
         } header: {
-            Text(L10n.string("weibo.badge.section", language: settings.appLanguage))
+            Text(L10n.string("weibo.alert.section", language: settings.appLanguage))
         }
 
         Section {
@@ -836,40 +836,98 @@ struct WeiboMonitorTab: View {
         }
     }
 
-    // MARK: - Badge settings
+    // MARK: - Follow alert settings
 
-    private var badgeSettingsSection: some View {
+    /// One place for everything the popover and the badges do: notifications,
+    /// the popover entry, and a badge master with one switch per surface.
+    private var followAlertSection: some View {
         VStack(alignment: .leading, spacing: 10) {
             Toggle(
-                L10n.string("weibo.badge.menuBar", language: language),
+                L10n.string("weibo.advanced.notifyToggle", language: language),
                 isOn: Binding(
+                    get: { settings.weiboMonitorNotifyEnabled },
+                    set: { settings.weiboMonitorNotifyEnabled = $0 }
+                )
+            )
+            .toggleStyle(.switch)
+
+            Text(L10n.string("weibo.advanced.notifyToggleHint", language: language))
+                .font(.system(size: 9.5))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Divider()
+
+            Toggle(
+                L10n.string("weibo.advanced.popoverChip", language: language),
+                isOn: Binding(
+                    get: { settings.weiboMonitorShowPopoverChip },
+                    set: { settings.weiboMonitorShowPopoverChip = $0 }
+                )
+            )
+            .toggleStyle(.switch)
+
+            Text(L10n.string("weibo.alert.popoverChipHint", language: language))
+                .font(.system(size: 9.5))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Divider()
+
+            Toggle(
+                L10n.string("weibo.alert.badges", language: language),
+                isOn: Binding(
+                    get: { settings.weiboMonitorBadgeEnabled },
+                    set: { enabled in
+                        settings.weiboMonitorBadgeEnabled = enabled
+                        postBadgeSettingsChanged()
+                    }
+                )
+            )
+            .toggleStyle(.switch)
+
+            Text(L10n.string("weibo.alert.badgesHint", language: language))
+                .font(.system(size: 9.5))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            VStack(alignment: .leading, spacing: 6) {
+                badgeRow("weibo.badge.menuBar", isOn: Binding(
                     get: { settings.weiboMonitorMenuBarBadgeEnabled },
                     set: { enabled in
                         settings.weiboMonitorMenuBarBadgeEnabled = enabled
                         postBadgeSettingsChanged()
                     }
-                )
-            )
-            .toggleStyle(.switch)
-
-            Toggle(
-                L10n.string("weibo.badge.dashboard", language: language),
-                isOn: Binding(
+                ))
+                badgeRow("weibo.badge.dashboard", isOn: Binding(
                     get: { settings.weiboMonitorDashboardBadgeEnabled },
                     set: { enabled in
                         settings.weiboMonitorDashboardBadgeEnabled = enabled
                         postBadgeSettingsChanged()
                     }
-                )
-            )
-            .toggleStyle(.switch)
+                ))
+                badgeRow("weibo.badge.popover", isOn: Binding(
+                    get: { settings.weiboMonitorPopoverBadgeEnabled },
+                    set: { enabled in
+                        settings.weiboMonitorPopoverBadgeEnabled = enabled
+                        postBadgeSettingsChanged()
+                    }
+                ))
+            }
+            .padding(.leading, 14)
+            .disabled(!settings.weiboMonitorBadgeEnabled)
 
-            Text(L10n.string("weibo.badge.footer", language: language))
+            Text(L10n.string("weibo.alert.footer", language: language))
                 .font(.system(size: 9.5))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
         .padding(.vertical, 2)
+    }
+
+    private func badgeRow(_ titleKey: String, isOn: Binding<Bool>) -> some View {
+        Toggle(L10n.string(titleKey, language: language), isOn: isOn)
+            .toggleStyle(.switch)
     }
 
     private func postBadgeSettingsChanged() {
@@ -1018,24 +1076,6 @@ struct WeiboMonitorTab: View {
     ) -> some View {
         DisclosureGroup(isExpanded: $showAdvanced) {
             VStack(alignment: .leading, spacing: 12) {
-                Text(L10n.string("weibo.advanced.notifyToggle", language: settings.appLanguage))
-                    .font(.system(size: 11, weight: .medium))
-                Toggle(
-                    L10n.string("weibo.advanced.notifyToggle", language: settings.appLanguage),
-                    isOn: Binding(
-                        get: { settings.weiboMonitorNotifyEnabled },
-                        set: { settings.weiboMonitorNotifyEnabled = $0 }
-                    )
-                )
-                .toggleStyle(.switch)
-                .labelsHidden()
-
-                Text(L10n.string("weibo.advanced.notifyToggleHint", language: settings.appLanguage))
-                    .font(.system(size: 9.5))
-                    .foregroundStyle(.secondary)
-
-                Divider()
-
                 Toggle(
                     settings.appLanguage == .en ? "Automatically load comments" : "自动加载评论",
                     isOn: Binding(
@@ -1228,17 +1268,6 @@ struct WeiboMonitorTab: View {
                 Text(L10n.string("weibo.advanced.backfillHint", language: settings.appLanguage))
                     .font(.system(size: 9.5))
                     .foregroundStyle(.secondary)
-
-                Divider()
-
-                Toggle(
-                    L10n.string("weibo.advanced.popoverChip", language: settings.appLanguage),
-                    isOn: Binding(
-                        get: { settings.weiboMonitorShowPopoverChip },
-                        set: { settings.weiboMonitorShowPopoverChip = $0 }
-                    )
-                )
-                .toggleStyle(.switch)
 
                 LaunchAtLoginRow(
                     titleKey: "weibo.advanced.loginItem",

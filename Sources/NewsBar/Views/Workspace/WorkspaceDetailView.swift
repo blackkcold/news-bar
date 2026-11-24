@@ -80,13 +80,12 @@ struct WorkspaceDetailView: View {
         ViewThatFits(in: .horizontal) {
             HStack(alignment: .top, spacing: 12) {
                 titleBlock(detail)
-                    .frame(minWidth: 250, idealWidth: 300, maxWidth: 310, alignment: .leading)
+                    .frame(minWidth: 220, maxWidth: .infinity, alignment: .leading)
                 actions(detail)
                     .fixedSize(horizontal: true, vertical: false)
             }
             VStack(alignment: .leading, spacing: 8) {
                 titleBlock(detail)
-                    .frame(maxWidth: .infinity, alignment: .leading)
                 HStack(spacing: 0) {
                     Spacer(minLength: 0)
                     actions(detail)
@@ -101,46 +100,53 @@ struct WorkspaceDetailView: View {
     private func titleBlock(_ detail: WorkspaceDetail) -> some View {
         let subject = detail.subject
         return VStack(alignment: .leading, spacing: 5) {
-            HStack(alignment: .firstTextBaseline, spacing: 7) {
-                Text(subject.title)
-                    .font(.system(size: 18, weight: isRetro ? .black : .semibold,
-                                  design: isRetro ? .serif : .default))
-                    .lineLimit(2)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .layoutPriority(1)
-                    .textSelection(.enabled)
-                kindBadge(subject.kind)
-                updateBadge(subject.updateState)
-                Spacer(minLength: 0)
-            }
+            Text(subject.title)
+                .font(.system(size: 18, weight: isRetro ? .black : .semibold,
+                              design: isRetro ? .serif : .default))
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+            metaRow(detail)
 
             if !subject.normalizedAliases.isEmpty {
                 aliasRow(subject.normalizedAliases)
             }
-
-            HStack(spacing: 6) {
-                if subject.isFollowed {
-                    Label("workspace.sidebar.following".localized, systemImage: "pin.fill")
-                        .lineLimit(1)
-                }
-                Text(L10n.string(
-                    "workspace.header.lastActivity",
-                    language: settings.appLanguage,
-                    model.relativeTime(subject.lastActivityAt)
-                ))
-                .lineLimit(1)
-                .truncationMode(.tail)
-                .help(subject.lastActivityAt.formatted(date: .abbreviated, time: .shortened))
-                if model.isReadOnly {
-                    Label("workspace.readOnly.short".localized, systemImage: "lock.doc")
-                        .foregroundStyle(.orange)
-                        .lineLimit(1)
-                }
-                Spacer(minLength: 0)
-            }
-            .font(.system(size: 9.5))
-            .foregroundStyle(.secondary)
         }
+    }
+
+    /// Badges, follow state and last activity sit on their own line. Keeping
+    /// them out of the title's HStack is what stops a long title from
+    /// compressing each badge into one character per line.
+    private func metaRow(_ detail: WorkspaceDetail) -> some View {
+        let subject = detail.subject
+        return HStack(spacing: 6) {
+            kindBadge(subject.kind)
+            updateBadge(subject.updateState)
+            if subject.isFollowed {
+                Label("workspace.sidebar.following".localized, systemImage: "pin.fill")
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
+            }
+            Text(L10n.string(
+                "workspace.header.lastActivity",
+                language: settings.appLanguage,
+                model.relativeTime(subject.lastActivityAt)
+            ))
+            .lineLimit(1)
+            .truncationMode(.tail)
+            .help(subject.lastActivityAt.formatted(date: .abbreviated, time: .shortened))
+            if model.isReadOnly {
+                Label("workspace.readOnly.short".localized, systemImage: "lock.doc")
+                    .foregroundStyle(.orange)
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
+            }
+            Spacer(minLength: 0)
+        }
+        .font(.system(size: 9.5))
+        .foregroundStyle(.secondary)
     }
 
     private func aliasRow(_ aliases: [String]) -> some View {
@@ -332,6 +338,8 @@ struct WorkspaceDetailView: View {
         Text(kindLabel(kind))
             .font(.system(size: 8, weight: .black))
             .foregroundStyle(.secondary)
+            .lineLimit(1)
+            .fixedSize(horizontal: true, vertical: false)
             .padding(.horizontal, 5)
             .padding(.vertical, 2)
             .background(.quaternary.opacity(0.30))
@@ -345,6 +353,8 @@ struct WorkspaceDetailView: View {
             Text("workspace.status.review".localized)
                 .font(.system(size: 8, weight: .black))
                 .foregroundStyle(.orange)
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
                 .padding(.horizontal, 5)
                 .padding(.vertical, 2)
                 .background(Color.orange.opacity(0.12))
@@ -353,6 +363,8 @@ struct WorkspaceDetailView: View {
             Text("workspace.status.updated".localized)
                 .font(.system(size: 8, weight: .black))
                 .foregroundStyle(.blue)
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
                 .padding(.horizontal, 5)
                 .padding(.vertical, 2)
                 .background(Color.blue.opacity(0.12))

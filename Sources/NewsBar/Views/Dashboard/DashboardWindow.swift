@@ -75,7 +75,7 @@ struct DashboardWindow: View {
             DashboardNewsroomBar(
                 mode: browseMode,
                 followingUnread: weiboMonitor?.snapshot.unreadCount ?? 0,
-                badgeEnabled: settings.weiboMonitorDashboardBadgeEnabled,
+                badgeEnabled: settings.showsWeiboDashboardBadge,
                 tabs: tabs.tabs,
                 activeID: tabs.activeID,
                 isRefreshing: orchestrator.isRefreshing,
@@ -392,7 +392,7 @@ struct DashboardWindow: View {
                     mode: $browseMode,
                     accountUID: $followingAccountUID,
                     followingUnread: weiboMonitor?.snapshot.unreadCount ?? 0,
-                    badgeEnabled: settings.weiboMonitorDashboardBadgeEnabled,
+                    badgeEnabled: settings.showsWeiboDashboardBadge,
                     showsModeControl: false,
                     availableWidth: contentWidth,
                     isActive: isActive,
