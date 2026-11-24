@@ -748,7 +748,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     @MainActor
     private func updateWeiboBadge(force: Bool = false) {
         guard let monitor = weiboMonitor else { return }
-        let unread = settings.weiboMonitorMenuBarBadgeEnabled
+        let unread = settings.showsWeiboMenuBarBadge
             ? monitor.snapshot.unreadCount
             : 0
         guard force || unread != lastWeiboUnread else { return }

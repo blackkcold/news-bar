@@ -170,6 +170,12 @@ private struct PopoverFeedList: View {
             && (weiboMonitor?.snapshot.unreadCount ?? 0) > 0
     }
 
+    /// A chip whose badge is switched off still opens the feed, but it stops
+    /// pretending there is something to clear.
+    private var showsFollowBadge: Bool {
+        settings.showsWeiboPopoverBadge
+    }
+
     private var rssSources: [NewsSource] {
         settings.activeSources.filter { !$0.isBuiltIn }
     }
@@ -198,6 +204,7 @@ private struct PopoverFeedList: View {
                         if showsFollowChip, let weiboMonitor {
                             PopoverWeiboFollowChip(
                                 unreadCount: weiboMonitor.snapshot.unreadCount,
+                                showsBadge: showsFollowBadge,
                                 onOpen: {
                                     NewsNavigationRouter.shared.close()
                                     onOpenDashboard()

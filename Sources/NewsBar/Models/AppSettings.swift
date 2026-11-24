@@ -249,6 +249,26 @@ final class AppSettings {
     var weiboMonitorShowPopoverChip: Bool {
         didSet { TestIsolation.defaults.set(weiboMonitorShowPopoverChip, forKey: "weiboMonitorShowPopoverChip") }
     }
+    /// Master switch for every unread badge. Off hides the menu-bar, Dashboard
+    /// and popover badges even when the per-surface switches stay on.
+    var weiboMonitorBadgeEnabled: Bool {
+        didSet {
+            TestIsolation.defaults.set(
+                weiboMonitorBadgeEnabled,
+                forKey: "weiboMonitorBadgeEnabled"
+            )
+        }
+    }
+    /// Unread badge on the popover follow chip. It is independent of the chip
+    /// itself: with badges off the entry stays but reads as a plain "Follow".
+    var weiboMonitorPopoverBadgeEnabled: Bool {
+        didSet {
+            TestIsolation.defaults.set(
+                weiboMonitorPopoverBadgeEnabled,
+                forKey: "weiboMonitorPopoverBadgeEnabled"
+            )
+        }
+    }
     /// Red unread count on the menu-bar status item. Separate from the
     /// Dashboard badge so a user can keep one and hide the other.
     var weiboMonitorMenuBarBadgeEnabled: Bool {
@@ -268,6 +288,18 @@ final class AppSettings {
                 forKey: "weiboMonitorDashboardBadgeEnabled"
             )
         }
+    }
+
+    // Effective badge visibility: the master switch always wins. Keeping the
+    // combination here stops the three surfaces from drifting apart.
+    var showsWeiboMenuBarBadge: Bool {
+        weiboMonitorBadgeEnabled && weiboMonitorMenuBarBadgeEnabled
+    }
+    var showsWeiboDashboardBadge: Bool {
+        weiboMonitorBadgeEnabled && weiboMonitorDashboardBadgeEnabled
+    }
+    var showsWeiboPopoverBadge: Bool {
+        weiboMonitorBadgeEnabled && weiboMonitorPopoverBadgeEnabled
     }
     // MARK: - Relevance filtering
 
@@ -836,6 +868,10 @@ final class AppSettings {
             defaults.boolIfPresent(forKey: "weiboCommentsAutoLoad") ?? true
         self.weiboMonitorAuthAlertAt = defaults.object(forKey: "weiboMonitorAuthAlertAt") as? Date
         self.weiboMonitorShowPopoverChip = defaults.boolIfPresent(forKey: "weiboMonitorShowPopoverChip") ?? true
+        self.weiboMonitorBadgeEnabled =
+            defaults.boolIfPresent(forKey: "weiboMonitorBadgeEnabled") ?? true
+        self.weiboMonitorPopoverBadgeEnabled =
+            defaults.boolIfPresent(forKey: "weiboMonitorPopoverBadgeEnabled") ?? true
         self.weiboMonitorMenuBarBadgeEnabled =
             defaults.boolIfPresent(forKey: "weiboMonitorMenuBarBadgeEnabled") ?? true
         self.weiboMonitorDashboardBadgeEnabled =

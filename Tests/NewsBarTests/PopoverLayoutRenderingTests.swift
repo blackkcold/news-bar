@@ -156,4 +156,88 @@ final class PopoverLayoutRenderingTests: XCTestCase {
         XCTAssertGreaterThan(data.count, 500)
         window.contentView = nil
     }
+
+    func testResearchChipReportsUnreadOnlyAndFallsBackToTheCenter() {
+        let unread = ResearchSummary(burstCount: 25, unreadBurstCount: 3)
+        XCTAssertEqual(
+            PopoverResearchChip.displayTitle(language: .zh, summary: unread),
+            "3 条新爆款研究"
+        )
+        XCTAssertEqual(
+            PopoverResearchChip.displayTitle(language: .en, summary: unread),
+            "3 new burst studies"
+        )
+
+        let read = ResearchSummary(burstCount: 25, unreadBurstCount: 0)
+        XCTAssertEqual(
+            PopoverResearchChip.displayTitle(language: .zh, summary: read),
+            "研究中心"
+        )
+        XCTAssertEqual(
+            PopoverResearchChip.displayTitle(language: .en, summary: read),
+            "Research Center"
+        )
+    }
+
+    func testFollowChipDropsTheUnreadNumberWhenItsBadgeIsOff() {
+        XCTAssertEqual(
+            PopoverWeiboFollowChip.displayTitle(language: .zh, unreadCount: 61, showsBadge: true),
+            "关注 61"
+        )
+        XCTAssertEqual(
+            PopoverWeiboFollowChip.displayTitle(language: .zh, unreadCount: 61, showsBadge: false),
+            "关注"
+        )
+        XCTAssertEqual(
+            PopoverWeiboFollowChip.displayTitle(language: .en, unreadCount: 61, showsBadge: true),
+            "Following 61"
+        )
+        XCTAssertEqual(
+            PopoverWeiboFollowChip.displayTitle(language: .en, unreadCount: 61, showsBadge: false),
+            "Following"
+        )
+    }
+
+    @MainActor
+    func testNeutralChipsFitInOnePopoverRow() throws {
+        let settings = AppSettings()
+        let view = HStack(spacing: 6) {
+            PopoverResearchChip(
+                summary: ResearchSummary(burstCount: 25, unreadBurstCount: 0),
+                onOpen: {},
+                compact: true
+            )
+            PopoverWeiboFollowChip(
+                unreadCount: 61,
+                showsBadge: false,
+                onOpen: {},
+                compact: true
+            )
+        }
+        .padding(.horizontal, PopoverLayout.horizontalInset)
+        .frame(width: 400)
+        .environment(settings)
+        .preferredColorScheme(.light)
+
+        let host = NSHostingView(rootView: view)
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 400, height: 80),
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
+        )
+        window.isOpaque = true
+        window.backgroundColor = .windowBackgroundColor
+        window.contentView = host
+        host.frame = NSRect(x: 0, y: 0, width: 400, height: 80)
+        host.layoutSubtreeIfNeeded()
+
+        XCTAssertLessThanOrEqual(host.fittingSize.height, 40)
+
+        let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+        host.cacheDisplay(in: host.bounds, to: bitmap)
+        let data = try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
+        XCTAssertGreaterThan(data.count, 500)
+        window.contentView = nil
+    }
 }
