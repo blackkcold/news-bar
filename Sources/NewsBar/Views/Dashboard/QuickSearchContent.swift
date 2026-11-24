@@ -94,7 +94,7 @@ struct QuickSearchContent: View {
     @State private var webGateway = ManualSearchGateway()
     @State private var workspaceSearch = WorkspaceSearchService()
     @State private var webTask: Task<Void, Never>?
-    @AppStorage("researchReadingEnabled") private var researchReadingEnabled = true
+    private var researchReadingEnabled: Bool { settings.researchReadingEnabled }
     @FocusState private var queryFocused: Bool
 
     var body: some View {

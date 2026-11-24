@@ -60,6 +60,10 @@ struct EventMonitorInterestSettingsForm: View {
     @State private var saveMessage: String?
     @State private var isSaving = false
 
+    /// The sheet supplies a Cancel action; the inline form (if any) does not.
+    var showsCancel = false
+    var onCancel: (() -> Void)? = nil
+
     var body: some View {
         Group {
             Section {
@@ -165,37 +169,62 @@ struct EventMonitorInterestSettingsForm: View {
             } header: {
                 Text("event.preferences.globalBlocks.title".localized)
             }
-
-            Section {
-                if let validationMessage {
-                    Label(validationMessage, systemImage: "exclamationmark.circle.fill")
-                        .foregroundStyle(.red)
-                        .font(.callout)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                if let saveMessage {
-                    Label(saveMessage, systemImage: isSaving ? "hourglass" : "checkmark.circle.fill")
-                        .foregroundStyle(isSaving ? Color.secondary : Color.green)
-                        .font(.callout)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                HStack {
-                    Spacer()
-                    Button {
-                        Task { await save() }
-                    } label: {
-                        if isSaving {
-                            Label("event.preferences.saving".localized, systemImage: "hourglass")
-                        } else {
-                            Label("event.preferences.save".localized, systemImage: "square.and.arrow.down")
-                        }
-                    }
-                    .buttonStyle(EditorialActionButtonStyle(tone: .primary))
-                    .disabled(isSaving)
-                }
-            }
         }
         .onAppear(perform: loadDraft)
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            saveBar
+        }
+    }
+
+    /// Pinned so a nine-section draft never hides its primary action below the
+    /// fold. The sheet passes Cancel; the standalone form does not.
+    private var saveBar: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if let validationMessage {
+                Label(validationMessage, systemImage: "exclamationmark.circle.fill")
+                    .foregroundStyle(.red)
+                    .font(.callout)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if let saveMessage {
+                Label(saveMessage, systemImage: isSaving ? "hourglass" : "checkmark.circle.fill")
+                    .foregroundStyle(isSaving ? Color.secondary : Color.green)
+                    .font(.callout)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            HStack(spacing: 10) {
+                if showsCancel, let onCancel {
+                    Button("event.preferences.cancel".localized) {
+                        onCancel()
+                    }
+                    .buttonStyle(EditorialActionButtonStyle(compact: true))
+                }
+                Spacer()
+                Button {
+                    Task { await save() }
+                } label: {
+                    if isSaving {
+                        Label("event.preferences.saving".localized, systemImage: "hourglass")
+                    } else {
+                        Label("event.preferences.save".localized, systemImage: "square.and.arrow.down")
+                    }
+                }
+                .buttonStyle(EditorialActionButtonStyle(tone: .primary))
+                .disabled(isSaving)
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .background {
+            if settings.appTheme == .retroEditorial {
+                RetroEditorialTokens.raisedPaper
+            } else {
+                Rectangle().fill(Color(nsColor: .windowBackgroundColor))
+            }
+        }
+        .overlay(alignment: .top) {
+            SettingsSubpageBar.rule
+        }
     }
 
     private var ruleSummary: String {

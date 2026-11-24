@@ -34,7 +34,7 @@ struct RecommendationCardView: View {
 
     @Environment(AppSettings.self) private var settings
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @AppStorage("researchReadingEnabled") private var researchReadingEnabled = true
+    private var researchReadingEnabled: Bool { settings.researchReadingEnabled }
     @State private var controller = InterestController.shared
     @State private var researchSignal = WorkspaceReaderResearchAssociationSignal()
     @State private var imagePhase: RecommendationImagePhase = .idle

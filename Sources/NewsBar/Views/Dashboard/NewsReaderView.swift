@@ -1239,7 +1239,7 @@ struct ReaderContentView: View {
     @State private var browserData = BrowserDataController.shared
     @Environment(AppSettings.self) private var settings
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @AppStorage("researchReadingEnabled") private var researchReadingEnabled = true
+    private var researchReadingEnabled: Bool { settings.researchReadingEnabled }
 
     private var canRefreshResearch: Bool {
         researchReadingEnabled && readerPresented && isActiveTab && !model.loading

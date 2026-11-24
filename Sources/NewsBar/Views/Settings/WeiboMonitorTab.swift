@@ -34,6 +34,9 @@ struct WeiboMonitorTab: View {
                 }
                 .formStyle(.grouped)
                 .scrollContentBackground(.hidden)
+                .safeAreaInset(edge: .top, spacing: 0) {
+                    SettingsSubpageBarPlaceholder()
+                }
                 .onAppear {
                     Task {
                         await monitor.start()
@@ -1310,11 +1313,6 @@ struct WeiboMonitorTab: View {
                 Text(L10n.string("weibo.advanced.backfillHint", language: settings.appLanguage))
                     .font(.system(size: 9.5))
                     .foregroundStyle(.secondary)
-
-                LaunchAtLoginRow(
-                    titleKey: "weibo.advanced.loginItem",
-                    hintKey: "weibo.advanced.loginItemHint"
-                )
             }
             .padding(.vertical, 4)
         } label: {

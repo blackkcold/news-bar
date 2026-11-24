@@ -7,6 +7,7 @@ struct AITab: View {
     enum Page: String, CaseIterable, Identifiable {
         case connection
         case usage
+        case features
         case research
 
         var id: String { rawValue }
@@ -137,6 +138,7 @@ struct AITab: View {
                 switch page {
                 case .connection: connectionSections
                 case .usage: usageSections
+                case .features: featuresSections
                 case .research: researchSections
                 }
             }
@@ -255,21 +257,14 @@ struct AITab: View {
     }
 
     /// A sticky page switch above the form, so the page name stays visible
-    /// while the form scrolls — the sidebar only says "AI". Chips rather than a
-    /// segmented control: on the paper surface the native one loses its labels.
+    /// while the form scrolls — the sidebar only says "AI".
     private var pagePicker: some View {
-        HStack(spacing: 0) {
-            EditorialChips(
-                values: Page.allCases,
-                title: { L10n.string($0.titleKey) },
-                groupLabel: "settings.ai.page".localized,
-                selection: $page
-            )
-            Spacer(minLength: 0)
-        }
-        .padding(.horizontal, 16)
-        .padding(.top, 10)
-        .padding(.bottom, 6)
+        SettingsSubpageTabs(
+            values: Page.allCases,
+            title: { L10n.string($0.titleKey) },
+            groupLabel: "settings.ai.page".localized,
+            selection: $page
+        )
     }
 
     private var legacyBindingSection: some View {
@@ -846,10 +841,27 @@ struct AITab: View {
         } footer: {
             Text("ai.limit.footer".localized)
         }
+
+        Section {
+            ResearchLedgerView()
+        } header: {
+            Text("research.ledger.title".localized)
+        } footer: {
+            Text("research.ledger.footer".localized)
+        }
+    }
+
+    /// Automated research lives here; its delivery switches live in
+    /// Notifications → Research reminders. Keeping the two apart is deliberate:
+    /// "do research" and "tell me about it" are different decisions.
+    @ViewBuilder
+    private var researchSections: some View {
+        ResearchAutomationSection()
+        ResearchSettingsSection()
     }
 
     @ViewBuilder
-    private var researchSections: some View {
+    private var featuresSections: some View {
         Section {
             Toggle("ai.search.enabled".localized, isOn: Binding(
                 get: { settings.aiSearchEnabled },
@@ -958,8 +970,6 @@ struct AITab: View {
         } footer: {
             Text("ai.summaryLength.footer".localized)
         }
-
-        ResearchSettingsSection()
 
         Section {
             VStack(alignment: .leading, spacing: 6) {

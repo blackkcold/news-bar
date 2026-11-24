@@ -17,7 +17,6 @@ struct ResearchSettingsSection: View {
     @State private var isSavingKey = false
     @State private var statuses: [SearchProviderStatus] = []
     @State private var lastStatusRefresh = Date.distantPast
-    @AppStorage("researchReadingEnabled") private var researchReadingEnabled = true
 
     private var parallelMCPEnabledBinding: Binding<Bool> {
         Binding(
@@ -41,7 +40,10 @@ struct ResearchSettingsSection: View {
                     settings.appLanguage == .en
                         ? "Show research with articles"
                         : "阅读时显示研究提示与报告",
-                    isOn: $researchReadingEnabled
+                    isOn: Binding(
+                        get: { settings.researchReadingEnabled },
+                        set: { settings.researchReadingEnabled = $0 }
+                    )
                 )
                 .help(settings.appLanguage == .en
                       ? "Show trusted research matches in article reading and local search."
@@ -160,14 +162,6 @@ struct ResearchSettingsSection: View {
                 Text("research.settings.providers".localized)
             } footer: {
                 Text("research.settings.providers.footer".localized)
-            }
-
-            Section {
-                ResearchLedgerView()
-            } header: {
-                Text("research.ledger.title".localized)
-            } footer: {
-                Text("research.ledger.footer".localized)
             }
         }
         .task {

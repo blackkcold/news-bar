@@ -98,8 +98,48 @@ final class SettingsWindowLayoutTests: XCTestCase {
     }
 
     @MainActor
-    func testPricingSheetRenders() async throws {
+    func testReadingPaneWithSourceRenders() async throws {
         let settings = AppSettings(modelService: makeModelService())
+        let source = RSSSourceConfig(
+            name: "少数派",
+            url: "https://sspai.com/feed",
+            displayMode: .text
+        )
+        settings.rssSources = [source]
+        settings.selectedRSSSourceIDs = [source.id]
+
+        let output = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+            .appendingPathComponent(".build/settings-ia-validation")
+        try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+
+        let size = CGSize(width: 665, height: 540)
+        let view = RSSTab()
+            .appThemeSurface()
+            .frame(width: size.width, height: size.height)
+            .background(Color(nsColor: .windowBackgroundColor))
+            .adaptiveColorScheme()
+            .environment(settings)
+        try await snapshot(view, size: size, name: "rss-with-source", to: output)
+    }
+
+    @MainActor
+    func testAddRSSSourceSheetRenders() async throws {
+        let settings = AppSettings(modelService: makeModelService())
+        let output = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+            .appendingPathComponent(".build/settings-ia-validation")
+        try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+
+        let size = CGSize(width: 520, height: 320)
+        let view = AddRSSSourceSheet(existingSources: []) { _ in }
+            .frame(width: size.width, height: size.height)
+            .background(Color(nsColor: .windowBackgroundColor))
+            .adaptiveColorScheme()
+            .environment(settings)
+        try await snapshot(view, size: size, name: "rss-add-source-sheet", to: output)
+    }
+
+    @MainActor
+    func testPricingSheetRenders() async throws {        let settings = AppSettings(modelService: makeModelService())
         let original = (settings.appTheme, settings.appLanguage, settings.colorScheme)
         defer {
             settings.appTheme = original.0

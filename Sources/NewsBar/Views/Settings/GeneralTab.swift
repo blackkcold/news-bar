@@ -47,8 +47,15 @@ struct GeneralTab: View {
 
             Section {
                 LaunchAtLoginRow()
+
+                Toggle("general.autoRefresh".localized, isOn: Binding(
+                    get: { settings.autoRefreshEnabled },
+                    set: { settings.autoRefreshEnabled = $0 }
+                ))
             } header: {
-                Text("general.launch".localized)
+                Text("general.launchAndRefresh".localized)
+            } footer: {
+                Text("general.autoRefresh.footer".localized)
             }
 
             if let updater {
@@ -66,7 +73,7 @@ struct GeneralTab: View {
                     themeSwatch(RetroEditorialTokens.brick, label: "general.theme.brick".localized)
                     themeSwatch(RetroEditorialTokens.ink, label: "general.theme.ink".localized)
                     Spacer()
-                    Text(settings.appTheme.displayName)
+                    Text(settings.appTheme.displayName(settings.appLanguage))
                         .font(.system(size: 11, weight: .bold, design: .serif))
                         .foregroundStyle(settings.appTheme == .retroEditorial ? RetroEditorialTokens.brick : .secondary)
                 }
@@ -92,6 +99,9 @@ struct GeneralTab: View {
         }
         .formStyle(.grouped)
         .scrollContentBackground(.hidden)
+        .safeAreaInset(edge: .top, spacing: 0) {
+            SettingsSubpageBarPlaceholder()
+        }
         // Opening this pane is an explicit signal that update controls should
         // work now, even if the launch-delayed scheduler has not started yet.
         .onAppear { updater?.start() }
