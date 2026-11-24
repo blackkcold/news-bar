@@ -318,7 +318,7 @@ var writeIssue: WeiboWriteIssue?
 - 取消赞：`POST /ajax/statuses/destroyLike`，同字段（`updateLike` 不是切换）；
 - 回复：`POST /ajax/comments/create`，`id + comment + pic_id + is_repost + comment_ori + is_comment`，成功返回新评论对象；
 - 评论图片：桌面评论对象没有 `pic_ids`/`pic_infos`，带图评论只有 `pic_num` 和 `url_struct`（`compic_id`），本期不做；
-- 未触发 403/418/429，错误形状仍未验证；`fp` 省略是否可用未验证。
+- 未触发 403/418/429，错误形状仍未验证；`fp` 已验证可省略（发评论/点赞/取消赞/删除均 200 + `ok:1`，测试评论已删除）。
 
 **已实现**：
 
