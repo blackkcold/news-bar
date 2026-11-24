@@ -308,3 +308,33 @@ var writeIssue: WeiboWriteIssue?
 - **工作区**：未 commit / 未 push / 未 release；`git status` 为 4 个修改 + 5 个新增文件（实现、测试、两份文档）。
 - **未验证**：点赞/回复写请求、评论图片 `pic_ids` 的真实桌面 payload；原因见第 0 节与抓包清单。
 
+---
+
+## 9. 抓包结果与实现记录（2026-11-24 晚）
+
+**证据**：已在桌面网页会话中实测并记录到 `docs/following-comment-interactions-capture.zh-CN.md` 第「实测结果」节。
+
+- 评论点赞：`POST /ajax/statuses/updateLike`，`object_id + object_type=comment`；
+- 取消赞：`POST /ajax/statuses/destroyLike`，同字段（`updateLike` 不是切换）；
+- 回复：`POST /ajax/comments/create`，`id + comment + pic_id + is_repost + comment_ori + is_comment`，成功返回新评论对象；
+- 评论图片：桌面评论对象没有 `pic_ids`/`pic_infos`，带图评论只有 `pic_num` 和 `url_struct`（`compic_id`），本期不做；
+- 未触发 403/418/429，错误形状仍未验证；`fp` 省略是否可用未验证。
+
+**已实现**：
+
+- `WeiboCommentWriteService`：点赞/取消赞、回复、每小时 12 赞 / 6 回复、串行 2.5s、不自动重试；错误映射到 `authRequired / rateLimited / challenge / network / server / unknown / localLimit`。
+- `WeiboCommentController`：乐观点赞 + 失败回滚、回复插入线程顶部、草稿按 post 保存。
+- 阅读器：评论行有点赞按钮（含 liked 状态），讨论区底部有回复输入框和发送按钮；错误就地显示。
+- 设置：`weiboCommentInteractionsEnabled` 开关默认关闭，首次开启弹出公开操作确认并写入 `weiboCommentInteractionsAckAt`。
+
+**本轮验证**：
+
+- `swift build` → Build complete。
+- `swift test` → **2047 tests / 6 skipped / 0 failures**（120.4s）。
+- `swift test --filter WeiboCommentWriteServiceTests` → 10 tests / 0 failures。
+- `bash scripts/agent-test.sh --tier render --no-build` → **PASS**（5 render tests）。
+- 新增截图：
+  - `.build/following-reader-validation/reader-interactions-modern-zh.png`
+  - `.build/following-reader-validation/reader-interactions-retro-zh.png`
+- 未做：回复某一条评论（缺 `cid`/`reply` 真实请求）；评论图片；未验证错误形状。
+

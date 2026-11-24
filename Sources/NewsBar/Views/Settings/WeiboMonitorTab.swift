@@ -18,6 +18,7 @@ struct WeiboMonitorTab: View {
     @State private var keywordInput = ""
     @State private var copied = false
     @State private var pendingAICorrection = false
+    @State private var pendingInteractionsConsent = false
 
     private var accent: Color {
         settings.appTheme == .retroEditorial ? RetroEditorialTokens.brick : Color.accentColor
@@ -1089,6 +1090,47 @@ struct WeiboMonitorTab: View {
                     settings.appLanguage == .en
                         ? "Loads comments from Weibo when a followed post is opened. Turn off to load them manually."
                         : "打开关注博文时自动加载评论；关闭后需手动加载，可减少微博请求。"
+                )
+                .font(.system(size: 9.5))
+                .foregroundStyle(.secondary)
+
+                Toggle(
+                    settings.appLanguage == .en
+                        ? "Allow likes and replies in the reader"
+                        : "允许在阅读器里点赞和回复",
+                    isOn: Binding(
+                        get: { settings.weiboCommentInteractionsEnabled },
+                        set: { newValue in
+                            if newValue, settings.weiboCommentInteractionsAckAt == nil {
+                                pendingInteractionsConsent = true
+                            } else {
+                                settings.weiboCommentInteractionsEnabled = newValue
+                            }
+                        }
+                    )
+                )
+                .toggleStyle(.switch)
+                .alert(
+                    settings.appLanguage == .en ? "Public actions" : "公开操作",
+                    isPresented: $pendingInteractionsConsent
+                ) {
+                    Button(settings.appLanguage == .en ? "Cancel" : "取消", role: .cancel) {}
+                    Button(settings.appLanguage == .en ? "Agree" : "同意") {
+                        settings.weiboCommentInteractionsAckAt = Date()
+                        settings.weiboCommentInteractionsEnabled = true
+                    }
+                } message: {
+                    Text(
+                        settings.appLanguage == .en
+                            ? "Likes and replies are sent from your Weibo account and are visible to others. The app sends them one at a time and stops after 12 likes or 6 replies per hour."
+                            : "点赞和回复会以你的微博账号发出，其他人可见。应用会逐条发送，每小时最多 12 个赞、6 条回复。"
+                    )
+                }
+
+                Text(
+                    settings.appLanguage == .en
+                        ? "Off by default. When on, each comment row gets a like control and the discussion gets a reply field."
+                        : "默认关闭。开启后评论行会出现点赞按钮，讨论区底部出现回复输入框。"
                 )
                 .font(.system(size: 9.5))
                 .foregroundStyle(.secondary)

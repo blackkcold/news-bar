@@ -73,3 +73,81 @@ pics: [{ "url": "..." }]?
 - [ ] 评论列表是否返回 `pic_ids` / `pic_infos` / `pics` 已确认。
 
 以上任何一项缺失，对应用户故事保持「未验证」，不进入生产代码。
+
+## 实测结果（2026-11-24，桌面 weibo.com）
+
+抓取方式：桌面网页已登录会话，在本人 2024 年旧博文下发一条测试评论，随后点赞、取消赞、删除。所有请求都带 `x-requested-with: XMLHttpRequest`、`x-xsrf-token`（取自 `XSRF-TOKEN` cookie）、`content-type: application/x-www-form-urlencoded`，`referer` 为博文详情页。
+
+### 1. 评论点赞
+
+```text
+POST https://weibo.com/ajax/statuses/updateLike
+object_id=<评论 id>&object_type=comment
+=> {"can_follow_comment_author":false,"result":true,"ok":1}
+```
+
+与博文点赞共用端点；博文走 `setLike` / `cancelLike` + `id`，评论走 `updateLike` / `destroyLike` + `object_type=comment`。
+
+### 2. 取消赞
+
+```text
+POST https://weibo.com/ajax/statuses/destroyLike
+object_id=<评论 id>&object_type=comment
+=> {"result":true,"ok":1}
+```
+
+`updateLike` 不是切换：连续调用两次仍是「已赞」，取消必须显式 `destroyLike`。
+
+### 3. 回复
+
+```text
+POST https://weibo.com/ajax/comments/create
+id=<博文 mid>&comment=<文本>&pic_id=&is_repost=0&comment_ori=0&is_comment=0&fp=<bot rid>
+=> {"ok":1,"data":{ "id":5368788372427081, "rootid":5368788372427081, "rootidstr":"...", "floor_number":1, "text":"...", "like_counts":1, "user":{...}, ... }}
+```
+
+`fp` 由页面 `wbBotDetector.get()` 注入；是否可省略尚未验证，实现先不带，失败再评估。
+
+### 4. 删除（清理测试评论）
+
+```text
+POST https://weibo.com/ajax/statuses/destroyComment
+cid=<评论 id>
+=> {"data":{...被删评论...}}
+```
+
+### 5. 评论列表
+
+```text
+GET https://weibo.com/ajax/statuses/buildComments?is_reload=1&id=<博文 mid>&is_show_bulletin=2&is_mix=0&count=10&uid=<作者 uid>&fetch_level=0&locale=zh-CN
+=> {"ok":1,"data":[评论...],"total_number":1,"max_id":0}
+```
+
+评论对象含 `id / rootid / floor_number / text / liked / like_counts / pic_num / url_struct / user`。`liked` 是该会话下的点赞状态。
+
+### 6. 评论图片：不是 pic_ids
+
+桌面评论对象**没有** `pic_ids` / `pic_infos` / `pics`。带图评论只有 `pic_num: 1`，图片以链接卡片形式出现在 `url_struct`：
+
+```text
+url_struct[0].url_type     = 39
+url_struct[0].url_title    = "查看图片"
+url_struct[0].ori_url      = https://photo.weibo.com/h5/comment/compic_id/1022:<hash>
+url_struct[0].short_url    = http://t.cn/...
+```
+
+所以「评论图片」不能按 `pic_ids` 实现；要显示原图需解析 compic 页面/接口，本期不做。
+
+### 7. 未验证项
+
+- 未触发 403 / 418 / 429，错误响应形状仍未验证。
+- 未观察到 `Set-Cookie` 轮换 `XSRF-TOKEN`。
+- 省略 `fp` 是否可用未验证。
+
+### 验收勾选
+
+- [x] 点赞与取消赞的端点、方法、字段差异已确认。
+- [x] 回复端点、表单字段、响应是否含新评论已确认。
+- [ ] `Set-Cookie` 是否轮换 `XSRF-TOKEN` 已确认（未观察到轮换）。
+- [ ] 403 / 418 / 429 / 200-HTML 的实际响应形状已确认（未触发）。
+- [x] 评论列表不返回 `pic_ids` / `pic_infos` / `pics`，图片走 `url_struct`。

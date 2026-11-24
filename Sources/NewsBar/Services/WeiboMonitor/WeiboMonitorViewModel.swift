@@ -290,6 +290,20 @@ final class WeiboMonitorViewModel {
         await comments.loadMore(post: post, credentials: credentials)
     }
 
+    /// User-initiated writes are gated twice: the setting must be on and the
+    /// cookie snapshot must actually allow writes. No hidden write path.
+    func toggleCommentLike(_ comment: WeiboComment, in post: WeiboPost) async {
+        guard settings.weiboCommentInteractionsEnabled else { return }
+        let credentials = await loadCredentials()
+        await comments.toggleLike(mid: post.mid, comment: comment, credentials: credentials)
+    }
+
+    func sendCommentReply(_ text: String, to post: WeiboPost) async {
+        guard settings.weiboCommentInteractionsEnabled else { return }
+        let credentials = await loadCredentials()
+        await comments.sendReply(mid: post.mid, text: text, credentials: credentials)
+    }
+
     func openNotificationSettings() {
         guard let url = URL(
             string: "x-apple.systempreferences:com.apple.Notifications-Settings.extension"

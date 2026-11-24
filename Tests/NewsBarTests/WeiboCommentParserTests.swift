@@ -349,4 +349,35 @@ final class WeiboCommentParserTests: XCTestCase {
         XCTAssertNil(page.comments[1].runs)
         XCTAssertEqual(page.comments[1].text, "纯文本")
     }
+
+    func testLikedFlagIsParsedOnlyWhenPresent() throws {
+        let payload: [String: Any] = [
+            "ok": 1,
+            "data": [
+                [
+                    "id": 1,
+                    "text": "已赞",
+                    "user": ["id": 1, "screen_name": "A"],
+                    "liked": true,
+                    "like_counts": 3,
+                ],
+                [
+                    "id": 2,
+                    "text": "未标",
+                    "user": ["id": 2, "screen_name": "B"],
+                ],
+            ],
+        ]
+
+        let page = try WeiboCommentParser.parse(
+            data(payload),
+            mid: "9",
+            tier: .desktop,
+            fetchedAt: now
+        )
+
+        XCTAssertEqual(page.comments[0].liked, true)
+        XCTAssertEqual(page.comments[0].likeCount, 3)
+        XCTAssertNil(page.comments[1].liked)
+    }
 }
