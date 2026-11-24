@@ -9,7 +9,19 @@ import Observation
 final class WeiboCommentController {
     private let fetcher: any WeiboCommentFetching
     private let cache: WeiboCommentCache
+    private let writer: WeiboCommentWriteService
     private(set) var threads: [String: WeiboCommentThread] = [:]
+
+    /// Comments with an in-flight like request. The row disables its control
+    /// while its id is here so one comment cannot be double-toggled.
+    private(set) var pendingLikeIDs: Set<String> = []
+    /// Posts with an in-flight reply.
+    private(set) var pendingReplyMIDs: Set<String> = []
+    /// Last write failure, cleared by the next attempt or by the reader.
+    private(set) var interactionFailure: WeiboCommentWriteFailure?
+    /// Draft text per post so switching posts does not leak a half-written
+    /// comment into another thread.
+    private(set) var replyDrafts: [String: String] = [:]
 
     @ObservationIgnored private var generations: [String: Int] = [:]
     @ObservationIgnored private var lastRequestAt: Date?
@@ -21,11 +33,13 @@ final class WeiboCommentController {
     init(
         fetcher: any WeiboCommentFetching,
         cache: WeiboCommentCache = WeiboCommentCache(),
+        writer: WeiboCommentWriteService = WeiboCommentWriteService(),
         cacheFreshness: TimeInterval = 10 * 60,
         minimumRequestInterval: TimeInterval = 1.2
     ) {
         self.fetcher = fetcher
         self.cache = cache
+        self.writer = writer
         self.cacheFreshness = cacheFreshness
         self.minimumRequestInterval = minimumRequestInterval
     }
@@ -173,6 +187,97 @@ final class WeiboCommentController {
     func clearCache() async {
         await cache.clear()
         threads = [:]
+    }
+
+    // MARK: - Interactions
+
+    /// Applies the like optimistically, then confirms or reverts on the
+    /// server's answer. The row never waits to look responsive, but a failed
+    /// write leaves no fake liked state behind.
+    func toggleLike(
+        mid: String,
+        comment: WeiboComment,
+        credentials: WeiboCredentials
+    ) async {
+        guard !pendingLikeIDs.contains(comment.id) else { return }
+        let desired = !(comment.liked ?? false)
+        pendingLikeIDs.insert(comment.id)
+        interactionFailure = nil
+        applyLike(mid: mid, commentID: comment.id, liked: desired, countDelta: desired ? 1 : -1)
+
+        let outcome = await writer.setLike(
+            commentID: comment.id,
+            liked: desired,
+            credentials: credentials
+        )
+
+        pendingLikeIDs.remove(comment.id)
+        switch outcome {
+        case .liked(let liked):
+            applyLike(mid: mid, commentID: comment.id, liked: liked, countDelta: 0)
+            await persist(mid: mid)
+        case .failure(let failure):
+            applyLike(mid: mid, commentID: comment.id, liked: !desired, countDelta: desired ? -1 : 1)
+            interactionFailure = failure
+        case .replied:
+            break
+        }
+    }
+
+    /// Posts a top-level comment and inserts the server's object at the top of
+    /// the thread. A failure keeps the draft so the text is not lost.
+    func sendReply(
+        mid: String,
+        text: String,
+        credentials: WeiboCredentials
+    ) async {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, !pendingReplyMIDs.contains(mid) else { return }
+        pendingReplyMIDs.insert(mid)
+        interactionFailure = nil
+
+        let outcome = await writer.reply(postMID: mid, text: trimmed, credentials: credentials)
+
+        pendingReplyMIDs.remove(mid)
+        switch outcome {
+        case .replied(let comment):
+            var thread = threads[mid] ?? WeiboCommentThread(postID: mid)
+            thread.comments.insert(comment, at: 0)
+            thread.comments = Array(thread.comments.prefix(WeiboCommentLimits.maxComments))
+            thread.total = max(thread.total ?? thread.comments.count, thread.comments.count)
+            if thread.state == .empty || thread.state == .idle {
+                thread.state = .loaded
+            }
+            threads[mid] = thread
+            replyDrafts[mid] = ""
+            await persist(mid: mid)
+        case .failure(let failure):
+            interactionFailure = failure
+        case .liked:
+            break
+        }
+    }
+
+    func setReplyDraft(_ text: String, mid: String) {
+        replyDrafts[mid] = text
+    }
+
+    func clearInteractionFailure() {
+        interactionFailure = nil
+    }
+
+    private func applyLike(mid: String, commentID: String, liked: Bool, countDelta: Int) {
+        guard var thread = threads[mid],
+              let index = thread.comments.firstIndex(where: { $0.id == commentID }) else { return }
+        var comment = thread.comments[index]
+        comment.liked = liked
+        if let count = comment.likeCount {
+            comment.likeCount = max(0, count + countDelta)
+        } else if countDelta > 0 {
+            comment.likeCount = 1
+        }
+        thread.comments[index] = comment
+        threads[mid] = thread
     }
 
     // MARK: - Requests

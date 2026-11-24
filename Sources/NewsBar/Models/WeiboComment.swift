@@ -47,6 +47,9 @@ struct WeiboComment: Codable, Identifiable, Equatable, Sendable {
     /// Optional on purpose: `comments/*.json` from an older build has no such
     /// key and must still decode, because a decode failure deletes the file.
     var runs: [WeiboCommentRun]?
+    /// Whether the signed-in account liked this comment when the page was
+    /// fetched. `nil` for caches written before likes were tracked.
+    var liked: Bool? = nil
 }
 
 /// One successful page of a comment thread.

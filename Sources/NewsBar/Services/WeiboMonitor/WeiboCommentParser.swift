@@ -79,7 +79,8 @@ enum WeiboCommentParser {
                     likeCount: count(item["like_counts"] ?? item["like_count"]),
                     replyToName: replyName?.trimmingCharacters(in: .whitespacesAndNewlines),
                     isAuthor: authorUID.map { !uid.isEmpty && uid == $0 } ?? false,
-                    runs: parseRuns(rawText)
+                    runs: parseRuns(rawText),
+                    liked: optionalBool(item["liked"])
                 )
             )
         }
@@ -120,6 +121,18 @@ enum WeiboCommentParser {
         }
         if let string = value as? String { return string == "1" || string.lowercased() == "true" }
         return false
+    }
+
+    /// Absent is `nil`, not `false`: an old payload without `liked` must not
+    /// make the row claim the comment is unliked.
+    private static func optionalBool(_ value: Any?) -> Bool? {
+        guard let value else { return nil }
+        if let bool = value as? Bool { return bool }
+        if let number = value as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID() {
+            return number.intValue == 1
+        }
+        if let string = value as? String { return string == "1" || string.lowercased() == "true" }
+        return nil
     }
 
     private static func identifier(_ value: Any?) -> String? {

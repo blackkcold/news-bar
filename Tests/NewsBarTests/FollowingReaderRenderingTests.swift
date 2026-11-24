@@ -30,7 +30,8 @@ private actor ReaderRenderFeed: WeiboCommentFetching {
                     WeiboCommentRun(kind: .text, text: "夜景那张的高光压得住，参考"),
                     WeiboCommentRun(kind: .link, text: "这份样张", url: "https://example.com/gallery"),
                     WeiboCommentRun(kind: .text, text: "里 5x 之后的锐度掉了。"),
-                ]
+                ],
+                liked: true
             ),
             WeiboComment(
                 id: "c2-\(mid)",
@@ -172,6 +173,27 @@ final class FollowingReaderRenderingTests: XCTestCase {
             pane(entry, viewModel, settings: settings, width: 579),
             size: CGSize(width: 579, height: 860),
             name: "reader-960-modern-zh",
+            appearance: .aqua,
+            to: output
+        )
+
+        // Interactions on: the like row and the composer must fit the same
+        // measure and stay legible in the retro theme too.
+        settings.weiboCommentInteractionsEnabled = true
+        settings.weiboCommentInteractionsAckAt = now
+        viewModel.comments.setReplyDraft("这条我周末去店里试试再回你。", mid: entry.post.mid)
+        try await snapshot(
+            pane(entry, viewModel, settings: settings, width: 579),
+            size: CGSize(width: 579, height: 860),
+            name: "reader-interactions-modern-zh",
+            appearance: .aqua,
+            to: output
+        )
+        settings.appTheme = .retroEditorial
+        try await snapshot(
+            pane(entry, viewModel, settings: settings, width: 579),
+            size: CGSize(width: 579, height: 860),
+            name: "reader-interactions-retro-zh",
             appearance: .aqua,
             to: output
         )

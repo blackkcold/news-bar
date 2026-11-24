@@ -91,6 +91,7 @@ struct FollowingReaderPane: View {
                         discussionHeader
                         newCommentsBanner
                         commentTree
+                        replyComposer
                         commentFooter
                         if let issue = thread.loadMoreError, !thread.comments.isEmpty {
                             inlineError(issue)
@@ -428,6 +429,13 @@ struct FollowingReaderPane: View {
                         language: settings.appLanguage,
                         accent: accent,
                         retro: retro,
+                        canInteract: settings.weiboCommentInteractionsEnabled,
+                        isLikePending: monitor.comments.pendingLikeIDs.contains(comment.id),
+                        onToggleLike: {
+                            Task {
+                                await monitor.toggleCommentLike(comment, in: entry.post)
+                            }
+                        },
                         onOpenOriginal: { monitor.openPost(entry.post) }
                     )
                     if index < thread.comments.count - 1 {
@@ -436,6 +444,61 @@ struct FollowingReaderPane: View {
                             .frame(height: 1)
                             .padding(.leading, FollowingReaderMetrics.commentDividerInset)
                     }
+                }
+            }
+            .frame(maxWidth: FollowingReaderMetrics.mediaMax, alignment: .leading)
+        }
+    }
+
+    /// One composer for the open post. It only writes a top-level comment: the
+    /// captured request has no reply target, so the app does not pretend to
+    /// support replying to a specific comment yet.
+    @ViewBuilder
+    private var replyComposer: some View {
+        if settings.weiboCommentInteractionsEnabled {
+            let mid = entry.post.mid
+            let draft = monitor.comments.replyDrafts[mid] ?? ""
+            let isSending = monitor.comments.pendingReplyMIDs.contains(mid)
+            VStack(alignment: .leading, spacing: 6) {
+                TextField(
+                    copy("写评论…", "Write a comment…"),
+                    text: Binding(
+                        get: { monitor.comments.replyDrafts[mid] ?? "" },
+                        set: { monitor.comments.setReplyDraft($0, mid: mid) }
+                    ),
+                    axis: .vertical
+                )
+                .textFieldStyle(.plain)
+                .font(.system(size: 13))
+                .lineLimit(1...4)
+                .padding(.horizontal, 9)
+                .padding(.vertical, 7)
+                .background(
+                    retro ? RetroEditorialTokens.raisedPaper : Color.primary.opacity(0.04),
+                    in: RoundedRectangle(cornerRadius: 7, style: .continuous)
+                )
+                .overlay {
+                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                        .strokeBorder(dividerColor, lineWidth: 1)
+                }
+                .disabled(isSending)
+
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    if let failure = monitor.comments.interactionFailure {
+                        Text(failure.message(language: settings.appLanguage))
+                            .font(.system(size: 10.5))
+                            .foregroundStyle(Color(nsColor: .systemRed))
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    Spacer(minLength: 8)
+                    Button(copy("发送", "Send")) {
+                        Task { await monitor.sendCommentReply(draft, to: entry.post) }
+                    }
+                    .buttonStyle(EditorialActionButtonStyle(compact: true))
+                    .controlSize(.small)
+                    .disabled(
+                        draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isSending
+                    )
                 }
             }
             .frame(maxWidth: FollowingReaderMetrics.mediaMax, alignment: .leading)
@@ -637,6 +700,11 @@ private struct FollowingCommentRow: View {
     let language: AppLanguage
     let accent: Color
     let retro: Bool
+    /// Whether this build shows the interaction controls at all. When off the
+    /// row still shows an existing like count, exactly as before.
+    let canInteract: Bool
+    let isLikePending: Bool
+    let onToggleLike: () -> Void
     let onOpenOriginal: () -> Void
 
     @Environment(\.displayScale) private var displayScale
@@ -659,9 +727,7 @@ private struct FollowingCommentRow: View {
             VStack(alignment: .leading, spacing: 4) {
                 header
                 commentBody
-                if let like = comment.likeCount, like > 0 {
-                    likeLine(like)
-                }
+                likeLine
             }
         }
         .padding(.leading, FollowingReaderMetrics.commentInset)
@@ -787,13 +853,40 @@ private struct FollowingCommentRow: View {
         return result
     }
 
-    private func likeLine(_ count: Int) -> some View {
-        Label("\(count)", systemImage: "hand.thumbsup")
-            .font(.system(size: 10.5))
-            .foregroundStyle(.secondary)
-            .monospacedDigit()
-            .padding(.top, 1)
-            .accessibilityLabel(copy("\(count) 人赞", "\(count) likes"))
+    @ViewBuilder
+    private var likeLine: some View {
+        let count = comment.likeCount ?? 0
+        let liked = comment.liked ?? false
+        if canInteract {
+            Button(action: onToggleLike) {
+                HStack(spacing: 3) {
+                    Image(systemName: liked ? "hand.thumbsup.fill" : "hand.thumbsup")
+                    if count > 0 {
+                        Text("\(count)")
+                    }
+                }
+                .font(.system(size: 10.5))
+                .foregroundStyle(liked ? accent : Color.secondary)
+                .monospacedDigit()
+                .padding(.vertical, 2)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .disabled(isLikePending)
+            .opacity(isLikePending ? 0.5 : 1)
+            .accessibilityLabel(
+                liked
+                    ? copy("取消赞，当前 \(count) 人赞", "Unlike, \(count) likes")
+                    : copy("赞这条评论，当前 \(count) 人赞", "Like this comment, \(count) likes")
+            )
+        } else if count > 0 {
+            Label("\(count)", systemImage: "hand.thumbsup")
+                .font(.system(size: 10.5))
+                .foregroundStyle(.secondary)
+                .monospacedDigit()
+                .padding(.top, 1)
+                .accessibilityLabel(copy("\(count) 人赞", "\(count) likes"))
+        }
     }
 
     private var firstLink: URL? {
