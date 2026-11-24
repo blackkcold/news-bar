@@ -241,6 +241,27 @@ final class AppSettings {
     var weiboCommentsAutoLoad: Bool {
         didSet { TestIsolation.defaults.set(weiboCommentsAutoLoad, forKey: "weiboCommentsAutoLoad") }
     }
+    /// Scaffolding for comment likes/replies. Off by default and intentionally
+    /// not exposed in Settings until a real request capture unlocks the write
+    /// path. No code may send a write while this is false.
+    var weiboCommentInteractionsEnabled: Bool {
+        didSet {
+            TestIsolation.defaults.set(
+                weiboCommentInteractionsEnabled,
+                forKey: "weiboCommentInteractionsEnabled"
+            )
+        }
+    }
+    /// First-run consent timestamp for public comment interactions. Nil means
+    /// the user has not accepted the warning yet.
+    var weiboCommentInteractionsAckAt: Date? {
+        didSet {
+            TestIsolation.defaults.set(
+                weiboCommentInteractionsAckAt,
+                forKey: "weiboCommentInteractionsAckAt"
+            )
+        }
+    }
     /// Last time the one-shot "login expired" alert was delivered. Stored so a
     /// relaunch does not repeat the same alert within 24 hours.
     var weiboMonitorAuthAlertAt: Date? {
@@ -866,6 +887,10 @@ final class AppSettings {
         )
         self.weiboCommentsAutoLoad =
             defaults.boolIfPresent(forKey: "weiboCommentsAutoLoad") ?? true
+        self.weiboCommentInteractionsEnabled =
+            defaults.boolIfPresent(forKey: "weiboCommentInteractionsEnabled") ?? false
+        self.weiboCommentInteractionsAckAt =
+            defaults.object(forKey: "weiboCommentInteractionsAckAt") as? Date
         self.weiboMonitorAuthAlertAt = defaults.object(forKey: "weiboMonitorAuthAlertAt") as? Date
         self.weiboMonitorShowPopoverChip = defaults.boolIfPresent(forKey: "weiboMonitorShowPopoverChip") ?? true
         self.weiboMonitorBadgeEnabled =

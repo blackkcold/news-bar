@@ -166,8 +166,10 @@ private struct PopoverFeedList: View {
     }
 
     private var showsFollowChip: Bool {
-        settings.weiboMonitorShowPopoverChip
-            && (weiboMonitor?.snapshot.unreadCount ?? 0) > 0
+        PopoverWeiboFollowChip.shouldShowEntry(
+            settingEnabled: settings.weiboMonitorShowPopoverChip,
+            accountCount: weiboMonitor?.snapshot.users.count ?? 0
+        )
     }
 
     /// A chip whose badge is switched off still opens the feed, but it stops

@@ -196,6 +196,72 @@ final class PopoverLayoutRenderingTests: XCTestCase {
             PopoverWeiboFollowChip.displayTitle(language: .en, unreadCount: 61, showsBadge: false),
             "Following"
         )
+        // A zero unread count must never read as "Following 0", even when the
+        // badge switch is on.
+        XCTAssertEqual(
+            PopoverWeiboFollowChip.displayTitle(language: .zh, unreadCount: 0, showsBadge: true),
+            "关注"
+        )
+        XCTAssertEqual(
+            PopoverWeiboFollowChip.displayTitle(language: .en, unreadCount: 0, showsBadge: true),
+            "Following"
+        )
+    }
+
+    func testFollowEntryRequiresTheSettingAndAtLeastOneAccount() {
+        XCTAssertTrue(
+            PopoverWeiboFollowChip.shouldShowEntry(settingEnabled: true, accountCount: 1)
+        )
+        XCTAssertFalse(
+            PopoverWeiboFollowChip.shouldShowEntry(settingEnabled: false, accountCount: 1)
+        )
+        XCTAssertFalse(
+            PopoverWeiboFollowChip.shouldShowEntry(settingEnabled: true, accountCount: 0)
+        )
+        XCTAssertFalse(
+            PopoverWeiboFollowChip.shouldShowEntry(settingEnabled: false, accountCount: 0)
+        )
+    }
+
+    @MainActor
+    func testFollowChipShowsANeutralEntryAtZeroUnread() throws {
+        let settings = AppSettings()
+        for theme in [AppTheme.modern, .retroEditorial] {
+            settings.appTheme = theme
+            let view = VStack(spacing: 0) {
+                PopoverWeiboFollowChip(
+                    unreadCount: 0,
+                    showsBadge: true,
+                    onOpen: {},
+                    compact: true
+                )
+            }
+            .padding(.horizontal, PopoverLayout.horizontalInset)
+            .frame(width: 400)
+            .environment(settings)
+            .preferredColorScheme(.light)
+
+            let host = NSHostingView(rootView: view)
+            let window = NSWindow(
+                contentRect: NSRect(x: 0, y: 0, width: 400, height: 80),
+                styleMask: [.borderless],
+                backing: .buffered,
+                defer: false
+            )
+            window.isOpaque = true
+            window.backgroundColor = .windowBackgroundColor
+            window.contentView = host
+            host.frame = NSRect(x: 0, y: 0, width: 400, height: 80)
+            host.layoutSubtreeIfNeeded()
+
+            XCTAssertLessThanOrEqual(host.fittingSize.height, 40, "theme: \(theme)")
+
+            let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+            host.cacheDisplay(in: host.bounds, to: bitmap)
+            let data = try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
+            XCTAssertGreaterThan(data.count, 500, "theme: \(theme)")
+            window.contentView = nil
+        }
     }
 
     @MainActor
