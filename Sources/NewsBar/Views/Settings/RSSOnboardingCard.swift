@@ -12,6 +12,7 @@ struct RSSOnboardingCard: View {
     let picks: [RSSRecommendation]
     let showsAllRecommendations: Bool
     let onAdd: (RSSRecommendation) -> Void
+    let onAddCustom: () -> Void
     let onToggleAll: () -> Void
     let onImportOPML: () -> Void
 
@@ -20,6 +21,8 @@ struct RSSOnboardingCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             header
+
+            primaryActions
 
             if !picks.isEmpty {
                 VStack(spacing: 0) {
@@ -31,7 +34,7 @@ struct RSSOnboardingCard: View {
             }
 
             steps
-            actionRow
+            disclosureAction
         }
         .padding(14)
         .background { cardBackground }
@@ -97,7 +100,7 @@ struct RSSOnboardingCard: View {
     private func pickRow(_ pick: RSSRecommendation) -> some View {
         HStack(alignment: .center, spacing: 10) {
             EditorialTag(
-                text: pick.category.rawValue,
+                text: pick.category.title(language: settings.appLanguage),
                 fallbackTint: tint(for: pick.category)
             )
 
@@ -128,8 +131,16 @@ struct RSSOnboardingCard: View {
 
     // MARK: - Actions
 
-    private var actionRow: some View {
+    private var primaryActions: some View {
         HStack(spacing: 8) {
+            Button {
+                onAddCustom()
+            } label: {
+                Label("rss.onboarding.custom".localized, systemImage: "plus")
+            }
+            .buttonStyle(EditorialActionButtonStyle(tone: .prominent, compact: true))
+            .controlSize(.small)
+
             Button {
                 onImportOPML()
             } label: {
@@ -138,6 +149,12 @@ struct RSSOnboardingCard: View {
             .buttonStyle(EditorialActionButtonStyle(compact: true))
             .controlSize(.small)
 
+            Spacer(minLength: 0)
+        }
+    }
+
+    private var disclosureAction: some View {
+        HStack {
             Button {
                 onToggleAll()
             } label: {

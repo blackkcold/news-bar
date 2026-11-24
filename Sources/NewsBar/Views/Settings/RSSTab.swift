@@ -8,13 +8,13 @@ struct RSSTab: View {
     @Environment(\.rssHealthAction) private var rssHealthAction
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    @State private var newURL = ""
-    @State private var newName = ""
-    @State private var isAdding = false
     @State private var addError: String?
     @State private var addWarning: String?
-    @State private var isTesting = false
-    @State private var showRecommendations = false
+    @State private var showAddSource = false
+    /// "auto" expands only while there is no source; "expanded" / "collapsed"
+    /// record an explicit choice. AppStorage, not SceneStorage: the settings
+    /// window is an AppKit-hosted NSHostingView and has no SwiftUI Scene.
+    @AppStorage("rss.recommendations.state", store: TestIsolation.defaults) private var recommendationsState = "auto"
     @State private var recommendationValidationTask: Task<Void, Never>?
     @State private var recommendationValidationCandidates: [RSSRecommendation] = []
     @State private var recommendationValidationActiveURL: String?
@@ -31,6 +31,33 @@ struct RSSTab: View {
     @State private var importSheet: ImportSheetRequest?
     @State private var importError: String?
     @State private var rssHealth: [RSSSourceHealth] = []
+    @State private var page: Page = .sources
+
+    enum Page: String, CaseIterable, Identifiable {
+        case sources
+        case display
+        case reader
+
+        var id: String { rawValue }
+        var titleKey: String { "settings.reading.page.\(rawValue)" }
+    }
+
+    private var showsRecommendations: Bool {
+        RSSRecommendationVisibility.isExpanded(
+            state: recommendationsState,
+            sourceCount: settings.rssSources.count
+        )
+    }
+
+    private func toggleRecommendations() {
+        recommendationsState = showsRecommendations ? "collapsed" : "expanded"
+    }
+
+    /// The first source should not collapse the catalog the user is browsing.
+    private func keepRecommendationsOpenForFirstRun(previousCount: Int) {
+        guard previousCount == 0, recommendationsState == "auto" else { return }
+        recommendationsState = "expanded"
+    }
 
     private let reorderAnimation = Animation.spring(response: 0.26, dampingFraction: 0.88, blendDuration: 0.08)
     private let textCountCandidates = [5, 10]
@@ -140,18 +167,32 @@ struct RSSTab: View {
     }
 
     var body: some View {
-        Form {
-            if !settings.rssSources.isEmpty {
-                displayCountSection
-            }
+        VStack(spacing: 0) {
+            SettingsSubpageTabs(
+                values: Page.allCases,
+                title: { L10n.string($0.titleKey) },
+                groupLabel: "settings.reading.pages".localized,
+                selection: $page
+            )
 
+            Form {
+                if page == .display {
+                    displaySections
+                }
+
+                if page == .reader {
+                    ReaderTypographySection()
+                }
+
+                if page == .sources {
             Section {
                 if settings.rssSources.isEmpty {
                     RSSOnboardingCard(
                         picks: RSSStarterPicks.recommendations,
-                        showsAllRecommendations: showRecommendations,
+                        showsAllRecommendations: showsRecommendations,
                         onAdd: addRecommended,
-                        onToggleAll: { withAnimation { showRecommendations.toggle() } },
+                        onAddCustom: { showAddSource = true },
+                        onToggleAll: { withAnimation { toggleRecommendations() } },
                         onImportOPML: importFile
                     )
                 } else if subscribedRSSSources.isEmpty {
@@ -171,17 +212,45 @@ struct RSSTab: View {
                     )
                     Spacer()
                     if !settings.rssSources.isEmpty {
-                        Button {
-                            withAnimation { showRecommendations.toggle() }
-                        } label: {
-                            Text(showRecommendations ? "rss.hideRecommendations".localized : "rss.showRecommendations".localized)
-                                .font(.caption)
+                        HStack(spacing: 8) {
+                            Button {
+                                showAddSource = true
+                            } label: {
+                                Label("rss.addSource.short".localized, systemImage: "plus")
+                                    .font(.caption)
+                            }
+                            .buttonStyle(EditorialActionButtonStyle(tone: .primary, compact: true))
+                            .controlSize(.small)
+
+                            Button {
+                                withAnimation { toggleRecommendations() }
+                            } label: {
+                                Text(showsRecommendations ? "rss.hideRecommendations".localized : "rss.showRecommendations".localized)
+                                    .font(.caption)
+                            }
                         }
                     }
                 }
             } footer: {
                 if !subscribedRSSSources.isEmpty {
                     Text("rss.subscribed.footer".localized)
+                }
+            }
+
+            if addError != nil || addWarning != nil {
+                Section {
+                    if let addError {
+                        Label(addError, systemImage: "exclamationmark.circle.fill")
+                            .font(.callout)
+                            .foregroundStyle(.red)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    if let addWarning {
+                        Label(addWarning, systemImage: "exclamationmark.triangle.fill")
+                            .font(.callout)
+                            .foregroundStyle(.orange)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                 }
             }
 
@@ -199,13 +268,15 @@ struct RSSTab: View {
                 noneSelectedSection
             }
 
-            if showRecommendations {
-                Section {
-                    recommendationTestingPanel
-                } header: {
-                    Text("rss.recommendationValidation".localized)
-                } footer: {
-                    Text("rss.recommendationValidation.footer".localized)
+            if showsRecommendations {
+                if settings.showDeveloperSettings {
+                    Section {
+                        recommendationTestingPanel
+                    } header: {
+                        Text("rss.recommendationValidation".localized)
+                    } footer: {
+                        Text("rss.recommendationValidation.footer".localized)
+                    }
                 }
 
                 ForEach(RSSRecommendation.Category.allCases, id: \.self) { category in
@@ -214,15 +285,9 @@ struct RSSTab: View {
                             recommendationRow(rec)
                         }
                     } header: {
-                        Text(category.rawValue)
+                        Text(category.title(language: settings.appLanguage))
                     }
                 }
-            }
-
-            Section {
-                addRSSForm
-            } header: {
-                Text("rss.addSource".localized)
             }
 
             if !settings.rssSources.isEmpty {
@@ -280,36 +345,9 @@ struct RSSTab: View {
             } footer: {
                 Text("rss.importExport.footer".localized)
             }
-
-            Section {
-                Toggle("rss.agent.enabled".localized, isOn: Binding(
-                    get: { settings.agentAccessEnabled },
-                    set: { settings.agentAccessEnabled = $0 }
-                ))
-
-                HStack(spacing: 8) {
-                    Image(systemName: "terminal")
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
-                    Text(AgentPaths.root.path)
-                        .font(.system(size: 10))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                    Spacer(minLength: 8)
-                    Button("rss.agent.openFolder".localized) {
-                        NSWorkspace.shared.open(AgentPaths.root)
-                    }
-                    .buttonStyle(EditorialActionButtonStyle(compact: true))
-                    .controlSize(.small)
                 }
-            } header: {
-                Text("rss.agent".localized)
-            } footer: {
-                Text("rss.agent.footer".localized)
             }
-        }
-        .formStyle(.grouped)
+            .formStyle(.grouped)
         .scrollContentBackground(.hidden)
         .onAppear {
             refreshHealth()
@@ -342,6 +380,13 @@ struct RSSTab: View {
                 applyImport(candidates)
             }
             .environment(settings)
+        }
+        .sheet(isPresented: $showAddSource) {
+            AddRSSSourceSheet(existingSources: settings.rssSources) { source in
+                addCustomSource(source)
+            }
+            .environment(settings)
+        }
         }
     }
 
@@ -438,6 +483,22 @@ struct RSSTab: View {
             importError = nil
         } catch {
             importError = "rss.export.failed".localized
+        }
+    }
+
+    @ViewBuilder
+    private var displaySections: some View {
+        if settings.rssSources.isEmpty {
+            Section {
+                Text("settings.reading.display.empty".localized)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            } header: {
+                Text("rss.displayCount".localized)
+            }
+        } else {
+            displayCountSection
         }
     }
 
@@ -989,13 +1050,30 @@ struct RSSTab: View {
         }
 
         let source = RSSSourceConfig(name: sanitizedName, url: sanitizedURL, displayMode: .text)
+        let previousCount = settings.rssSources.count
         settings.rssSources.append(source)
         settings.selectedRSSSourceIDs.insert(source.id)
+        keepRecommendationsOpenForFirstRun(previousCount: previousCount)
         NotificationCenter.default.post(
             name: .rssSourceAdded,
             object: nil,
             userInfo: ["url": sanitizedURL, "name": sanitizedName]
         )
+    }
+
+    private func addCustomSource(_ source: RSSSourceConfig) {
+        let previousCount = settings.rssSources.count
+        settings.rssSources.append(source)
+        settings.selectedRSSSourceIDs.insert(source.id)
+        keepRecommendationsOpenForFirstRun(previousCount: previousCount)
+        addError = nil
+        addWarning = nil
+        NotificationCenter.default.post(
+            name: .rssSourceAdded,
+            object: nil,
+            userInfo: ["url": source.url, "name": source.name]
+        )
+        refreshHealth()
     }
 
     private var recommendationTestingPanel: some View {
@@ -1305,18 +1383,7 @@ struct RSSTab: View {
     }
 
     private func localizedSecurityReason(_ reason: String) -> String {
-        switch reason {
-        case "Invalid URL or scheme":
-            return "rss.security.invalidURL".localized
-        default:
-            if reason.hasPrefix("Blocked host: ") {
-                return L10n.string("rss.security.blockedHost", reason.replacingOccurrences(of: "Blocked host: ", with: ""))
-            }
-            if reason.hasPrefix("Private IP range: ") {
-                return L10n.string("rss.security.privateIP", reason.replacingOccurrences(of: "Private IP range: ", with: ""))
-            }
-            return reason
-        }
+        RSSSecurityCopy.localized(reason, language: settings.appLanguage)
     }
 
     private func localizedNetworkSummary(_ summary: String) -> String {
@@ -1343,98 +1410,16 @@ struct RSSTab: View {
             return summary
         }
     }
+}
 
-    private var addRSSForm: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 8) {
-                TextField("rss.sourceName".localized, text: $newName)
-                    .textFieldStyle(.roundedBorder)
-                    .frame(width: 120)
-                TextField("rss.url".localized, text: $newURL)
-                    .textFieldStyle(.roundedBorder)
-            }
-
-            if let error = addError {
-                Text(error)
-                    .font(.caption)
-                    .foregroundStyle(.red)
-            }
-            if let warning = addWarning {
-                Text("⚠️ \(warning)")
-                    .font(.caption)
-                    .foregroundStyle(.orange)
-            }
-
-            HStack {
-                Button(action: addRSSSource) {
-                    HStack(spacing: 4) {
-                        if isTesting {
-                            ProgressView().scaleEffect(0.6)
-                        }
-                        Text("rss.addAndValidate".localized)
-                    }
-                }
-                .disabled(newName.isEmpty || newURL.isEmpty || isTesting)
-                .buttonStyle(EditorialActionButtonStyle(compact: true))
-                .controlSize(.small)
-            }
-        }
-    }
-
-    private func addRSSSource() {
-        let sanitizedURL = SecurityPolicies.sanitizeUserInput(newURL)
-        let sanitizedName = SecurityPolicies.sanitizeUserInput(newName)
-
-        guard !sanitizedURL.isEmpty else {
-            addError = "rss.needURL".localized
-            return
-        }
-
-        var normalizedURL = sanitizedURL
-        if URL(string: normalizedURL)?.scheme == nil {
-            normalizedURL = "https://" + normalizedURL
-        }
-        normalizedURL = SecurityPolicies.canonicalRSSURL(normalizedURL)
-
-        switch SecurityPolicies.validateRSSURL(normalizedURL) {
-        case .valid:
-            break
-        case .blocked(let reason):
-            addError = reason
-            return
-        case .warning(let reason):
-            addWarning = reason
-            addError = nil
-            // warning is non-blocking, user can still add
-        }
-
-        isTesting = true
-
-        Task {
-            do {
-                let isValid = try await RSSService.validate(normalizedURL)
-                if isValid {
-                    let source = RSSSourceConfig(
-                        name: sanitizedName, url: normalizedURL, displayMode: .text
-                    )
-                    settings.rssSources.append(source)
-                    settings.selectedRSSSourceIDs.insert(source.id)
-                    newURL = ""
-                    newName = ""
-                    addError = nil
-                    addWarning = nil
-                    NotificationCenter.default.post(
-                        name: .rssSourceAdded,
-                        object: nil,
-                        userInfo: ["url": normalizedURL, "name": sanitizedName]
-                    )
-                } else {
-                    addError = "rss.notValidFeed".localized
-                }
-            } catch {
-                addError = "rss.cannotConnect".localized
-            }
-            isTesting = false
+/// The recommendation catalog's visibility rule is a pure function so the
+/// first-run behaviour is testable without a hosting view.
+enum RSSRecommendationVisibility {
+    static func isExpanded(state: String, sourceCount: Int) -> Bool {
+        switch state {
+        case "expanded": return true
+        case "collapsed": return false
+        default: return sourceCount == 0
         }
     }
 }

@@ -4,8 +4,6 @@ import SwiftUI
 /// push off must not silently stop the research archive, and vice versa.
 struct ResearchAutomationSection: View {
     @Environment(AppSettings.self) private var settings
-    @AppStorage("researchNotificationsEnabled") private var researchNotificationsEnabled = true
-    @AppStorage("researchNotificationDetailedPreviewEnabled") private var detailedPreviewEnabled = false
 
     var body: some View {
         Section {
@@ -44,36 +42,6 @@ struct ResearchAutomationSection: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
-
-            Toggle("research.auto.notificationSummary".localized, isOn: Binding(
-                get: { settings.researchNotificationShowsSummary },
-                set: { settings.researchNotificationShowsSummary = $0 }
-            ))
-
-            Toggle(
-                settings.appLanguage == .en
-                    ? "Research result notifications"
-                    : "研究结果提醒",
-                isOn: $researchNotificationsEnabled
-            )
-            .onChange(of: researchNotificationsEnabled) { _, enabled in
-                guard !enabled else { return }
-                Task { await NotificationService.withdrawPendingResearchNotifications() }
-            }
-            .help(settings.appLanguage == .en
-                  ? "Send a notice when a useful report is ready; automatic research remains independently controlled."
-                  : "报告达到可读状态时发送提醒；自动研究仍由上方单独控制。")
-
-            Toggle(
-                settings.appLanguage == .en
-                    ? "Show verified detail in notifications"
-                    : "在通知中显示已核验摘要",
-                isOn: $detailedPreviewEnabled
-            )
-            .disabled(!researchNotificationsEnabled)
-            .help(settings.appLanguage == .en
-                  ? "Off by default. When enabled, a short verified conclusion may appear on the lock screen."
-                  : "默认关闭。开启后，锁屏通知可能显示一句已核验结论。")
         } header: {
             Text("research.auto.title".localized)
         } footer: {

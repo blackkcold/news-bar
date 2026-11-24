@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// 关于 → 研究数据. History and temp-cache limits are enforced immediately; a
+/// 隐私与数据 → 研究数据. History and temp-cache limits are enforced immediately; a
 /// lower limit asks for confirmation with the exact deletion count first.
 struct ResearchDataSection: View {
     @Environment(AppSettings.self) private var settings

@@ -11,7 +11,7 @@ enum SummaryTarget: String, Sendable, CaseIterable {
 
 /// Budget mode for AI summary daily request caps.
 /// - shared: Popup and Dashboard share a single total daily cap (`aiDailyCap`).
-/// - independent: Each target has its own daily cap (`aiPopupDailyCap` / `aiDashboardDailyCap`).
+/// - independent: Each target keeps its own daily cap.
 enum AISummaryBudgetMode: String, Sendable, CaseIterable {
     case shared
     case independent
@@ -35,11 +35,8 @@ enum AppTheme: String, Sendable, CaseIterable, Identifiable {
 
     var id: String { rawValue }
 
-    var displayName: String {
-        switch self {
-        case .modern: return "现代材质"
-        case .retroEditorial: return "复古报刊"
-        }
+    func displayName(_ language: AppLanguage) -> String {
+        L10n.string("settings.appTheme.\(rawValue)", language: language)
     }
 }
 
@@ -241,9 +238,9 @@ final class AppSettings {
     var weiboCommentsAutoLoad: Bool {
         didSet { TestIsolation.defaults.set(weiboCommentsAutoLoad, forKey: "weiboCommentsAutoLoad") }
     }
-    /// Scaffolding for comment likes/replies. Off by default and intentionally
-    /// not exposed in Settings until a real request capture unlocks the write
-    /// path. No code may send a write while this is false.
+    /// Comment likes/replies. Off by default; exposed under Following → Advanced
+    /// behind a one-time consent prompt. No code may send a write while this is
+    /// false.
     var weiboCommentInteractionsEnabled: Bool {
         didSet {
             TestIsolation.defaults.set(
@@ -432,14 +429,8 @@ final class AppSettings {
     var aiModelManuallyEntered: Bool {
         didSet { TestIsolation.defaults.set(aiModelManuallyEntered, forKey: "aiModelManuallyEntered") }
     }
-    var aiPopupMaxWords: Int {
-        didSet { TestIsolation.defaults.set(aiPopupMaxWords, forKey: "aiPopupMaxWords") }
-    }
     var aiDashboardMaxWords: Int {
         didSet { TestIsolation.defaults.set(aiDashboardMaxWords, forKey: "aiDashboardMaxWords") }
-    }
-    var aiMaxWords: Int {
-        didSet { TestIsolation.defaults.set(aiMaxWords, forKey: "aiMaxWords") }
     }
     /// Daily AI call cap for the whole app. `-1` means unlimited. The gate
     /// always works through `aiQuotaPolicy`, never through this raw value.
@@ -463,9 +454,6 @@ final class AppSettings {
     var todayAIUnpricedCalls = 0
     var todayAIInputTokens = 0
     var todayAIOutputTokens = 0
-    var aiBudgetMode: AISummaryBudgetMode {
-        didSet { TestIsolation.defaults.set(aiBudgetMode.rawValue, forKey: "aiBudgetMode") }
-    }
     /// When true, DeepSeek V4's thinking mode is disabled for faster,
     /// non-truncated summaries. Exposed in Settings → AI.
     var aiDisableDeepSeekThinking: Bool {
@@ -475,9 +463,6 @@ final class AppSettings {
     /// Migrated from `aiDisableDeepSeekThinking` on first launch.
     var aiSummaryThinking: AIThinkingLevel {
         didSet { TestIsolation.defaults.set(aiSummaryThinking.rawValue, forKey: "aiSummaryThinking") }
-    }
-    var aiPopupDailyCap: Int {
-        didSet { TestIsolation.defaults.set(aiPopupDailyCap, forKey: "aiPopupDailyCap") }
     }
     /// Reader AI search is a first-class feature, but it is independent from the
     /// RSS summary settings: its own model, thinking level and page budget.
@@ -531,9 +516,6 @@ final class AppSettings {
             )
         }
     }
-    var aiDashboardDailyCap: Int {
-        didSet { TestIsolation.defaults.set(aiDashboardDailyCap, forKey: "aiDashboardDailyCap") }
-    }
     var aiProvider: String {
         didSet {
             guard !isInitializing else { return }
@@ -567,12 +549,6 @@ final class AppSettings {
     var todayAIRequestCount: Int {
         didSet { TestIsolation.defaults.set(todayAIRequestCount, forKey: "todayAIRequestCount") }
     }
-    var todayPopupAIRequestCount: Int {
-        didSet { TestIsolation.defaults.set(todayPopupAIRequestCount, forKey: "todayPopupAIRequestCount") }
-    }
-    var todayDashboardAIRequestCount: Int {
-        didSet { TestIsolation.defaults.set(todayDashboardAIRequestCount, forKey: "todayDashboardAIRequestCount") }
-    }
     var lastRefreshTimestamp: Double {
         didSet { TestIsolation.defaults.set(lastRefreshTimestamp, forKey: "lastRefreshTimestamp") }
     }
@@ -582,6 +558,12 @@ final class AppSettings {
 
     var showAllAIModels: Bool {
         didSet { TestIsolation.defaults.set(showAllAIModels, forKey: "showAllAIModels") }
+    }
+
+    /// Reveals debug and one-off tooling in Advanced. Off by default; anything
+    /// that changes runtime behavior stays behind it.
+    var showDeveloperSettings: Bool {
+        didSet { TestIsolation.defaults.set(showDeveloperSettings, forKey: "showDeveloperSettings") }
     }
 
     var customAIProviders: [CustomAIProviderConfig] {
@@ -657,6 +639,36 @@ final class AppSettings {
     var researchUsePersonalization: Bool {
         didSet { TestIsolation.defaults.set(researchUsePersonalization, forKey: "researchUsePersonalization") }
     }
+    /// Send a notice when a research report is ready. Automatic research stays
+    /// independently controlled by `researchAutoEnabled`.
+    var researchNotificationsEnabled: Bool {
+        didSet {
+            TestIsolation.defaults.set(
+                researchNotificationsEnabled,
+                forKey: "researchNotificationsEnabled"
+            )
+        }
+    }
+    /// Include a verified one-line conclusion on the lock screen. Off by
+    /// default; only meaningful while `researchNotificationsEnabled` is on.
+    var researchNotificationDetailedPreviewEnabled: Bool {
+        didSet {
+            TestIsolation.defaults.set(
+                researchNotificationDetailedPreviewEnabled,
+                forKey: "researchNotificationDetailedPreviewEnabled"
+            )
+        }
+    }
+    /// Show research hints and finished reports while reading. One switch for
+    /// every reading surface (menu bar, dashboard cards, reader, quick search).
+    var researchReadingEnabled: Bool {
+        didSet {
+            TestIsolation.defaults.set(
+                researchReadingEnabled,
+                forKey: "researchReadingEnabled"
+            )
+        }
+    }
     /// Automatic-search request count per UTC day. This is a request limit,
     /// not a currency budget; metered providers stay manual-only unless their
     /// price and remaining balance can be enforced before dispatch.
@@ -678,16 +690,6 @@ final class AppSettings {
             TestIsolation.defaults.set(text, forKey: "researchLastAutomaticDecision")
         } else {
             TestIsolation.defaults.removeObject(forKey: "researchLastAutomaticDecision")
-        }
-    }
-    /// Legacy preference retained for compatibility; task-completion notices
-    /// no longer include report conclusions, regardless of this value.
-    var researchNotificationShowsSummary: Bool {
-        didSet {
-            TestIsolation.defaults.set(
-                researchNotificationShowsSummary,
-                forKey: "researchNotificationShowsSummary"
-            )
         }
     }
     /// Research depth preset (quick / standard / deep).
@@ -743,10 +745,6 @@ final class AppSettings {
             guard firecrawlAPIKey.isEmpty else { return }
             TestIsolation.defaults.removeObject(forKey: "firecrawlAPIKey")
         }
-    }
-    /// Independent daily cap for burst research AI requests.
-    var burstDailyCap: Int {
-        didSet { TestIsolation.defaults.set(burstDailyCap, forKey: "burstDailyCap") }
     }
     var todayBurstResearchCount: Int {
         didSet { TestIsolation.defaults.set(todayBurstResearchCount, forKey: "todayBurstResearchCount") }
@@ -939,19 +937,14 @@ final class AppSettings {
         self.aiModel = defaults.stringIfPresent(forKey: "aiModel") ?? ""
         self.aiModelManuallyEntered = defaults.boolIfPresent(forKey: "aiModelManuallyEntered") ?? false
 
-        let rawPopupMaxWords = defaults.integerIfPresent(forKey: "aiPopupMaxWords") ?? 120
-        self.aiPopupMaxWords = Self.validAIPopupMaxWords.contains(rawPopupMaxWords) ? rawPopupMaxWords : 120
         let rawDashboardMaxWords = defaults.integerIfPresent(forKey: "aiDashboardMaxWords") ?? 360
         self.aiDashboardMaxWords = Self.validAIDashboardMaxWords.contains(rawDashboardMaxWords) ? rawDashboardMaxWords : 360
-        self.aiMaxWords = defaults.integerIfPresent(forKey: "aiMaxWords") ?? 150
         let rawCap = defaults.integerIfPresent(forKey: "aiDailyCap") ?? 200
         self.aiDailyCap = Self.migratedAICap(rawCap)
         let rawLimitMode = defaults.stringIfPresent(forKey: "aiLimitMode") ?? AILimitMode.count.rawValue
         self.aiLimitMode = AILimitMode(rawValue: rawLimitMode) ?? .count
         self.aiCostCapMicros = defaults.int64IfPresent(forKey: "aiCostCapMicros")
             ?? Self.defaultAICostCapMicros
-        let rawBudgetMode = defaults.stringIfPresent(forKey: "aiBudgetMode") ?? AISummaryBudgetMode.shared.rawValue
-        self.aiBudgetMode = AISummaryBudgetMode(rawValue: rawBudgetMode) ?? .shared
         let legacyDisableDeepSeekThinking = defaults.boolIfPresent(forKey: "aiDisableDeepSeekThinking") ?? true
         self.aiDisableDeepSeekThinking = legacyDisableDeepSeekThinking
         if let rawSummaryThinking = defaults.stringIfPresent(forKey: "aiSummaryThinking"),
@@ -962,8 +955,6 @@ final class AppSettings {
             // thinking, false left the provider default untouched.
             self.aiSummaryThinking = legacyDisableDeepSeekThinking ? .off : .providerDefault
         }
-        let rawPopupCap = defaults.integerIfPresent(forKey: "aiPopupDailyCap") ?? 200
-        self.aiPopupDailyCap = Self.validAICaps.contains(rawPopupCap) ? rawPopupCap : 200
         self.aiSearchEnabled = defaults.boolIfPresent(forKey: "aiSearchEnabled") ?? true
         self.aiSearchUseWeb = defaults.boolIfPresent(forKey: "aiSearchUseWeb") ?? true
         self.selectionWebMode = SelectionWebMode(
@@ -987,8 +978,6 @@ final class AppSettings {
             defaults.boolIfPresent(forKey: "aiEvidenceAssessmentEnabled") ?? false
         self.aiOverviewWebSupplement =
             defaults.boolIfPresent(forKey: "aiOverviewWebSupplement") ?? true
-        let rawDashboardCap = defaults.integerIfPresent(forKey: "aiDashboardDailyCap") ?? 200
-        self.aiDashboardDailyCap = Self.validAICaps.contains(rawDashboardCap) ? rawDashboardCap : 200
         if let legacyRef = defaults.stringIfPresent(forKey: "onePasswordRef"),
            !legacyRef.isEmpty {
             defaults.removeObject(forKey: "onePasswordRef")
@@ -1006,17 +995,7 @@ final class AppSettings {
 
         let todayStart = Calendar.current.startOfDay(for: Date()).timeIntervalSince1970
         self.todayRefreshCount = defaults.integerIfPresent(forKey: "todayRefreshCount") ?? 0
-        let legacyTotalCount = defaults.integerIfPresent(forKey: "todayAIRequestCount") ?? 0
-        self.todayAIRequestCount = legacyTotalCount
-        let hasPopupCount = defaults.object(forKey: "todayPopupAIRequestCount") != nil
-        let hasDashboardCount = defaults.object(forKey: "todayDashboardAIRequestCount") != nil
-        if !hasPopupCount && !hasDashboardCount && legacyTotalCount > 0 {
-            self.todayPopupAIRequestCount = legacyTotalCount
-            self.todayDashboardAIRequestCount = 0
-        } else {
-            self.todayPopupAIRequestCount = defaults.integerIfPresent(forKey: "todayPopupAIRequestCount") ?? 0
-            self.todayDashboardAIRequestCount = defaults.integerIfPresent(forKey: "todayDashboardAIRequestCount") ?? 0
-        }
+        self.todayAIRequestCount = defaults.integerIfPresent(forKey: "todayAIRequestCount") ?? 0
         self.lastRefreshTimestamp = defaults.doubleIfPresent(forKey: "lastRefreshTimestamp") ?? 0
         self.statsDayTimestamp = defaults.doubleIfPresent(forKey: "statsDayTimestamp") ?? todayStart
 
@@ -1035,6 +1014,7 @@ final class AppSettings {
         }
 
         self.showAllAIModels = defaults.boolIfPresent(forKey: "showAllAIModels") ?? false
+        self.showDeveloperSettings = defaults.boolIfPresent(forKey: "showDeveloperSettings") ?? false
         if let data = defaults.data(forKey: "customAIProviders"),
            let decoded = try? JSONDecoder().decode([CustomAIProviderConfig].self, from: data) {
             self.customAIProviders = decoded
@@ -1067,12 +1047,16 @@ final class AppSettings {
         self.researchShowPopoverChip = defaults.boolIfPresent(forKey: "researchShowPopoverChip") ?? true
         self.researchMarkReadOnOpen = defaults.boolIfPresent(forKey: "researchMarkReadOnOpen") ?? true
         self.researchUsePersonalization = defaults.boolIfPresent(forKey: "researchUsePersonalization") ?? true
+        self.researchNotificationsEnabled = defaults.boolIfPresent(forKey: "researchNotificationsEnabled") ?? true
+        self.researchNotificationDetailedPreviewEnabled = defaults.boolIfPresent(
+            forKey: "researchNotificationDetailedPreviewEnabled"
+        ) ?? false
+        self.researchReadingEnabled = defaults.boolIfPresent(forKey: "researchReadingEnabled") ?? true
         let rawAutomaticSearchLimit = defaults.integerIfPresent(forKey: "researchAutoSearchDailyLimit") ?? 20
         self.researchAutoSearchDailyLimit = Self.validResearchAutoSearchDailyLimits.contains(rawAutomaticSearchLimit)
             ? rawAutomaticSearchLimit : 20
         self.researchParallelMCPEnabled = defaults.boolIfPresent(forKey: "researchParallelMCPEnabled") ?? false
         self.researchLastAutomaticDecision = defaults.stringIfPresent(forKey: "researchLastAutomaticDecision")
-        self.researchNotificationShowsSummary = defaults.boolIfPresent(forKey: "researchNotificationShowsSummary") ?? true
         let rawDepth = defaults.stringIfPresent(forKey: "researchDepth") ?? ResearchDepth.standard.rawValue
         self.researchDepth = ResearchDepth(rawValue: rawDepth) ?? .standard
         let rawResearchTaskCap = defaults.integerIfPresent(forKey: "researchDailyTaskCap") ?? 3
@@ -1098,8 +1082,6 @@ final class AppSettings {
         self.burstTestMode = defaults.boolIfPresent(forKey: "burstTestMode") ?? false
         self.burstTestTopic = defaults.stringIfPresent(forKey: "burstTestTopic") ?? ""
         self.firecrawlAPIKey = defaults.stringIfPresent(forKey: "firecrawlAPIKey") ?? ""
-        let rawBurstCap = defaults.integerIfPresent(forKey: "burstDailyCap") ?? 20
-        self.burstDailyCap = Self.validBurstCaps.contains(rawBurstCap) ? rawBurstCap : 20
         self.todayBurstResearchCount = defaults.integerIfPresent(forKey: "todayBurstResearchCount") ?? 0
 
         self.keywordTrackingEnabled = defaults.boolIfPresent(forKey: "keywordTrackingEnabled") ?? false
@@ -1634,42 +1616,6 @@ final class AppSettings {
         todayAIOutputTokens = snapshot.outputTokens
     }
 
-    var aiPopupUsageText: String {
-        let cap = effectiveDailyCap(for: .popup)
-        guard cap >= 0 else {
-            return L10n.string("ai.usage.unlimitedValue", todayPopupAIRequestCount)
-        }
-        return "\(todayPopupAIRequestCount) / \(cap) 次"
-    }
-
-    var aiDashboardUsageText: String {
-        let cap = effectiveDailyCap(for: .dashboard)
-        guard cap >= 0 else {
-            return L10n.string("ai.usage.unlimitedValue", todayDashboardAIRequestCount)
-        }
-        return "\(todayDashboardAIRequestCount) / \(cap) 次"
-    }
-
-    /// Returns the effective daily cap for a target based on the current budget mode.
-    func effectiveDailyCap(for target: SummaryTarget) -> Int {
-        switch aiBudgetMode {
-        case .shared:       return aiDailyCap
-        case .independent:
-            switch target {
-            case .popup:     return aiPopupDailyCap
-            case .dashboard: return aiDashboardDailyCap
-            }
-        }
-    }
-
-    /// Returns the persisted daily count for a target.
-    func todayAIRequestCount(for target: SummaryTarget) -> Int {
-        switch target {
-        case .popup:     return todayPopupAIRequestCount
-        case .dashboard: return todayDashboardAIRequestCount
-        }
-    }
-
     /// Whitelisted daily AI call caps. `-1` means unlimited. Any value outside
     /// this set is migrated to the entry tier.
     static let validAICaps: Set<Int> = [-1, 200, 500]
@@ -1710,8 +1656,6 @@ final class AppSettings {
         }
         return result
     }
-    /// Whitelisted burst-research daily caps. Any value outside this set is rejected.
-    static let validBurstCaps: Set<Int> = [10, 20, 50]
     /// Whitelisted automatic-detection limits.
     static let validResearchDetectionLimits: Set<Int> = [1, 2, 3, 5]
     static let validResearchAutoSearchDailyLimits: Set<Int> = [8, 20, 40]
@@ -1737,8 +1681,6 @@ final class AppSettings {
         if researchParallelMCPEnabled { enabled.insert(.parallelMCP) }
         return enabled
     }
-    /// Whitelisted Popup AI summary lengths. Any value outside this set is rejected.
-    static let validAIPopupMaxWords: Set<Int> = [80, 120, 160, 200]
     /// Whitelisted Dashboard AI summary lengths. Any value outside this set is rejected.
     static let validAIDashboardMaxWords: Set<Int> = [240, 360, 480, 600]
 
@@ -1750,8 +1692,6 @@ final class AppSettings {
 
         todayRefreshCount = 0
         todayAIRequestCount = 0
-        todayPopupAIRequestCount = 0
-        todayDashboardAIRequestCount = 0
         todayBurstResearchCount = 0
         statsDayTimestamp = today.timeIntervalSince1970
     }
@@ -1766,17 +1706,6 @@ final class AppSettings {
         guard count > 0 else { return }
         resetDailyStatsIfNeeded()
         todayAIRequestCount += count
-    }
-
-    /// Target-aware recording: increments both the per-target count and the legacy total.
-    func recordAIRequests(_ count: Int, for target: SummaryTarget) {
-        guard count > 0 else { return }
-        resetDailyStatsIfNeeded()
-        todayAIRequestCount += count
-        switch target {
-        case .popup:     todayPopupAIRequestCount += count
-        case .dashboard: todayDashboardAIRequestCount += count
-        }
     }
 
     /// Stores the cumulative burst-research request count from the service's

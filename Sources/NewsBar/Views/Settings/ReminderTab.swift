@@ -1,20 +1,7 @@
 import SwiftUI
 import UserNotifications
 
-private struct SettingsNotificationAuthorizationActionKey: EnvironmentKey {
-    static let defaultValue: @MainActor () async -> UNAuthorizationStatus = {
-        await NotificationService.authorizationStatus()
-    }
-}
-
-extension EnvironmentValues {
-    var settingsNotificationAuthorizationStatusAction: @MainActor () async -> UNAuthorizationStatus {
-        get { self[SettingsNotificationAuthorizationActionKey.self] }
-        set { self[SettingsNotificationAuthorizationActionKey.self] = newValue }
-    }
-}
-
-/// 提醒页签：定时推送、爆款推送、联网搜索、关键词监控。
+/// 通知页签：定时推送、爆款推送、关键词监控、新闻事件与研究提醒。
 /// 标准主题下使用 Liquid Glass 胶囊/浮框；复古主题使用纸张 + 硬描边风格。
 struct ReminderTab: View {
     @Environment(AppSettings.self) private var settings
@@ -25,6 +12,7 @@ struct ReminderTab: View {
     @State private var authorizationRefreshInFlight = false
     @State private var authorizationNeedsRefreshOnActivation = false
     @State private var newKeyword = ""
+    @State private var showEventInterestRules = false
 
     private let suppliedEventController: NewsEventController?
     private let activationNotificationCenter: NotificationCenter
@@ -117,13 +105,6 @@ struct ReminderTab: View {
                 Text("notif.burst.footer".localized)
             }
 
-            EventMonitorNotificationSettingsSection(
-                authorizationGranted: authorized,
-                controller: suppliedEventController
-            )
-
-            ResearchAutomationSection()
-
             Section {
                 Toggle("notif.keywordTracking".localized, isOn: Binding(
                     get: { settings.keywordTrackingEnabled },
@@ -139,10 +120,38 @@ struct ReminderTab: View {
                 Text("notif.keywordTracking.footer".localized)
             }
 
-            EventMonitorInterestSettingsForm()
+            EventMonitorNotificationSettingsSection(
+                authorizationGranted: authorized,
+                controller: suppliedEventController
+            )
+
+            Section {
+                Text(eventRuleSummary)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Button {
+                    showEventInterestRules = true
+                } label: {
+                    Label("event.interest.edit".localized, systemImage: "slider.horizontal.3")
+                }
+                .buttonStyle(EditorialActionButtonStyle(compact: true))
+            } header: {
+                Text("event.interest.title".localized)
+            } footer: {
+                Text("event.interest.footer".localized)
+            }
+
+            ResearchNotificationSettingsSection()
         }
         .formStyle(.grouped)
         .scrollContentBackground(.hidden)
+        .safeAreaInset(edge: .top, spacing: 0) {
+            SettingsSubpageBarPlaceholder()
+        }
+        .sheet(isPresented: $showEventInterestRules) {
+            EventInterestRulesSheet()
+        }
         .task {
             await refreshNotificationAuthorization()
         }
@@ -173,6 +182,17 @@ struct ReminderTab: View {
         }
         authorizationHasLoaded = true
         authorizationRefreshInFlight = false
+    }
+
+    /// A compact count so the entry row says something before it is opened.
+    private var eventRuleSummary: String {
+        let interest = settings.newsEventInterestSettings
+        let count = interest.keywords.count + interest.aliases.count
+            + interest.includes.count + interest.excludes.count
+            + interest.scopedIncludes.count + interest.scopedExcludes.count
+            + interest.hardBlocks.count
+        guard count > 0 else { return "event.interest.summary.empty".localized }
+        return L10n.string("event.interest.summary", count)
     }
 
     private var permissionRow: some View {

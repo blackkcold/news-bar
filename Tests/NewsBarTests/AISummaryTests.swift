@@ -359,12 +359,7 @@ final class AppSettingsBudgetCapTests: XCTestCase {
             "aiDailyCap": snapshotObject(forKey: "aiDailyCap"),
             "aiLimitMode": snapshotObject(forKey: "aiLimitMode"),
             "aiCostCapMicros": snapshotObject(forKey: "aiCostCapMicros"),
-            "aiBudgetMode": snapshotObject(forKey: "aiBudgetMode"),
-            "aiPopupDailyCap": snapshotObject(forKey: "aiPopupDailyCap"),
-            "aiDashboardDailyCap": snapshotObject(forKey: "aiDashboardDailyCap"),
             "todayAIRequestCount": snapshotObject(forKey: "todayAIRequestCount"),
-            "todayPopupAIRequestCount": snapshotObject(forKey: "todayPopupAIRequestCount"),
-            "todayDashboardAIRequestCount": snapshotObject(forKey: "todayDashboardAIRequestCount"),
             "statsDayTimestamp": snapshotObject(forKey: "statsDayTimestamp"),
         ]
     }
@@ -474,199 +469,6 @@ final class AppSettingsBudgetCapTests: XCTestCase {
         XCTAssertTrue(settings.aiUsageText.contains("500"))
     }
 
-    // MARK: - Budget Mode Tests
-
-    func testBudgetMode_defaultsToShared() {
-        let snapshot = snapshotAIKeys()
-        defer { restoreAIKeys(snapshot) }
-
-        TestIsolation.defaults.removeObject(forKey: "aiBudgetMode")
-        let settings = AppSettings()
-        XCTAssertEqual(settings.aiBudgetMode, .shared)
-    }
-
-    func testBudgetMode_loadsIndependentFromUserDefaults() {
-        let snapshot = snapshotAIKeys()
-        defer { restoreAIKeys(snapshot) }
-
-        TestIsolation.defaults.set("independent", forKey: "aiBudgetMode")
-        let settings = AppSettings()
-        XCTAssertEqual(settings.aiBudgetMode, .independent)
-    }
-
-    func testBudgetMode_invalidValueFallsBackToShared() {
-        let snapshot = snapshotAIKeys()
-        defer { restoreAIKeys(snapshot) }
-
-        TestIsolation.defaults.set("invalid", forKey: "aiBudgetMode")
-        let settings = AppSettings()
-        XCTAssertEqual(settings.aiBudgetMode, .shared)
-    }
-
-    // MARK: - Per-Target Cap Tests
-
-    func testInit_popupCapDefaultsTo200() {
-        let snapshot = snapshotAIKeys()
-        defer { restoreAIKeys(snapshot) }
-
-        TestIsolation.defaults.removeObject(forKey: "aiPopupDailyCap")
-        let settings = AppSettings()
-        XCTAssertEqual(settings.aiPopupDailyCap, 200)
-    }
-
-    func testInit_dashboardCapDefaultsTo200() {
-        let snapshot = snapshotAIKeys()
-        defer { restoreAIKeys(snapshot) }
-
-        TestIsolation.defaults.removeObject(forKey: "aiDashboardDailyCap")
-        let settings = AppSettings()
-        XCTAssertEqual(settings.aiDashboardDailyCap, 200)
-    }
-
-    func testInit_popupCapValidates() {
-        let snapshot = snapshotAIKeys()
-        defer { restoreAIKeys(snapshot) }
-
-        TestIsolation.defaults.set(500, forKey: "aiPopupDailyCap")
-        let settings = AppSettings()
-        XCTAssertEqual(settings.aiPopupDailyCap, 500)
-    }
-
-    func testInit_popupCapRejectsInvalid() {
-        let snapshot = snapshotAIKeys()
-        defer { restoreAIKeys(snapshot) }
-
-        TestIsolation.defaults.set(42, forKey: "aiPopupDailyCap")
-        let settings = AppSettings()
-        XCTAssertEqual(settings.aiPopupDailyCap, 200)
-    }
-
-    func testInit_dashboardCapValidates() {
-        let snapshot = snapshotAIKeys()
-        defer { restoreAIKeys(snapshot) }
-
-        TestIsolation.defaults.set(200, forKey: "aiDashboardDailyCap")
-        let settings = AppSettings()
-        XCTAssertEqual(settings.aiDashboardDailyCap, 200)
-    }
-
-    // MARK: - effectiveDailyCap Tests
-
-    func testEffectiveDailyCap_sharedModeReturnsSharedCap() {
-        let snapshot = snapshotAIKeys()
-        defer { restoreAIKeys(snapshot) }
-
-        TestIsolation.defaults.set("shared", forKey: "aiBudgetMode")
-        TestIsolation.defaults.set(500, forKey: "aiDailyCap")
-        TestIsolation.defaults.set(200, forKey: "aiPopupDailyCap")
-        TestIsolation.defaults.set(200, forKey: "aiDashboardDailyCap")
-        let settings = AppSettings()
-        XCTAssertEqual(settings.effectiveDailyCap(for: .popup), 500)
-        XCTAssertEqual(settings.effectiveDailyCap(for: .dashboard), 500)
-    }
-
-    func testEffectiveDailyCap_independentModeReturnsPerTargetCap() {
-        let snapshot = snapshotAIKeys()
-        defer { restoreAIKeys(snapshot) }
-
-        TestIsolation.defaults.set("independent", forKey: "aiBudgetMode")
-        TestIsolation.defaults.set(500, forKey: "aiDailyCap")
-        TestIsolation.defaults.set(200, forKey: "aiPopupDailyCap")
-        TestIsolation.defaults.set(500, forKey: "aiDashboardDailyCap")
-        let settings = AppSettings()
-        XCTAssertEqual(settings.effectiveDailyCap(for: .popup), 200)
-        XCTAssertEqual(settings.effectiveDailyCap(for: .dashboard), 500)
-    }
-
-    // MARK: - Per-Target Count Tests
-
-    func testRecordAIRequestsForTarget_incrementsTargetAndTotal() {
-        let snapshot = snapshotAIKeys()
-        defer { restoreAIKeys(snapshot) }
-
-        TestIsolation.defaults.removeObject(forKey: "todayAIRequestCount")
-        TestIsolation.defaults.removeObject(forKey: "todayPopupAIRequestCount")
-        TestIsolation.defaults.removeObject(forKey: "todayDashboardAIRequestCount")
-        let settings = AppSettings()
-        let popupBefore = settings.todayPopupAIRequestCount
-        let totalBefore = settings.todayAIRequestCount
-        settings.recordAIRequests(2, for: .popup)
-        XCTAssertEqual(settings.todayPopupAIRequestCount, popupBefore + 2)
-        XCTAssertEqual(settings.todayAIRequestCount, totalBefore + 2)
-        XCTAssertEqual(settings.todayDashboardAIRequestCount, 0)
-    }
-
-    func testRecordAIRequestsForTarget_dashboardIncrementsIndependently() {
-        let snapshot = snapshotAIKeys()
-        defer { restoreAIKeys(snapshot) }
-
-        TestIsolation.defaults.removeObject(forKey: "todayAIRequestCount")
-        TestIsolation.defaults.removeObject(forKey: "todayPopupAIRequestCount")
-        TestIsolation.defaults.removeObject(forKey: "todayDashboardAIRequestCount")
-        let settings = AppSettings()
-        settings.recordAIRequests(3, for: .popup)
-        let dashboardBefore = settings.todayDashboardAIRequestCount
-        let totalBefore = settings.todayAIRequestCount
-        settings.recordAIRequests(5, for: .dashboard)
-        XCTAssertEqual(settings.todayDashboardAIRequestCount, dashboardBefore + 5)
-        XCTAssertEqual(settings.todayAIRequestCount, totalBefore + 5)
-    }
-
-    func testRecordAIRequestsForTarget_ignoresNonPositive() {
-        let snapshot = snapshotAIKeys()
-        defer { restoreAIKeys(snapshot) }
-
-        TestIsolation.defaults.removeObject(forKey: "todayPopupAIRequestCount")
-        let settings = AppSettings()
-        let before = settings.todayPopupAIRequestCount
-        settings.recordAIRequests(0, for: .popup)
-        XCTAssertEqual(settings.todayPopupAIRequestCount, before)
-        settings.recordAIRequests(-1, for: .popup)
-        XCTAssertEqual(settings.todayPopupAIRequestCount, before)
-    }
-
-    func testTodayAIRequestCountForTarget_returnsCorrectCount() {
-        let snapshot = snapshotAIKeys()
-        defer { restoreAIKeys(snapshot) }
-
-        TestIsolation.defaults.removeObject(forKey: "todayAIRequestCount")
-        TestIsolation.defaults.removeObject(forKey: "todayPopupAIRequestCount")
-        TestIsolation.defaults.removeObject(forKey: "todayDashboardAIRequestCount")
-        let settings = AppSettings()
-        settings.recordAIRequests(3, for: .popup)
-        settings.recordAIRequests(7, for: .dashboard)
-        XCTAssertEqual(settings.todayAIRequestCount(for: .popup), 3)
-        XCTAssertEqual(settings.todayAIRequestCount(for: .dashboard), 7)
-    }
-
-    // MARK: - Migration Tests
-
-    func testMigration_legacyTotalMigratesToPopupCount() {
-        let snapshot = snapshotAIKeys()
-        defer { restoreAIKeys(snapshot) }
-
-        TestIsolation.defaults.set(15, forKey: "todayAIRequestCount")
-        TestIsolation.defaults.removeObject(forKey: "todayPopupAIRequestCount")
-        TestIsolation.defaults.removeObject(forKey: "todayDashboardAIRequestCount")
-        let settings = AppSettings()
-        XCTAssertEqual(settings.todayAIRequestCount, 15)
-        XCTAssertEqual(settings.todayPopupAIRequestCount, 15)
-        XCTAssertEqual(settings.todayDashboardAIRequestCount, 0)
-    }
-
-    func testMigration_doesNotOverrideWhenPerTargetCountsExist() {
-        let snapshot = snapshotAIKeys()
-        defer { restoreAIKeys(snapshot) }
-
-        TestIsolation.defaults.set(15, forKey: "todayAIRequestCount")
-        TestIsolation.defaults.set(5, forKey: "todayPopupAIRequestCount")
-        TestIsolation.defaults.set(10, forKey: "todayDashboardAIRequestCount")
-        let settings = AppSettings()
-        XCTAssertEqual(settings.todayAIRequestCount, 15)
-        XCTAssertEqual(settings.todayPopupAIRequestCount, 5)
-        XCTAssertEqual(settings.todayDashboardAIRequestCount, 10)
-    }
-
     // MARK: - Daily Reset Tests
 
     func testResetDailyStatsIfNeeded_resetsAllCounts() {
@@ -675,13 +477,9 @@ final class AppSettingsBudgetCapTests: XCTestCase {
 
         let settings = AppSettings()
         settings.todayAIRequestCount = 10
-        settings.todayPopupAIRequestCount = 6
-        settings.todayDashboardAIRequestCount = 4
         settings.statsDayTimestamp = Date().addingTimeInterval(-86400 * 2).timeIntervalSince1970
         settings.resetDailyStatsIfNeeded()
         XCTAssertEqual(settings.todayAIRequestCount, 0)
-        XCTAssertEqual(settings.todayPopupAIRequestCount, 0)
-        XCTAssertEqual(settings.todayDashboardAIRequestCount, 0)
     }
 }
 
@@ -1082,52 +880,6 @@ final class TruncationHashTests: XCTestCase {
         await orchestrator.clearCache()
 
         XCTAssertEqual(orchestrator.sharedSummaryConsecutiveTruncationCount, 0)
-    }
-}
-
-@MainActor
-final class NewsOrchestratorBudgetBaselineTests: XCTestCase {
-    private let baselineKeys = [
-        "aiBudgetMode",
-        "todayAIRequestCount",
-        "todayPopupAIRequestCount",
-        "todayDashboardAIRequestCount",
-    ]
-
-    private func restore(_ snapshot: [String: Any?]) {
-        for (key, value) in snapshot {
-            if let value {
-                TestIsolation.defaults.set(value, forKey: key)
-            } else {
-                TestIsolation.defaults.removeObject(forKey: key)
-            }
-        }
-    }
-
-    func testSharedModeUsesTotalDailyCountAsBaseline() {
-        let snapshot = Dictionary(uniqueKeysWithValues: baselineKeys.map { ($0, TestIsolation.defaults.object(forKey: $0)) })
-        defer { restore(snapshot) }
-        let settings = AppSettings()
-        settings.aiBudgetMode = .shared
-        settings.todayAIRequestCount = 12
-        settings.todayPopupAIRequestCount = 9
-        settings.todayDashboardAIRequestCount = 3
-
-        XCTAssertEqual(NewsOrchestrator.budgetBaseline(settings: settings, target: .popup), 12)
-        XCTAssertEqual(NewsOrchestrator.budgetBaseline(settings: settings, target: .dashboard), 12)
-    }
-
-    func testIndependentModeUsesTargetSpecificCountAsBaseline() {
-        let snapshot = Dictionary(uniqueKeysWithValues: baselineKeys.map { ($0, TestIsolation.defaults.object(forKey: $0)) })
-        defer { restore(snapshot) }
-        let settings = AppSettings()
-        settings.aiBudgetMode = .independent
-        settings.todayAIRequestCount = 12
-        settings.todayPopupAIRequestCount = 9
-        settings.todayDashboardAIRequestCount = 3
-
-        XCTAssertEqual(NewsOrchestrator.budgetBaseline(settings: settings, target: .popup), 9)
-        XCTAssertEqual(NewsOrchestrator.budgetBaseline(settings: settings, target: .dashboard), 3)
     }
 }
 

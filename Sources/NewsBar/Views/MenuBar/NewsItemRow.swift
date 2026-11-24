@@ -7,7 +7,7 @@ struct NewsItemRow: View, Equatable {
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(AppSettings.self) private var settings
-    @AppStorage("researchReadingEnabled") private var researchReadingEnabled = true
+    private var researchReadingEnabled: Bool { settings.researchReadingEnabled }
     @State private var isHovering = false
     @State private var researchSignal = WorkspaceReaderResearchAssociationSignal()
 

@@ -5,16 +5,25 @@ struct InterestPrivacySection: View {
     @State private var controller: InterestController
     @State private var consentPrompt = false
     @State private var clearPrompt = false
-    @State private var topic = ""
-    @State private var topicMessage: String?
+    @Binding private var topic: String
+    @Binding private var topicMessage: String?
     @State private var showSavedRules = false
     @State private var explanationPresentation: RecommendationExplanationPresentation?
     @State private var isClearing = false
     @State private var clearMessage: String?
     private var english: Bool { settings.appLanguage == .en }
 
+    /// The topic draft lives on the pane so switching subpages does not drop a
+    /// half-typed topic. Everything else here is disclosure or sheet state and
+    /// may safely reset.
     @MainActor
-    init(controller: InterestController = .shared) {
+    init(
+        topic: Binding<String>,
+        topicMessage: Binding<String?>,
+        controller: InterestController = .shared
+    ) {
+        _topic = topic
+        _topicMessage = topicMessage
         _controller = State(initialValue: controller)
     }
 

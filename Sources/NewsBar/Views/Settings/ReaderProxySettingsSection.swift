@@ -4,8 +4,8 @@ struct ReaderProxySettingsSection: View {
     @Environment(AppSettings.self) private var settings
     private let controller: ReaderProxyController
     @State private var host = ""
-    @State private var port = "7890"
-    @State private var username = "nikki"
+    @State private var port = ""
+    @State private var username = ""
     @State private var password = ""
     @State private var acceptsRisk = false
     @State private var isWorking = false
@@ -68,8 +68,8 @@ struct ReaderProxySettingsSection: View {
                  : "仅影响内嵌阅读器。自动模式跟随系统 DNS 与网关，不修改系统或软路由。受信任代理的凭据使用应用既有本机加密存储；授权不等于连接验证。")
         }
         .onAppear {
-            host = controller.endpoint?.host ?? "192.168.0.14"
-            port = controller.endpoint.map { String($0.port) } ?? "7890"
+            host = controller.endpoint?.host ?? ""
+            port = controller.endpoint.map { String($0.port) } ?? ""
         }
         .task(id: controller.mode) {
             guard controller.mode == .strict else { return }

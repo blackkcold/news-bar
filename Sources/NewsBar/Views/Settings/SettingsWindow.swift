@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// The seven settings groups. A group is a place a person would look for a
+/// The eight settings groups. A group is a place a person would look for a
 /// thing, not a subsystem: the RSS sources, the interest profile and the
 /// cleanup actions used to be scattered across three tabs.
 enum SettingsPane: String, CaseIterable, Identifiable {
@@ -244,10 +244,6 @@ struct SettingsWindow: View {
                 }
                 .accessibilityIdentifier("settings.pane.content.\(presentedPane.rawValue)")
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-
-            Divider()
-
-            footer
         }
     }
 
@@ -290,11 +286,19 @@ struct SettingsWindow: View {
 
             Spacer(minLength: 8)
 
-            EditorialTag(
-                text: "settings.badge".localized,
-                fallbackTint: .secondary,
-                filled: settings.appTheme == .retroEditorial
-            )
+            if settings.burstTestMode {
+                EditorialTag(
+                    text: "settings.badge.testMode".localized,
+                    fallbackTint: .orange,
+                    filled: settings.appTheme == .retroEditorial
+                )
+            } else {
+                EditorialTag(
+                    text: "settings.badge".localized,
+                    fallbackTint: .secondary,
+                    filled: settings.appTheme == .retroEditorial
+                )
+            }
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 9)
@@ -306,21 +310,5 @@ struct SettingsWindow: View {
         }
         .accessibilityElement(children: .combine)
         .accessibilityIdentifier("settings.pane.header.\(presentedPane.rawValue)")
-    }
-
-    private var footer: some View {
-        HStack {
-            Spacer()
-            Button {
-                NSApplication.shared.terminate(nil)
-            } label: {
-                Text("settings.quit".localized)
-                    .font(.system(size: 12))
-            }
-            .buttonStyle(EditorialActionButtonStyle(tone: .destructive, compact: true))
-            .controlSize(.small)
-        }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 8)
     }
 }

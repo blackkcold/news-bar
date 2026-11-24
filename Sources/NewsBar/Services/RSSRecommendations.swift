@@ -13,6 +13,21 @@ struct RSSRecommendation: Identifiable {
         case design = "设计"
         case international = "国际"
         case lifestyle = "生活"
+
+        var titleKey: String {
+            switch self {
+            case .tech: return "rss.category.tech"
+            case .general: return "rss.category.general"
+            case .finance: return "rss.category.finance"
+            case .design: return "rss.category.design"
+            case .international: return "rss.category.international"
+            case .lifestyle: return "rss.category.lifestyle"
+            }
+        }
+
+        func title(language: AppLanguage) -> String {
+            L10n.string(titleKey, language: language)
+        }
     }
 }
 

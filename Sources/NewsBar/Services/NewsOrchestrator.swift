@@ -224,12 +224,6 @@ final class NewsOrchestrator {
         }
     }
 
-    static func budgetBaseline(settings: AppSettings, target: SummaryTarget) -> Int {
-        settings.aiBudgetMode == .shared
-            ? settings.todayAIRequestCount
-            : settings.todayAIRequestCount(for: target)
-    }
-
     // MARK: - One-Time Format Retry
 
     /// Static suffix appended to the prompt when a successful-but-unrenderable

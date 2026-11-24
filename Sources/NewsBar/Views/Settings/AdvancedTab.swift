@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import NewsBarAgentProtocol
 
 /// 高级页签：刷新与诊断、阅读器网络代理、开发者测试工具。
 /// 原先分散在「刷新」「通用」「开发者」三个页签，都是低频但不可缺的开关。
@@ -15,20 +16,7 @@ struct AdvancedTab: View {
     var body: some View {
         Form {
             Section {
-                Toggle("general.autoRefresh".localized, isOn: Binding(
-                    get: { settings.autoRefreshEnabled },
-                    set: { settings.autoRefreshEnabled = $0 }
-                ))
-            } header: {
-                Text("general.refresh".localized)
-            } footer: {
-                Text("general.autoRefresh.footer".localized)
-            }
-
-            Section {
                 statRow(title: "general.todayRefreshCount".localized, value: "\(settings.todayRefreshCount) \("unit.times".localized)")
-                statRow(title: "general.todayAICount".localized, value: "\(settings.todayAIRequestCount) \("unit.times".localized)")
-                statRow(title: "general.estimatedAICost".localized, value: settings.estimatedAICostText)
                 if settings.lastRefreshTimestamp > 0 {
                     statRow(title: "general.lastRefresh".localized, value: formattedLastRefresh)
                 }
@@ -52,22 +40,6 @@ struct AdvancedTab: View {
             ReaderProxySettingsSection()
 
             Section {
-                Picker("reader.zoom.menu".localized, selection: Binding(
-                    get: { ReaderZoomMode(rawValue: settings.readerPageZoomMode) ?? .fit },
-                    set: { settings.readerPageZoomMode = $0.rawValue }
-                )) {
-                    Text("reader.zoom.fit".localized).tag(ReaderZoomMode.fit)
-                    Text("reader.zoom.actual".localized).tag(ReaderZoomMode.actual)
-                    Text("reader.zoom.large".localized).tag(ReaderZoomMode.large)
-                }
-                .pickerStyle(.menu)
-            } header: {
-                Text("settings.reader.pages".localized)
-            } footer: {
-                Text("settings.reader.pages.footer".localized)
-            }
-
-            Section {
                 Button {
                     NotificationCenter.default.post(name: .fireTestNewsPush, object: nil)
                 } label: {
@@ -80,6 +52,18 @@ struct AdvancedTab: View {
                 Text("notif.testPush.footer".localized)
             }
 
+            Section {
+                Toggle("settings.developer.show".localized, isOn: Binding(
+                    get: { settings.showDeveloperSettings },
+                    set: { settings.showDeveloperSettings = $0 }
+                ))
+            } header: {
+                Text("settings.developer".localized)
+            } footer: {
+                Text("settings.developer.footer".localized)
+            }
+
+            if settings.showDeveloperSettings {
             Section {
                 Toggle("general.showAllModels".localized, isOn: Binding(
                     get: { settings.showAllAIModels },
@@ -182,9 +166,41 @@ struct AdvancedTab: View {
                      ? "The automated suite tests only the Swift parser with golden fixtures. The JS extractor needs a real page, so this run is manual."
                      : "自动化测试只覆盖 Swift 侧解析与固定样本；JS 抽取器需要真实页面，因此这里手动运行。")
             }
+
+            Section {
+                Toggle("rss.agent.enabled".localized, isOn: Binding(
+                    get: { settings.agentAccessEnabled },
+                    set: { settings.agentAccessEnabled = $0 }
+                ))
+
+                HStack(spacing: 8) {
+                    Image(systemName: "terminal")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                    Text(AgentPaths.root.path)
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Spacer(minLength: 8)
+                    Button("rss.agent.openFolder".localized) {
+                        NSWorkspace.shared.open(AgentPaths.root)
+                    }
+                    .buttonStyle(EditorialActionButtonStyle(compact: true))
+                    .controlSize(.small)
+                }
+            } header: {
+                Text("rss.agent".localized)
+            } footer: {
+                Text("rss.agent.footer".localized)
+            }
+            }
         }
         .formStyle(.grouped)
         .scrollContentBackground(.hidden)
+        .safeAreaInset(edge: .top, spacing: 0) {
+            SettingsSubpageBarPlaceholder()
+        }
         .task {
             logEntries = await RefreshLog.shared.snapshot()
         }

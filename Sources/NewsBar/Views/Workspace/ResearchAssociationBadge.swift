@@ -5,7 +5,7 @@ import SwiftUI
 /// keeps its existing target and behavior.
 struct ResearchAssociationBadge: View {
     @Environment(AppSettings.self) private var settings
-    @AppStorage("researchReadingEnabled") private var researchReadingEnabled = true
+    private var researchReadingEnabled: Bool { settings.researchReadingEnabled }
 
     let item: NewsItem
     var compact = false
