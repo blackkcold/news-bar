@@ -76,6 +76,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private var orchestrator: NewsOrchestrator?
     private var updater: SparkleUpdater?
     private var agentCommandService: AgentCommandService?
+    private var recommendationSummaryServer: RecommendationAgentSocketServer?
     private var autoRefreshTimer: Timer?
     private var newsEventStartupTask: Task<Void, Never>?
     private var newsEventTickTask: Task<Void, Never>?
@@ -107,6 +108,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             weiboMonitor = WeiboMonitorViewModel(settings: settings)
         }
         Task { await InterestController.shared.prepare() }
+        MainActor.assumeIsolated { startRecommendationSummaryServer() }
         Task { await ReaderRuleListCache.prewarm() }
         setupWorkspaceObservers()
 
@@ -155,6 +157,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 self?.openSettings(toAITab: true)
             }
         }
+    }
+
+    @MainActor
+    private func startRecommendationSummaryServer() {
+        let diagnostics = InterestController.shared.diagnostics
+        let access = diagnostics.agentAccess
+        let server = RecommendationAgentSocketServer(
+            access: access,
+            scope: { [weak diagnostics, weak access] in
+                RecommendationAgentAccess.Scope(
+                    diagnostics: diagnostics?.permissionGeneration ?? UUID(),
+                    agent: access?.epoch ?? UUID()
+                )
+            },
+            isAgentEnabled: { [weak self] in
+                guard let self, !self.isTerminating else { return false }
+                return self.settings?.agentAccessEnabled == true
+            }
+        )
+        try? server.start()
+        recommendationSummaryServer = server
     }
 
     private func scheduleStartupAndAutoRefresh() {
@@ -1074,6 +1097,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         weiboMonitor?.stop()
         agentCommandService?.stop()
         agentCommandService = nil
+        recommendationSummaryServer?.stop()
+        recommendationSummaryServer = nil
+        MainActor.assumeIsolated {
+            InterestController.shared.diagnostics.revokeAgentAccess()
+        }
         appearanceObservation?.invalidate()
         appearanceObservation = nil
         let workspaceCenter = NSWorkspace.shared.notificationCenter

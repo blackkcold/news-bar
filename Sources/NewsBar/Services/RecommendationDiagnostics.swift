@@ -1,4 +1,5 @@
 import Foundation
+import NewsBarAgentProtocol
 import Observation
 
 @MainActor
@@ -11,6 +12,9 @@ final class RecommendationDiagnostics {
     private static let defaultsKey = "recommendationDiagnosticsEnabled"
     private let store: RecommendationDiagnosticStore
     private let defaults: UserDefaults?
+    /// In-memory only. Any consent change, storage failure, clear or quit
+    /// invalidates every outstanding agent authorization.
+    @ObservationIgnored let agentAccess = RecommendationAgentAccess()
     private let permit = RecommendationDiagnosticPermit()
     private(set) var enabled: Bool
     private(set) var isClearing = false
@@ -70,6 +74,7 @@ final class RecommendationDiagnostics {
     }
 
     private func invalidate() {
+        agentAccess.revoke()
         permit.invalidate()
         permissionGeneration = permit.generation.withLock { $0 }
         capture.invalidate()
@@ -250,6 +255,140 @@ final class RecommendationDiagnostics {
                 invalidate()
             }
             return .unavailable
+        }
+    }
+
+    // MARK: - Agent read access
+
+    /// Disclosure threshold from the design. Below it, the reply carries the
+    /// covered range but no counts, and the Agent cannot ask for a smaller view.
+    static let agentMinimumExposures = RecommendationSummaryCommand.minimumExposures
+
+    var agentScope: RecommendationAgentAccess.Scope {
+        RecommendationAgentAccess.Scope(diagnostics: permissionGeneration, agent: agentAccess.epoch)
+    }
+
+    var agentGrant: RecommendationAgentAccess.Grant? {
+        agentAccess.activeGrant(scope: agentScope, now: ProcessInfo.processInfo.systemUptime)
+    }
+
+    /// A fixed reply for one authorization. The caller shows this exact object
+    /// before granting; the same object is then returned for every admitted
+    /// request until expiry, so repeated reads cannot produce a fresher view.
+    func agentReply(
+        _ window: RecommendationSummaryWindow,
+        now: Date = Date()
+    ) async -> RecommendationSummaryReply {
+        if unavailable { return RecommendationSummaryReply(status: .storageUnavailable, window: window) }
+        guard canCapture else { return RecommendationSummaryReply(status: .notAuthorized, window: window) }
+        let generation = permissionGeneration
+        await flush()
+        guard canCapture, generation == permissionGeneration else {
+            return RecommendationSummaryReply(
+                status: unavailable ? .storageUnavailable : .notAuthorized,
+                window: window
+            )
+        }
+        do {
+            let document = try await store.load(now: now)
+            guard canCapture, generation == permissionGeneration else {
+                return RecommendationSummaryReply(
+                    status: unavailable ? .storageUnavailable : .notAuthorized,
+                    window: window
+                )
+            }
+            guard let summary = RecommendationDiagnosticSummary.make(
+                document: document,
+                window: window.diagnosticWindow,
+                now: now
+            ) else {
+                return RecommendationSummaryReply(status: .storageUnavailable, window: window)
+            }
+            return Self.reply(from: summary, window: window)
+        } catch {
+            if generation == permissionGeneration {
+                unavailable = true
+                invalidate()
+            }
+            return RecommendationSummaryReply(status: .storageUnavailable, window: window)
+        }
+    }
+
+    @discardableResult
+    func grantAgentAccess(
+        _ reply: RecommendationSummaryReply,
+        now: TimeInterval = ProcessInfo.processInfo.systemUptime
+    ) -> Bool {
+        guard canCapture, reply.window != nil,
+              reply.status == .ok || reply.status == .insufficientData else { return false }
+        agentAccess.grant(reply, scope: agentScope, now: now)
+        return true
+    }
+
+    func revokeAgentAccess() {
+        agentAccess.revoke()
+    }
+
+    private static func reply(
+        from summary: RecommendationDiagnosticSummary,
+        window: RecommendationSummaryWindow
+    ) -> RecommendationSummaryReply {
+        let coverage: RecommendationSummaryReply.Coverage = summary.missingDays == 0 ? .complete : .partial
+        let from = summary.availableFrom.map(dayString)
+        let through = summary.availableFrom.flatMap { _ -> String? in
+            Calendar.autoupdatingCurrent.date(byAdding: .day, value: -1, to: summary.end).map(dayString)
+        }
+        guard summary.exposures >= agentMinimumExposures else {
+            return RecommendationSummaryReply(
+                status: .insufficientData,
+                window: window,
+                availableFromDay: from,
+                completeThroughDay: through,
+                coverage: coverage,
+                counts: nil
+            )
+        }
+        return RecommendationSummaryReply(
+            status: .ok,
+            window: window,
+            availableFromDay: from,
+            completeThroughDay: through,
+            coverage: coverage,
+            counts: .init(
+                qualifiedExposures: summary.exposures,
+                exposuresWithEngagedRead: summary.engagedExposures,
+                clickedExposures: summary.clickedExposures,
+                clickAttempts: summary.clicks,
+                attributedClickAttempts: summary.sameSnapshot + summary.afterRerank,
+                opens: summary.results[.opened, default: 0]
+            )
+        )
+    }
+
+    private static func dayString(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.calendar = Calendar.autoupdatingCurrent
+        formatter.timeZone = Calendar.autoupdatingCurrent.timeZone
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter.string(from: date)
+    }
+}
+
+extension RecommendationDiagnosticWindow {
+    var summaryWindow: RecommendationSummaryWindow {
+        switch self {
+        case .week: .week
+        case .month: .month
+        }
+    }
+}
+
+extension RecommendationSummaryWindow {
+    var diagnosticWindow: RecommendationDiagnosticWindow {
+        switch self {
+        case .week: .week
+        case .month: .month
         }
     }
 }
