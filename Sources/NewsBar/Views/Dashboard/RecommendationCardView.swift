@@ -296,14 +296,14 @@ struct RecommendationCardView: View {
 
             Menu {
                 Button(english ? "Bookmark / remove" : "收藏／取消收藏") {
-                    if let id = controller.toggleBookmark(row.item) {
+                    if let id = controller.toggleBookmark(row.item, diagnosticContext: (contextID, position)) {
                         ActionToastCenter.shared.show(english ? "Bookmarked" : "已收藏") {
                             controller.undo(id)
                         }
                     }
                 }
                 Button(english ? "More like this (session)" : "更多同类（本次会话）") {
-                    if let id = controller.feedback(row.item, kind: .moreLikeThis) {
+                    if let id = controller.feedback(row.item, kind: .moreLikeThis, diagnosticContext: (contextID, position)) {
                         ActionToastCenter.shared.show(english ? "More like this" : "已记录：更多同类") {
                             controller.undo(id)
                         }
@@ -316,7 +316,7 @@ struct RecommendationCardView: View {
 
                 Menu(english ? "Less like this" : "少推荐") {
                     Button(english ? "This article" : "这条内容") {
-                        if let id = controller.feedback(row.item, kind: .lessLikeContent) {
+                        if let id = controller.feedback(row.item, kind: .lessLikeContent, diagnosticContext: (contextID, position)) {
                             ActionToastCenter.shared.show(english ? "Fewer like this" : "已减少推荐：这条") {
                                 controller.undo(id)
                             }
@@ -324,7 +324,7 @@ struct RecommendationCardView: View {
                     }
                     if let topic = row.topic {
                         Button(english ? "This topic" : "这个主题") {
-                            if let id = controller.feedback(row.item, kind: .reduceTopic, topic: topic) {
+                            if let id = controller.feedback(row.item, kind: .reduceTopic, topic: topic, diagnosticContext: (contextID, position)) {
                                 ActionToastCenter.shared.show(english ? "Fewer like this topic" : "已减少推荐：这个主题") {
                                     controller.undo(id)
                                 }
@@ -332,7 +332,7 @@ struct RecommendationCardView: View {
                         }
                     }
                     Button(english ? "This source" : "这个来源") {
-                        if let id = controller.feedback(row.item, kind: .lessLikeSource) {
+                        if let id = controller.feedback(row.item, kind: .lessLikeSource, diagnosticContext: (contextID, position)) {
                             ActionToastCenter.shared.show(english ? "Fewer like this source" : "已减少推荐：这个来源") {
                                 controller.undo(id)
                             }
@@ -344,21 +344,21 @@ struct RecommendationCardView: View {
 
                 Menu(english ? "Hide" : "屏蔽") {
                     Button(english ? "This article" : "不再看这条") {
-                        if let id = controller.feedback(row.item, kind: .notInterested) {
+                        if let id = controller.feedback(row.item, kind: .notInterested, diagnosticContext: (contextID, position)) {
                             ActionToastCenter.shared.show(english ? "Hidden: this article" : "已屏蔽：这条") {
                                 controller.undo(id)
                             }
                         }
                     }
                     Button(english ? "This event" : "不再看这个事件") {
-                        if let id = controller.feedback(row.item, kind: .hideEvent) {
+                        if let id = controller.feedback(row.item, kind: .hideEvent, diagnosticContext: (contextID, position)) {
                             ActionToastCenter.shared.show(english ? "Hidden: this event" : "已屏蔽：这个事件") {
                                 controller.undo(id)
                             }
                         }
                     }
                     Button(english ? "This source" : "屏蔽这个来源") {
-                        if let id = controller.feedback(row.item, kind: .muteSource) {
+                        if let id = controller.feedback(row.item, kind: .muteSource, diagnosticContext: (contextID, position)) {
                             ActionToastCenter.shared.show(english ? "Muted source" : "已屏蔽：这个来源") {
                                 controller.undo(id)
                             }

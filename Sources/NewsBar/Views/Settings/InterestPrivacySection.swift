@@ -159,6 +159,12 @@ struct InterestPrivacySection: View {
         } message: {
             Text(english ? "Removes behavior, profile, feedback, followed keywords, personalized caches, research state, the public content cache and the current web session, and stops learning. Retained bookmarks do not automatically rebuild the profile. A failed clear is not shown as success." : "将清除行为、画像、反馈、关注词、个性化缓存、调研状态、公开内容缓存与当前网页会话，并停止学习。保留收藏不会自动重建画像。清空失败不会显示成功。")
         }
+        RecommendationDiagnosticsSettings(diagnostics: controller.diagnostics, english: english)
+        RecommendationAgentAccessSettings(
+            diagnostics: controller.diagnostics,
+            english: english,
+            agentAccessEnabled: settings.agentAccessEnabled
+        )
     }
 
     private func makeExplanationModel() -> RecommendationExplanationModel {

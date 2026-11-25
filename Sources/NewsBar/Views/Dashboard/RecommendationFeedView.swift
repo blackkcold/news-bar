@@ -86,7 +86,9 @@ private struct ExposureWindowReader: NSViewRepresentable {
 }
 
 private struct QualifiedImpression: ViewModifier {
-    let item: NewsItem
+    let row: ScoredRecommendation
+    let snapshot: UUID
+    let confidence: Double
     let sessionID: UUID
     let epoch: UUID
     let contextID: String
@@ -96,14 +98,25 @@ private struct QualifiedImpression: ViewModifier {
     @Environment(\.dashboardListObscured) private var listObscured
     @State private var visible = false
     @State private var exposure = QualifiedExposure()
+    @State private var diagnosticExposure = QualifiedExposure()
+    @State private var diagnosticBoundary: RecommendationDiagnostics.ExposureBoundary?
 
     func body(content: Content) -> some View {
         content
-            .onScrollVisibilityChange(threshold: 0.5) { visible = $0 }
+            .onScrollVisibilityChange(threshold: 0.5) {
+                visible = $0
+                if !$0, diagnosticBoundary != nil {
+                    _ = diagnosticExposure.update(visibleFraction: 0, active: false, now: ProcessInfo.processInfo.systemUptime)
+                }
+            }
             // The one-shot latch belongs to a consent epoch. Turning learning
             // off and on again is a new epoch, so the same row may record a new
             // impression in the same list session instead of staying latched.
             .onChange(of: epoch) { _, _ in exposure = QualifiedExposure() }
+            .onChange(of: sessionID) { _, _ in
+                diagnosticBoundary = nil
+                diagnosticExposure = QualifiedExposure()
+            }
             .onReceive(ExposureClock.ticks) { _ in
                 // One gate for window/session/reader state, evaluated every tick
                 // so an inactive interval resets continuity instead of pausing it.
@@ -111,13 +124,14 @@ private struct QualifiedImpression: ViewModifier {
                     && !listObscured
                     && InterestController.shared.canLearn
                 let fraction = (active && visible) ? 1.0 : 0.0
+                let uptime = ProcessInfo.processInfo.systemUptime
                 if exposure.update(
                     visibleFraction: fraction,
                     active: active,
-                    now: ProcessInfo.processInfo.systemUptime
+                    now: uptime
                 ) {
                     InterestController.shared.record(
-                        item,
+                        row.item,
                         kind: .impression,
                         epoch: epoch,
                         sessionID: sessionID,
@@ -127,6 +141,23 @@ private struct QualifiedImpression: ViewModifier {
                         policyVersion: policyVersion,
                         profileVersion: profileVersion
                     )
+                }
+                let diagnostics = InterestController.shared.diagnostics
+                guard diagnostics.canCapture else {
+                    if diagnosticBoundary != nil {
+                        diagnosticBoundary = nil
+                        diagnosticExposure = QualifiedExposure()
+                    }
+                    return
+                }
+                let now = Date()
+                let boundary = diagnostics.exposureBoundary(at: now)
+                if diagnosticBoundary != boundary {
+                    diagnosticBoundary = boundary
+                    diagnosticExposure = QualifiedExposure()
+                }
+                if diagnosticExposure.update(visibleFraction: fraction, active: active, now: uptime) {
+                    diagnostics.expose(row: row, snapshot: snapshot, rank: position + 1, confidence: confidence, now: now)
                 }
             }
     }
@@ -331,8 +362,14 @@ struct RecommendationFeedView: View {
             }
             .frame(width: 0, height: 0)
         }
-        .onAppear { ExposureEnvironment.shared.start() }
-        .onDisappear { ExposureEnvironment.shared.stop() }
+        .onAppear {
+            ExposureEnvironment.shared.start()
+            if snapshotOverride == nil { controller.setDashboardRecommendationsVisible(true) }
+        }
+        .onDisappear {
+            ExposureEnvironment.shared.stop()
+            if snapshotOverride == nil { controller.setDashboardRecommendationsVisible(false) }
+        }
     }
 
     private struct RankedRecommendation {
@@ -426,7 +463,9 @@ struct RecommendationFeedView: View {
                             }
                         }
                         .modifier(QualifiedImpression(
-                            item: ranked.row.item,
+                            row: ranked.row,
+                            snapshot: snapshot.id,
+                            confidence: snapshot.profileConfidence,
                             sessionID: controller.feedSessionID,
                             epoch: controller.consentEpoch,
                             contextID: snapshot.id.uuidString,

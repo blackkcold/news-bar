@@ -10,6 +10,231 @@ final class ResearchReportReaderRenderingTests: XCTestCase {
         NSSize(width: 760, height: 760),
     ]
 
+    func testPopupRendersShortAndLongReportsAcrossReaderWidthsAndAppearances() throws {
+        let output = try researchTestDirectory()
+        let short = BurstResearch(summary: "确认发布时间，渠道已开始备货。", timeline: [
+            TimelineNode(date: "11月25日", title: "发布公告", detail: "确认适用范围。")
+        ])
+        let long = BurstResearch(
+            summary: String(repeating: "这是一段需要换行并且完整滚动的长摘要，包含核验依据和不同来源的表述。", count: 42),
+            sources: ["https://example.org/" + String(repeating: "long-english-address-", count: 13)]
+        )
+        let cases: [(String, AppTheme, ColorScheme, NSSize, DynamicTypeSize, BurstResearch)] = [
+            ("popup-default-short-light", .modern, .light, sizes[1], .large, short),
+            ("popup-narrow-long-dark", .modern, .dark, sizes[0], .large, long),
+            ("popup-wide-long-retro", .retroEditorial, .light, NSSize(width: 1150, height: 850), .accessibility2, long),
+        ]
+        XCTAssertEqual(ResearchReportPresentation.popup.maximumBodyWidth, 640)
+        XCTAssertEqual(ResearchReportPresentation.popup.bodyFontSize, 15)
+        XCTAssertEqual(ResearchReportPresentation.popup.secondaryFontSize, 12.5)
+        XCTAssertFalse(ResearchReportPresentation.popup.showsChapterNumbers)
+        XCTAssertFalse(ResearchReportPresentation.popup.showsChapterCounts)
+        XCTAssertNil(ResearchReportPresentation.workspace.maximumBodyWidth)
+        XCTAssertEqual(ResearchReportPresentation.popup.scalingBodyFont(by: 1.35).bodyFontSize, 20.25)
+        XCTAssertEqual(ResearchReportPresentation.popup.scalingBodyFont(by: 1.35).secondaryFontSize, 16.875)
+        XCTAssertNil(ResearchReportPresentation.workspace.scalingBodyFont(by: 1.35).bodyFontSize)
+        for (name, theme, scheme, size, type, report) in cases {
+            try render(
+                state: name, theme: theme, size: size, output: output, colorScheme: scheme,
+                content: popupReader(report).environment(\.dynamicTypeSize, type)
+            )
+        }
+    }
+
+    /// The popup pins one body size, but a 10.5pt note must not become the
+    /// same size as the 14pt summary: that flattens the dense chapters. Two
+    /// tiers, both scaled by the same factor, and the workbench untouched.
+    func testPopupBodyAndSecondaryFontsKeepTheirTwoLevelHierarchy() {
+        let popup = ResearchReportPresentation.popup
+        XCTAssertEqual(popup.fontSize(14), 15)
+        XCTAssertEqual(popup.fontSize(11.5), 12.5)
+        XCTAssertEqual(popup.fontSize(10.5), 12.5)
+        XCTAssertNotEqual(popup.fontSize(14), popup.fontSize(10.5))
+        XCTAssertGreaterThan(popup.fontSize(14), popup.fontSize(10.5))
+
+        let scaled = popup.scalingBodyFont(by: DynamicTypeSize.accessibility2.readerTextScale)
+        let bodyRatio = scaled.fontSize(14) / popup.fontSize(14)
+        let secondaryRatio = scaled.fontSize(10.5) / popup.fontSize(10.5)
+        XCTAssertEqual(bodyRatio, secondaryRatio, accuracy: 0.0001)
+        XCTAssertGreaterThan(scaled.fontSize(10.5), popup.fontSize(10.5))
+
+        // The workbench never pins a size, so its exact fallbacks survive.
+        XCTAssertEqual(ResearchReportPresentation.workspace.fontSize(14), 14)
+        XCTAssertEqual(ResearchReportPresentation.workspace.fontSize(10.5), 10.5)
+        XCTAssertNil(ResearchReportPresentation.workspace.bodyFontSize)
+        XCTAssertNil(ResearchReportPresentation.workspace.secondaryFontSize)
+    }
+
+    func testPopupReaderStillDrawsDenseReportAtTheLargestAccessibilitySize() throws {
+        let output = try researchTestDirectory()
+        let report = makeReportWithClaimsAndEvidence()
+        let reader = popupReader(report)
+        XCTAssertEqual(reader.sections, [.conclusion, .timeline, .verification, .sources])
+        let scaled = ResearchReportPresentation.popup
+            .scalingBodyFont(by: DynamicTypeSize.accessibility5.readerTextScale)
+        XCTAssertEqual(scaled.fontSize(14), 37.5, accuracy: 0.0001)
+        XCTAssertEqual(scaled.fontSize(10.5), 31.25, accuracy: 0.0001)
+
+        for theme in AppTheme.allCases {
+            for size in sizes {
+                // A snapshot does not prove the real panel keeps focus; it does
+                // prove the wrapped body and both font tiers still lay out at
+                // the largest Dynamic Type size without dropping a chapter.
+                try render(
+                    state: "popup-accessibility5",
+                    theme: theme,
+                    size: size,
+                    output: output,
+                    content: reader.environment(\.dynamicTypeSize, .accessibility5)
+                )
+            }
+        }
+    }
+
+    func testPopupModernSourcesOnlyReportKeepsTheSourceChapterReachable() {
+        let report = BurstResearch(
+            summary: "只有来源清单，没有结构化证据。",
+            sources: [
+                "https://example.org/first",
+                "https://EXAMPLE.org/first?utm_source=duplicate",
+                "https://example.org/second",
+            ]
+        )
+        let reader = popupReader(report)
+        XCTAssertEqual(reader.sections, [.conclusion, .sources])
+        XCTAssertEqual(reader.supplementaryLinks.map(\.rawURL), [
+            "https://example.org/first",
+            "https://example.org/second",
+        ])
+        XCTAssertEqual(reader.supplementaryLinks.map(\.kind), [.other, .other])
+        XCTAssertEqual(reader.supplementaryLinks.first?.label(language: .zh), "其他来源链接 · 无引文")
+        XCTAssertEqual(reader.supplementaryLinks.first?.label(language: .en), "Additional source link · No citation")
+        // A workspace still hides unstructured links: the rail owns sources.
+        XCTAssertEqual(
+            ResearchReportReader(report: report, contextID: nil, onOpenURL: { _, _ in }).sections,
+            [.conclusion, .timeline]
+        )
+    }
+
+    func testWorkspacePresentationKeepsExistingChapterChromeAndSourceGate() {
+        let workspace = ResearchReportPresentation.workspace
+        XCTAssertTrue(workspace.showsChapterNumbers)
+        XCTAssertTrue(workspace.showsChapterCounts)
+        XCTAssertFalse(workspace.usesReadableChapters)
+        XCTAssertFalse(workspace.linksToVerification)
+        XCTAssertFalse(workspace.showsSupplementarySources)
+        XCTAssertNil(workspace.bodyFontSize)
+        XCTAssertEqual(workspace.title(.conclusion), "01 \(ResearchReportSection.conclusion.title)")
+        XCTAssertEqual(workspace.title(.sources), "04 \(ResearchReportSection.sources.title)")
+
+        // The workbench gates must stay exactly as shipped: chapter 02 is
+        // always offered, limitations alone do not open chapter 03, and the
+        // source rail handover still removes chapter 04.
+        let report = makeReportWithClaimsAndEvidence()
+        XCTAssertEqual(
+            ResearchReportReader(report: report, contextID: nil, onOpenURL: { _, _ in }).sections,
+            [.conclusion, .timeline, .verification, .sources]
+        )
+        XCTAssertEqual(
+            ResearchReportReader(
+                report: report, contextID: nil, showsSourceSection: false, onOpenURL: { _, _ in }
+            ).sections,
+            [.conclusion, .timeline, .verification]
+        )
+        let limitationsOnly = BurstResearch(summary: "summary", limitations: "public records only")
+        XCTAssertEqual(
+            ResearchReportReader(report: limitationsOnly, contextID: nil, onOpenURL: { _, _ in }).sections,
+            [.conclusion, .timeline]
+        )
+    }
+
+    func testPopupReaderShowsLegacyURLSourcesWithoutInventingEvidence() throws {
+        let report = legacyURLOnlyReport()
+        let reader = popupReader(report, isLegacy: true)
+        XCTAssertEqual(reader.sections, [.conclusion, .sources])
+        XCTAssertEqual(reader.supplementaryLinks.map(\.rawURL), ["https://example.org/legacy?utm_source=archive"])
+        XCTAssertEqual(reader.supplementaryLinks.map(\.kind), [.legacy])
+        XCTAssertEqual(reader.supplementaryLinks.first?.label(language: .zh), "旧版链接 · 无引文")
+        XCTAssertFalse(ResearchReportConclusionSection.noteKeys(
+            report: report, isLegacy: true, supplementaryLinks: reader.supplementaryLinks
+        ).contains("research.report.legacy.note"))
+        XCTAssertEqual(popupReader(report, isLegacy: true, showsSourceSection: false).sections, [.conclusion])
+
+        let output = try researchTestDirectory()
+        try render(state: "popup-legacy-url-only", theme: .retroEditorial, size: sizes[0], output: output, content: reader)
+    }
+
+    func testPopupReaderShowsLimitationsWithoutVerificationOrEvidence() throws {
+        let report = legacyLimitationsOnlyReport()
+        let reader = popupReader(report, isLegacy: true)
+        XCTAssertEqual(reader.sections, [.conclusion, .verification])
+        XCTAssertEqual(reader.presentation.visibleLimitations(in: report), "只覆盖公开披露，不评估未公开渠道。")
+        XCTAssertEqual(reader.presentation.verificationAnchor(in: report), .verification)
+        XCTAssertNil(ResearchReportPresentation.workspace.visibleLimitations(in: report))
+        var evidenceOnly = report
+        evidenceOnly.evidence = makeEvidence()
+        XCTAssertEqual(popupReader(evidenceOnly).sections, [.conclusion, .verification, .sources])
+        XCTAssertEqual(reader.presentation.visibleLimitations(in: evidenceOnly), "只覆盖公开披露，不评估未公开渠道。")
+
+        let output = try researchTestDirectory()
+        try render(state: "popup-legacy-limitations", theme: .modern, size: sizes[1], output: output, content: reader)
+    }
+
+    func testPopupSupplementarySourcesKeepFirstSafeTargetsAndExistingCitationIDs() {
+        let report = BurstResearch(
+            sources: [
+                "https://example.org/stored?utm_medium=source",
+                "https://example.org/first?utm_source=original#article",
+                "javascript:alert(1)",
+                "https://example.org/second",
+                "https://EXAMPLE.org/first?fbclid=duplicate",
+                "http://example.org/insecure",
+                "https://127.0.0.1/private",
+                "https://example.org:8080/other",
+            ],
+            evidence: [EvidenceItem(
+                id: "E7", url: "https://example.org/stored?utm_source=evidence",
+                canonicalURL: "https://example.org/stale-canonical-field",
+                domain: "example.org", title: "Existing evidence", publishedAt: nil,
+                quote: "Existing quotation", quoteVerified: true, stance: .supports,
+                tier: .major, syndicationGroup: nil, fetchedAt: .distantPast
+            )]
+        )
+        let reader = popupReader(report)
+        let links = reader.supplementaryLinks
+        XCTAssertEqual(links.map(\.rawURL), ["https://example.org/first?utm_source=original#article", "https://example.org/second"])
+        XCTAssertEqual(links.map(\.kind), [.other, .other])
+        XCTAssertEqual(links.first?.label(language: .zh), "其他来源链接 · 无引文")
+        XCTAssertEqual(reader.report.evidence.map(\.id), ["E7"])
+    }
+
+    func testPopupHidesBlankTimelineButKeepsNarrativeNodesInOrder() {
+        let blank = TimelineNode(date: "", title: " ", detail: "")
+        let first = TimelineNode(date: "", title: "First input", detail: "")
+        let second = TimelineNode(date: "Earlier date", title: "Second input", detail: "")
+        XCTAssertEqual(popupReader(BurstResearch(timeline: [blank])).sections, [.conclusion])
+        let reader = popupReader(BurstResearch(timeline: [first, blank, second]))
+        XCTAssertEqual(reader.sections, [.conclusion, .timeline])
+        XCTAssertEqual(reader.presentation.timelineReport(reader.report).timeline.map(\.title), ["First input", "Second input"])
+    }
+
+    private func legacyURLOnlyReport() -> BurstResearch {
+        BurstResearch(summary: "报道呈现了争议双方的说法。", sources: ["https://example.org/legacy?utm_source=archive"])
+    }
+
+    private func legacyLimitationsOnlyReport() -> BurstResearch {
+        BurstResearch(summary: "简短结论。", limitations: "只覆盖公开披露，不评估未公开渠道。")
+    }
+
+    private func popupReader(
+        _ report: BurstResearch, isLegacy: Bool = false, showsSourceSection: Bool = true
+    ) -> ResearchReportReader {
+        ResearchReportReader(
+            report: report, contextID: nil, isLegacy: isLegacy, showsSourceSection: showsSourceSection,
+            onOpenURL: { _, _ in }, presentation: .popup
+        )
+    }
+
     func testReaderRendersAcrossSizesAndThemes() throws {
         let output = try researchTestDirectory()
             .appendingPathComponent("report-reader-render-matrix", isDirectory: true)
@@ -846,6 +1071,7 @@ final class ResearchReportReaderRenderingTests: XCTestCase {
         theme: AppTheme,
         size: NSSize,
         output: URL,
+        colorScheme: ColorScheme? = nil,
         content: some View
     ) throws -> Data {
         let settings = AppSettings()
@@ -864,7 +1090,7 @@ final class ResearchReportReaderRenderingTests: XCTestCase {
             // Retro paints light paper, so the app pins a light appearance for
             // it (`AppSettings.resolvedColorScheme`). Without the same pin the
             // harness draws light text on cream and hides palette regressions.
-            .environment(\.colorScheme, theme == .retroEditorial ? .light : .dark)
+            .environment(\.colorScheme, colorScheme ?? (theme == .retroEditorial ? .light : .dark))
 
         let host = NSHostingView(rootView: view)
         let window = NSWindow(

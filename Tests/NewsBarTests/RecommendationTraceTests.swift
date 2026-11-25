@@ -198,6 +198,34 @@ final class RecommendationTraceTests: XCTestCase {
         XCTAssertNil(oldTrace.contributions["baseline.publicHeat"])
     }
 
+    func testV4InterestDenominatorBaselineForAllThreeTagStates() throws {
+        var state = LocalInterestState()
+        state.learningEnabled = true
+        state.followedTopics = ["人工智能"]
+        let candidates = [
+            item("每日新闻", 101, source: rssA, publishedAt: now),
+            item("体育头条", 102, source: rssA, publishedAt: now),
+            item("人工智能头条", 103, source: rssA, publishedAt: now),
+            item("新闻速览", 104, source: rssA, publishedAt: now)
+        ]
+        state.ingest(candidates, now: now)
+        let snapshot = RecommendationEngine.rank(items: candidates, state: state, now: now, seed: 4)
+        XCTAssertEqual(snapshot.policyVersion, 4)
+        XCTAssertEqual(snapshot.profileConfidence, 0.25)
+        let byTitle = Dictionary(uniqueKeysWithValues: snapshot.items.map { ($0.item.title, $0) })
+        let unknown = try XCTUnwrap(byTitle["每日新闻"])
+        let unmatched = try XCTUnwrap(byTitle["体育头条"])
+        let matched = try XCTUnwrap(byTitle["人工智能头条"])
+        XCTAssertNil(unknown.components["interest"])
+        XCTAssertEqual(unmatched.components["interest"], 0)
+        XCTAssertEqual(try XCTUnwrap(matched.components["interest"]), 0.65, accuracy: 1e-12)
+        XCTAssertEqual(try XCTUnwrap(unknown.trace).personalScore, 0.25 / 0.35, accuracy: 1e-12)
+        XCTAssertEqual(try XCTUnwrap(unmatched.trace).personalScore, 0.25 / 0.70, accuracy: 1e-12)
+        XCTAssertEqual(try XCTUnwrap(matched.trace).personalScore, 0.4775 / 0.70, accuracy: 1e-12)
+        XCTAssertEqual(snapshot.items.map(\.topic), [nil, "ai", nil, "sports"])
+        XCTAssertEqual(try XCTUnwrap(snapshot.items[2].trace).topicPenalty, 0.04, accuracy: 1e-12)
+    }
+
     func testDeterministicReplayProducesIdenticalTraces() throws {
         var state = LocalInterestState()
         state.learningEnabled = true

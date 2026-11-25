@@ -56,7 +56,8 @@ private struct PendingInterestEvent: Sendable {
 @MainActor
 @Observable
 final class InterestController {
-    static let shared = InterestController()
+    static let shared = InterestController(diagnostics: RecommendationDiagnostics(defaults: TestIsolation.defaults))
+    let diagnostics: RecommendationDiagnostics
     private(set) var state = LocalInterestState() {
         didSet { syncLearningProjections() }
     }
@@ -69,12 +70,12 @@ final class InterestController {
     private(set) var learningEnabled = false
     private(set) var learningPaused = false
     private(set) var consentEpoch = UUID()
-    private(set) var isReady = false
-    private(set) var storageError: String?
+    private(set) var isReady = false { didSet { updateDiagnosticPermission() } }
+    private(set) var storageError: String? { didSet { updateDiagnosticPermission() } }
     /// True for the whole clear/recovery await. Consent changes, learning
     /// writes and a second reset are rejected while the reset is in flight.
-    private(set) var isResetting = false
-    var privateReading = false
+    private(set) var isResetting = false { didSet { updateDiagnosticPermission() } }
+    var privateReading = false { didSet { updateDiagnosticPermission() } }
     private(set) var recommendations: RecommendationSnapshot?
     private(set) var sessionFeedback: [InterestFeedback] = []
     /// Stable identity for the current feed/list session. Views can be rebuilt
@@ -97,10 +98,13 @@ final class InterestController {
     /// Bumped when personal data is cleared. An ingest that suspended before
     /// the clear must not commit the old items afterwards.
     @ObservationIgnored private var contentEpoch = 0
+    @ObservationIgnored private var dashboardRecommendationsVisible = false
+    @ObservationIgnored private var shadowRanking = false
     private var loading: Task<Void, Never>?
 
-    init(store: LocalInterestStore = LocalInterestStore()) {
+    init(store: LocalInterestStore = LocalInterestStore(), diagnostics: RecommendationDiagnostics? = nil) {
         self.store = store
+        self.diagnostics = diagnostics ?? RecommendationDiagnostics()
         learningEnabled = state.learningEnabled
         learningPaused = state.learningPaused
         consentEpoch = state.consentEpoch
@@ -116,11 +120,15 @@ final class InterestController {
         if consentEpoch != state.consentEpoch {
             consentEpoch = state.consentEpoch
         }
+        updateDiagnosticPermission()
     }
+
+    private func updateDiagnosticPermission() { diagnostics.setLearningAllowed(canLearn, epoch: consentEpoch) }
 
     func prepare() async {
         if isReady { return }
         if let loading { await loading.value; return }
+        diagnostics.maintainRetention()
         let task = Task { @MainActor in
             do {
                 state = try await store.load()
@@ -169,6 +177,9 @@ final class InterestController {
 
     func recordSession(_ session: ReadingSessionRecord) {
         guard canLearn else { return }
+        if session.epoch == consentEpoch, session.surface == "recommendation" {
+            diagnostics.readSessionEnded(session)
+        }
         flushPendingEvents()
         guard state.recordSession(session) else { return }
         persist()
@@ -205,9 +216,13 @@ final class InterestController {
         position: Int? = nil,
         readerSessionID: UUID? = nil,
         policyVersion: String? = nil,
-        profileVersion: Int? = nil
+        profileVersion: Int? = nil,
+        occurredAt: Date? = nil
     ) {
         guard canLearn else { return }
+        if diagnostics.canCapture, surface == "recommendation", epoch == consentEpoch, let readerSessionID {
+            diagnostics.readSignal(kind, id: readerSessionID, now: occurredAt ?? Date())
+        }
         // Freeze batch/profile provenance at capture time. The buffer may flush
         // after another article changes the profile; attribution must describe
         // the batch that produced this signal.
@@ -221,7 +236,7 @@ final class InterestController {
                 kind: kind,
                 epoch: epoch,
                 sessionID: sessionID,
-                now: Date(),
+                now: occurredAt ?? Date(),
                 surface: surface,
                 contextID: contextID,
                 position: position,
@@ -238,7 +253,7 @@ final class InterestController {
             kind: kind,
             epoch: epoch,
             sessionID: sessionID,
-            occurredAt: Date(),
+            occurredAt: occurredAt ?? Date(),
             surface: surface,
             contextID: contextID,
             position: position,
@@ -255,7 +270,8 @@ final class InterestController {
     /// active learning: saving them without consent would either train later
     /// without consent or never take effect, both misleading.
     @discardableResult
-    func feedback(_ item: NewsItem, kind: InterestFeedbackKind, topic: String? = nil) -> UUID? {
+    func feedback(_ item: NewsItem, kind: InterestFeedbackKind, topic: String? = nil,
+                  diagnosticContext: (snapshot: String?, position: Int?)? = nil) -> UUID? {
         guard canManagePreferences else { return nil }
         switch kind {
         case .reduceTopic, .moreLikeThis, .followTopic, .lessLikeContent, .lessLikeSource:
@@ -273,6 +289,7 @@ final class InterestController {
             let feedback = InterestFeedback(item: item, kind: kind, occurredAt: Date())
             sessionFeedback.removeAll { $0.kind == .moreLikeThis && $0.scopeKey == feedback.scopeKey }
             sessionFeedback.append(feedback)
+            recordDiagnosticFeedback(item, id: feedback.id, kind: kind, context: diagnosticContext)
             rebuild()
             return feedback.id
         }
@@ -287,9 +304,18 @@ final class InterestController {
             let previous = previousFeedbacks.first { $0.kind == current.kind && $0.scopeKey == current.scopeKey }
             rememberReplacement(previous, for: id)
         }
+        recordDiagnosticFeedback(item, id: id, kind: kind, context: diagnosticContext)
         persist()
         rebuild()
         return id
+    }
+
+    private func recordDiagnosticFeedback(_ item: NewsItem, id: UUID, kind: InterestFeedbackKind,
+                                          context: (snapshot: String?, position: Int?)?) {
+        guard diagnostics.canCapture, let context,
+              let value = RecommendationDiagnosticEvent.Feedback(rawValue: kind.rawValue) else { return }
+        diagnostics.feedback(item, id: id, kind: value, snapshot: context.snapshot.flatMap(UUID.init(uuidString:)),
+                             rank: context.position.flatMap { (0..<Int.max).contains($0) ? $0 + 1 : nil })
     }
 
     private func rememberReplacement(_ previous: InterestFeedback?, for id: UUID) {
@@ -303,6 +329,7 @@ final class InterestController {
         let exists = state.feedbacks.contains { $0.id == id } || sessionFeedback.contains { $0.id == id }
         let previous = replacedFeedback.removeValue(forKey: id)
         guard exists else { return }
+        diagnostics.undoFeedback(id)
         flushPendingEvents()
         state.undoFeedback(id)
         sessionFeedback.removeAll { $0.id == id }
@@ -313,13 +340,13 @@ final class InterestController {
         rebuild()
     }
 
-    func toggleBookmark(_ item: NewsItem) -> UUID? {
+    func toggleBookmark(_ item: NewsItem, diagnosticContext: (snapshot: String?, position: Int?)? = nil) -> UUID? {
         guard canManagePreferences else { return nil }
         if let existing = state.feedbacks.first(where: { $0.kind == .bookmark && ContentIdentity.id(for: $0.item.url) == ContentIdentity.id(for: item.url) }) {
             undo(existing.id, restorePrevious: false)
             return nil
         }
-        return feedback(item, kind: .bookmark)
+        return feedback(item, kind: .bookmark, diagnosticContext: diagnosticContext)
     }
 
     @discardableResult
@@ -354,6 +381,8 @@ final class InterestController {
     }
 
     func endListSession() {
+        dashboardRecommendationsVisible = false
+        diagnostics.endSession()
         // Closing the dashboard should not rebuild a ranking nobody is looking
         // at; the next load/refresh ranks with the cleared session feedback.
         // A new list session may legitimately see the same article again.
@@ -362,18 +391,46 @@ final class InterestController {
         feedSessionID = UUID()
     }
 
+    func setDashboardRecommendationsVisible(_ visible: Bool) {
+        dashboardRecommendationsVisible = visible
+    }
+
     private func rebuild() {
         let state = state
         let items = candidates
         let feedback = sessionFeedback
         let generation = UUID()
         rankingGeneration = generation
+        if dashboardRecommendationsVisible, diagnostics.canCapture, !shadowRanking, !items.isEmpty {
+            shadowRanking = true
+            let permit = diagnostics.permissionGeneration
+            let baseline = Task.detached(priority: .userInitiated) {
+                let input = RecommendationShadowInput(items: items, state: state, feedback: feedback, now: Date(), seed: 0)
+                let candidate = Task.detached(priority: .utility) { input.rank(.taggedNoMatchNeutral) }
+                return (input, input.rank(.v4), candidate)
+            }
+            Task { @MainActor in
+                let (input, a, candidate) = await baseline.value
+                if generation == rankingGeneration {
+                    recommendations = a.snapshot
+                    diagnostics.noteSnapshot(a.snapshot)
+                }
+                let b = await candidate.value
+                shadowRanking = false
+                guard dashboardRecommendationsVisible, generation == rankingGeneration else { return }
+                let sample = await Task.detached(priority: .utility) { input.compare(a, b) }.value
+                guard dashboardRecommendationsVisible, generation == rankingGeneration else { return }
+                diagnostics.recordShadow(sample, generation: permit)
+            }
+            return
+        }
         Task { @MainActor in
             let snapshot = await Task.detached(priority: .userInitiated) {
                 RecommendationEngine.rank(items: items, state: state, sessionFeedback: feedback)
             }.value
             guard generation == rankingGeneration else { return }
             recommendations = snapshot
+            diagnostics.noteSnapshot(snapshot)
         }
     }
 

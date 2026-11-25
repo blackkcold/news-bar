@@ -123,6 +123,7 @@ if [[ "$TIER" == "headless" || "$TIER" == "all" ]]; then
     run_step agent-check "$AGENT_BIN" check
     run_step agent-store-summary "$AGENT_BIN" store-summary
     run_step agent-doctor "$AGENT_BIN" doctor
+    run_step recommend-cli bash scripts/check-recommend-cli.sh
 fi
 
 if [[ "$TIER" == "render" || "$TIER" == "all" ]]; then

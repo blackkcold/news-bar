@@ -18,16 +18,23 @@ USAGE
                           [--dry-run] [--no-select] [--refresh] [--json]
   newsbarctl rss export <file|-> [--format opml|json] [--all] [--json]
   newsbarctl refresh [--json]
+  newsbarctl recommend summary --window 7d|30d [--json]
+
+  recommend summary reads one fixed aggregate from the running app. It never
+  launches NewsBar, never writes a command queue and returns app_unavailable
+  when the app is not running or no authorization is active.
 
 OPTIONS
   --json            Print the full result envelope as one JSON object
   --timeout <sec>   How long to wait for the app (default 8)
   --no-wait         Write the command and print its id; do not wait
   --no-launch       Never try to launch NewsBar automatically
+  --window <7d|30d> Authorization window for recommend summary
   --help            Show this help
 
 EXIT CODES
-  0 success   2 usage   3 app unavailable   4 rejected
+  0 success · insufficient data   2 usage   3 app unavailable   4 rejected
+  5 storage unavailable or timed out
 """
 
 private enum CLIError: Error {
@@ -48,6 +55,7 @@ private struct Options {
     var name: String?
     var mode: String?
     var format: String?
+    var window: String?
     var select = true
     var refresh = false
     var dryRun = false
@@ -89,6 +97,9 @@ private func parseOptions(_ args: ArraySlice<String>) throws -> Options {
         case "--format":
             guard let value = iterator.next() else { throw CLIError.usage("--format wants a value") }
             options.format = value.lowercased()
+        case "--window":
+            guard let value = iterator.next() else { throw CLIError.usage("--window wants 7d or 30d") }
+            options.window = value.lowercased()
         case "--timeout":
             guard let value = iterator.next(), let seconds = Double(value), seconds > 0 else {
                 throw CLIError.usage("--timeout wants a positive number of seconds")
@@ -451,6 +462,28 @@ private func runRefresh(_ options: Options) throws -> Int32 {
     return printResult(result, json: options.json)
 }
 
+private func runRecommendSummary(_ options: Options) throws -> Int32 {
+    guard let raw = options.window else {
+        throw CLIError.usage("recommend summary needs --window 7d or 30d")
+    }
+    guard let window = RecommendationSummaryWindow(rawValue: raw) else {
+        throw CLIError.usage("--window must be 7d or 30d")
+    }
+
+    // Deliberately not `send`: no queue file, no launch, no wait-for-later
+    // command. The request lives only as long as the client's 3 second
+    // deadline, and the app answers from a fixed in-memory authorization.
+    let reply = RecommendationSummarySocket.request(window)
+    let rendering = RecommendationSummaryCommand.render(reply, json: options.json)
+    if !rendering.output.isEmpty {
+        print(rendering.output)
+    }
+    if let error = rendering.error {
+        FileHandle.standardError.write(Data(error.utf8))
+    }
+    return rendering.exitCode
+}
+
 // MARK: - Entry point
 
 private func main() -> Int32 {
@@ -476,6 +509,16 @@ private func main() -> Int32 {
             return try runStatus(parseOptions(args[...]))
         case "refresh":
             return try runRefresh(parseOptions(args[...]))
+        case "recommend":
+            guard !args.isEmpty else { throw CLIError.usage("recommend needs a subcommand") }
+            let subcommand = args.removeFirst()
+            let options = try parseOptions(args[...])
+            switch subcommand {
+            case "summary":
+                return try runRecommendSummary(options)
+            default:
+                throw CLIError.usage("Unknown recommend subcommand: \(subcommand)")
+            }
         case "rss":
             guard !args.isEmpty else { throw CLIError.usage("rss needs a subcommand") }
             let subcommand = args.removeFirst()

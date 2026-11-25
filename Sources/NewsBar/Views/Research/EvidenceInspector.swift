@@ -103,24 +103,79 @@ struct ResearchEvidenceRow: View {
     }
 }
 
+/// Owned by the transient window so Escape can dismiss a citation before
+/// closing the window, even if the key command reaches the host first.
+@MainActor @Observable
+final class ResearchReportCitationPresentation {
+    var activeChip: UUID?
+
+    @discardableResult
+    func dismiss() -> Bool {
+        guard activeChip != nil else { return false }
+        activeChip = nil
+        return true
+    }
+}
+
+extension EnvironmentValues {
+    @Entry var researchReportCitations: ResearchReportCitationPresentation? = nil
+}
+
 /// Small `E1` chip that opens the evidence inspector popover. A chip whose ID
 /// has no matching evidence stays inert and visually muted.
 struct ResearchEvidenceChip: View {
     @Environment(AppSettings.self) private var settings
+    @Environment(\.researchReportCitations) private var readerCitations
     let id: String
     let evidence: EvidenceItem?
     var contextID: String? = nil
 
     @State private var showsPopover = false
+    @State private var chipKey = UUID()
+    @FocusState private var hasKeyboardFocus: Bool
+    @AccessibilityFocusState(for: .voiceOver) private var hasVoiceOverFocus: Bool
+
+    private var presentation: Binding<Bool> {
+        guard let readerCitations else { return $showsPopover }
+        return Binding {
+            readerCitations.activeChip == chipKey
+        } set: { visible in
+            if visible {
+                readerCitations.activeChip = chipKey
+            } else if readerCitations.activeChip == chipKey {
+                readerCitations.dismiss()
+            }
+        }
+    }
 
     private var accent: Color {
         settings.appTheme == .retroEditorial ? RetroEditorialTokens.brick : .accentColor
     }
 
     var body: some View {
+        if readerCitations == nil {
+            chip
+        } else {
+            chip
+                .focused($hasKeyboardFocus)
+                .accessibilityFocused($hasVoiceOverFocus)
+                .accessibilityValue((presentation.wrappedValue
+                    ? "research.report.sources.expand" : "research.report.sources.collapse").localized)
+                .disabled(evidence == nil)
+                .onChange(of: presentation.wrappedValue) { wasPresented, isPresented in
+                    // Don't move focus back to the first chip if the user
+                    // clicked a second one while the first card was open.
+                    guard wasPresented, !isPresented, readerCitations?.activeChip == nil else { return }
+                    hasKeyboardFocus = true
+                    hasVoiceOverFocus = true
+                }
+        }
+    }
+
+    private var chip: some View {
         Button {
             guard evidence != nil else { return }
-            showsPopover.toggle()
+            presentation.wrappedValue.toggle()
         } label: {
             Text(id)
                 .font(.system(size: 8, weight: .bold, design: .monospaced))
@@ -140,11 +195,12 @@ struct ResearchEvidenceChip: View {
                 evidence?.title ?? "research.evidence.missing".localized
             )
         )
-        .popover(isPresented: $showsPopover, arrowEdge: .bottom) {
+        .popover(isPresented: presentation, arrowEdge: .bottom) {
             if let evidence {
                 ResearchEvidenceInspector(
                     item: evidence,
-                    contextID: contextID
+                    contextID: contextID,
+                    onClose: readerCitations.map { _ in { presentation.wrappedValue = false } }
                 )
             }
         }
@@ -155,8 +211,17 @@ private struct ResearchEvidenceInspector: View {
     @Environment(AppSettings.self) private var settings
     let item: EvidenceItem
     let contextID: String?
+    var onClose: (() -> Void)? = nil
 
     var body: some View {
+        if let onClose {
+            card.onExitCommand(perform: onClose)
+        } else {
+            card
+        }
+    }
+
+    private var card: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 6) {
                 Text(item.id)
@@ -210,6 +275,10 @@ private struct ResearchEvidenceInspector: View {
             }
 
             HStack {
+                if let onClose {
+                    Button("research.report.citation.close".localized, action: onClose)
+                        .controlSize(.small)
+                }
                 Spacer()
                 Button("research.action.open".localized) {
                     NewsNavigationRouter.shared.open(
