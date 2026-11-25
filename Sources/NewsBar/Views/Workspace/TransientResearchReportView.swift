@@ -35,6 +35,9 @@ final class TransientResearchReportModel {
     private(set) var isShowingChanges = false
     private(set) var didLoad = false
     private(set) var readingID = UUID()
+    /// The target pinned a version that is no longer stored. The record may
+    /// still have a current report, but it is a different identity.
+    private(set) var pinnedVersionUnavailable = false
     private var displayedVersion: WorkspaceReportVersion?
     private var currentVersion: WorkspaceReportVersion?
     private var unversionedDate: Date?
@@ -58,7 +61,11 @@ final class TransientResearchReportModel {
         return selectedVersion.id != currentVersion.id
     }
     var currentTaskStatus: ResearchStatus? { isHistorical ? nil : record?.status }
-    var emptyState: TransientReportEmptyState { TransientReportEmptyState(status: currentTaskStatus) }
+    /// A vanished pinned version is its own state: the task may have reports
+    /// and may even be running, but neither fact explains the missing version.
+    var emptyState: TransientReportEmptyState {
+        pinnedVersionUnavailable ? .unavailableVersion : TransientReportEmptyState(status: currentTaskStatus)
+    }
 
     init(
         researchStore: any ResearchPersisting = ResearchStore.shared,
@@ -106,6 +113,7 @@ final class TransientResearchReportModel {
         displayedVersion = nil
         currentVersion = nil
         unversionedDate = nil
+        pinnedVersionUnavailable = false
         clearAvailable()
         isShowingChanges = false
         didLoad = false
@@ -219,18 +227,21 @@ final class TransientResearchReportModel {
                 }
                 displayedVersion = pinned
                 record = resolvedRecord
+                pinnedVersionUnavailable = false
                 clearAvailable()
                 return
             }
             // The pin is gone (deleted history, or a stale notification). The
             // latest report is a different identity and must not stand in for
-            // it, while the event summary and the task's progress still may.
+            // it, and neither may the current task's progress: the reader says
+            // the version itself is unavailable.
             var unreadable = resolvedRecord
             unreadable?.report = nil
             record = unreadable
             selectedVersion = nil
             displayedVersion = nil
             unversionedDate = nil
+            pinnedVersionUnavailable = true
             clearAvailable()
             return
         }
@@ -285,13 +296,17 @@ final class TransientResearchReportModel {
 
 }
 
-/// Why the popup has no readable report. Only a running task or a finished
-/// failure may claim a state; a record that is merely missing a report must not
-/// be shown as completed. Kept out of the view so the copy is testable.
+/// Why the popup has no readable report. A running task, a finished failure
+/// and a vanished pinned version each get their own state; a record that is
+/// merely missing a report must not be shown as completed. Kept out of the
+/// view so the copy is testable.
 enum TransientReportEmptyState: Equatable {
     case researching
     case ended(ResearchStatus)
     case unavailable
+    /// The notification pinned a version that is no longer stored. It is not
+    /// "no report yet" and not the current task's failure.
+    case unavailableVersion
 
     init(status: ResearchStatus?) {
         guard let status else {
@@ -326,7 +341,20 @@ enum TransientReportEmptyState: Equatable {
             return language == .en ? "No readable report yet" : "尚无可读报告"
         case .unavailable:
             return language == .en ? "No readable report yet" : "尚无可读报告"
+        case .unavailableVersion:
+            return language == .en
+                ? "This historical version is no longer available"
+                : "该历史版本已不可用"
         }
+    }
+
+    /// The one sentence that explains the state without offering an action.
+    /// History is read-only here; recovery belongs to the research center.
+    func detail(language: AppLanguage) -> String? {
+        guard self == .unavailableVersion else { return nil }
+        return language == .en
+            ? "The version this notification points to is not stored on this Mac. The current report is available in the research center."
+            : "这条通知指向的版本已不在本机历史中。当前报告可在研究中心查看。"
     }
 }
 
@@ -597,39 +625,47 @@ struct TransientResearchReportView: View {
     }
 
     private var noReport: some View {
-        ScrollView {
+        let state = model.emptyState
+        return ScrollView {
             VStack(alignment: .leading, spacing: 12) {
-                Text(noReportHeadline)
+                Text(state.headline(language: settings.appLanguage))
                     .font(.headline)
+                    .fixedSize(horizontal: false, vertical: true)
                     .accessibilityAddTraits(.isHeader)
-                if let record = model.record, record.status.isActive {
-                    progress(record)
-                }
-                if let event = model.event {
-                    Text(english ? "Event information, not a research report" : "事件信息，非研究报告")
-                        .font(.caption)
+                if let detail = state.detail(language: settings.appLanguage) {
+                    // A vanished pinned version is a read-only dead end here:
+                    // no retry, no recovery, and no current task status that
+                    // could pass for an explanation of the missing version.
+                    Text(detail)
+                        .font(.callout)
                         .foregroundStyle(.secondary)
-                    Text(event.eventDescription)
-                        .font(.body)
                         .fixedSize(horizontal: false, vertical: true)
-                    ForEach(event.claims) { claim in
-                        Text(claim.text)
-                            .font(.callout)
-                            .fixedSize(horizontal: false, vertical: true)
+                } else {
+                    if state == .researching, let record = model.record {
+                        progress(record)
                     }
-                }
-                if let fallbackSourceURL, ReaderNavigationPolicy.allowedURL(fallbackSourceURL) != nil {
-                    sourceFallbackButton(fallbackSourceURL, title: fallbackTitle)
+                    if let event = model.event {
+                        Text(english ? "Event information, not a research report" : "事件信息，非研究报告")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Text(event.eventDescription)
+                            .font(.body)
+                            .fixedSize(horizontal: false, vertical: true)
+                        ForEach(event.claims) { claim in
+                            Text(claim.text)
+                                .font(.callout)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                    if let fallbackSourceURL, ReaderNavigationPolicy.allowedURL(fallbackSourceURL) != nil {
+                        sourceFallbackButton(fallbackSourceURL, title: fallbackTitle)
+                    }
                 }
             }
             .frame(maxWidth: 640, alignment: .leading)
             .padding(18)
             .frame(maxWidth: .infinity)
         }
-    }
-
-    private var noReportHeadline: String {
-        model.emptyState.headline(language: settings.appLanguage)
     }
 
     private func openEvidenceURL(_ rawURL: String, title: String) {

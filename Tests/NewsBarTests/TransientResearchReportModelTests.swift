@@ -51,6 +51,35 @@ final class TransientResearchReportModelTests: XCTestCase {
         XCTAssertNil(model.displayedReport)
         XCTAssertNil(model.displayedVersionLabel)
         XCTAssertNil(model.currentTaskStatus)
+        XCTAssertTrue(model.pinnedVersionUnavailable)
+        XCTAssertEqual(model.emptyState, .unavailableVersion)
+        XCTAssertEqual(model.emptyState.headline(language: .zh), "该历史版本已不可用")
+        XCTAssertEqual(
+            model.emptyState.headline(language: .en),
+            "This historical version is no longer available"
+        )
+        XCTAssertNotNil(model.emptyState.detail(language: .zh))
+        XCTAssertNotNil(model.emptyState.detail(language: .en))
+    }
+
+    func testEmptyStateCopySeparatesAllFourNoReportReasons() {
+        let states: [TransientReportEmptyState] = [
+            .researching, .ended(.failed), .unavailable, .unavailableVersion,
+        ]
+        for language in [AppLanguage.zh, .en] {
+            let headlines = states.map { $0.headline(language: language) }
+            XCTAssertEqual(Set(headlines).count, states.count, "\(language)")
+        }
+        XCTAssertEqual(TransientReportEmptyState.unavailable.headline(language: .zh), "尚无可读报告")
+        XCTAssertEqual(TransientReportEmptyState.researching.headline(language: .zh), "研究中 · 尚无可读报告")
+        XCTAssertEqual(TransientReportEmptyState.ended(.failed).headline(language: .zh), "研究失败 · 尚无可读报告")
+        XCTAssertEqual(
+            TransientReportEmptyState.unavailableVersion.detail(language: .zh),
+            "这条通知指向的版本已不在本机历史中。当前报告可在研究中心查看。"
+        )
+        XCTAssertNil(TransientReportEmptyState.unavailable.detail(language: .zh))
+        XCTAssertNil(TransientReportEmptyState.researching.detail(language: .zh))
+        XCTAssertNil(TransientReportEmptyState.ended(.failed).detail(language: .zh))
     }
 
     func testNewVersionNeedsAnExplicitSwitchEvenForSameSummary() async throws {
