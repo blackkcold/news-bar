@@ -13,6 +13,10 @@ struct RecommendationDiagnosticsSettings: View {
         Section {
             Toggle(copy("Record recommendation diagnostics", "记录推荐诊断"),
                    isOn: Binding(get: { diagnostics.enabled }, set: diagnostics.setEnabled))
+                .accessibilityHint(copy(
+                    "Stores exposure and read outcomes only on this Mac. You can turn it off or clear it at any time.",
+                    "只在本机记录曝光与阅读结果，可随时关闭或清空。"
+                ))
             Text(copy("Only used for analysis on this Mac. Turn it off or clear it at any time without affecting reading.",
                       "只在本机用于分析，可随时关闭或清空，不影响正常阅读。"))
                 .font(.caption).foregroundStyle(.secondary)
@@ -86,12 +90,24 @@ struct RecommendationDiagnosticsSettings: View {
         return "\(numerator)/\(denominator) · \(percent)"
     }
 
+    @ViewBuilder
     private func range(_ value: RecommendationDiagnosticSummary) -> some View {
-        let end = Calendar.autoupdatingCurrent.date(byAdding: .day, value: -1, to: value.end) ?? value.end
-        let days = "\(value.start.formatted(date: .abbreviated, time: .omitted)) – \(end.formatted(date: .abbreviated, time: .omitted))"
-        return Text(value.missingDays == 0 ? days : days + " · " +
-            copy("\(value.missingDays) days incomplete", "\(value.missingDays) 天不完整（仅显示已记录样本）"))
-            .font(.caption).foregroundStyle(.secondary)
+        // Never show the nominal window as if it were covered: with no
+        // complete day the start date is not a coverage claim.
+        if let from = value.availableFrom {
+            let end = Calendar.autoupdatingCurrent.date(byAdding: .day, value: -1, to: value.end) ?? value.end
+            let days = "\(from.formatted(date: .abbreviated, time: .omitted)) – \(end.formatted(date: .abbreviated, time: .omitted))"
+            // The range only covers complete days, so missing days sit before
+            // it inside the requested window rather than inside the range.
+            Text(value.missingDays == 0 ? days : days + " · " +
+                copy("\(value.missingDays) days incomplete within the window",
+                     "窗口内另有 \(value.missingDays) 天不完整"))
+                .font(.caption).foregroundStyle(.secondary)
+        } else {
+            Text(copy("No complete day yet; only recorded samples are shown.",
+                      "尚无完整日，仅显示已记录样本。"))
+                .font(.caption).foregroundStyle(.secondary)
+        }
     }
 
     private func details(_ value: RecommendationDiagnosticSummary) -> some View {
@@ -108,8 +124,8 @@ struct RecommendationDiagnosticsSettings: View {
                           "成功 \(opens) · 失败 \(value.results[.failed, default: 0]) · 阻断 \(value.results[.blocked, default: 0]) · 未结算 \(value.unsettled)"))
                 LabeledContent(copy("Engaged after opening", "打开后有效阅读"), value: fraction(value.engaged, opens))
                 LabeledContent(copy("Adaptation known", "适配状态已知"), value: fraction(value.knownAdaptationOpens, opens))
-                LabeledContent(copy("Qualified / adapted", "合格阅读／已知适配"), value: fraction(value.qualified, value.adaptedOpens))
-                LabeledContent(copy("Deep / adapted", "深读／已知适配"), value: fraction(value.deep, value.adaptedOpens))
+                LabeledContent(copy("Qualified / adapted", "合格阅读／已适配"), value: fraction(value.qualified, value.adaptedOpens))
+                LabeledContent(copy("Deep / adapted", "深读／已适配"), value: fraction(value.deep, value.adaptedOpens))
             }
             LabeledContent(copy("Negative feedback exposures", "明确负反馈曝光"), value: fraction(value.negativeExposures, value.exposures))
             if value.undo > 0 { LabeledContent(copy("Undo actions", "撤销反馈"), value: "\(value.undo)") }

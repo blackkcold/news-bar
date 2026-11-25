@@ -23,6 +23,13 @@ struct RecommendationAgentAccessSettings: View {
                 ))
                 .font(.caption)
                 .foregroundStyle(.secondary)
+            } else if diagnostics.unavailable {
+                Text(copy(
+                    "Recommendation diagnostics storage is unavailable, so no summary can be shared right now.",
+                    "推荐诊断存储暂不可用，当前无法共享汇总。"
+                ))
+                .font(.caption)
+                .foregroundStyle(.secondary)
             } else if !diagnostics.canCapture {
                 Text(copy(
                     "Turn on recommendation diagnostics and keep local learning active to grant access.",
@@ -59,47 +66,59 @@ struct RecommendationAgentAccessSettings: View {
     @ViewBuilder
     private func granted(_ grant: RecommendationAgentAccess.Grant) -> some View {
         TimelineView(.periodic(from: .now, by: 1)) { _ in
-            let remaining = max(0, grant.expiresAt - ProcessInfo.processInfo.systemUptime)
-            if remaining > 0 {
-                LabeledContent(copy("Time remaining", "剩余时间"), value: duration(remaining))
-                Text("\(windowLabel(grant.window)) · \(range(grant.response))")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                if let counts = grant.response.counts {
+            // A leading VStack keeps every row and the revoke button on the
+            // same margin; a bare tuple of views is centred by the Form row.
+            VStack(alignment: .leading, spacing: 6) {
+                let remaining = max(0, grant.expiresAt - ProcessInfo.processInfo.systemUptime)
+                if remaining > 0 {
+                    LabeledContent(copy("Time remaining", "剩余时间"), value: duration(remaining))
+                    Text("\(windowLabel(grant.window)) · \(range(grant.response))")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    LabeledContent(copy("Coverage", "覆盖"),
+                                   value: coverageLabel(grant.response.coverage, english: english))
+                        .font(.caption)
+                    if let counts = grant.response.counts {
+                        Text(copy(
+                            "\(counts.qualifiedExposures) qualified exposures · \(counts.exposuresWithEngagedRead) with engaged reading",
+                            "\(counts.qualifiedExposures) 条合格曝光 · \(counts.exposuresWithEngagedRead) 条有效阅读"
+                        ))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    } else {
+                        Text(copy(
+                            "Fewer than 20 qualified exposures; only the date range is shared.",
+                            "合格曝光不足 20 条，只共享日期范围。"
+                        ))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    }
                     Text(copy(
-                        "\(counts.qualifiedExposures) qualified exposures · \(counts.exposuresWithEngagedRead) with engaged reading",
-                        "\(counts.qualifiedExposures) 条合格曝光 · \(counts.exposuresWithEngagedRead) 条有效阅读"
+                        "Already delivered summaries cannot be recalled. Revoking stops the next delivery only.",
+                        "已交付的汇总无法收回；撤销只阻止后续交付。"
                     ))
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                    Button(copy("Revoke access", "撤销访问"), role: .destructive) {
+                        diagnostics.revokeAgentAccess()
+                    }
+                    .accessibilityHint(copy(
+                        "Ends the current 15-minute read access immediately.",
+                        "立即结束当前 15 分钟的读取权限。"
+                    ))
                 } else {
                     Text(copy(
-                        "Fewer than 20 qualified exposures; only the date range is shared.",
-                        "合格曝光不足 20 条，只共享日期范围。"
+                        "Access expired. Authorize again to read a new summary.",
+                        "授权已到期。如需读取新的汇总，请重新授权。"
                     ))
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                }
-                Text(copy(
-                    "Already delivered summaries cannot be recalled. Revoking stops the next delivery only.",
-                    "已交付的汇总无法收回；撤销只阻止后续交付。"
-                ))
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                Button(copy("Revoke access", "撤销访问"), role: .destructive) {
-                    diagnostics.revokeAgentAccess()
-                }
-            } else {
-                Text(copy(
-                    "Access expired. Authorize again to read a new summary.",
-                    "授权已到期。如需读取新的汇总，请重新授权。"
-                ))
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                Button(copy("Allow agent read access…", "允许 Agent 读取汇总…")) {
-                    authorizing = true
+                    Button(copy("Allow agent read access…", "允许 Agent 读取汇总…")) {
+                        authorizing = true
+                    }
                 }
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 
@@ -113,10 +132,7 @@ struct RecommendationAgentAccessSettings: View {
         guard let from = reply.availableFromDay, let through = reply.completeThroughDay else {
             return copy("No complete day yet", "暂无完整日")
         }
-        let base = "\(from) – \(through)"
-        return reply.coverage == .partial
-            ? base + " · " + copy("some days incomplete", "部分日期不完整")
-            : base
+        return "\(from) – \(through)"
     }
 
     private func duration(_ seconds: TimeInterval) -> String {
@@ -125,7 +141,9 @@ struct RecommendationAgentAccessSettings: View {
     }
 }
 
-private struct RecommendationAgentAuthorizationSheet: View {
+/// Internal for the offscreen render test; the section is the only
+/// production entry point.
+struct RecommendationAgentAuthorizationSheet: View {
     let diagnostics: RecommendationDiagnostics
     let english: Bool
     @Environment(\.dismiss) private var dismiss
@@ -135,79 +153,90 @@ private struct RecommendationAgentAuthorizationSheet: View {
     @State private var error: String?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text(copy("Allow agent read access", "允许 Agent 读取汇总"))
-                .font(.headline)
-            Picker(copy("Window", "窗口"), selection: $window) {
-                Text(copy("7 days", "7 天")).tag(RecommendationDiagnosticWindow.week)
-                Text(copy("30 days", "30 天")).tag(RecommendationDiagnosticWindow.month)
-            }
-            .pickerStyle(.segmented)
+        // Fixed size plus a scroll view: at large Dynamic Type the consent
+        // copy must stay reachable instead of overflowing the sheet.
+        ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                Text(copy("Allow agent read access", "允许 Agent 读取汇总"))
+                    .font(.headline)
+                Picker(copy("Window", "窗口"), selection: $window) {
+                    Text(copy("7 days", "7 天")).tag(RecommendationDiagnosticWindow.week)
+                    Text(copy("30 days", "30 天")).tag(RecommendationDiagnosticWindow.month)
+                }
+                .pickerStyle(.segmented)
 
-            if let reply {
-                if canGrant(reply) {
-                    VStack(alignment: .leading, spacing: 6) {
-                        LabeledContent(copy("Range", "范围"), value: range(reply))
-                        if let counts = reply.counts {
-                            LabeledContent(
-                                copy("Qualified exposures", "合格曝光"),
-                                value: "\(counts.qualifiedExposures)"
-                            )
-                            LabeledContent(
-                                copy("Engaged reading", "有效阅读"),
-                                value: "\(counts.exposuresWithEngagedRead)"
-                            )
-                        } else {
-                            Text(copy(
-                                "Fewer than 20 qualified exposures. The Agent will see insufficient_data and the date range, not counts.",
-                                "合格曝光不足 20 条。Agent 只会看到 insufficient_data 与日期范围，不会看到计数。"
-                            ))
+                if let reply {
+                    if canGrant(reply) {
+                        VStack(alignment: .leading, spacing: 6) {
+                            LabeledContent(copy("Range", "范围"), value: range(reply))
+                            LabeledContent(copy("Coverage", "覆盖"),
+                                           value: coverageLabel(reply.coverage, english: english))
+                            if let counts = reply.counts {
+                                LabeledContent(
+                                    copy("Qualified exposures", "合格曝光"),
+                                    value: "\(counts.qualifiedExposures)"
+                                )
+                                LabeledContent(
+                                    copy("Engaged reading", "有效阅读"),
+                                    value: "\(counts.exposuresWithEngagedRead)"
+                                )
+                            } else {
+                                Text(copy(
+                                    "Fewer than 20 qualified exposures. The Agent will see insufficient_data and the date range, not counts.",
+                                    "合格曝光不足 20 条。Agent 只会看到 insufficient_data 与日期范围，不会看到计数。"
+                                ))
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            }
+                        }
+                        Text(copy(
+                            "The Agent receives exactly this fixed summary. It may request it repeatedly for 15 minutes, but the numbers do not change.",
+                            "Agent 将收到这份固定汇总。15 分钟内可重复读取，但数字不会变化。"
+                        ))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        Text(copy(
+                            "Data already delivered cannot be recalled. Access ends automatically after 15 minutes or when you revoke it.",
+                            "已经交付的数据无法收回。授权会在 15 分钟后自动结束，也可随时撤销。"
+                        ))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    } else {
+                        Text(message(reply.status))
                             .font(.caption)
                             .foregroundStyle(.secondary)
-                        }
                     }
-                    Text(copy(
-                        "The Agent receives exactly this fixed summary. It may request it repeatedly for 15 minutes, but the numbers do not change.",
-                        "Agent 将收到这份固定汇总。15 分钟内可重复读取，但数字不会变化。"
-                    ))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    Text(copy(
-                        "Data already delivered cannot be recalled. Access ends automatically after 15 minutes or when you revoke it.",
-                        "已经交付的数据无法收回。授权会在 15 分钟后自动结束，也可随时撤销。"
-                    ))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                } else if loading {
+                    ProgressView()
+                        .controlSize(.small)
                 } else {
-                    Text(message(reply.status))
+                    Text(copy("Summary unavailable.", "汇总暂不可用。"))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
-            } else if loading {
-                ProgressView()
-                    .controlSize(.small)
-            } else {
-                Text(copy("Summary unavailable.", "汇总暂不可用。"))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
 
-            if let error {
-                Text(error)
-                    .font(.caption)
-                    .foregroundStyle(.red)
-            }
+                if let error {
+                    Text(error)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                }
 
-            HStack {
-                Spacer()
-                Button(copy("Cancel", "取消")) { dismiss() }
-                Button(copy("Allow for 15 minutes", "允许 15 分钟")) { allow() }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(reply.map(canGrant) != true)
+                HStack {
+                    Spacer()
+                    Button(copy("Cancel", "取消")) { dismiss() }
+                    Button(copy("Allow for 15 minutes", "允许 15 分钟")) { allow() }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(reply.map(canGrant) != true)
+                        .accessibilityHint(copy(
+                            "Shares this fixed aggregate with the Agent for 15 minutes.",
+                            "将这份固定汇总共享给 Agent，有效期 15 分钟。"
+                        ))
+                }
             }
+            .padding(22)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .padding(22)
-        .frame(width: 440)
+        .frame(width: 440, height: 460)
         .task(id: window) { await load() }
     }
 
@@ -243,10 +272,7 @@ private struct RecommendationAgentAuthorizationSheet: View {
         guard let from = reply.availableFromDay, let through = reply.completeThroughDay else {
             return copy("No complete day yet", "暂无完整日")
         }
-        let base = "\(from) – \(through)"
-        return reply.coverage == .partial
-            ? base + " · " + copy("some days incomplete", "部分日期不完整")
-            : base
+        return "\(from) – \(through)"
     }
 
     private func message(_ status: RecommendationSummaryReply.Status) -> String {
@@ -260,5 +286,15 @@ private struct RecommendationAgentAuthorizationSheet: View {
         case .ok, .insufficientData:
             ""
         }
+    }
+}
+
+/// Shared between the section and the sheet so the coverage wording cannot
+/// drift apart.
+private func coverageLabel(_ coverage: RecommendationSummaryReply.Coverage?, english: Bool) -> String {
+    switch coverage {
+    case .complete: english ? "Complete" : "完整"
+    case .partial: english ? "Some days incomplete" : "部分日期不完整"
+    case nil: english ? "Unknown" : "未知"
     }
 }
