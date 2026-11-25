@@ -1213,7 +1213,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         fallbackSourceURL: String? = nil,
         fallbackTitle: String? = nil
     ) {
-        guard recordID != nil || eventID != nil else { return }
+        guard recordID != nil || eventID != nil
+                || fallbackSourceURL.flatMap(ReaderNavigationPolicy.allowedURL) != nil else { return }
 
         if transientResearchWindow?.isVisible != true {
             let candidate = NSApp.keyWindow ?? NSApp.mainWindow
@@ -1262,6 +1263,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                         self?.handOffTransientReportToWorkspace(segment: .timeline)
                     }
                 )
+                .onChange(of: settings.resolvedColorScheme, initial: true) { [weak panel] _, scheme in
+                    panel?.appearance = scheme.flatMap { NSAppearance(named: $0 == .dark ? .darkAqua : .aqua) }
+                }
                 .environment(settings)
                 .id(settings.appLanguage)
             )
