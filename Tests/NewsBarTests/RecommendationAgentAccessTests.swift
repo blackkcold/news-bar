@@ -34,6 +34,49 @@ final class RecommendationAgentAccessTests: XCTestCase {
         XCTAssertEqual(RecommendationAgentAccess().begin(.week, scope: scope, now: 301).status, .notAuthorized)
     }
 
+    @MainActor
+    func testClosingAgentSwitchRevokesGrantWithoutAnyRequest() throws {
+        let access = RecommendationAgentAccess()
+        let scope = RecommendationAgentAccess.Scope(diagnostics: UUID(), agent: UUID())
+        let response = RecommendationSummaryReply(status: .ok, window: .week, availableFromDay: "2026-10-01",
+                                                  completeThroughDay: "2026-10-07", coverage: .complete,
+                                                  counts: .init(qualifiedExposures: 20, exposuresWithEngagedRead: 3,
+                                                                clickedExposures: 4, clickAttempts: 6,
+                                                                attributedClickAttempts: 4, opens: 3))
+        access.grant(response, scope: scope, now: 100)
+        let inFlight = try XCTUnwrap(access.begin(.week, scope: scope, now: 101).ticket)
+
+        // No request arrives while the switch is off; only the switch change.
+        access.setAgentEnabled(false)
+        XCTAssertFalse(access.agentEnabled)
+        XCTAssertNil(access.activeGrant(scope: scope, now: 102))
+        XCTAssertEqual(access.deliver(inFlight, scope: scope, now: 102).status, .notAuthorized)
+
+        // Reopening the switch must not revive the old grant or ticket.
+        access.setAgentEnabled(true)
+        XCTAssertNil(access.grant)
+        XCTAssertEqual(access.begin(.week, scope: scope, now: 103).status, .notAuthorized)
+        XCTAssertEqual(access.deliver(inFlight, scope: scope, now: 103).status, .notAuthorized)
+
+        // A grant cannot be created while the switch is off either.
+        access.setAgentEnabled(false)
+        access.grant(response, scope: scope, now: 200)
+        XCTAssertNil(access.activeGrant(scope: scope, now: 201))
+    }
+
+    @MainActor
+    func testAgentSwitchSettingIsBroadcastForRevocation() {
+        let settings = AppSettings()
+        let original = settings.agentAccessEnabled
+        defer { settings.agentAccessEnabled = original }
+        settings.agentAccessEnabled = true
+        let expected = expectation(forNotification: .agentAccessSettingChanged, object: nil) { notification in
+            notification.userInfo?["enabled"] as? Bool == false
+        }
+        settings.agentAccessEnabled = false
+        wait(for: [expected], timeout: 1)
+    }
+
     func testRequestAndReplyWhitelist() throws {
         XCTAssertEqual(RecommendationSummaryRequest.parse(Data("7d\n".utf8)), .week)
         for invalid in ["31d\n", "7d,rank\n", "7d\nextra", "7d", "7d\n\n"] {
@@ -131,6 +174,34 @@ final class RecommendationAgentAccessTests: XCTestCase {
             diagnostics.agentAccess.begin(.week, scope: diagnostics.agentScope).status,
             .notAuthorized
         )
+    }
+
+    @MainActor
+    func testDiagnosticsAgentSwitchOffRevokesWithoutAnyRequest() async throws {
+        let noon = Calendar.autoupdatingCurrent.date(bySettingHour: 12, minute: 0, second: 0, of: Date()) ?? Date()
+        let store = RecommendationDiagnosticStore(directory: TestIsolation.directory("ra-\(UUID())"))
+        let diagnostics = RecommendationDiagnostics(store: store)
+        diagnostics.setLearningAllowed(true)
+        diagnostics.setEnabled(true)
+        try await store.append(
+            (0..<20).map { exposure(at: noon.addingTimeInterval(-86_400), index: $0) },
+            now: noon,
+            coverageSince: noon.addingTimeInterval(-8 * 86_400)
+        )
+        let reply = await diagnostics.agentReply(.week, now: noon)
+        XCTAssertEqual(reply.status, .ok)
+        XCTAssertTrue(diagnostics.grantAgentAccess(reply))
+        XCTAssertNotNil(diagnostics.agentGrant)
+
+        diagnostics.setAgentAccessEnabled(false)
+        diagnostics.setAgentAccessEnabled(true)
+        XCTAssertNil(diagnostics.agentGrant)
+        XCTAssertEqual(
+            diagnostics.agentAccess.begin(.week, scope: diagnostics.agentScope).status,
+            .notAuthorized
+        )
+        // Diagnostics themselves keep running: only the Agent gate closed.
+        XCTAssertTrue(diagnostics.canCapture)
     }
 
     @MainActor

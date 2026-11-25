@@ -139,7 +139,7 @@ final class RecommendationAgentSocketServer {
         let reply: RecommendationSummaryReply
         if let window {
             if !isAgentEnabled() {
-                access.revoke()
+                access.setAgentEnabled(false)
                 reply = RecommendationSummaryReply(status: .notAuthorized, window: window)
             } else {
                 let admission = access.begin(window, scope: scope())
@@ -147,7 +147,7 @@ final class RecommendationAgentSocketServer {
                     onAdmitted?()
                     // A switch turned off after admission must invalidate the
                     // ticket before any bytes are written.
-                    if !isAgentEnabled() { access.revoke() }
+                    if !isAgentEnabled() { access.setAgentEnabled(false) }
                     reply = access.deliver(ticket, scope: scope())
                 } else {
                     reply = RecommendationSummaryReply(status: admission.status, window: window)

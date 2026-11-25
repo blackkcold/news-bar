@@ -49,6 +49,10 @@ final class RecommendationAgentAccess {
     let epoch = UUID()
 
     private(set) var grant: Grant?
+    /// Mirrors the general Agent switch. Turning it off revokes at once, so a
+    /// grant made before the switch is reopened cannot become usable again
+    /// without a fresh consent.
+    private(set) var agentEnabled = true
     private var inFlight: Set<UUID> = []
     private var admissions: [TimeInterval] = []
 
@@ -57,7 +61,7 @@ final class RecommendationAgentAccess {
         scope: Scope,
         now: TimeInterval = ProcessInfo.processInfo.systemUptime
     ) {
-        guard let window = response.window else { return }
+        guard agentEnabled, let window = response.window else { return }
         grant = Grant(
             window: window,
             response: response,
@@ -67,6 +71,14 @@ final class RecommendationAgentAccess {
         )
         inFlight.removeAll(keepingCapacity: true)
         admissions.removeAll(keepingCapacity: true)
+    }
+
+    /// The switch is an intent gate, not a security boundary, but a grant that
+    /// predates it being turned off must not survive into the next on period.
+    func setAgentEnabled(_ enabled: Bool) {
+        guard agentEnabled != enabled else { return }
+        agentEnabled = enabled
+        if !enabled { revoke() }
     }
 
     func revoke() {
@@ -79,7 +91,7 @@ final class RecommendationAgentAccess {
         scope: Scope,
         now: TimeInterval = ProcessInfo.processInfo.systemUptime
     ) -> Grant? {
-        guard let grant, grant.scope == scope, now < grant.expiresAt else { return nil }
+        guard agentEnabled, let grant, grant.scope == scope, now < grant.expiresAt else { return nil }
         return grant
     }
 
@@ -90,7 +102,8 @@ final class RecommendationAgentAccess {
         scope: Scope,
         now: TimeInterval = ProcessInfo.processInfo.systemUptime
     ) -> Admission {
-        guard let grant, grant.scope == scope, grant.window == window, now < grant.expiresAt else {
+        guard agentEnabled, let grant, grant.scope == scope, grant.window == window,
+              now < grant.expiresAt else {
             return Admission(status: .notAuthorized, ticket: nil)
         }
         admissions.removeAll { now - $0 >= Self.rateWindow }
@@ -110,7 +123,7 @@ final class RecommendationAgentAccess {
         scope: Scope,
         now: TimeInterval = ProcessInfo.processInfo.systemUptime
     ) -> RecommendationSummaryReply {
-        guard let grant, grant.scope == scope, grant.window == ticket.window,
+        guard agentEnabled, let grant, grant.scope == scope, grant.window == ticket.window,
               now < grant.expiresAt, inFlight.remove(ticket.id) != nil else {
             return RecommendationSummaryReply(status: .notAuthorized, window: ticket.window)
         }

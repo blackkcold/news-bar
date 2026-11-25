@@ -329,6 +329,12 @@ final class RecommendationDiagnostics {
         agentAccess.revoke()
     }
 
+    /// Wired to the general Agent switch. Turning it off revokes immediately,
+    /// before any request can observe the change.
+    func setAgentAccessEnabled(_ enabled: Bool) {
+        agentAccess.setAgentEnabled(enabled)
+    }
+
     private static func reply(
         from summary: RecommendationDiagnosticSummary,
         window: RecommendationSummaryWindow
