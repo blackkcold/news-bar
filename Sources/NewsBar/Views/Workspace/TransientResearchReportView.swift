@@ -264,6 +264,7 @@ final class TransientResearchReportModel {
 
 struct TransientResearchReportView: View {
     @Environment(AppSettings.self) private var settings
+    @State private var citations = ResearchReportCitationPresentation()
     let model: TransientResearchReportModel
     let onClose: () -> Void
     let onOpenWorkspace: () -> Void
@@ -311,8 +312,10 @@ struct TransientResearchReportView: View {
                     isLegacy: model.isHistorical ? report.promptVersion == 0 : model.record?.reportVersion == 0,
                     onOpenURL: openEvidenceURL,
                     onOpenEventTimeline: onOpenEventTimeline,
-                    topContent: changes
+                    topContent: changes,
+                    presentation: .popup
                 )
+                .environment(\.researchReportCitations, citations)
                 .id(model.readingID)
             } else {
                 noReport
@@ -322,7 +325,10 @@ struct TransientResearchReportView: View {
         .appThemeSurface()
         .background(Color(nsColor: .windowBackgroundColor))
         .adaptiveColorScheme()
-        .onExitCommand(perform: onClose)
+        .onExitCommand {
+            if !citations.dismiss() { onClose() }
+        }
+        .onChange(of: model.readingID) { citations.dismiss() }
         .onReceive(NotificationCenter.default.publisher(for: .researchRecordsChanged)) { notification in
             let changedID = notification.userInfo?[ResearchChangeKey.recordID] as? String
             guard changedID == nil || changedID == model.recordID else { return }

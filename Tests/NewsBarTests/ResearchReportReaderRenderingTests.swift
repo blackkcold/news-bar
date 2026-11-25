@@ -10,6 +10,93 @@ final class ResearchReportReaderRenderingTests: XCTestCase {
         NSSize(width: 760, height: 760),
     ]
 
+    func testPopupReaderShowsLegacyURLSourcesWithoutInventingEvidence() throws {
+        let report = legacyURLOnlyReport()
+        let reader = popupReader(report, isLegacy: true)
+        XCTAssertEqual(reader.sections, [.conclusion, .sources])
+        XCTAssertEqual(reader.supplementaryLinks.map(\.rawURL), ["https://example.org/legacy?utm_source=archive"])
+        XCTAssertEqual(reader.supplementaryLinks.map(\.kind), [.legacy])
+        XCTAssertEqual(reader.supplementaryLinks.first?.label(language: .zh), "旧版链接 · 无引文")
+        XCTAssertFalse(ResearchReportConclusionSection.noteKeys(
+            report: report, isLegacy: true, supplementaryLinks: reader.supplementaryLinks
+        ).contains("research.report.legacy.note"))
+        XCTAssertEqual(popupReader(report, isLegacy: true, showsSourceSection: false).sections, [.conclusion])
+
+        let output = try researchTestDirectory()
+        try render(state: "popup-legacy-url-only", theme: .retroEditorial, size: sizes[0], output: output, content: reader)
+    }
+
+    func testPopupReaderShowsLimitationsWithoutVerificationOrEvidence() throws {
+        let report = legacyLimitationsOnlyReport()
+        let reader = popupReader(report, isLegacy: true)
+        XCTAssertEqual(reader.sections, [.conclusion, .verification])
+        XCTAssertEqual(reader.presentation.visibleLimitations(in: report), "只覆盖公开披露，不评估未公开渠道。")
+        XCTAssertEqual(reader.presentation.verificationAnchor(in: report), .verification)
+        XCTAssertNil(ResearchReportPresentation.workspace.visibleLimitations(in: report))
+        var evidenceOnly = report
+        evidenceOnly.evidence = makeEvidence()
+        XCTAssertEqual(popupReader(evidenceOnly).sections, [.conclusion, .verification, .sources])
+        XCTAssertEqual(reader.presentation.visibleLimitations(in: evidenceOnly), "只覆盖公开披露，不评估未公开渠道。")
+
+        let output = try researchTestDirectory()
+        try render(state: "popup-legacy-limitations", theme: .modern, size: sizes[1], output: output, content: reader)
+    }
+
+    func testPopupSupplementarySourcesKeepFirstSafeTargetsAndExistingCitationIDs() {
+        let report = BurstResearch(
+            sources: [
+                "https://example.org/stored?utm_medium=source",
+                "https://example.org/first?utm_source=original#article",
+                "javascript:alert(1)",
+                "https://example.org/second",
+                "https://EXAMPLE.org/first?fbclid=duplicate",
+                "http://example.org/insecure",
+                "https://127.0.0.1/private",
+                "https://example.org:8080/other",
+            ],
+            evidence: [EvidenceItem(
+                id: "E7", url: "https://example.org/stored?utm_source=evidence",
+                canonicalURL: "https://example.org/stale-canonical-field",
+                domain: "example.org", title: "Existing evidence", publishedAt: nil,
+                quote: "Existing quotation", quoteVerified: true, stance: .supports,
+                tier: .major, syndicationGroup: nil, fetchedAt: .distantPast
+            )]
+        )
+        let reader = popupReader(report)
+        let links = reader.supplementaryLinks
+        XCTAssertEqual(links.map(\.rawURL), ["https://example.org/first?utm_source=original#article", "https://example.org/second"])
+        XCTAssertEqual(links.map(\.kind), [.other, .other])
+        XCTAssertEqual(links.first?.label(language: .zh), "其他来源链接 · 无引文")
+        XCTAssertEqual(reader.report.evidence.map(\.id), ["E7"])
+    }
+
+    func testPopupHidesBlankTimelineButKeepsNarrativeNodesInOrder() {
+        let blank = TimelineNode(date: "", title: " ", detail: "")
+        let first = TimelineNode(date: "", title: "First input", detail: "")
+        let second = TimelineNode(date: "Earlier date", title: "Second input", detail: "")
+        XCTAssertEqual(popupReader(BurstResearch(timeline: [blank])).sections, [.conclusion])
+        let reader = popupReader(BurstResearch(timeline: [first, blank, second]))
+        XCTAssertEqual(reader.sections, [.conclusion, .timeline])
+        XCTAssertEqual(reader.presentation.timelineReport(reader.report).timeline.map(\.title), ["First input", "Second input"])
+    }
+
+    private func legacyURLOnlyReport() -> BurstResearch {
+        BurstResearch(summary: "报道呈现了争议双方的说法。", sources: ["https://example.org/legacy?utm_source=archive"])
+    }
+
+    private func legacyLimitationsOnlyReport() -> BurstResearch {
+        BurstResearch(summary: "简短结论。", limitations: "只覆盖公开披露，不评估未公开渠道。")
+    }
+
+    private func popupReader(
+        _ report: BurstResearch, isLegacy: Bool = false, showsSourceSection: Bool = true
+    ) -> ResearchReportReader {
+        ResearchReportReader(
+            report: report, contextID: nil, isLegacy: isLegacy, showsSourceSection: showsSourceSection,
+            onOpenURL: { _, _ in }, presentation: .popup
+        )
+    }
+
     func testReaderRendersAcrossSizesAndThemes() throws {
         let output = try researchTestDirectory()
             .appendingPathComponent("report-reader-render-matrix", isDirectory: true)

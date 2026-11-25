@@ -1,5 +1,27 @@
 import SwiftUI
 
+private struct ResearchReaderHeading: View {
+    @Environment(\.researchReportPresentation) private var presentation
+    let section: ResearchReportSection
+    let symbol: String
+    var count: String? = nil
+    var focus: AccessibilityFocusState<ResearchReportSection?>.Binding? = nil
+
+    var body: some View {
+        let header = WorkspaceSectionHeader(
+            symbol: symbol,
+            title: presentation.usesReadableChapters && section == .verification
+                ? "research.report.verification.chapter".localized : presentation.title(section),
+            trailing: presentation.showsChapterCounts ? count : nil
+        )
+        if let focus {
+            header.accessibilityAddTraits(.isHeader).accessibilityFocused(focus, equals: section)
+        } else {
+            header
+        }
+    }
+}
+
 // MARK: - Conclusion
 
 /// The report's conclusion: the full summary, data-backed counts, the two most
@@ -7,15 +29,26 @@ import SwiftUI
 /// from prose — every number here comes from `ResearchReportMetrics`.
 struct ResearchReportConclusionSection: View {
     @Environment(AppSettings.self) private var settings
+    @Environment(\.researchReportPresentation) private var presentation
 
     let report: BurstResearch
     var isLegacy: Bool = false
+    let supplementaryLinks: [SupplementaryReportLink]
+    let headingFocus: AccessibilityFocusState<ResearchReportSection?>.Binding?
+    let onJump: ((ResearchReportSection) -> Void)?
 
     @State private var showsOverview: Bool
 
-    init(report: BurstResearch, isLegacy: Bool = false) {
+    init(
+        report: BurstResearch, isLegacy: Bool = false, supplementaryLinks: [SupplementaryReportLink] = [],
+        headingFocus: AccessibilityFocusState<ResearchReportSection?>.Binding? = nil,
+        onJump: ((ResearchReportSection) -> Void)? = nil
+    ) {
         self.report = report
         self.isLegacy = isLegacy
+        self.supplementaryLinks = supplementaryLinks
+        self.headingFocus = headingFocus
+        self.onJump = onJump
         // Background is only open by default when there is no summary to read.
         let summaryIsEmpty = report.summary
             .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -34,14 +67,11 @@ struct ResearchReportConclusionSection: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            WorkspaceSectionHeader(
-                symbol: "text.alignleft",
-                title: "\(ResearchReportSection.conclusion.index) \(ResearchReportSection.conclusion.title)"
-            )
+            ResearchReaderHeading(section: .conclusion, symbol: "text.alignleft", focus: headingFocus)
 
             if hasSummary {
                 Text(report.summary)
-                    .font(.system(size: 14, weight: .regular, design: isRetro ? .serif : .default))
+                    .font(presentation.bodyFont(14, isRetro: isRetro))
                     .lineSpacing(2)
                     .textSelection(.enabled)
                     .fixedSize(horizontal: false, vertical: true)
@@ -54,7 +84,15 @@ struct ResearchReportConclusionSection: View {
                 metaStrip
             }
 
-            if metrics.missingCount > 0, let missing = report.verification?.missing, !missing.isEmpty {
+            if let section = presentation.verificationAnchor(in: report), let onJump {
+                Button {
+                    onJump(section)
+                } label: {
+                    Label("research.report.verification.jump".localized, systemImage: "arrow.down")
+                }
+                .buttonStyle(.link)
+            } else if !presentation.linksToVerification,
+                      metrics.missingCount > 0, let missing = report.verification?.missing, !missing.isEmpty {
                 missingStrip(missing)
             }
 
@@ -62,7 +100,7 @@ struct ResearchReportConclusionSection: View {
                 overviewDisclosure
             }
 
-            ForEach(Self.noteKeys(report: report, isLegacy: isLegacy), id: \.self) { key in
+            ForEach(Self.noteKeys(report: report, isLegacy: isLegacy, supplementaryLinks: supplementaryLinks), id: \.self) { key in
                 note(Self.noteSymbol(key), key)
             }
         }
@@ -79,11 +117,13 @@ struct ResearchReportConclusionSection: View {
     /// "re-run" note; the missing-evidence sentence is added only when there
     /// really is no evidence, because legacy imports usually keep theirs and a
     /// blanket note would contradict chapters 03 and 04.
-    static func noteKeys(report: BurstResearch, isLegacy: Bool) -> [String] {
+    static func noteKeys(
+        report: BurstResearch, isLegacy: Bool, supplementaryLinks: [SupplementaryReportLink] = []
+    ) -> [String] {
         var keys: [String] = []
         if isLegacy {
             keys.append("research.oldReport")
-            if report.evidence.isEmpty {
+            if report.evidence.isEmpty && supplementaryLinks.isEmpty {
                 keys.append("research.report.legacy.note")
             }
         }
@@ -104,7 +144,8 @@ struct ResearchReportConclusionSection: View {
     static func metaText(
         report: BurstResearch,
         language: AppLanguage,
-        isLegacy: Bool = false
+        isLegacy: Bool = false,
+        hasSupplementaryLinks: Bool = false
     ) -> String {
         let metrics = ResearchReportMetrics(report: report)
         var parts: [String] = []
@@ -124,7 +165,7 @@ struct ResearchReportConclusionSection: View {
                 ))
             }
         }
-        if !(isLegacy && metrics.evidenceCount == 0) {
+        if metrics.evidenceCount > 0 || (!isLegacy && !hasSupplementaryLinks) {
             parts.append(L10n.string(
                 "research.report.meta.sources",
                 language: language,
@@ -151,7 +192,10 @@ struct ResearchReportConclusionSection: View {
     }
 
     private var metaText: String {
-        Self.metaText(report: report, language: settings.appLanguage, isLegacy: isLegacy)
+        Self.metaText(
+            report: report, language: settings.appLanguage, isLegacy: isLegacy,
+            hasSupplementaryLinks: !supplementaryLinks.isEmpty
+        )
     }
 
     private var metaStrip: some View {
@@ -213,7 +257,7 @@ struct ResearchReportConclusionSection: View {
     private var overviewDisclosure: some View {
         DisclosureGroup(isExpanded: $showsOverview) {
             Text(trimmedOverview)
-                .font(.system(size: 12, weight: .regular, design: isRetro ? .serif : .default))
+                .font(presentation.bodyFont(12, isRetro: isRetro))
                 .lineSpacing(2)
                 .foregroundStyle(.secondary)
                 .textSelection(.enabled)
@@ -250,11 +294,13 @@ struct ResearchReportConclusionSection: View {
 /// look verified.
 struct ResearchReportTimelineSection: View {
     @Environment(AppSettings.self) private var settings
+    @Environment(\.researchReportPresentation) private var readerPresentation
 
     let report: BurstResearch
     let contextID: String?
     var isLegacy: Bool = false
     var onOpenEventTimeline: (() -> Void)? = nil
+    var headingFocus: AccessibilityFocusState<ResearchReportSection?>.Binding? = nil
 
     private var isRetro: Bool { settings.appTheme == .retroEditorial }
     private var accent: Color { isRetro ? RetroEditorialTokens.brick : .accentColor }
@@ -263,10 +309,9 @@ struct ResearchReportTimelineSection: View {
         let metrics = ResearchReportMetrics(report: report)
         let presentation = ReportPresentation(report: report, isLegacy: isLegacy)
         return VStack(alignment: .leading, spacing: 10) {
-            WorkspaceSectionHeader(
-                symbol: "clock",
-                title: "\(ResearchReportSection.timeline.index) \(ResearchReportSection.timeline.title)",
-                trailing: trailingCount(presentation: presentation, metrics: metrics)
+            ResearchReaderHeading(
+                section: .timeline, symbol: "clock",
+                count: trailingCount(presentation: presentation, metrics: metrics), focus: headingFocus
             )
 
             if presentation.nodes.isEmpty {
@@ -373,7 +418,7 @@ struct ResearchReportTimelineSection: View {
                             .foregroundStyle(.secondary)
                     }
                     Text(item.node.title)
-                        .font(.system(size: 12, weight: .semibold, design: isRetro ? .serif : .default))
+                        .font(readerPresentation.bodyFont(12, weight: .semibold, isRetro: isRetro))
                         .fixedSize(horizontal: false, vertical: true)
                     Spacer(minLength: 0)
                 }
@@ -385,7 +430,7 @@ struct ResearchReportTimelineSection: View {
 
                 if !item.node.detail.isEmpty {
                     Text(item.node.detail)
-                        .font(.system(size: 11.5, design: isRetro ? .serif : .default))
+                        .font(readerPresentation.bodyFont(11.5, isRetro: isRetro))
                         .foregroundStyle(.secondary)
                         .lineSpacing(2)
                         .fixedSize(horizontal: false, vertical: true)
@@ -463,10 +508,12 @@ struct ResearchReportTimelineSection: View {
 /// shown as supported; a quote that failed the check is not shown as verified.
 struct ResearchReportVerificationSection: View {
     @Environment(AppSettings.self) private var settings
+    @Environment(\.researchReportPresentation) private var presentation
 
     let report: BurstResearch
     var isLegacy: Bool = false
     var contextID: String? = nil
+    let headingFocus: AccessibilityFocusState<ResearchReportSection?>.Binding?
 
     @State private var expandedClaims: Set<String>
     @State private var showsConflicts = false
@@ -476,11 +523,13 @@ struct ResearchReportVerificationSection: View {
         report: BurstResearch,
         isLegacy: Bool = false,
         contextID: String? = nil,
-        initiallyExpandedClaimIDs: Set<String> = []
+        initiallyExpandedClaimIDs: Set<String> = [],
+        headingFocus: AccessibilityFocusState<ResearchReportSection?>.Binding? = nil
     ) {
         self.report = report
         self.isLegacy = isLegacy
         self.contextID = contextID
+        self.headingFocus = headingFocus
         _expandedClaims = State(initialValue: initiallyExpandedClaimIDs)
     }
 
@@ -488,10 +537,6 @@ struct ResearchReportVerificationSection: View {
     private var evidenceByID: [String: EvidenceItem] {
         Dictionary(report.evidence.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
     }
-    private var trimmedLimitations: String {
-        report.limitations.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
     /// Which note explains a missing verification block, or nil when the block
     /// exists. Chapter 03 draws its gap state from this key, so a blank chapter
     /// and a silent regression are the same failure: the key is the contract.
@@ -509,7 +554,10 @@ struct ResearchReportVerificationSection: View {
             } else if let gapNoteKey {
                 VStack(alignment: .leading, spacing: 9) {
                     header
-                    note(gapNoteKey)
+                    note(presentation.usesReadableChapters ? "research.report.verification.noChecks" : gapNoteKey)
+                    if let limitations = presentation.visibleLimitations(in: report) {
+                        limitationsBlock(limitations)
+                    }
                 }
                 .accessibilityElement(children: .contain)
             }
@@ -538,10 +586,7 @@ struct ResearchReportVerificationSection: View {
     }
 
     private var header: some View {
-        WorkspaceSectionHeader(
-            symbol: "checklist",
-            title: "\(ResearchReportSection.verification.index) \(ResearchReportSection.verification.title)"
-        )
+        ResearchReaderHeading(section: .verification, symbol: "checklist", focus: headingFocus)
     }
 
     private func verificationBody(_ verification: VerificationReport) -> some View {
@@ -566,8 +611,8 @@ struct ResearchReportVerificationSection: View {
                 missingDisclosure(verification.missing)
             }
 
-            if !trimmedLimitations.isEmpty {
-                limitationsBlock
+            if let limitations = presentation.visibleLimitations(in: report) {
+                limitationsBlock(limitations)
             }
         }
         .accessibilityElement(children: .contain)
@@ -616,7 +661,7 @@ struct ResearchReportVerificationSection: View {
             VStack(alignment: .leading, spacing: 6) {
                 if !claim.note.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     Text(claim.note)
-                        .font(.system(size: 10.5, design: isRetro ? .serif : .default))
+                        .font(presentation.bodyFont(10.5, isRetro: isRetro))
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -641,7 +686,7 @@ struct ResearchReportVerificationSection: View {
                     .foregroundStyle(claimTint(claim.status))
                     .accessibilityHidden(true)
                 Text(claim.claim)
-                    .font(.system(size: 11.5, weight: .medium, design: isRetro ? .serif : .default))
+                    .font(presentation.bodyFont(11.5, weight: .medium, isRetro: isRetro))
                     .fixedSize(horizontal: false, vertical: true)
                 Spacer(minLength: 6)
                 Text(claimCountText(claim))
@@ -747,7 +792,7 @@ struct ResearchReportVerificationSection: View {
                         .padding(.top, 4)
                         .accessibilityHidden(true)
                     Text(text)
-                        .font(.system(size: 10.5, design: isRetro ? .serif : .default))
+                        .font(presentation.bodyFont(10.5, isRetro: isRetro))
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -755,14 +800,14 @@ struct ResearchReportVerificationSection: View {
         }
     }
 
-    private var limitationsBlock: some View {
+    private func limitationsBlock(_ text: String) -> some View {
         VStack(alignment: .leading, spacing: 3) {
             Text("research.report.limitations".localized.uppercased())
                 .font(.system(size: 9, weight: .bold, design: isRetro ? .serif : .default))
                 .tracking(isRetro ? 0.6 : 0)
                 .foregroundStyle(.tertiary)
-            Text(trimmedLimitations)
-                .font(.system(size: 10.5, design: isRetro ? .serif : .default))
+            Text(text)
+                .font(presentation.bodyFont(10.5, isRetro: isRetro))
                 .foregroundStyle(.secondary)
                 .lineSpacing(2)
                 .fixedSize(horizontal: false, vertical: true)
@@ -804,9 +849,12 @@ struct ResearchReportVerificationSection: View {
 struct ResearchReportSourceSection: View {
     @Environment(AppSettings.self) private var settings
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.researchReportPresentation) private var presentation
 
     let report: BurstResearch
     let onOpenURL: (String, String) -> Void
+    var supplementaryLinks: [SupplementaryReportLink] = []
+    var headingFocus: AccessibilityFocusState<ResearchReportSection?>.Binding? = nil
 
     @State private var isExpanded = false
     @State private var expandedSources: Set<String> = []
@@ -819,14 +867,29 @@ struct ResearchReportSourceSection: View {
     var body: some View {
         let metrics = ResearchReportMetrics(report: report)
         return VStack(alignment: .leading, spacing: 10) {
-            WorkspaceSectionHeader(
-                symbol: "quote.bubble",
-                title: "\(ResearchReportSection.sources.index) \(ResearchReportSection.sources.title)",
-                trailing: "\(metrics.evidenceCount)"
-            )
-            summaryButton(metrics: metrics)
-            if isExpanded {
-                sourceIndex
+            ResearchReaderHeading(section: .sources, symbol: "quote.bubble", count: "\(metrics.evidenceCount)", focus: headingFocus)
+            if !report.evidence.isEmpty || !presentation.showsSupplementarySources {
+                summaryButton(metrics: metrics)
+                if isExpanded { sourceIndex }
+            }
+            ForEach(supplementaryLinks) { link in
+                VStack(alignment: .leading, spacing: 3) {
+                    Button(link.host) { onOpenURL(link.rawURL, link.host) }
+                        .buttonStyle(.link)
+                        .font(presentation.bodyFont(12, isRetro: isRetro))
+                        .help(link.rawURL)
+                        .accessibilityLabel("\(link.rawURL) · \(link.label(language: settings.appLanguage))")
+                    Text(link.rawURL)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .textSelection(.enabled)
+                        .accessibilityHidden(true)
+                    Text(link.label(language: settings.appLanguage))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .accessibilityHidden(true)
+                }
             }
         }
         .onChange(of: WorkspaceReportDigest.make(report)) {
