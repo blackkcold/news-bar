@@ -4,26 +4,37 @@ import SwiftUI
 struct ResearchReportPresentation: Sendable {
     var maximumBodyWidth: CGFloat? = nil
     var bodyFontSize: CGFloat? = nil
+    /// The size for dense, secondary copy (timeline detail, claim rows,
+    /// verification notes, supplementary links). Kept separate from
+    /// `bodyFontSize` so the popup does not flatten every fallback into one
+    /// size: a 10.5pt note and a 14pt summary stay two levels apart.
+    var secondaryFontSize: CGFloat? = nil
     var showsChapterNumbers = true
     var showsChapterCounts = true
     var usesReadableChapters = false
     var linksToVerification = false
     var showsSupplementarySources = false
 
+    /// A fallback at or above this point is main reading copy; anything below
+    /// is secondary or meta copy. The workbench never resolves sizes, so this
+    /// threshold only affects a presentation that pins `bodyFontSize`.
+    static let primaryFallbackThreshold: CGFloat = 13.5
+
     static let workspace = Self()
     static let popup = Self(
-        maximumBodyWidth: 640, bodyFontSize: 15, showsChapterNumbers: false,
-        showsChapterCounts: false, usesReadableChapters: true,
+        maximumBodyWidth: 640, bodyFontSize: 15, secondaryFontSize: 12.5,
+        showsChapterNumbers: false, showsChapterCounts: false, usesReadableChapters: true,
         linksToVerification: true, showsSupplementarySources: true
     )
 
     /// A reader that pins its own body size stops following the system's text
     /// size, so the host scales that size itself. The workbench keeps `nil` and
-    /// therefore keeps its existing fixed sizes.
+    /// therefore keeps its existing fixed sizes. Both tiers scale by the same
+    /// factor so the hierarchy survives enlarged text.
     func scalingBodyFont(by scale: CGFloat) -> Self {
-        guard let bodyFontSize else { return self }
         var scaled = self
-        scaled.bodyFontSize = bodyFontSize * scale
+        if let bodyFontSize { scaled.bodyFontSize = bodyFontSize * scale }
+        if let secondaryFontSize { scaled.secondaryFontSize = secondaryFontSize * scale }
         return scaled
     }
 
@@ -31,8 +42,17 @@ struct ResearchReportPresentation: Sendable {
         showsChapterNumbers ? "\(section.index) \(section.title)" : section.title
     }
 
+    /// The resolved point size for a fallback. Exposed so the hierarchy and its
+    /// scaling can be asserted without reading a `Font` back apart.
+    func fontSize(_ fallback: CGFloat) -> CGFloat {
+        guard let bodyFontSize else { return fallback }
+        return fallback >= Self.primaryFallbackThreshold
+            ? bodyFontSize
+            : (secondaryFontSize ?? bodyFontSize)
+    }
+
     func bodyFont(_ fallback: CGFloat, weight: Font.Weight = .regular, isRetro: Bool) -> Font {
-        .system(size: bodyFontSize ?? fallback, weight: weight, design: isRetro ? .serif : .default)
+        .system(size: fontSize(fallback), weight: weight, design: isRetro ? .serif : .default)
     }
 
     func timelineReport(_ report: BurstResearch) -> BurstResearch {

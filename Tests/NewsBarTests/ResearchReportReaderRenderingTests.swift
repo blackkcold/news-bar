@@ -26,10 +26,12 @@ final class ResearchReportReaderRenderingTests: XCTestCase {
         ]
         XCTAssertEqual(ResearchReportPresentation.popup.maximumBodyWidth, 640)
         XCTAssertEqual(ResearchReportPresentation.popup.bodyFontSize, 15)
+        XCTAssertEqual(ResearchReportPresentation.popup.secondaryFontSize, 12.5)
         XCTAssertFalse(ResearchReportPresentation.popup.showsChapterNumbers)
         XCTAssertFalse(ResearchReportPresentation.popup.showsChapterCounts)
         XCTAssertNil(ResearchReportPresentation.workspace.maximumBodyWidth)
         XCTAssertEqual(ResearchReportPresentation.popup.scalingBodyFont(by: 1.35).bodyFontSize, 20.25)
+        XCTAssertEqual(ResearchReportPresentation.popup.scalingBodyFont(by: 1.35).secondaryFontSize, 16.875)
         XCTAssertNil(ResearchReportPresentation.workspace.scalingBodyFont(by: 1.35).bodyFontSize)
         for (name, theme, scheme, size, type, report) in cases {
             try render(
@@ -37,6 +39,81 @@ final class ResearchReportReaderRenderingTests: XCTestCase {
                 content: popupReader(report).environment(\.dynamicTypeSize, type)
             )
         }
+    }
+
+    /// The popup pins one body size, but a 10.5pt note must not become the
+    /// same size as the 14pt summary: that flattens the dense chapters. Two
+    /// tiers, both scaled by the same factor, and the workbench untouched.
+    func testPopupBodyAndSecondaryFontsKeepTheirTwoLevelHierarchy() {
+        let popup = ResearchReportPresentation.popup
+        XCTAssertEqual(popup.fontSize(14), 15)
+        XCTAssertEqual(popup.fontSize(11.5), 12.5)
+        XCTAssertEqual(popup.fontSize(10.5), 12.5)
+        XCTAssertNotEqual(popup.fontSize(14), popup.fontSize(10.5))
+        XCTAssertGreaterThan(popup.fontSize(14), popup.fontSize(10.5))
+
+        let scaled = popup.scalingBodyFont(by: DynamicTypeSize.accessibility2.readerTextScale)
+        let bodyRatio = scaled.fontSize(14) / popup.fontSize(14)
+        let secondaryRatio = scaled.fontSize(10.5) / popup.fontSize(10.5)
+        XCTAssertEqual(bodyRatio, secondaryRatio, accuracy: 0.0001)
+        XCTAssertGreaterThan(scaled.fontSize(10.5), popup.fontSize(10.5))
+
+        // The workbench never pins a size, so its exact fallbacks survive.
+        XCTAssertEqual(ResearchReportPresentation.workspace.fontSize(14), 14)
+        XCTAssertEqual(ResearchReportPresentation.workspace.fontSize(10.5), 10.5)
+        XCTAssertNil(ResearchReportPresentation.workspace.bodyFontSize)
+        XCTAssertNil(ResearchReportPresentation.workspace.secondaryFontSize)
+    }
+
+    func testPopupReaderStillDrawsDenseReportAtTheLargestAccessibilitySize() throws {
+        let output = try researchTestDirectory()
+        let report = makeReportWithClaimsAndEvidence()
+        let reader = popupReader(report)
+        XCTAssertEqual(reader.sections, [.conclusion, .timeline, .verification, .sources])
+        let scaled = ResearchReportPresentation.popup
+            .scalingBodyFont(by: DynamicTypeSize.accessibility5.readerTextScale)
+        XCTAssertEqual(scaled.fontSize(14), 37.5, accuracy: 0.0001)
+        XCTAssertEqual(scaled.fontSize(10.5), 31.25, accuracy: 0.0001)
+
+        for theme in AppTheme.allCases {
+            for size in sizes {
+                // A snapshot does not prove the real panel keeps focus; it does
+                // prove the wrapped body and both font tiers still lay out at
+                // the largest Dynamic Type size without dropping a chapter.
+                try render(
+                    state: "popup-accessibility5",
+                    theme: theme,
+                    size: size,
+                    output: output,
+                    content: reader.environment(\.dynamicTypeSize, .accessibility5)
+                )
+            }
+        }
+    }
+
+    func testPopupModernSourcesOnlyReportKeepsTheSourceChapterReachable() {
+        let report = BurstResearch(
+            summary: "只有来源清单，没有结构化证据。",
+            sources: [
+                "https://example.org/first",
+                "https://EXAMPLE.org/first?utm_source=duplicate",
+                "https://example.org/second",
+            ]
+        )
+        let reader = popupReader(report)
+        XCTAssertEqual(reader.sections, [.conclusion, .sources])
+        XCTAssertEqual(reader.supplementaryLinks.map(\.rawURL), [
+            "https://example.org/first",
+            "https://example.org/second",
+        ])
+        XCTAssertEqual(reader.supplementaryLinks.map(\.kind), [.other, .other])
+        XCTAssertEqual(reader.supplementaryLinks.first?.label(language: .zh), "其他来源链接 · 无引文")
+        XCTAssertEqual(reader.supplementaryLinks.first?.label(language: .en), "Additional source link · No citation")
+        // A workspace still hides unstructured links: the rail owns sources.
+        XCTAssertEqual(
+            ResearchReportReader(report: report, contextID: nil, onOpenURL: { _, _ in }).sections,
+            [.conclusion, .timeline]
+        )
     }
 
     func testWorkspacePresentationKeepsExistingChapterChromeAndSourceGate() {
