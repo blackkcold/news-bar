@@ -171,6 +171,49 @@ final class RecommendationDiagnosticsTests: XCTestCase {
     }
 
     @MainActor
+    func testLearningPauseAndPrivateReadingGateDiagnosticsThroughController() async throws {
+        let directory = TestIsolation.directory("rd-\(UUID())")
+        let store = RecommendationDiagnosticStore(directory: directory.appendingPathComponent("diagnostic"))
+        let diagnostics = RecommendationDiagnostics(store: store)
+        let controller = InterestController(
+            store: LocalInterestStore(fileURL: directory.appendingPathComponent("interest.sqlite")),
+            diagnostics: diagnostics
+        )
+        await controller.prepare()
+        controller.setLearningEnabled(true)
+        diagnostics.setEnabled(true)
+        XCTAssertTrue(diagnostics.canCapture)
+
+        let item = NewsItem(title: "News", url: "https://example.invalid/a", source: .weibo)
+        let rank = RecommendationEngine.rank(items: [item], state: controller.state, now: now)
+        let row = try XCTUnwrap(rank.items.first)
+        diagnostics.expose(row: row, snapshot: rank.id, rank: 1, confidence: 0, now: Date())
+
+        // Private reading closes the same gate as pause: the buffered exposure
+        // must be dropped, not written when the mode ends.
+        controller.privateReading = true
+        XCTAssertFalse(diagnostics.canCapture)
+        await diagnostics.flush()
+        let afterPrivate = try await store.load(now: Date())
+        XCTAssertTrue(afterPrivate.events.isEmpty)
+        controller.privateReading = false
+        XCTAssertTrue(diagnostics.canCapture)
+        await diagnostics.flush()
+        let afterResume = try await store.load(now: Date())
+        XCTAssertTrue(afterResume.events.isEmpty)
+
+        controller.setPaused(true)
+        XCTAssertFalse(diagnostics.canCapture)
+        controller.setPaused(false)
+        XCTAssertTrue(diagnostics.canCapture)
+
+        diagnostics.expose(row: row, snapshot: rank.id, rank: 1, confidence: 0, now: Date())
+        await diagnostics.flush()
+        let afterPauseResume = try await store.load(now: Date())
+        XCTAssertEqual(afterPauseResume.events.count, 1)
+    }
+
+    @MainActor
     func testRevokedGenerationDropsPendingRecordsAcrossPausePrivateAndClear() async throws {
         let store = RecommendationDiagnosticStore(directory: TestIsolation.directory("rd-\(UUID())"))
         let diagnostics = RecommendationDiagnostics(store: store)

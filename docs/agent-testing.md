@@ -18,7 +18,7 @@ bash scripts/agent-test.sh --tier all --json # 机器可读报告
 
 | 层 | 内容 | 是否开窗口 | 是否碰运行实例 |
 |---|---|---|---|
-| `headless` | `AgentHeadlessTests`、评论解析/缓存/控制器、Feed 过滤；`NewsBarAgent check / store-summary / doctor` | 否 | 否 |
+| `headless` | `AgentHeadlessTests`、评论解析/缓存/控制器、Feed 过滤；`NewsBarAgent check / store-summary / doctor`；`newsbarctl recommend summary` 契约检查 | 否 | 否 |
 | `render` | `FollowingReaderRenderingTests`、`WeiboMonitorRenderingTests` 的离屏快照；`render-reader` 三张 | 仅离屏，不 makeKey | 否 |
 | `launch` | `--launch-probe`：进入 AppKit run loop，并断言主 actor 任务能执行 | 不显示窗口，`.prohibited` | 否 |
 | `all` | 完整 `swift test` + headless + render + launch | 仅离屏 | 否 |
@@ -43,6 +43,22 @@ v3.4.2 起 agent 命令由独立可执行文件 `NewsBarAgent` 提供；App 入�
 - `store-summary`：**先复制**真实 store 到临时目录再读；原目录不会被 `load()` 的归档或重建写入。
 - `render-reader`：离屏渲染 `FollowingReaderPane` 到 PNG；agent 进程显式激活 `TestIsolation`，使用 `.prohibited` 激活策略。
 - `doctor`：分别报告真实 store 根（`storeRoot`）与隔离后的有效根（`effectiveRoot`）、agent 根目录、是否隔离、正在运行的实例数；只读，不启动第二个 App。
+
+## 推荐诊断与 `newsbarctl recommend summary`
+
+`newsbarctl` 是独立 CLI（`.build/debug/newsbarctl`），不属于 `NewsBarAgent`。推荐汇总只从**正在运行**的 App 读取：
+
+```bash
+.build/debug/newsbarctl recommend summary --window 7d --json
+```
+
+- 前提：App 内「隐私与数据 → 兴趣与推荐」已开启推荐诊断、本地学习可用，并由用户显式授权 15 分钟；授权前会展示固定日期范围、覆盖是否完整、计数（不足 20 条时只给日期范围），授权中可看到剩余时间并随时撤销。
+- 窗口只有 `7d` / `30d`，且必须等于授权时选定的窗口；CLI 不能扩大范围。
+- 退出码：`0` ok / insufficient_data，`2` 用法错误，`3` App 未运行，`4` 未授权或限流，`5` 存储不可用或超时。
+- App 未运行时直接返回 `app_unavailable`：不唤醒 App、不写命令队列、不排队。响应只走内存 socket，不落 `AgentPaths`、outbox 或日志；App 退出后授权失效。
+- 已交付给 Agent 的汇总无法收回；撤销只阻止后续读取。
+
+`bash scripts/agent-test.sh --tier headless` 会跑 `scripts/check-recommend-cli.sh`，核对退出码、字段白名单、无队列写入与不拉起 App。
 
 ## 隔离模型
 
