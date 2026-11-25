@@ -201,7 +201,7 @@ struct RecommendationSnapshot: Identifiable, Sendable {
 
 /// One pass over explicit feedback per ranking, instead of scanning the whole
 /// feedback list (and re-hashing URLs) for every candidate.
-private struct BlockedContentIndex {
+struct BlockedContentIndex {
     let sourceIDs: Set<String>
     let contentIDs: Set<String>
     let clusterIDs: Set<String>
@@ -285,7 +285,8 @@ enum RecommendationEngine {
     }
 
     static func rank(items: [NewsItem], state: LocalInterestState, now: Date = Date(), limit: Int = 60, seed: UInt64 = 0,
-                     sourceFiltered: Bool = false, sessionFeedback: [InterestFeedback] = []) -> RecommendationSnapshot {
+                     sourceFiltered: Bool = false, sessionFeedback: [InterestFeedback] = [],
+                     variant: RecommendationDiagnosticEvent.Variant = .v4) -> RecommendationSnapshot {
         let profile = InterestProfile.build(state: state, now: now, sessionFeedback: sessionFeedback)
         var ids: Set<String> = []
         var candidates: [TracedCandidate] = []
@@ -324,8 +325,10 @@ enum RecommendationEngine {
             var denominator = 0.35
             if let affinity {
                 components["interest"] = affinity
-                terms.append(FeatureTerm(key: "interest", coefficient: 0.35, value: affinity))
-                denominator += 0.35
+                if variant == .v4 || affinity != 0 {
+                    terms.append(FeatureTerm(key: "interest", coefficient: 0.35, value: affinity))
+                    denominator += 0.35
+                }
             }
             var heat: Double?
             if item.source.isBuiltIn, let rank = item.rank, rank > 0 {

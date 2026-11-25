@@ -98,6 +98,8 @@ final class InterestController {
     /// Bumped when personal data is cleared. An ingest that suspended before
     /// the clear must not commit the old items afterwards.
     @ObservationIgnored private var contentEpoch = 0
+    @ObservationIgnored private var dashboardRecommendationsVisible = false
+    @ObservationIgnored private var shadowRanking = false
     private var loading: Task<Void, Never>?
 
     init(store: LocalInterestStore = LocalInterestStore(), diagnostics: RecommendationDiagnostics? = nil) {
@@ -379,6 +381,7 @@ final class InterestController {
     }
 
     func endListSession() {
+        dashboardRecommendationsVisible = false
         diagnostics.endSession()
         // Closing the dashboard should not rebuild a ranking nobody is looking
         // at; the next load/refresh ranks with the cleared session feedback.
@@ -388,12 +391,39 @@ final class InterestController {
         feedSessionID = UUID()
     }
 
+    func setDashboardRecommendationsVisible(_ visible: Bool) {
+        dashboardRecommendationsVisible = visible
+    }
+
     private func rebuild() {
         let state = state
         let items = candidates
         let feedback = sessionFeedback
         let generation = UUID()
         rankingGeneration = generation
+        if dashboardRecommendationsVisible, diagnostics.canCapture, !shadowRanking, !items.isEmpty {
+            shadowRanking = true
+            let permit = diagnostics.permissionGeneration
+            let baseline = Task.detached(priority: .userInitiated) {
+                let input = RecommendationShadowInput(items: items, state: state, feedback: feedback, now: Date(), seed: 0)
+                let candidate = Task.detached(priority: .utility) { input.rank(.taggedNoMatchNeutral) }
+                return (input, input.rank(.v4), candidate)
+            }
+            Task { @MainActor in
+                let (input, a, candidate) = await baseline.value
+                if generation == rankingGeneration {
+                    recommendations = a.snapshot
+                    diagnostics.noteSnapshot(a.snapshot)
+                }
+                let b = await candidate.value
+                shadowRanking = false
+                guard dashboardRecommendationsVisible, generation == rankingGeneration else { return }
+                let sample = await Task.detached(priority: .utility) { input.compare(a, b) }.value
+                guard dashboardRecommendationsVisible, generation == rankingGeneration else { return }
+                diagnostics.recordShadow(sample, generation: permit)
+            }
+            return
+        }
         Task { @MainActor in
             let snapshot = await Task.detached(priority: .userInitiated) {
                 RecommendationEngine.rank(items: items, state: state, sessionFeedback: feedback)

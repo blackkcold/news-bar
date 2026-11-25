@@ -362,8 +362,14 @@ struct RecommendationFeedView: View {
             }
             .frame(width: 0, height: 0)
         }
-        .onAppear { ExposureEnvironment.shared.start() }
-        .onDisappear { ExposureEnvironment.shared.stop() }
+        .onAppear {
+            ExposureEnvironment.shared.start()
+            if snapshotOverride == nil { controller.setDashboardRecommendationsVisible(true) }
+        }
+        .onDisappear {
+            ExposureEnvironment.shared.stop()
+            if snapshotOverride == nil { controller.setDashboardRecommendationsVisible(false) }
+        }
     }
 
     private struct RankedRecommendation {

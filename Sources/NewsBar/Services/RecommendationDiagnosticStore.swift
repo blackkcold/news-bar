@@ -15,19 +15,27 @@ struct RecommendationDiagnosticDocument: Codable, Sendable {
     var coverageSince: Date?
     var truncatedThrough: Date?
     var events: [RecommendationDiagnosticEvent] = []
+    var shadow: [RecommendationShadowSample]? = nil
 
     @discardableResult
     mutating func prune(now: Date) -> Bool {
         let start = now.addingTimeInterval(-30 * 86_400)
         let before = events.count
+        let shadowBefore = shadow?.count ?? 0
         events.removeAll { $0.occurredAt < start }
+        shadow?.removeAll { $0.occurredAt < start }
+        // Shadow work is optional; prefer retaining funnel rows at the cap.
+        if let samples = shadow {
+            let remaining = min(512, max(0, 10_000 - events.count))
+            if samples.count > remaining { shadow = Array(samples.suffix(remaining)) }
+        }
         if events.count > 10_000 {
             events.sort { $0.occurredAt < $1.occurredAt }
             let removed = events.count - 10_000
             truncatedThrough = max(truncatedThrough ?? .distantPast, events[removed - 1].occurredAt)
             events.removeFirst(removed)
         }
-        return before != events.count
+        return before != events.count || shadowBefore != (shadow?.count ?? 0)
     }
 }
 
@@ -71,11 +79,15 @@ actor RecommendationDiagnosticStore {
     }
 
     func append(_ events: [RecommendationDiagnosticEvent], now: Date, coverageSince: Date? = nil,
-                gate: RecommendationDiagnosticPermit? = nil, generation: UUID? = nil) throws {
+                gate: RecommendationDiagnosticPermit? = nil, generation: UUID? = nil,
+                shadow samples: [RecommendationShadowSample] = []) throws {
         if let gate, gate.generation.withLock({ $0 != generation }) { return }
         var document = try read()
         if let coverageSince { document.coverageSince = max(coverageSince, document.coverageSince ?? .distantPast) }
         document.events.append(contentsOf: events)
+        if !samples.isEmpty {
+            document.shadow = (document.shadow ?? []) + samples
+        }
         document.prune(now: now)
         try save(document, gate: gate, generation: generation)
     }

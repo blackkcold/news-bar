@@ -20,6 +20,7 @@ final class RecommendationDiagnostics {
     private var learningEpoch: UUID?
     @ObservationIgnored private var capture = RecommendationDiagnosticCapture()
     @ObservationIgnored private var pending: [RecommendationDiagnosticEvent] = []
+    @ObservationIgnored private var pendingShadow: [RecommendationShadowSample] = []
     @ObservationIgnored private var flushTask: Task<Void, Never>?
     @ObservationIgnored private var writeTask: Task<Void, Never>?
     @ObservationIgnored private var coverageSince: Date?
@@ -75,6 +76,7 @@ final class RecommendationDiagnostics {
         snapshots.removeAll(keepingCapacity: true)
         diagnosticFeedbackItems.removeAll(keepingCapacity: true)
         pending.removeAll(keepingCapacity: true)
+        pendingShadow.removeAll(keepingCapacity: true)
         flushTask?.cancel()
         flushTask = nil
         coverageSince = canCapture ? Date() : nil
@@ -171,6 +173,14 @@ final class RecommendationDiagnostics {
         scheduleFlush()
     }
 
+    func recordShadow(_ sample: RecommendationShadowSample, generation: UUID) {
+        guard canCapture, permissionGeneration == generation, pendingShadow.count < 32 else { return }
+        pendingShadow.append(sample)
+        scheduleFlush()
+    }
+
+    private var hasPendingData: Bool { !pending.isEmpty || !pendingShadow.isEmpty || coverageSince != nil }
+
     private func scheduleFlush() {
         guard flushTask == nil, writeTask == nil else { return }
         flushTask = Task { @MainActor [weak self] in
@@ -185,13 +195,14 @@ final class RecommendationDiagnostics {
         flushTask?.cancel()
         flushTask = nil
         if let writeTask { await writeTask.value }
-        guard canCapture, !pending.isEmpty || coverageSince != nil, writeTask == nil else { return }
-        let batch = pending, start = coverageSince, generation = permissionGeneration
+        guard canCapture, hasPendingData, writeTask == nil else { return }
+        let batch = pending, shadow = pendingShadow, start = coverageSince, generation = permissionGeneration
         pending.removeAll(keepingCapacity: true)
+        pendingShadow.removeAll(keepingCapacity: true)
         coverageSince = nil
         let task = Task { @MainActor [self] in
             do {
-                try await store.append(batch, now: Date(), coverageSince: start, gate: permit, generation: generation)
+                try await store.append(batch, now: Date(), coverageSince: start, gate: permit, generation: generation, shadow: shadow)
             } catch {
                 if permissionGeneration == generation {
                     unavailable = true
@@ -199,7 +210,7 @@ final class RecommendationDiagnostics {
                 }
             }
             writeTask = nil
-            if canCapture && (!pending.isEmpty || coverageSince != nil) { scheduleFlush() }
+            if canCapture && hasPendingData { scheduleFlush() }
         }
         writeTask = task
         await task.value
