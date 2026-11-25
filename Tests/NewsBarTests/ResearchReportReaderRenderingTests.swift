@@ -10,6 +10,67 @@ final class ResearchReportReaderRenderingTests: XCTestCase {
         NSSize(width: 760, height: 760),
     ]
 
+    func testPopupRendersShortAndLongReportsAcrossReaderWidthsAndAppearances() throws {
+        let output = try researchTestDirectory()
+        let short = BurstResearch(summary: "确认发布时间，渠道已开始备货。", timeline: [
+            TimelineNode(date: "11月25日", title: "发布公告", detail: "确认适用范围。")
+        ])
+        let long = BurstResearch(
+            summary: String(repeating: "这是一段需要换行并且完整滚动的长摘要，包含核验依据和不同来源的表述。", count: 42),
+            sources: ["https://example.org/" + String(repeating: "long-english-address-", count: 13)]
+        )
+        let cases: [(String, AppTheme, ColorScheme, NSSize, DynamicTypeSize, BurstResearch)] = [
+            ("popup-default-short-light", .modern, .light, sizes[1], .large, short),
+            ("popup-narrow-long-dark", .modern, .dark, sizes[0], .large, long),
+            ("popup-wide-long-retro", .retroEditorial, .light, NSSize(width: 1150, height: 850), .accessibility2, long),
+        ]
+        XCTAssertEqual(ResearchReportPresentation.popup.maximumBodyWidth, 640)
+        XCTAssertEqual(ResearchReportPresentation.popup.bodyFontSize, 15)
+        XCTAssertFalse(ResearchReportPresentation.popup.showsChapterNumbers)
+        XCTAssertFalse(ResearchReportPresentation.popup.showsChapterCounts)
+        XCTAssertNil(ResearchReportPresentation.workspace.maximumBodyWidth)
+        XCTAssertEqual(ResearchReportPresentation.popup.scalingBodyFont(by: 1.35).bodyFontSize, 20.25)
+        XCTAssertNil(ResearchReportPresentation.workspace.scalingBodyFont(by: 1.35).bodyFontSize)
+        for (name, theme, scheme, size, type, report) in cases {
+            try render(
+                state: name, theme: theme, size: size, output: output, colorScheme: scheme,
+                content: popupReader(report).environment(\.dynamicTypeSize, type)
+            )
+        }
+    }
+
+    func testWorkspacePresentationKeepsExistingChapterChromeAndSourceGate() {
+        let workspace = ResearchReportPresentation.workspace
+        XCTAssertTrue(workspace.showsChapterNumbers)
+        XCTAssertTrue(workspace.showsChapterCounts)
+        XCTAssertFalse(workspace.usesReadableChapters)
+        XCTAssertFalse(workspace.linksToVerification)
+        XCTAssertFalse(workspace.showsSupplementarySources)
+        XCTAssertNil(workspace.bodyFontSize)
+        XCTAssertEqual(workspace.title(.conclusion), "01 \(ResearchReportSection.conclusion.title)")
+        XCTAssertEqual(workspace.title(.sources), "04 \(ResearchReportSection.sources.title)")
+
+        // The workbench gates must stay exactly as shipped: chapter 02 is
+        // always offered, limitations alone do not open chapter 03, and the
+        // source rail handover still removes chapter 04.
+        let report = makeReportWithClaimsAndEvidence()
+        XCTAssertEqual(
+            ResearchReportReader(report: report, contextID: nil, onOpenURL: { _, _ in }).sections,
+            [.conclusion, .timeline, .verification, .sources]
+        )
+        XCTAssertEqual(
+            ResearchReportReader(
+                report: report, contextID: nil, showsSourceSection: false, onOpenURL: { _, _ in }
+            ).sections,
+            [.conclusion, .timeline, .verification]
+        )
+        let limitationsOnly = BurstResearch(summary: "summary", limitations: "public records only")
+        XCTAssertEqual(
+            ResearchReportReader(report: limitationsOnly, contextID: nil, onOpenURL: { _, _ in }).sections,
+            [.conclusion, .timeline]
+        )
+    }
+
     func testPopupReaderShowsLegacyURLSourcesWithoutInventingEvidence() throws {
         let report = legacyURLOnlyReport()
         let reader = popupReader(report, isLegacy: true)
@@ -933,6 +994,7 @@ final class ResearchReportReaderRenderingTests: XCTestCase {
         theme: AppTheme,
         size: NSSize,
         output: URL,
+        colorScheme: ColorScheme? = nil,
         content: some View
     ) throws -> Data {
         let settings = AppSettings()
@@ -951,7 +1013,7 @@ final class ResearchReportReaderRenderingTests: XCTestCase {
             // Retro paints light paper, so the app pins a light appearance for
             // it (`AppSettings.resolvedColorScheme`). Without the same pin the
             // harness draws light text on cream and hides palette regressions.
-            .environment(\.colorScheme, theme == .retroEditorial ? .light : .dark)
+            .environment(\.colorScheme, colorScheme ?? (theme == .retroEditorial ? .light : .dark))
 
         let host = NSHostingView(rootView: view)
         let window = NSWindow(

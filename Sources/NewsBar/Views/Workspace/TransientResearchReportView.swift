@@ -36,6 +36,7 @@ final class TransientResearchReportModel {
     private(set) var didLoad = false
     private(set) var readingID = UUID()
     private var displayedVersion: WorkspaceReportVersion?
+    private var currentVersion: WorkspaceReportVersion?
     private var unversionedDate: Date?
 
     var displayedReport: BurstResearch? { selectedVersion?.report ?? record?.report }
@@ -48,10 +49,16 @@ final class TransientResearchReportModel {
         return "V\(sequence)"
     }
     var copyVersionLabel: String? { selectedVersion.map { "V\($0.sequence)" } }
+    /// A notification can pin the version that is still current; only a
+    /// version older than the record's current one is a historical read, and
+    /// an unreadable pin must not borrow the latest report's identity.
     var isHistorical: Bool {
-        target?.versionID != nil && selectedVersion != nil
+        guard target?.versionID != nil else { return false }
+        guard let selectedVersion, let currentVersion else { return true }
+        return selectedVersion.id != currentVersion.id
     }
     var currentTaskStatus: ResearchStatus? { isHistorical ? nil : record?.status }
+    var emptyState: TransientReportEmptyState { TransientReportEmptyState(status: currentTaskStatus) }
 
     init(
         researchStore: any ResearchPersisting = ResearchStore.shared,
@@ -97,6 +104,7 @@ final class TransientResearchReportModel {
         selectedVersion = nil
         previousVersion = nil
         displayedVersion = nil
+        currentVersion = nil
         unversionedDate = nil
         clearAvailable()
         isShowingChanges = false
@@ -119,6 +127,7 @@ final class TransientResearchReportModel {
         record = latest
         selectedVersion = availableVersion
         displayedVersion = availableVersion
+        currentVersion = availableVersion
         unversionedDate = latest.updatedAt
         previousVersion = availablePreviousVersion
         clearAvailable()
@@ -193,25 +202,39 @@ final class TransientResearchReportModel {
         eventID = requestedEventID ?? resolvedEvent?.id
         event = resolvedEvent
 
+        let latestVersion = resolvedRecord?.report.flatMap { report in
+            versions.last { $0.report == report }
+        }
+        currentVersion = latestVersion
+
         defer { didLoad = true }
-        if let requestedVersionID,
-           let pinned = selectedVersion ?? versions.first(where: { $0.id == requestedVersionID }) {
-            if selectedVersion == nil {
-                // A version can become readable after the record first opened.
-                if didLoad { readingID = UUID() }
-                selectedVersion = pinned
-                previousVersion = versions.first { $0.id == requestedComparisonVersionID }
-                isShowingChanges = previousVersion != nil
+        if let requestedVersionID {
+            if let pinned = selectedVersion ?? versions.first(where: { $0.id == requestedVersionID }) {
+                if selectedVersion == nil {
+                    // A version can become readable after the record first opened.
+                    if didLoad { readingID = UUID() }
+                    selectedVersion = pinned
+                    previousVersion = versions.first { $0.id == requestedComparisonVersionID }
+                    isShowingChanges = previousVersion != nil
+                }
+                displayedVersion = pinned
+                record = resolvedRecord
+                clearAvailable()
+                return
             }
-            displayedVersion = pinned
-            record = resolvedRecord
+            // The pin is gone (deleted history, or a stale notification). The
+            // latest report is a different identity and must not stand in for
+            // it, while the event summary and the task's progress still may.
+            var unreadable = resolvedRecord
+            unreadable?.report = nil
+            record = unreadable
+            selectedVersion = nil
+            displayedVersion = nil
+            unversionedDate = nil
             clearAvailable()
             return
         }
 
-        let latestVersion = resolvedRecord?.report.flatMap { report in
-            versions.last { $0.report == report }
-        }
         if let existing = record, let visibleReport = displayedReport {
             let newerVersion = latestVersion.flatMap { latest in
                 displayedVersion.map { latest.sequence > $0.sequence }
@@ -260,6 +283,51 @@ final class TransientResearchReportModel {
         return lhs.id < rhs.id
     }
 
+}
+
+/// Why the popup has no readable report. Only a running task or a finished
+/// failure may claim a state; a record that is merely missing a report must not
+/// be shown as completed. Kept out of the view so the copy is testable.
+enum TransientReportEmptyState: Equatable {
+    case researching
+    case ended(ResearchStatus)
+    case unavailable
+
+    init(status: ResearchStatus?) {
+        guard let status else {
+            self = .unavailable
+            return
+        }
+        if status.isActive {
+            self = .researching
+        } else if [.failed, .cancelled, .interrupted, .corrupt].contains(status) {
+            self = .ended(status)
+        } else {
+            // ready/partial without a report is a gap, not a completed read.
+            self = .unavailable
+        }
+    }
+
+    func headline(language: AppLanguage) -> String {
+        switch self {
+        case .researching:
+            return language == .en
+                ? "Research in progress · No readable report yet"
+                : "研究中 · 尚无可读报告"
+        case .ended(.failed):
+            return language == .en ? "Research failed · No readable report yet" : "研究失败 · 尚无可读报告"
+        case .ended(.cancelled):
+            return language == .en ? "Research cancelled · No readable report yet" : "研究已取消 · 尚无可读报告"
+        case .ended(.interrupted):
+            return language == .en ? "Research interrupted · No readable report yet" : "研究已中断 · 尚无可读报告"
+        case .ended(.corrupt):
+            return language == .en ? "Report file is unreadable" : "报告文件无法读取"
+        case .ended:
+            return language == .en ? "No readable report yet" : "尚无可读报告"
+        case .unavailable:
+            return language == .en ? "No readable report yet" : "尚无可读报告"
+        }
+    }
 }
 
 struct TransientResearchReportView: View {
@@ -561,13 +629,7 @@ struct TransientResearchReportView: View {
     }
 
     private var noReportHeadline: String {
-        if model.currentTaskStatus?.isActive == true {
-            return english ? "Research in progress · No readable report yet" : "研究中 · 尚无可读报告"
-        }
-        if let status = model.currentTaskStatus, [.failed, .cancelled, .interrupted, .corrupt].contains(status) {
-            return taskLabel(status)
-        }
-        return english ? "No readable report yet" : "尚无可读报告"
+        model.emptyState.headline(language: settings.appLanguage)
     }
 
     private func openEvidenceURL(_ rawURL: String, title: String) {

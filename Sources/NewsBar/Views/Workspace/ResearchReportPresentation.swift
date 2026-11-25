@@ -17,6 +17,16 @@ struct ResearchReportPresentation: Sendable {
         linksToVerification: true, showsSupplementarySources: true
     )
 
+    /// A reader that pins its own body size stops following the system's text
+    /// size, so the host scales that size itself. The workbench keeps `nil` and
+    /// therefore keeps its existing fixed sizes.
+    func scalingBodyFont(by scale: CGFloat) -> Self {
+        guard let bodyFontSize else { return self }
+        var scaled = self
+        scaled.bodyFontSize = bodyFontSize * scale
+        return scaled
+    }
+
     func title(_ section: ResearchReportSection) -> String {
         showsChapterNumbers ? "\(section.index) \(section.title)" : section.title
     }
@@ -77,4 +87,27 @@ struct SupplementaryReportLink: Identifiable {
 
 extension EnvironmentValues {
     @Entry var researchReportPresentation = ResearchReportPresentation.workspace
+}
+
+extension DynamicTypeSize {
+    /// Multiplier for text whose point size is pinned by a presentation.
+    /// Semantic text styles already scale on their own; only the pinned body
+    /// size needs this, and `.large` is the platform default.
+    var readerTextScale: CGFloat {
+        switch self {
+        case .xSmall: return 0.82
+        case .small: return 0.88
+        case .medium: return 0.94
+        case .large: return 1
+        case .xLarge: return 1.12
+        case .xxLarge: return 1.23
+        case .xxxLarge: return 1.35
+        case .accessibility1: return 1.55
+        case .accessibility2: return 1.75
+        case .accessibility3: return 2
+        case .accessibility4: return 2.25
+        case .accessibility5: return 2.5
+        default: return 1
+        }
+    }
 }

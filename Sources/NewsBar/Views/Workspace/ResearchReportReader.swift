@@ -73,6 +73,7 @@ private struct ScrollMetrics: Equatable {
 /// which is why chapter 04 can be handed over to the rail.
 struct ResearchReportReader: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     static let scrollSpace = "researchReportScroll"
 
@@ -86,6 +87,13 @@ struct ResearchReportReader: View {
     var topContent: AnyView? = nil
     var presentation: ResearchReportPresentation = .workspace
 
+    /// The popup pins its own body size, which would otherwise stop following
+    /// the system text size. Chapters read the resolved value from the
+    /// environment so no section needs to know about Dynamic Type.
+    private var resolvedPresentation: ResearchReportPresentation {
+        presentation.scalingBodyFont(by: dynamicTypeSize.readerTextScale)
+    }
+
     @State private var activeSection: ResearchReportSection = .conclusion
     @State private var hasScrolled = false
     @State private var isAtContentEnd = false
@@ -93,19 +101,20 @@ struct ResearchReportReader: View {
     @AccessibilityFocusState(for: .voiceOver) private var focusedSection: ResearchReportSection?
 
     var supplementaryLinks: [SupplementaryReportLink] {
-        presentation.supplementaryLinks(in: report, isLegacy: isLegacy)
+        resolvedPresentation.supplementaryLinks(in: report, isLegacy: isLegacy)
     }
 
     var sections: [ResearchReportSection] {
-        sections(timeline: presentation.timelineReport(report), links: supplementaryLinks)
+        sections(timeline: resolvedPresentation.timelineReport(report), links: supplementaryLinks)
     }
 
     private func sections(timeline: BurstResearch, links: [SupplementaryReportLink]) -> [ResearchReportSection] {
         var result: [ResearchReportSection] = [.conclusion]
-        if !presentation.usesReadableChapters || !timeline.timeline.isEmpty {
+        if !resolvedPresentation.usesReadableChapters || !timeline.timeline.isEmpty {
             result.append(.timeline)
         }
-        if report.verification != nil || !report.evidence.isEmpty || presentation.visibleLimitations(in: report) != nil {
+        if report.verification != nil || !report.evidence.isEmpty
+            || resolvedPresentation.visibleLimitations(in: report) != nil {
             result.append(.verification)
         }
         if showsSourceSection && (!report.evidence.isEmpty || !links.isEmpty) {
@@ -115,6 +124,7 @@ struct ResearchReportReader: View {
     }
 
     var body: some View {
+        let presentation = resolvedPresentation
         let timeline = presentation.timelineReport(report)
         let links = supplementaryLinks
         let chapters = sections(timeline: timeline, links: links)
