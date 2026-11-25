@@ -73,6 +73,7 @@ private struct ScrollMetrics: Equatable {
 /// which is why chapter 04 can be handed over to the rail.
 struct ResearchReportReader: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     static let scrollSpace = "researchReportScroll"
 
@@ -84,36 +85,56 @@ struct ResearchReportReader: View {
     let onOpenURL: (String, String) -> Void
     var onOpenEventTimeline: (() -> Void)? = nil
     var topContent: AnyView? = nil
+    var presentation: ResearchReportPresentation = .workspace
+
+    /// The popup pins its own body size, which would otherwise stop following
+    /// the system text size. Chapters read the resolved value from the
+    /// environment so no section needs to know about Dynamic Type.
+    private var resolvedPresentation: ResearchReportPresentation {
+        presentation.scalingBodyFont(by: dynamicTypeSize.readerTextScale)
+    }
 
     @State private var activeSection: ResearchReportSection = .conclusion
     @State private var hasScrolled = false
     @State private var isAtContentEnd = false
     @State private var lastOffsets: [ResearchReportSection: CGFloat] = [:]
+    @AccessibilityFocusState(for: .voiceOver) private var focusedSection: ResearchReportSection?
 
-    /// Chapters that actually have data. An empty verification block or an
-    /// empty source list is never shown as a blank chapter.
+    var supplementaryLinks: [SupplementaryReportLink] {
+        resolvedPresentation.supplementaryLinks(in: report, isLegacy: isLegacy)
+    }
+
     var sections: [ResearchReportSection] {
-        var result: [ResearchReportSection] = [.conclusion, .timeline]
-        if report.verification != nil || !report.evidence.isEmpty {
+        sections(timeline: resolvedPresentation.timelineReport(report), links: supplementaryLinks)
+    }
+
+    private func sections(timeline: BurstResearch, links: [SupplementaryReportLink]) -> [ResearchReportSection] {
+        var result: [ResearchReportSection] = [.conclusion]
+        if !resolvedPresentation.usesReadableChapters || !timeline.timeline.isEmpty {
+            result.append(.timeline)
+        }
+        if report.verification != nil || !report.evidence.isEmpty
+            || resolvedPresentation.visibleLimitations(in: report) != nil {
             result.append(.verification)
         }
-        if showsSourceSection && !report.evidence.isEmpty {
+        if showsSourceSection && (!report.evidence.isEmpty || !links.isEmpty) {
             result.append(.sources)
         }
         return result
     }
 
     var body: some View {
-        ScrollViewReader { proxy in
+        let presentation = resolvedPresentation
+        let timeline = presentation.timelineReport(report)
+        let links = supplementaryLinks
+        let chapters = sections(timeline: timeline, links: links)
+        return ScrollViewReader { proxy in
             VStack(spacing: 0) {
                 ResearchReportNavigator(
-                    sections: sections,
+                    sections: chapters,
                     active: activeSection,
                     onSelect: { section in
-                        activeSection = section
-                        withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.18)) {
-                            proxy.scrollTo(section.id, anchor: .top)
-                        }
+                        jump(to: section, using: proxy)
                     },
                     isHistorical: isHistorical
                 )
@@ -123,22 +144,23 @@ struct ResearchReportReader: View {
                         if let topContent {
                             topContent
                         }
-                        ForEach(sections) { section in
-                            sectionContent(section)
+                        ForEach(chapters) { section in
+                            sectionContent(section, timeline: timeline, links: links, using: proxy)
                                 .id(section.id)
                                 .background(alignment: .top) {
                                     ResearchReportSectionOffsetReader(section: section)
                                 }
                         }
                     }
+                    .frame(maxWidth: presentation.maximumBodyWidth, alignment: .leading)
                     .padding(.horizontal, 18)
                     .padding(.vertical, 16)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .frame(maxWidth: .infinity, alignment: presentation.maximumBodyWidth == nil ? .leading : .center)
                 }
                 .coordinateSpace(name: Self.scrollSpace)
                 .onPreferenceChange(ResearchReportSectionOffsetKey.self) { offsets in
                     lastOffsets = offsets
-                    updateActiveSection(lastOffsets)
+                    updateActiveSection(lastOffsets, chapters: chapters)
                 }
                 .onScrollGeometryChange(for: ScrollMetrics.self) { geometry in
                     ScrollMetrics(
@@ -150,7 +172,7 @@ struct ResearchReportReader: View {
                     hasScrolled = metrics.offsetY > 1
                     isAtContentEnd = metrics.contentHeight > metrics.viewportHeight + 1
                         && metrics.offsetY + metrics.viewportHeight >= metrics.contentHeight - 2
-                    updateActiveSection(lastOffsets)
+                    updateActiveSection(lastOffsets, chapters: chapters)
                 }
                 .onChange(of: WorkspaceReportDigest.make(report)) {
                     activeSection = .conclusion
@@ -162,69 +184,81 @@ struct ResearchReportReader: View {
                     // a chapter that no longer means the same thing.
                     proxy.scrollTo(ResearchReportSection.conclusion.id, anchor: .top)
                 }
-                .onChange(of: showsSourceSection) { _, _ in
-                    clampActiveSection()
+                .onChange(of: chapters) { _, updated in
+                    if !updated.contains(activeSection) {
+                        activeSection = updated.last ?? .conclusion
+                    }
                 }
             }
         }
+        .environment(\.researchReportPresentation, presentation)
     }
 
-    /// The navigator must never highlight a chapter it does not offer: when the
-    /// rail takes over chapter 04 (or gives it back), a stale `.sources`
-    /// selection falls back to the last visible chapter. Called from
-    /// `onChange`, never from `body`, so view evaluation stays pure.
-    private func clampActiveSection() {
-        if !sections.contains(activeSection) {
-            activeSection = sections.last ?? .conclusion
+    private func jump(to section: ResearchReportSection, using proxy: ScrollViewProxy) {
+        activeSection = section
+        if presentation.usesReadableChapters { focusedSection = section }
+        withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.18)) {
+            proxy.scrollTo(section.id, anchor: .top)
         }
     }
 
     /// Keeps the highlighted chapter on the last section whose top has passed
     /// the navigation bar. An unscrolled reader always shows the first section,
     /// so a report that fits the viewport opens on the conclusion.
-    private func updateActiveSection(_ offsets: [ResearchReportSection: CGFloat]) {
+    private func updateActiveSection(_ offsets: [ResearchReportSection: CGFloat], chapters: [ResearchReportSection]) {
         guard !offsets.isEmpty else { return }
         let next: ResearchReportSection
         if !hasScrolled {
-            next = sections.first ?? .conclusion
-        } else if isAtContentEnd, let last = sections.last {
+            next = chapters.first ?? .conclusion
+        } else if isAtContentEnd, let last = chapters.last {
             next = last
-        } else if let last = sections.last(where: {
+        } else if let last = chapters.last(where: {
             (offsets[$0] ?? .greatestFiniteMagnitude) <= 12
         }) {
             next = last
         } else {
-            next = sections.first ?? .conclusion
+            next = chapters.first ?? .conclusion
         }
         guard next != activeSection else { return }
         activeSection = next
     }
 
     @ViewBuilder
-    private func sectionContent(_ section: ResearchReportSection) -> some View {
+    private func sectionContent(
+        _ section: ResearchReportSection, timeline: BurstResearch, links: [SupplementaryReportLink],
+        using proxy: ScrollViewProxy
+    ) -> some View {
+        let headingFocus = presentation.usesReadableChapters ? $focusedSection : nil
         switch section {
         case .conclusion:
             ResearchReportConclusionSection(
                 report: report,
-                isLegacy: isLegacy
+                isLegacy: isLegacy,
+                supplementaryLinks: links,
+                headingFocus: headingFocus,
+                onJump: { jump(to: $0, using: proxy) }
             )
         case .timeline:
             ResearchReportTimelineSection(
-                report: report,
+                report: timeline,
                 contextID: contextID,
                 isLegacy: isLegacy,
-                onOpenEventTimeline: onOpenEventTimeline
+                onOpenEventTimeline: onOpenEventTimeline,
+                headingFocus: headingFocus
             )
         case .verification:
             ResearchReportVerificationSection(
                 report: report,
                 isLegacy: isLegacy,
-                contextID: contextID
+                contextID: contextID,
+                headingFocus: headingFocus
             )
         case .sources:
             ResearchReportSourceSection(
                 report: report,
-                onOpenURL: onOpenURL
+                onOpenURL: onOpenURL,
+                supplementaryLinks: links,
+                headingFocus: headingFocus
             )
         }
     }
@@ -239,6 +273,7 @@ struct ResearchReportReader: View {
 /// keeps the same contract — the accessible label is the chapter title (no
 /// ordinal) and the active chapter is marked selected.
 struct ResearchReportNavigator: View {
+    @Environment(\.researchReportPresentation) private var presentation
     let sections: [ResearchReportSection]
     let active: ResearchReportSection
     let onSelect: (ResearchReportSection) -> Void
@@ -269,7 +304,8 @@ struct ResearchReportNavigator: View {
         return Button {
             onSelect(section)
         } label: {
-            Text("\(section.index) \(section.title)")
+            Text(presentation.title(section))
+                .fontWeight(!presentation.showsChapterNumbers && isActive ? .bold : nil)
                 .lineLimit(1)
                 .frame(maxWidth: .infinity)
         }
