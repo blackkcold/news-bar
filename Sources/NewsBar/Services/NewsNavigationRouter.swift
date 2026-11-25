@@ -109,6 +109,7 @@ final class NewsNavigationRouter {
             profileVersion: profileVersion,
             position: position
         )
+        interest.diagnostics.click(request, current: interest.recommendations)
         selection = request
         // Opening is only an attempt. The reader records `opened` after a
         // successfully loaded, attributed document; a failed open stays a

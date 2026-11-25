@@ -768,7 +768,17 @@ final class AppSettings {
     /// Local-only CLI bridge. Defaults to on because the queue is already
     /// owner-only; the switch is an intent gate, not a security boundary.
     var agentAccessEnabled: Bool {
-        didSet { TestIsolation.defaults.set(agentAccessEnabled, forKey: "agentAccessEnabled") }
+        didSet {
+            TestIsolation.defaults.set(agentAccessEnabled, forKey: "agentAccessEnabled")
+            // Short-lived recommendation grants must be dropped at the moment
+            // this gate closes, not on the next request. Posted from the
+            // property so every mutation path is covered, not just the toggle.
+            NotificationCenter.default.post(
+                name: .agentAccessSettingChanged,
+                object: nil,
+                userInfo: ["enabled": agentAccessEnabled]
+            )
+        }
     }
     var rssDefaultTextCount: Int {
         didSet { TestIsolation.defaults.set(rssDefaultTextCount, forKey: "rssDefaultTextCount") }

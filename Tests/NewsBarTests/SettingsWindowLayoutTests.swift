@@ -98,6 +98,81 @@ final class SettingsWindowLayoutTests: XCTestCase {
     }
 
     @MainActor
+    func testRecommendationDiagnosticsAndAgentAccessRender() async throws {
+        let now = Date()
+        let store = RecommendationDiagnosticStore(directory: TestIsolation.directory("diag-render-\(UUID())"))
+        let diagnostics = RecommendationDiagnostics(store: store)
+        diagnostics.setLearningAllowed(true)
+        diagnostics.setEnabled(true)
+        // 24 exposures two local days ago: enough to clear the 20-row
+        // disclosure threshold and to stay inside the 7-day window at any run
+        // time, including the first hour after midnight.
+        let occurredAt = now.addingTimeInterval(-2 * 86_400)
+        try await store.append(
+            (0..<24).map { index in
+                RecommendationDiagnosticEvent(
+                    kind: .exposure,
+                    occurredAt: occurredAt.addingTimeInterval(Double(index)),
+                    diagnosticSessionID: UUID(),
+                    snapshotID: UUID(),
+                    contentKey: UUID(),
+                    exposureID: UUID(),
+                    algorithmRank: index % 20 + 1,
+                    confidenceBand: .high,
+                    interestMatch: .matched,
+                    rankingVariant: .v4
+                )
+            },
+            now: now,
+            coverageSince: now.addingTimeInterval(-8 * 86_400)
+        )
+        let reply = await diagnostics.agentReply(.week, now: now)
+        XCTAssertEqual(reply.status, .ok)
+        XCTAssertTrue(diagnostics.grantAgentAccess(reply))
+
+        let output = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+            .appendingPathComponent(".build/settings-ia-validation")
+        try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+        let size = CGSize(width: 665, height: 620)
+
+        let variants: [(name: String, english: Bool, type: DynamicTypeSize)] = [
+            ("recommendation-diagnostics-zh", false, .large),
+            ("recommendation-diagnostics-en-ax", true, .accessibility3),
+            ("recommendation-agent-access-zh", false, .large),
+            ("recommendation-agent-access-en-ax", true, .accessibility3)
+        ]
+        for variant in variants {
+            let view = Form {
+                RecommendationDiagnosticsSettings(diagnostics: diagnostics, english: variant.english)
+                RecommendationAgentAccessSettings(
+                    diagnostics: diagnostics,
+                    english: variant.english,
+                    agentAccessEnabled: true
+                )
+            }
+            .formStyle(.grouped)
+            .dynamicTypeSize(variant.type)
+            .frame(width: size.width, height: size.height)
+            .background(Color(nsColor: .windowBackgroundColor))
+            try await snapshot(view, size: size, name: variant.name, to: output)
+        }
+
+        // The pre-authorization sheet is where the exact window, coverage and
+        // counts are disclosed, so it gets its own picture in both languages.
+        for variant in [("recommendation-agent-sheet-zh", false, DynamicTypeSize.large),
+                        ("recommendation-agent-sheet-en-ax", true, .accessibility3)] {
+            let sheetSize = CGSize(width: 440, height: 460)
+            // `.borderedProminent` renders unfilled in an offscreen host, so the
+            // allow button is laid out but not coloured in this PNG; the copy
+            // and truncation are what this picture is for.
+            let view = RecommendationAgentAuthorizationSheet(diagnostics: diagnostics, english: variant.1)
+                .dynamicTypeSize(variant.2)
+                .background(Color(nsColor: .windowBackgroundColor))
+            try await snapshot(view, size: sheetSize, name: variant.0, to: output)
+        }
+    }
+
+    @MainActor
     func testReadingPaneWithSourceRenders() async throws {
         let settings = AppSettings(modelService: makeModelService())
         let source = RSSSourceConfig(

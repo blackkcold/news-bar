@@ -27,6 +27,7 @@ extension Notification.Name {
     static let openRSSSettingsRequested = Notification.Name("openRSSSettingsRequested")
     static let fireTestNewsPush = Notification.Name("fireTestNewsPush")
     static let weiboBadgeSettingsChanged = Notification.Name("weiboBadgeSettingsChanged")
+    static let agentAccessSettingChanged = Notification.Name("agentAccessSettingChanged")
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate, NSWindowDelegate {
@@ -76,6 +77,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private var orchestrator: NewsOrchestrator?
     private var updater: SparkleUpdater?
     private var agentCommandService: AgentCommandService?
+    private var recommendationSummaryServer: RecommendationAgentSocketServer?
     private var autoRefreshTimer: Timer?
     private var newsEventStartupTask: Task<Void, Never>?
     private var newsEventTickTask: Task<Void, Never>?
@@ -107,6 +109,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             weiboMonitor = WeiboMonitorViewModel(settings: settings)
         }
         Task { await InterestController.shared.prepare() }
+        MainActor.assumeIsolated { startRecommendationSummaryServer() }
         Task { await ReaderRuleListCache.prewarm() }
         setupWorkspaceObservers()
 
@@ -155,6 +158,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 self?.openSettings(toAITab: true)
             }
         }
+    }
+
+    @MainActor
+    private func startRecommendationSummaryServer() {
+        let diagnostics = InterestController.shared.diagnostics
+        // The switch may already be off at launch; mirror it before the socket
+        // accepts a request.
+        diagnostics.setAgentAccessEnabled(settings.agentAccessEnabled)
+        let access = diagnostics.agentAccess
+        let server = RecommendationAgentSocketServer(
+            access: access,
+            scope: { [weak diagnostics, weak access] in
+                RecommendationAgentAccess.Scope(
+                    diagnostics: diagnostics?.permissionGeneration ?? UUID(),
+                    agent: access?.epoch ?? UUID()
+                )
+            },
+            isAgentEnabled: { [weak self] in
+                guard let self, !self.isTerminating else { return false }
+                return self.settings?.agentAccessEnabled == true
+            }
+        )
+        try? server.start()
+        recommendationSummaryServer = server
     }
 
     private func scheduleStartupAndAutoRefresh() {
@@ -552,6 +579,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         ) { [weak self] _ in
             MainActor.assumeIsolated {
                 self?.updateWeiboBadge()
+            }
+        }
+
+        // A live recommendation grant must die when the general Agent switch
+        // closes, even if no CLI request arrives in between.
+        NotificationCenter.default.addObserver(
+            forName: .agentAccessSettingChanged,
+            object: nil,
+            queue: .main
+        ) { notification in
+            let enabled = notification.userInfo?["enabled"] as? Bool ?? false
+            MainActor.assumeIsolated {
+                InterestController.shared.diagnostics.setAgentAccessEnabled(enabled)
             }
         }
     }
@@ -1074,6 +1114,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         weiboMonitor?.stop()
         agentCommandService?.stop()
         agentCommandService = nil
+        recommendationSummaryServer?.stop()
+        recommendationSummaryServer = nil
+        MainActor.assumeIsolated {
+            InterestController.shared.diagnostics.revokeAgentAccess()
+        }
         appearanceObservation?.invalidate()
         appearanceObservation = nil
         let workspaceCenter = NSWorkspace.shared.notificationCenter
