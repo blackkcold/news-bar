@@ -14,6 +14,34 @@ struct ResearchReportPresentation: Sendable {
     var usesReadableChapters = false
     var linksToVerification = false
     var showsSupplementarySources = false
+    /// Whether the fixed chapter tab bar sits above the reading scroll view.
+    /// Only the popup turns it off: its chapters live behind one disclosure
+    /// strip instead, so a 40pt bar is no longer spending the first screen.
+    var showsChapterNavigator = true
+    /// Whether the chapters after the conclusion are folded away by default
+    /// and reached through one strip. The workbench keeps every chapter
+    /// visible because it is a management surface, not a reading surface.
+    var foldsDetailChapters = false
+    /// Whether the conclusion repeats the missing-item summary. The popup does
+    /// not: with the fold strip in place that summary was a third entrance to
+    /// the same chapter, and the verification chapter lists the items once.
+    var showsMissingSummaryInConclusion = true
+    /// Whether the count line sits as plain secondary text instead of a filled
+    /// strip. The popup goes plain: the counts are context, not a badge.
+    var usesPlainCountLine = false
+    /// Whether every text run in the reading column can be selected. The popup
+    /// turns this on because it drops the chapter tabs: with no navigation
+    /// affordance in the chrome, quoting a heading or a date by hand is how a
+    /// reader carries a fact out of the report.
+    var enablesTextSelection = false
+    /// Whether the conclusion draws the background/overview disclosure inline.
+    /// The popup turns this off and renders the overview as plain copy at the
+    /// top of its detail area: two disclosures on the first screen compete for
+    /// the same action, and only one of them can win.
+    var showsOverviewInConclusion = true
+    /// The report title's point size. The workbench draws its own title, so
+    /// only a presentation that owns the title sets this.
+    var titlePointSize: CGFloat? = nil
 
     /// A fallback at or above this point is main reading copy; anything below
     /// is secondary or meta copy. The workbench never resolves sizes, so this
@@ -22,9 +50,17 @@ struct ResearchReportPresentation: Sendable {
 
     static let workspace = Self()
     static let popup = Self(
-        maximumBodyWidth: 640, bodyFontSize: 15, secondaryFontSize: 12.5,
+        maximumBodyWidth: 640, bodyFontSize: 16, secondaryFontSize: 12.5,
         showsChapterNumbers: false, showsChapterCounts: false, usesReadableChapters: true,
-        linksToVerification: true, showsSupplementarySources: true
+        // The chapter tab bar is replaced by the detail strip, so the
+        // conclusion no longer needs a second "view verification" link: the
+        // strip is the single entrance and the verification chapter keeps the
+        // missing items that the conclusion used to duplicate.
+        linksToVerification: false, showsSupplementarySources: true,
+        showsChapterNavigator: false, foldsDetailChapters: true,
+        showsMissingSummaryInConclusion: false, usesPlainCountLine: true,
+        enablesTextSelection: true, showsOverviewInConclusion: false,
+        titlePointSize: 22
     )
 
     /// A reader that pins its own body size stops following the system's text

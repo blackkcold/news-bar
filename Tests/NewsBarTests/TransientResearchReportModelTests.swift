@@ -261,6 +261,33 @@ final class TransientResearchReportModelTests: XCTestCase {
         XCTAssertFalse(citations.dismiss())
     }
 
+    /// The titlebar carries the full report title because the header truncates
+    /// it to two lines. That only holds if the title follows a rename picked up
+    /// by `reload()`: a title written once when the panel opened would keep
+    /// showing the old name after the event store changed it.
+    func testWindowTitleFollowsReloadAndStaysNilUntilTheTargetResolves() async throws {
+        let record = researchTestRecord(title: "原始主题", report: BurstResearch(summary: "summary"))
+        let (model, records, _, _) = try makeModel(records: [record])
+
+        // Before anything resolves there is no title, so the panel keeps
+        // whatever it had instead of flashing a generic placeholder.
+        XCTAssertNil(model.windowTitle)
+
+        await model.open(recordID: record.id, eventID: nil)
+        XCTAssertEqual(model.windowTitle, "原始主题")
+
+        var renamed = record
+        renamed.topic = "改后的主题"
+        try await records.save(renamed)
+        await model.reload()
+        XCTAssertEqual(model.windowTitle, "改后的主题", "a reload must refresh the titlebar title")
+
+        // A fallback title is only a last resort: it must not outrank a record
+        // or an event that actually resolved.
+        await model.open(recordID: nil, eventID: nil, fallbackTitle: "兜底标题")
+        XCTAssertEqual(model.windowTitle, "兜底标题")
+    }
+
     func testExistingMarkdownStillIncludesLimitationsAndOmitsUnstructuredLinks() {
         let report = BurstResearch(
             summary: "The archived summary", sources: ["https://example.org/original"],

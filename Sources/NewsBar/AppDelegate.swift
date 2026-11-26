@@ -1311,6 +1311,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 .onChange(of: settings.resolvedColorScheme, initial: true) { [weak panel] _, scheme in
                     panel?.appearance = scheme.flatMap { NSAppearance(named: $0 == .dark ? .darkAqua : .aqua) }
                 }
+                // The header truncates the title to two lines, so the full
+                // target title lives in the titlebar, Mission Control and the
+                // Dock. Observing the model rather than writing once after
+                // `open()` keeps it correct when `reload()` picks up a renamed
+                // event or a record whose topic changed. A nil title leaves the
+                // previous one: an unresolved target must not replace it with
+                // a generic string.
+                .onChange(of: model.windowTitle, initial: true) { [weak panel] _, title in
+                    guard let title else { return }
+                    panel?.title = title
+                }
                 .environment(settings)
                 .id(settings.appLanguage)
             )
@@ -1331,6 +1342,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 fallbackTitle: fallbackTitle,
                 markReadOnOpen: settings.researchMarkReadOnOpen
             )
+            // The header truncates the title to two lines, so the full target
+            // title lives in the titlebar, Mission Control and the Dock. Set
+            // only after the target resolved: an unresolved target must not
+            // replace the previous title with a generic one.
+            if let resolved = model.windowTitle {
+                window.title = resolved
+            }
         }
     }
 

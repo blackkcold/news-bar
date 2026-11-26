@@ -84,6 +84,11 @@ struct ResearchReportConclusionSection: View {
                 metaStrip
             }
 
+            // The popup turns the verification jump link off because the fold
+            // strip is the single entrance, and it then must not fall through
+            // to the missing-summary strip: the two used to be an either/or
+            // pair, and the popup now renders neither. The missing items live
+            // in the verification chapter only.
             if let section = presentation.verificationAnchor(in: report), let onJump {
                 Button {
                     onJump(section)
@@ -92,11 +97,12 @@ struct ResearchReportConclusionSection: View {
                 }
                 .buttonStyle(.link)
             } else if !presentation.linksToVerification,
+                      presentation.showsMissingSummaryInConclusion,
                       metrics.missingCount > 0, let missing = report.verification?.missing, !missing.isEmpty {
                 missingStrip(missing)
             }
 
-            if !trimmedOverview.isEmpty {
+            if !trimmedOverview.isEmpty, presentation.showsOverviewInConclusion {
                 overviewDisclosure
             }
 
@@ -198,17 +204,38 @@ struct ResearchReportConclusionSection: View {
         )
     }
 
+    /// The popup draws the counts as plain secondary text: they are context for
+    /// the summary, not a badge competing with it. The workbench keeps the
+    /// filled strip it has always had.
+    ///
+    /// The plain line asks the presentation for its secondary size instead of
+    /// hard-coding 12: it must scale with Dynamic Type like every other text
+    /// tier, and it must be the same 12.5pt the rest of the secondary copy uses.
+    @ViewBuilder
     private var metaStrip: some View {
-        Text(metaText)
-            .font(.system(size: 10, weight: .medium, design: isRetro ? .serif : .default))
+        let label = Text(metaText)
+        let styled = label
+            .font(.system(
+                size: presentation.usesPlainCountLine ? presentation.fontSize(10.5) : 10,
+                weight: presentation.usesPlainCountLine ? .regular : .medium,
+                design: isRetro ? .serif : .default
+            ))
             .foregroundStyle(.secondary)
-            .fixedSize(horizontal: false, vertical: true)
-            .padding(.horizontal, 9)
-            .padding(.vertical, 6)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(.quaternary.opacity(0.22))
-            .editorialClipShape(cornerRadius: 7)
-            .accessibilityLabel(metaText)
+        if presentation.usesPlainCountLine {
+            styled
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .accessibilityLabel(metaText)
+        } else {
+            styled
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.horizontal, 9)
+                .padding(.vertical, 6)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(.quaternary.opacity(0.22))
+                .editorialClipShape(cornerRadius: 7)
+                .accessibilityLabel(metaText)
+        }
     }
 
     private func missingStrip(_ missing: [String]) -> some View {
@@ -321,6 +348,11 @@ struct ResearchReportTimelineSection: View {
                 VStack(alignment: .leading, spacing: 13) {
                     ForEach(presentation.nodes) { node in
                         nodeRow(node)
+                            // Its own namespace: the timeline strip's capsules
+                            // carry the bare node id, and a reader scrolling to
+                            // "show me this node in the detail" must land here,
+                            // not on the capsule.
+                            .id(ResearchReportNodeAnchor.detail(node.id))
                     }
                 }
             }
