@@ -61,6 +61,17 @@ final class TransientResearchReportModel {
         return selectedVersion.id != currentVersion.id
     }
     var currentTaskStatus: ResearchStatus? { isHistorical ? nil : record?.status }
+    /// The full title of the target on screen, used for the window title so a
+    /// title truncated to two lines in the header stays readable in the
+    /// titlebar, Mission Control and the Dock. Nil while the target has not
+    /// resolved yet: the panel keeps its previous title instead of flashing a
+    /// generic one.
+    var windowTitle: String? {
+        if let title = event?.title, !title.isEmpty { return title }
+        if let topic = record?.topic, !topic.isEmpty { return topic }
+        if let fallbackTitle, !fallbackTitle.isEmpty { return fallbackTitle }
+        return nil
+    }
     /// A vanished pinned version is its own state: the task may have reports
     /// and may even be running, but neither fact explains the missing version.
     var emptyState: TransientReportEmptyState {
@@ -265,6 +276,11 @@ final class TransientResearchReportModel {
             if let resolvedRecord {
                 refreshedProgress.run = resolvedRecord.run
                 refreshedProgress.status = resolvedRecord.status
+                // The topic is a display label, not report identity. A rebuilt
+                // record can carry a corrected title for the same topic key,
+                // and the window title reads from here — so it must refresh
+                // even while the report itself is deliberately left alone.
+                refreshedProgress.topic = resolvedRecord.topic
             }
             record = refreshedProgress
         } else {
@@ -360,6 +376,7 @@ enum TransientReportEmptyState: Equatable {
 
 struct TransientResearchReportView: View {
     @Environment(AppSettings.self) private var settings
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @State private var citations = ResearchReportCitationPresentation()
     let model: TransientResearchReportModel
     let onClose: () -> Void
@@ -368,7 +385,10 @@ struct TransientResearchReportView: View {
 
     private var english: Bool { settings.appLanguage == .en }
     private var reportTitle: String {
-        model.event?.title ?? model.record?.topic ?? (english ? "Research report" : "研究报告")
+        model.event?.title
+            ?? model.record?.topic
+            ?? fallbackTitle
+            ?? (english ? "Research report" : "研究报告")
     }
     private var fallbackSourceURL: String? { model.fallbackSourceURL }
     private var fallbackTitle: String? { model.fallbackTitle }
@@ -439,47 +459,126 @@ struct TransientResearchReportView: View {
     }
 
     private var header: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            ViewThatFits(in: .horizontal) {
-                headerControls(includesWorkspaceButton: true)
-                headerControls(includesWorkspaceButton: false)
-            }
-            Text(model.event?.title ?? model.record?.topic ?? fallbackTitle ?? reportTitle)
-                .font(.title3.weight(.semibold))
+        VStack(alignment: .leading, spacing: 8) {
+            headerMetaRow
+            Text(reportTitle)
+                .font(.system(size: resolvedTitlePointSize, weight: .bold))
+                .lineSpacing(1)
+                .lineLimit(2)
+                .truncationMode(.tail)
                 .fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
+                .help(reportTitle)
                 .accessibilityAddTraits(.isHeader)
+                .accessibilityLabel(reportTitle)
+            if !headerTags.isEmpty {
+                headerTagRow
+            }
         }
         .padding(.horizontal, 18)
-        .padding(.vertical, 12)
+        .padding(.top, 14)
+        .padding(.bottom, 12)
     }
 
-    private func headerControls(includesWorkspaceButton: Bool) -> some View {
+    /// The title scales with the same factor the reader uses for its body.
+    /// Without this the header stays at 22pt while the body grows to 40pt at
+    /// the largest accessibility size — which reintroduces the exact defect
+    /// this redesign fixed, only in the other direction.
+    private var resolvedTitlePointSize: CGFloat {
+        (ResearchReportPresentation.popup.titlePointSize ?? 22) * dynamicTypeSize.readerTextScale
+    }
+
+    /// One line of chrome: identity on the left, actions on the right. The
+    /// separate "Research Center" button and the copy icon moved into the menu
+    /// so the title can claim the row it used to share.
+    private var headerMetaRow: some View {
         HStack(spacing: 8) {
             if let meta = headerMeta {
                 Text(meta)
-                    .font(.caption)
+                    .font(.system(size: 11.5))
                     .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
             }
             Spacer(minLength: 8)
-            if includesWorkspaceButton {
-                Button(workspaceTitle, action: onOpenWorkspace)
-                    .buttonStyle(.bordered)
-                    .disabled(!canOpenWorkspace)
-            }
             Menu {
-                if !includesWorkspaceButton {
-                    Button(workspaceTitle, action: onOpenWorkspace)
-                        .disabled(!canOpenWorkspace)
-                }
+                Button(workspaceTitle, action: onOpenWorkspace)
+                    .disabled(!canOpenWorkspace)
                 Button(L10n.string("research.report.copy", language: settings.appLanguage), action: copyMarkdown)
                     .disabled(model.displayedReport == nil)
             } label: {
-                Text(english ? "More" : "更多")
+                HStack(spacing: 3) {
+                    Text(english ? "More" : "更多")
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 8, weight: .semibold))
+                }
             }
             .fixedSize()
             .accessibilityLabel(L10n.string("research.report.actions.a11y", language: settings.appLanguage))
         }
         .controlSize(.small)
+    }
+
+    /// The three facts worth compressing into the first screen. An empty set
+    /// draws no row at all rather than reserving a blank line.
+    private var headerTags: [ResearchReportHeaderTag] {
+        ResearchReportHeaderTagBuilder.tags(
+            source: model.record?.seed.source,
+            depth: model.record?.run.depth,
+            verdict: model.displayedReport?.verification?.verdict,
+            language: settings.appLanguage
+        )
+    }
+
+    /// Three candidates for the same row: all tags, then without depth, then
+    /// the verdict alone. The drop order is depth → source → verdict because
+    /// the verdict is the only tag that changes what the reader should do with
+    /// the summary, while depth and source are context.
+    ///
+    /// `ViewThatFits` needs an intrinsically sized row to measure, so each
+    /// candidate is `fixedSize(horizontal:)`; the flexible frame is applied
+    /// outside, where it cannot inflate the measurement.
+    private var headerTagRow: some View {
+        ViewThatFits(in: .horizontal) {
+            tagRow(headerTags)
+            tagRow(headerTags.filter { $0.kind != .depth })
+            tagRow(headerTags.filter { $0.kind == .verdict })
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        // VoiceOver has no width to run out of, so it always gets every tag
+        // that exists. That is the opposite of hiding information: a reader who
+        // cannot see the row still learns the verdict before the summary.
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(ResearchReportHeaderTagBuilder.accessibilityLabel(headerTags))
+    }
+
+    private func tagRow(_ tags: [ResearchReportHeaderTag]) -> some View {
+        HStack(spacing: 6) {
+            ForEach(tags) { tag in
+                Text(tag.text)
+                    .font(.system(size: 11, weight: .medium))
+                    .lineLimit(1)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 3)
+                    .background(headerTagTint(tag).opacity(0.13), in: Capsule())
+                    .foregroundStyle(headerTagTint(tag))
+            }
+        }
+        .fixedSize(horizontal: true, vertical: false)
+    }
+
+    /// The verdict tag carries the only colour, because it is the only tag
+    /// that changes what the reader should do with the summary.
+    private func headerTagTint(_ tag: ResearchReportHeaderTag) -> Color {
+        guard tag.kind == .verdict, let verdict = model.displayedReport?.verification?.verdict else {
+            return .secondary
+        }
+        switch verdict {
+        case .confirmed, .mostlyConfirmed: return .green
+        case .mixed: return .orange
+        case .unverified: return .orange
+        case .refuted: return .red
+        }
     }
 
     private var workspaceTitle: String { english ? "Research Center" : "研究中心" }

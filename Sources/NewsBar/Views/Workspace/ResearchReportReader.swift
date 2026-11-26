@@ -98,6 +98,7 @@ struct ResearchReportReader: View {
     @State private var hasScrolled = false
     @State private var isAtContentEnd = false
     @State private var lastOffsets: [ResearchReportSection: CGFloat] = [:]
+    @State private var disclosure = ResearchDetailDisclosureState()
     @AccessibilityFocusState(for: .voiceOver) private var focusedSection: ResearchReportSection?
 
     var supplementaryLinks: [SupplementaryReportLink] {
@@ -130,28 +131,24 @@ struct ResearchReportReader: View {
         let chapters = sections(timeline: timeline, links: links)
         return ScrollViewReader { proxy in
             VStack(spacing: 0) {
-                ResearchReportNavigator(
-                    sections: chapters,
-                    active: activeSection,
-                    onSelect: { section in
-                        jump(to: section, using: proxy)
-                    },
-                    isHistorical: isHistorical
-                )
-                Divider()
+                if presentation.showsChapterNavigator {
+                    ResearchReportNavigator(
+                        sections: chapters,
+                        active: activeSection,
+                        onSelect: { section in
+                            jump(to: section, using: proxy)
+                        },
+                        isHistorical: isHistorical
+                    )
+                    Divider()
+                }
                 ScrollView {
-                    VStack(alignment: .leading, spacing: 20) {
-                        if let topContent {
-                            topContent
-                        }
-                        ForEach(chapters) { section in
-                            sectionContent(section, timeline: timeline, links: links, using: proxy)
-                                .id(section.id)
-                                .background(alignment: .top) {
-                                    ResearchReportSectionOffsetReader(section: section)
-                                }
-                        }
-                    }
+                    bodyContent(
+                        chapters: chapters,
+                        timeline: timeline,
+                        links: links,
+                        using: proxy
+                    )
                     .frame(maxWidth: presentation.maximumBodyWidth, alignment: .leading)
                     .padding(.horizontal, 18)
                     .padding(.vertical, 16)
@@ -189,9 +186,140 @@ struct ResearchReportReader: View {
                         activeSection = updated.last ?? .conclusion
                     }
                 }
+                // A queued reveal only exists because the reader clicked a
+                // capsule before the detail chapters were in the view tree.
+                // Running it after the layout pass is what makes that click
+                // land instead of silently doing nothing.
+                .onChange(of: disclosure.isExpanded) { _, expanded in
+                    guard expanded, let target = disclosure.consumePendingReveal() else { return }
+                    scrollToDetailNode(target, using: proxy)
+                }
             }
         }
         .environment(\.researchReportPresentation, presentation)
+    }
+
+    /// Scrolls to a node's row inside the timeline chapter. The row carries its
+    /// own id namespace because the strip's capsule holds the bare node id:
+    /// without the prefix this would land on the capsule instead of the row.
+    private func scrollToDetailNode(_ nodeID: String, using proxy: ScrollViewProxy) {
+        let anchor = ResearchReportNodeAnchor.detail(nodeID)
+        DispatchQueue.main.async {
+            withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) {
+                proxy.scrollTo(anchor, anchor: .center)
+            }
+        }
+    }
+
+    /// One scroll view for both layouts. The workbench reads every chapter in
+    /// order; the popup reads the conclusion, then a strip, then — only when
+    /// the reader asked for it — the three detail chapters below that strip.
+    ///
+    /// The strip never moves: detail is appended *after* it, so expanding
+    /// changes nothing above the reader's current position.
+    @ViewBuilder
+    private func bodyContent(
+        chapters: [ResearchReportSection],
+        timeline: BurstResearch,
+        links: [SupplementaryReportLink],
+        using proxy: ScrollViewProxy
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 20) {
+            if let topContent {
+                topContent
+            }
+            if presentation.foldsDetailChapters {
+                sectionContent(.conclusion, timeline: timeline, links: links, using: proxy)
+                    .id(ResearchReportSection.conclusion.id)
+                if detailChapters(chapters).isEmpty == false {
+                    detailStrip(chapters: chapters, timeline: timeline, using: proxy)
+                }
+                if disclosure.isExpanded {
+                    // Background reads as the first thing in the detail area:
+                    // it is context for the timeline, not a second disclosure
+                    // competing with the fold strip on the first screen.
+                    if let overview = publishedOverview(timeline) {
+                        ResearchReportOverviewBlock(text: overview)
+                    }
+                    // 24pt between detail chapters: they are three answers to
+                    // three different questions, and 20pt read as one block.
+                    VStack(alignment: .leading, spacing: 24) {
+                        ForEach(detailChapters(chapters)) { section in
+                            sectionContent(section, timeline: timeline, links: links, using: proxy)
+                                .id(section.id)
+                        }
+                    }
+                }
+            } else {
+                ForEach(chapters) { section in
+                    sectionContent(section, timeline: timeline, links: links, using: proxy)
+                        .id(section.id)
+                        .background(alignment: .top) {
+                            ResearchReportSectionOffsetReader(section: section)
+                        }
+                }
+            }
+        }
+        // Attached to the whole column so headings, dates, node titles, the
+        // count line and source rows are all quotable — not just the summary,
+        // which is the only run that opts in per view today.
+        .modifier(ResearchReaderTextSelection(enabled: presentation.enablesTextSelection))
+    }
+
+    private func detailChapters(_ chapters: [ResearchReportSection]) -> [ResearchReportSection] {
+        chapters.filter { $0 != .conclusion }
+    }
+
+    /// Background copy for the detail area, or nil when there is none or when
+    /// the conclusion already draws it. Only the popup moves it here; the
+    /// workbench keeps its inline disclosure untouched.
+    private func publishedOverview(_ timeline: BurstResearch) -> String? {
+        guard !presentation.showsOverviewInConclusion else { return nil }
+        let text = report.overview.trimmingCharacters(in: .whitespacesAndNewlines)
+        return text.isEmpty ? nil : text
+    }
+
+    /// The preview strip and the fold control, in that order. Both are pinned
+    /// inside the same scroll content, so neither can cover the report.
+    @ViewBuilder
+    private func detailStrip(
+        chapters: [ResearchReportSection],
+        timeline: BurstResearch,
+        using proxy: ScrollViewProxy
+    ) -> some View {
+        let nodes = ReportPresentation(report: timeline, isLegacy: isLegacy).nodes
+        VStack(alignment: .leading, spacing: 14) {
+            if !nodes.isEmpty {
+                ResearchTimelineStrip(
+                    preview: ResearchTimelinePreview(nodes: nodes),
+                    onSelect: { nodeID in
+                        // Two distinct paths, because the detail chapters only
+                        // exist while expanded. An open detail has the row in
+                        // the tree already, so scroll now; a folded one has to
+                        // expand first and scroll after the layout pass, which
+                        // the `onChange` below does. Relying on `onChange`
+                        // alone would drop every click made while expanded.
+                        let wasExpanded = disclosure.isExpanded
+                        if wasExpanded {
+                            scrollToDetailNode(nodeID, using: proxy)
+                            disclosure.reveal(nodeID)
+                            _ = disclosure.consumePendingReveal()
+                        } else {
+                            disclosure.reveal(nodeID)
+                        }
+                    }
+                )
+            }
+            ResearchDetailFoldStrip(
+                isExpanded: disclosure.isExpanded,
+                onToggle: {
+                    ResearchDetailDisclosureState.persist(!disclosure.isExpanded)
+                    withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) {
+                        disclosure.toggle()
+                    }
+                }
+            )
+        }
     }
 
     private func jump(to section: ResearchReportSection, using proxy: ScrollViewProxy) {

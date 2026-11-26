@@ -25,12 +25,12 @@ final class ResearchReportReaderRenderingTests: XCTestCase {
             ("popup-wide-long-retro", .retroEditorial, .light, NSSize(width: 1150, height: 850), .accessibility2, long),
         ]
         XCTAssertEqual(ResearchReportPresentation.popup.maximumBodyWidth, 640)
-        XCTAssertEqual(ResearchReportPresentation.popup.bodyFontSize, 15)
+        XCTAssertEqual(ResearchReportPresentation.popup.bodyFontSize, 16)
         XCTAssertEqual(ResearchReportPresentation.popup.secondaryFontSize, 12.5)
         XCTAssertFalse(ResearchReportPresentation.popup.showsChapterNumbers)
         XCTAssertFalse(ResearchReportPresentation.popup.showsChapterCounts)
         XCTAssertNil(ResearchReportPresentation.workspace.maximumBodyWidth)
-        XCTAssertEqual(ResearchReportPresentation.popup.scalingBodyFont(by: 1.35).bodyFontSize, 20.25)
+        XCTAssertEqual(ResearchReportPresentation.popup.scalingBodyFont(by: 1.35).bodyFontSize, 21.6)
         XCTAssertEqual(ResearchReportPresentation.popup.scalingBodyFont(by: 1.35).secondaryFontSize, 16.875)
         XCTAssertNil(ResearchReportPresentation.workspace.scalingBodyFont(by: 1.35).bodyFontSize)
         for (name, theme, scheme, size, type, report) in cases {
@@ -46,7 +46,7 @@ final class ResearchReportReaderRenderingTests: XCTestCase {
     /// tiers, both scaled by the same factor, and the workbench untouched.
     func testPopupBodyAndSecondaryFontsKeepTheirTwoLevelHierarchy() {
         let popup = ResearchReportPresentation.popup
-        XCTAssertEqual(popup.fontSize(14), 15)
+        XCTAssertEqual(popup.fontSize(14), 16)
         XCTAssertEqual(popup.fontSize(11.5), 12.5)
         XCTAssertEqual(popup.fontSize(10.5), 12.5)
         XCTAssertNotEqual(popup.fontSize(14), popup.fontSize(10.5))
@@ -72,7 +72,7 @@ final class ResearchReportReaderRenderingTests: XCTestCase {
         XCTAssertEqual(reader.sections, [.conclusion, .timeline, .verification, .sources])
         let scaled = ResearchReportPresentation.popup
             .scalingBodyFont(by: DynamicTypeSize.accessibility5.readerTextScale)
-        XCTAssertEqual(scaled.fontSize(14), 37.5, accuracy: 0.0001)
+        XCTAssertEqual(scaled.fontSize(14), 40, accuracy: 0.0001)
         XCTAssertEqual(scaled.fontSize(10.5), 31.25, accuracy: 0.0001)
 
         for theme in AppTheme.allCases {
@@ -169,7 +169,14 @@ final class ResearchReportReaderRenderingTests: XCTestCase {
         let reader = popupReader(report, isLegacy: true)
         XCTAssertEqual(reader.sections, [.conclusion, .verification])
         XCTAssertEqual(reader.presentation.visibleLimitations(in: report), "只覆盖公开披露，不评估未公开渠道。")
-        XCTAssertEqual(reader.presentation.verificationAnchor(in: report), .verification)
+        // The popup dropped the inline "view verification" jump: the fold strip
+        // is the single entrance to the detail chapters now, so an anchor here
+        // would be a second one. Limitations stay reachable through `sections`.
+        XCTAssertNil(reader.presentation.verificationAnchor(in: report))
+        XCTAssertEqual(
+            popupReader(report, isLegacy: true, showsSourceSection: true).sections,
+            [.conclusion, .verification]
+        )
         XCTAssertNil(ResearchReportPresentation.workspace.visibleLimitations(in: report))
         var evidenceOnly = report
         evidenceOnly.evidence = makeEvidence()
@@ -365,6 +372,127 @@ final class ResearchReportReaderRenderingTests: XCTestCase {
     }
 
     // MARK: - Chapters
+
+    func testPopupReadingSheetRendersFoldStripAndTimelineStrip() throws {
+        let output = try researchTestDirectory()
+            .appendingPathComponent("popup-reading-sheet", isDirectory: true)
+        try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+
+        // Long captions: six of them do not fit 584pt, so the strip must
+        // overflow and the badge path is actually exercised. Short titles
+        // ("节点 1") all fit, which is why the first version of this test never
+        // rendered a badge at all.
+        let report = makePopupStripReport(nodeCount: 6, titlePad: "每日额度与订阅方案")
+
+        XCTAssertEqual(
+            ResearchReportPresentation.popup.showsChapterNavigator, false,
+            "the popup spends its first screen on the report, not on a tab bar"
+        )
+        XCTAssertEqual(ResearchReportPresentation.popup.foldsDetailChapters, true)
+        XCTAssertEqual(ResearchReportPresentation.popup.titlePointSize, 22)
+
+        for theme in AppTheme.allCases {
+            for size in sizes {
+                try render(
+                    state: "popup-reading-sheet-collapsed",
+                    theme: theme,
+                    size: size,
+                    output: output,
+                    content: popupReader(report)
+                )
+            }
+        }
+    }
+
+    /// The badge path needs a strip that actually overflows, and the detail
+    /// chapters only exist while expanded. Neither had a rendering, so R03's
+    /// expanded state and R05's `+N` were unverified by the suite.
+    func testPopupReadingSheetRendersOverflowBadgeAndExpandedDetail() throws {
+        let output = try researchTestDirectory()
+            .appendingPathComponent("popup-reading-sheet-expanded", isDirectory: true)
+        try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+
+        let report = makePopupStripReport(nodeCount: 12, titlePad: "每日额度与订阅方案")
+
+        let defaults = TestIsolation.defaults
+        let previous = defaults.object(forKey: ResearchDetailDisclosureState.defaultsKey)
+        defaults.set(true, forKey: ResearchDetailDisclosureState.defaultsKey)
+        defer {
+            if let previous {
+                defaults.set(previous, forKey: ResearchDetailDisclosureState.defaultsKey)
+            } else {
+                defaults.removeObject(forKey: ResearchDetailDisclosureState.defaultsKey)
+            }
+        }
+
+        // Twelve captions do not fit, so this is the overflow state.
+        XCTAssertTrue(
+            ResearchTimelinePreview(
+                nodes: ReportPresentation(report: report, isLegacy: false).nodes
+            ).showsOverflow,
+            "the fixture must overflow or the badge is never drawn"
+        )
+
+        for theme in AppTheme.allCases {
+            for size in sizes {
+                // Expanded: the reader reads the defaults, so the three detail
+                // chapters are in the tree and get their own snapshot.
+                try render(
+                    state: "popup-reading-sheet-expanded",
+                    theme: theme,
+                    size: size,
+                    output: output,
+                    content: popupReader(report)
+                )
+            }
+        }
+    }
+
+    /// Six or twelve nodes with captions long enough to overflow a 584pt strip,
+    /// plus a mix of node states so the dots differ in shape and not only hue.
+    private func makePopupStripReport(nodeCount: Int, titlePad: String) -> BurstResearch {
+        let evidence = (1...4).map { index in
+            EvidenceItem(
+                id: "E\(index)",
+                url: "https://example.org/\(index)",
+                canonicalURL: "https://example.org/\(index)",
+                domain: "example.org",
+                title: "Source \(index)",
+                publishedAt: nil,
+                quote: "Quote \(index)",
+                quoteVerified: index <= 3,
+                stance: .supports,
+                tier: .major,
+                syndicationGroup: nil,
+                fetchedAt: .distantPast
+            )
+        }
+        var verification = VerificationReport()
+        verification.verdict = .mixed
+        verification.independentSources = 2
+        verification.claims = [
+            ClaimCheck(claim: "额度按功能类别划分", status: .supports, evidenceIDs: ["E1"], note: "")
+        ]
+        return BurstResearch(
+            summary: "苹果在测试版系统中为云端智能引入每日额度，超额后暂停高级请求，直到额度重置或升级 iCloud+。",
+            overview: "测试版先上线额度机制，随后公开按类别划分的细节。",
+            timeline: (1...nodeCount).map { index in
+                TimelineNode(
+                    date: "2026-11-\(String(format: "%02d", min(index, 28)))",
+                    title: "\(titlePad) \(index)",
+                    detail: "第 \(index) 个节点的细节。",
+                    sortDate: Date(timeIntervalSince1970: 1_700_000_000 + Double(index) * 86_400),
+                    precision: .day,
+                    evidenceIDs: ["E\(min(index, 4))"],
+                    confidence: index <= 3 ? .high : .medium
+                )
+            },
+            searchStatus: .succeeded,
+            evidence: evidence,
+            verification: verification,
+            limitations: "部分关键数字缺少一手确认。"
+        )
+    }
 
     func testSectionsIncludeVerificationAndSourcesWithEvidence() {
         let reader = ResearchReportReader(
