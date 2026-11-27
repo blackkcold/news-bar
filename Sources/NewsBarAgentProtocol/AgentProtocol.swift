@@ -97,6 +97,13 @@ public struct AgentCommand: Codable, Sendable {
         public var scope: String?
         public var refresh: Bool?
         public var query: String?
+        /// Research subject. Sanitized by the app before any record is created.
+        public var topic: String?
+        /// `quick` | `standard` | `deep`. Unknown values fall back to standard
+        /// rather than failing: the depth is a preference, not an identity.
+        public var depth: String?
+        /// Existing research record to read, for `research.status`.
+        public var recordID: String?
 
         public init(
             url: String? = nil,
@@ -109,7 +116,10 @@ public struct AgentCommand: Codable, Sendable {
             dryRun: Bool? = nil,
             scope: String? = nil,
             refresh: Bool? = nil,
-            query: String? = nil
+            query: String? = nil,
+            topic: String? = nil,
+            depth: String? = nil,
+            recordID: String? = nil
         ) {
             self.url = url
             self.urls = urls
@@ -122,6 +132,9 @@ public struct AgentCommand: Codable, Sendable {
             self.scope = scope
             self.refresh = refresh
             self.query = query
+            self.topic = topic
+            self.depth = depth
+            self.recordID = recordID
         }
     }
 }
@@ -136,6 +149,12 @@ public enum AgentCommandName: String, Codable, Sendable, CaseIterable {
     case rssImport = "rss.import"
     case rssExport = "rss.export"
     case refresh
+    /// Starts a research pass for a topic and returns immediately with a record
+    /// id. A deep pass takes minutes, so waiting for the report inside one
+    /// command would exceed any sane CLI timeout; `research.status` polls it.
+    case researchStart = "research.start"
+    /// Reads one record's run state, without touching it. Never starts a run.
+    case researchStatus = "research.status"
 }
 
 public struct AgentResult: Codable, Sendable {
@@ -176,6 +195,26 @@ public struct AgentResult: Codable, Sendable {
         public var running: Bool?
         public var appVersion: String?
         public var agentEnabled: Bool?
+        /// `research.start` / `research.status`.
+        public var recordID: String?
+        public var topic: String?
+        public var depth: String?
+        public var status: String?
+        public var phase: String?
+        public var summary: String?
+        public var evidenceCount: Int?
+        public var timelineCount: Int?
+        public var commentaryCount: Int?
+        public var verdict: String?
+        public var verdictStrength: Int?
+        public var searchCalls: Int?
+        public var aiCalls: Int?
+        public var pagesRead: Int?
+        public var queries: [String]?
+        public var limitations: String?
+        public var lastError: String?
+        public var isPartial: Bool?
+        public var generatedAt: String?
 
         public init(
             sources: [AgentSource]? = nil,
@@ -187,7 +226,26 @@ public struct AgentResult: Codable, Sendable {
             content: String? = nil,
             running: Bool? = nil,
             appVersion: String? = nil,
-            agentEnabled: Bool? = nil
+            agentEnabled: Bool? = nil,
+            recordID: String? = nil,
+            topic: String? = nil,
+            depth: String? = nil,
+            status: String? = nil,
+            phase: String? = nil,
+            summary: String? = nil,
+            evidenceCount: Int? = nil,
+            timelineCount: Int? = nil,
+            commentaryCount: Int? = nil,
+            verdict: String? = nil,
+            verdictStrength: Int? = nil,
+            searchCalls: Int? = nil,
+            aiCalls: Int? = nil,
+            pagesRead: Int? = nil,
+            queries: [String]? = nil,
+            limitations: String? = nil,
+            lastError: String? = nil,
+            isPartial: Bool? = nil,
+            generatedAt: String? = nil
         ) {
             self.sources = sources
             self.preview = preview
@@ -199,6 +257,25 @@ public struct AgentResult: Codable, Sendable {
             self.running = running
             self.appVersion = appVersion
             self.agentEnabled = agentEnabled
+            self.recordID = recordID
+            self.topic = topic
+            self.depth = depth
+            self.status = status
+            self.phase = phase
+            self.summary = summary
+            self.evidenceCount = evidenceCount
+            self.timelineCount = timelineCount
+            self.commentaryCount = commentaryCount
+            self.verdict = verdict
+            self.verdictStrength = verdictStrength
+            self.searchCalls = searchCalls
+            self.aiCalls = aiCalls
+            self.pagesRead = pagesRead
+            self.queries = queries
+            self.limitations = limitations
+            self.lastError = lastError
+            self.isPartial = isPartial
+            self.generatedAt = generatedAt
         }
     }
 
@@ -247,6 +324,12 @@ public enum AgentErrorCode: String, Codable, Sendable {
 public enum AgentTimestamp {
     public static func now() -> String {
         ISO8601DateFormatter().string(from: Date())
+    }
+
+    /// One format for every timestamp in an envelope, so a caller can compare
+    /// `completedAt` and a report's `generatedAt` without guessing.
+    public static func string(from date: Date) -> String {
+        ISO8601DateFormatter().string(from: date)
     }
 }
 

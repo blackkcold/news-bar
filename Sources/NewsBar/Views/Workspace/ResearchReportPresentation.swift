@@ -39,6 +39,33 @@ struct ResearchReportPresentation: Sendable {
     /// top of its detail area: two disclosures on the first screen compete for
     /// the same action, and only one of them can win.
     var showsOverviewInConclusion = true
+    /// Whether the conclusion's body copy is the overview rather than the
+    /// one-sentence summary. The popup turns this on: a reader opens a deep
+    /// research report to get material the article did not have, and a single
+    /// sentence of restatement is the opposite of that. The summary stays in
+    /// the data layer because the notification and the Markdown export use it.
+    var usesOverviewAsBody = false
+    /// Which parts of the conclusion's count line this host wants. The popup
+    /// asks for the evidence-only line: two of the five parts of the full line
+    /// were measured to be constant or duplicated across every report on this
+    /// machine, and a count that never varies teaches the reader to skip the
+    /// whole line. The workbench keeps everything.
+    var countLineScope: MetaScope = .all
+
+    /// The two shapes of the conclusion count line. Declared here rather than
+    /// in the section view because it is a presentation decision: both hosts
+    /// read the same report and ask for different parts of it.
+    enum MetaScope {
+        case all
+        case evidence
+    }
+
+    /// Whether the conclusion chapter still draws its own heading. The popup
+    /// turns this off because its body is the overview — what happened, why and
+    /// what changed — and a heading that says "Conclusion" over that copy names
+    /// something the paragraph is not. The workbench keeps it: its chapter tab
+    /// carries the same word and the heading anchors the scroll spy.
+    var hidesConclusionHeading = false
     /// The report title's point size. The workbench draws its own title, so
     /// only a presentation that owns the title sets this.
     var titlePointSize: CGFloat? = nil
@@ -60,7 +87,8 @@ struct ResearchReportPresentation: Sendable {
         showsChapterNavigator: false, foldsDetailChapters: true,
         showsMissingSummaryInConclusion: false, usesPlainCountLine: true,
         enablesTextSelection: true, showsOverviewInConclusion: false,
-        titlePointSize: 22
+        usesOverviewAsBody: true, countLineScope: .evidence,
+        hidesConclusionHeading: true, titlePointSize: 22
     )
 
     /// A reader that pins its own body size stops following the system's text
@@ -76,6 +104,11 @@ struct ResearchReportPresentation: Sendable {
 
     func title(_ section: ResearchReportSection) -> String {
         showsChapterNumbers ? "\(section.index) \(section.title)" : section.title
+    }
+
+    /// Whether a chapter's own heading is drawn above its content.
+    func showsHeading(_ section: ResearchReportSection) -> Bool {
+        !(section == .conclusion && hidesConclusionHeading)
     }
 
     /// The resolved point size for a fallback. Exposed so the hierarchy and its

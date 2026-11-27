@@ -67,15 +67,11 @@ struct ResearchReportConclusionSection: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            ResearchReaderHeading(section: .conclusion, symbol: "text.alignleft", focus: headingFocus)
-
-            if hasSummary {
-                Text(report.summary)
-                    .font(presentation.bodyFont(14, isRetro: isRetro))
-                    .lineSpacing(2)
-                    .textSelection(.enabled)
-                    .fixedSize(horizontal: false, vertical: true)
+            if presentation.showsHeading(.conclusion) {
+                ResearchReaderHeading(section: .conclusion, symbol: "text.alignleft", focus: headingFocus)
             }
+
+            bodyCopy
 
             // The meta strip is hidden only for a legacy report with no sources:
             // an explicit "0 sources" on an imported artifact that never had a
@@ -119,6 +115,42 @@ struct ResearchReportConclusionSection: View {
         .accessibilityElement(children: .contain)
     }
 
+    /// The chapter's reading copy.
+    ///
+    /// The popup shows the overview here, not the summary: a deep research
+    /// report exists to hand the reader material the original article did not
+    /// carry, and the summary is by definition a restatement of that article.
+    /// A report whose overview is missing falls back to the summary rather
+    /// than showing a blank body — old records always carry both, but the
+    /// contract must not depend on that.
+    ///
+    /// The copy is stacked paragraph by paragraph, because the model writes
+    /// 2–4 paragraphs separated by a blank line. Handing the whole string to a
+    /// single `Text` makes the paragraph gap identical to the line gap, and
+    /// the body reads as one undifferentiated block.
+    @ViewBuilder
+    private var bodyCopy: some View {
+        if presentation.usesOverviewAsBody, !trimmedOverview.isEmpty {
+            paragraphStack(trimmedOverview)
+        } else if hasSummary {
+            paragraphStack(report.summary)
+        }
+    }
+
+    private func paragraphStack(_ text: String) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            ForEach(Array(ResearchProseParagraphs.split(text).enumerated()), id: \.offset) { _, paragraph in
+                Text(paragraph)
+                    .font(presentation.bodyFont(14, isRetro: isRetro))
+                    .lineSpacing(5)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
     /// What chapter 01 must say out loud. A legacy report always gets the
     /// "re-run" note; the missing-evidence sentence is added only when there
     /// really is no evidence, because legacy imports usually keep theirs and a
@@ -143,6 +175,21 @@ struct ResearchReportConclusionSection: View {
         key == "research.report.searchFailed" ? "wifi.exclamationmark" : "info.circle"
     }
 
+    /// Which parts of the count line a host wants.
+    ///
+    /// The workbench is a management surface: it keeps every count. The popup
+    /// reads like a report, and two of the five parts of the full line were
+    /// measured to be dead weight on this machine's 36 reports — "quotes
+    /// verified N/N" was 155/155 in every one of them, and `independentSources`
+    /// equalled the distinct domain count with no exception because no evidence
+    /// item ever carried a `syndicationGroup`. Both are dropped there and the
+    /// slot goes to the best source tier, which explains the verdict instead of
+    /// restating it.
+    enum MetaScope {
+        case all
+        case evidence
+    }
+
     /// One honest count per line of the report. A modern report always shows its
     /// source count, including zero, so an empty evidence set is stated rather
     /// than silently dropped. A legacy report without evidence hides the line:
@@ -151,11 +198,12 @@ struct ResearchReportConclusionSection: View {
         report: BurstResearch,
         language: AppLanguage,
         isLegacy: Bool = false,
-        hasSupplementaryLinks: Bool = false
+        hasSupplementaryLinks: Bool = false,
+        scope: ResearchReportPresentation.MetaScope = .all
     ) -> String {
         let metrics = ResearchReportMetrics(report: report)
         var parts: [String] = []
-        if metrics.timelineNodeCount > 0 {
+        if metrics.timelineNodeCount > 0, scope == .all {
             if let span = metrics.displaySpanDays {
                 parts.append(L10n.string(
                     "research.report.meta.timeline",
@@ -172,35 +220,66 @@ struct ResearchReportConclusionSection: View {
             }
         }
         if metrics.evidenceCount > 0 || (!isLegacy && !hasSupplementaryLinks) {
-            parts.append(L10n.string(
-                "research.report.meta.sources",
-                language: language,
-                metrics.evidenceCount,
-                metrics.domainCount
-            ))
+            // The popup drops the domain count with the other duplicates: with
+            // no syndication group in any of the 36 reports measured here,
+            // "N domains" and "N sources" were the same number twice.
+            parts.append(scope == .all
+                ? L10n.string(
+                    "research.report.meta.sources",
+                    language: language,
+                    metrics.evidenceCount,
+                    metrics.domainCount
+                )
+                : L10n.string(
+                    "research.report.meta.sourcesPlain",
+                    language: language,
+                    metrics.evidenceCount
+                ))
         }
-        if metrics.verifiedQuoteCount > 0 {
-            parts.append(L10n.string(
-                "research.report.meta.quotes",
-                language: language,
-                metrics.verifiedQuoteCount,
-                metrics.evidenceCount
-            ))
-        }
-        if metrics.independentSourceCount > 0 {
-            parts.append(L10n.string(
-                "research.report.meta.independentSources",
-                language: language,
-                metrics.independentSourceCount
-            ))
+        if scope == .all {
+            if metrics.verifiedQuoteCount > 0 {
+                parts.append(L10n.string(
+                    "research.report.meta.quotes",
+                    language: language,
+                    metrics.verifiedQuoteCount,
+                    metrics.evidenceCount
+                ))
+            }
+            if metrics.independentSourceCount > 0 {
+                parts.append(L10n.string(
+                    "research.report.meta.independentSources",
+                    language: language,
+                    metrics.independentSourceCount
+                ))
+            }
+        } else if let quality = bestSourceQualityKey(for: report) {
+            parts.append(L10n.string(quality, language: language))
         }
         return parts.joined(separator: " · ")
+    }
+
+    /// The strongest tier present, in words a reader already understands. A
+    /// number ("tier 3") would need the reader to know that 1 is better than 3
+    /// before it means anything, which is the same tax the verdict pill charges.
+    ///
+    /// Nil for an empty evidence set: there is no quality to name, and a word
+    /// there would describe sources that do not exist.
+    static func bestSourceQualityKey(for report: BurstResearch) -> String? {
+        guard let best = report.evidence.map(\.tier.rawValue).min().flatMap(SourceTier.init(rawValue:))
+        else { return nil }
+        switch best {
+        case .primary: return "research.report.meta.sourceQuality.primary"
+        case .major: return "research.report.meta.sourceQuality.major"
+        case .industry: return "research.report.meta.sourceQuality.industry"
+        case .social: return "research.report.meta.sourceQuality.social"
+        }
     }
 
     private var metaText: String {
         Self.metaText(
             report: report, language: settings.appLanguage, isLegacy: isLegacy,
-            hasSupplementaryLinks: !supplementaryLinks.isEmpty
+            hasSupplementaryLinks: !supplementaryLinks.isEmpty,
+            scope: presentation.countLineScope
         )
     }
 

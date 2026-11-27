@@ -10,6 +10,44 @@ struct PlannedQuery: Sendable, Equatable {
     var recency: SearchRecency?
 }
 
+/// The five questions a reader actually asks about a news event. Extraction
+/// labels each fact with the one it answers, which is what turns a pile of
+/// quotes into coverage: an angle is "covered" only when at least two verified
+/// facts answer it.
+///
+/// This replaces the old plan of spending two search queries per angle. The
+/// pages were already fetched; the missing step was asking each page more than
+/// one question, and that costs no network at all.
+enum ResearchAngle: String, Codable, Sendable, CaseIterable {
+    /// What did it look like last time — year-over-year, prior rounds.
+    case time
+    /// How does it compare elsewhere — other markets, competitors, benchmarks.
+    case compare
+    /// Who gets what — rankings, shares, the shape of the outcome.
+    case structure
+    /// Why it happened and what it spills into.
+    case cause
+    /// What to watch next.
+    case next
+
+    /// Vocabulary for the extraction prompt, and the fallback classifier for a
+    /// model that returned facts without labels.
+    var keywords: [String] {
+        switch self {
+        case .time: return ["去年", "前年", "同期", "同比", "环比", "历年", "此前", "上一次",
+                            "last year", "previous", "year over year", "yoy", "prior"]
+        case .compare: return ["对比", "相比", "其他", "海外", "同行", "竞品", "基准",
+                               "compare", "versus", "vs", "other markets", "peer", "benchmark"]
+        case .structure: return ["排名", "份额", "占比", "前五", "结构", "构成", "分布",
+                                 "ranking", "share", "top five", "breakdown", "split"]
+        case .cause: return ["原因", "因为", "由于", "推动", "导致", "影响", "外溢", "政策", "补贴",
+                             "cause", "because", "driven by", "led to", "impact", "policy", "subsidy"]
+        case .next: return ["接下来", "预计", "即将", "前瞻", "观察", "下一季", "后续",
+                            "next", "expected", "outlook", "watch", "upcoming", "forecast"]
+        }
+    }
+}
+
 struct RawEvidence: Sendable, Equatable {
     /// 1-based index into the batch of documents sent with the extraction prompt.
     var sourceIndex: Int?
@@ -19,6 +57,9 @@ struct RawEvidence: Sendable, Equatable {
     var claim: String
     var stance: EvidenceStance
     var publishedAt: Date?
+    /// Which reader question this fact answers. Nil for an older model that
+    /// does not emit the field; coverage then infers it from the claim.
+    var angle: ResearchAngle? = nil
 }
 
 struct EvidenceCandidate: Sendable, Equatable {
@@ -29,6 +70,7 @@ struct EvidenceCandidate: Sendable, Equatable {
     var stance: EvidenceStance
     var publishedAt: Date?
     var fetchedAt: Date
+    var angle: ResearchAngle?
 
     init(
         url: String,
@@ -37,6 +79,7 @@ struct EvidenceCandidate: Sendable, Equatable {
         claim: String,
         stance: EvidenceStance,
         publishedAt: Date? = nil,
+        angle: ResearchAngle? = nil,
         fetchedAt: Date = Date()
     ) {
         self.url = url
@@ -45,6 +88,7 @@ struct EvidenceCandidate: Sendable, Equatable {
         self.claim = claim
         self.stance = stance
         self.publishedAt = publishedAt
+        self.angle = angle
         self.fetchedAt = fetchedAt
     }
 }
@@ -60,6 +104,10 @@ struct ResearchDraft: Sendable, Equatable {
     var conflicts: [String] = []
     var missing: [String] = []
     var limitations = ""
+    /// Positions the synthesis model claims to have found, before any gate runs.
+    /// Nothing here is trusted: `ResearchCommentaryValidator` re-checks every
+    /// field against the page that was actually read.
+    var commentary: [CommentaryCandidate] = []
 }
 
 /// Tolerant decoder for the three JSON contracts. Models wrap JSON in code
@@ -99,7 +147,8 @@ enum ResearchReportParser {
                 claim: string(item["claim"]),
                 stance: stance(item["stance"]),
                 publishedAt: date(item["publishedAt"], now: now)
-                    ?? date(item["published_at"], now: now)
+                    ?? date(item["published_at"], now: now),
+                angle: ResearchAngle(rawValue: string(item["angle"]).lowercased())
             )
         }
         return items
@@ -160,6 +209,7 @@ enum ResearchReportParser {
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
         draft.limitations = string(object["limitations"]).trimmingCharacters(in: .whitespacesAndNewlines)
+        draft.commentary = commentary(from: object["commentary"], now: now)
 
         guard !draft.summary.isEmpty || !draft.overview.isEmpty || !draft.timeline.isEmpty else {
             return nil
@@ -169,12 +219,47 @@ enum ResearchReportParser {
 
     // MARK: - Field coercion
 
+    /// Positions from the four quadrants. Every field is read leniently and
+    /// nothing is validated here: an unlabelled or malformed row is dropped, and
+    /// whatever survives still has to pass `ResearchCommentaryValidator`.
+    private static func commentary(
+        from value: Any?,
+        now: Date
+    ) -> [CommentaryCandidate] {
+        guard let rawItems = value as? [[String: Any]] else { return [] }
+        return rawItems.compactMap { item -> CommentaryCandidate? in
+            let speaker = string(item["speaker"]).trimmingCharacters(in: .whitespacesAndNewlines)
+            let quote = string(item["quote"]).trimmingCharacters(in: .whitespacesAndNewlines)
+            let url = string(item["url"]).trimmingCharacters(in: .whitespacesAndNewlines)
+            // Without an author, words, or a place to check them, there is
+            // nothing to verify and nothing to show.
+            guard !speaker.isEmpty, !quote.isEmpty, !url.isEmpty else { return nil }
+            return CommentaryCandidate(
+                era: CommentaryEra(rawValue: string(item["era"]).lowercased()) ?? .present,
+                origin: CommentaryOrigin(rawValue: string(item["origin"]).lowercased()) ?? .domestic,
+                speaker: speaker,
+                role: stringIfPresent(item["role"]),
+                quote: quote,
+                url: url,
+                publishedAt: date(item["publishedAt"], now: now),
+                evidenceID: stringIfPresent(item["evidenceID"])
+            )
+        }
+    }
+
     private static func string(_ value: Any?) -> String {
         switch value {
         case let value as String: return value
         case let value as NSNumber: return value.stringValue
         default: return ""
         }
+    }
+
+    /// Empty and whitespace-only strings mean "absent" in these contracts; an
+    /// empty `role` must not render an empty line under the speaker's name.
+    private static func stringIfPresent(_ value: Any?) -> String? {
+        let text = string(value).trimmingCharacters(in: .whitespacesAndNewlines)
+        return text.isEmpty ? nil : text
     }
 
     private static func int(_ value: Any?) -> Int? {

@@ -86,6 +86,10 @@ struct ResearchReportReader: View {
     var onOpenEventTimeline: (() -> Void)? = nil
     var topContent: AnyView? = nil
     var presentation: ResearchReportPresentation = .workspace
+    /// Reports the scroll content's natural height, so a host that sizes its
+    /// window to the report can use the measured value instead of a guess.
+    /// Not called for the workbench, which has a fixed window.
+    var onContentHeightChange: ((CGFloat) -> Void)? = nil
 
     /// The popup pins its own body size, which would otherwise stop following
     /// the system text size. Chapters read the resolved value from the
@@ -170,6 +174,13 @@ struct ResearchReportReader: View {
                     isAtContentEnd = metrics.contentHeight > metrics.viewportHeight + 1
                         && metrics.offsetY + metrics.viewportHeight >= metrics.contentHeight - 2
                     updateActiveSection(lastOffsets, chapters: chapters)
+                    // The natural height of the reading column. Measured here
+                    // rather than with a GeometryReader because the content
+                    // lives inside this scroll view: a nested reader would
+                    // report the viewport, which is what we already know.
+                    if let onContentHeightChange, metrics.contentHeight > 0 {
+                        onContentHeightChange(metrics.contentHeight)
+                    }
                 }
                 .onChange(of: WorkspaceReportDigest.make(report)) {
                     activeSection = .conclusion
@@ -235,18 +246,26 @@ struct ResearchReportReader: View {
                     detailStrip(chapters: chapters, timeline: timeline, using: proxy)
                 }
                 if disclosure.isExpanded {
-                    // Background reads as the first thing in the detail area:
-                    // it is context for the timeline, not a second disclosure
-                    // competing with the fold strip on the first screen.
-                    if let overview = publishedOverview(timeline) {
-                        ResearchReportOverviewBlock(text: overview)
-                    }
                     // 24pt between detail chapters: they are three answers to
                     // three different questions, and 20pt read as one block.
                     VStack(alignment: .leading, spacing: 24) {
-                        ForEach(detailChapters(chapters)) { section in
-                            sectionContent(section, timeline: timeline, links: links, using: proxy)
-                                .id(section.id)
+                        ForEach(
+                            Array(Self.detailBlocks(
+                                chapters: detailChapters(chapters),
+                                hasCommentary: !report.commentary.isEmpty
+                            ).enumerated()),
+                            id: \.offset
+                        ) { _, block in
+                            switch block {
+                            case let .chapter(section):
+                                sectionContent(section, timeline: timeline, links: links, using: proxy)
+                                    .id(section.id)
+                            case .commentary:
+                                ResearchCommentarySection(
+                                    commentary: report.commentary,
+                                    onOpenURL: onOpenURL
+                                )
+                            }
                         }
                     }
                 }
@@ -270,13 +289,50 @@ struct ResearchReportReader: View {
         chapters.filter { $0 != .conclusion }
     }
 
-    /// Background copy for the detail area, or nil when there is none or when
-    /// the conclusion already draws it. Only the popup moves it here; the
-    /// workbench keeps its inline disclosure untouched.
-    private func publishedOverview(_ timeline: BurstResearch) -> String? {
-        guard !presentation.showsOverviewInConclusion else { return nil }
-        let text = report.overview.trimmingCharacters(in: .whitespacesAndNewlines)
-        return text.isEmpty ? nil : text
+    /// One block in the popup's detail area. Chapter order comes from
+    /// `sections`; commentary is inserted rather than becoming a chapter, so the
+    /// workbench's chapter tab bar (driven by `allCases`) is untouched.
+    enum DetailBlock: Equatable {
+        case chapter(ResearchReportSection)
+        case commentary
+    }
+
+    /// Facts → what people think → how it was checked → where it came from.
+    ///
+    /// Commentary goes before verification because it is part of the reading,
+    /// not part of the audit trail: a reader who has just seen the events wants
+    /// the positions next, and only then the machinery. It goes after the
+    /// timeline because an opinion about an unexplained event is unreadable.
+    ///
+    /// An empty commentary list inserts nothing at all. Four empty cells,
+    /// "not available" placeholders or an empty box would all be worse than
+    /// silence.
+    static func detailBlocks(
+        chapters: [ResearchReportSection],
+        hasCommentary: Bool
+    ) -> [DetailBlock] {
+        var blocks: [DetailBlock] = []
+        var inserted = !hasCommentary
+        for chapter in chapters where chapter != .conclusion {
+            // Insert immediately before the first chapter that follows the
+            // facts. If verification never appears, the block still lands after
+            // whatever came before it.
+            if !inserted, chapter == .verification {
+                blocks.append(.commentary)
+                inserted = true
+            }
+            blocks.append(.chapter(chapter))
+        }
+        // No verification chapter at all: the block still belongs before the
+        // sources, or at the end when there are none.
+        if !inserted {
+            if let sourcesIndex = blocks.firstIndex(of: .chapter(.sources)) {
+                blocks.insert(.commentary, at: sourcesIndex)
+            } else {
+                blocks.append(.commentary)
+            }
+        }
+        return blocks
     }
 
     /// The preview strip and the fold control, in that order. Both are pinned
@@ -312,6 +368,7 @@ struct ResearchReportReader: View {
             }
             ResearchDetailFoldStrip(
                 isExpanded: disclosure.isExpanded,
+                report: timeline,
                 onToggle: {
                     ResearchDetailDisclosureState.persist(!disclosure.isExpanded)
                     withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) {

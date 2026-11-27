@@ -124,6 +124,14 @@ enum ReportValidator {
         let groupedEvidence = assignSyndicationGroups(mergedEvidence, documents: input.documents)
         let independentDomains = independentDomainSet(groupedEvidence)
 
+        /// Everything each cited page said, before `mergeSameURL` folded the
+        /// page down to one row. The title-figure check needs this: a figure can
+        /// legitimately live in a quote that is no longer its own evidence row.
+        var quotesByCanonicalURL: [String: [String]] = [:]
+        for item in evidence {
+            quotesByCanonicalURL[item.canonicalURL, default: []].append(item.quote)
+        }
+
         var limitations: [String] = []
         if !input.draft.limitations.isEmpty {
             limitations.append(input.draft.limitations)
@@ -239,6 +247,23 @@ enum ReportValidator {
             )
         }
 
+        // A quantitative title is the most useful line on the popup's first
+        // screen and the easiest one to fabricate. The check warns only: the
+        // node keeps its citations so the reader can see the sources for
+        // themselves and decide.
+        let unsupportedFigureCount = TimelineTitleFigures.unsupportedTitles(
+            in: BurstResearch(timeline: timeline, evidence: groupedEvidence),
+            extraQuotesByCanonicalURL: quotesByCanonicalURL
+        ).count
+        if unsupportedFigureCount > 0 {
+            limitations.append(
+                L10n.string(
+                    "research.limitation.unverifiedFigures",
+                    language: input.language
+                )
+            )
+        }
+
         if !groupedEvidence.isEmpty,
            groupedEvidence.allSatisfy({ $0.tier.rawValue >= 3 }) {
             limitations.append(L10n.string("research.limitation.lowTier", language: input.language))
@@ -267,7 +292,18 @@ enum ReportValidator {
             generatedAt: input.now,
             promptVersion: ResearchPrompts.version,
             depth: input.depth,
-            method: input.method
+            method: input.method,
+            // Commentary passes its own gates, all deterministic. It never
+            // touches the verdict or the source count: it answers "what do
+            // people think", not "what happened".
+            commentary: ResearchCommentaryValidator.accepted(
+                input.draft.commentary,
+                // A snippet is not a page. Gate 1 asks whether the speaker
+                // appears in the source body, and a short snippet cannot answer
+                // that, so only fetched pages may vouch for an attribution.
+                documents: input.documents.filter { $0.value.isFullText },
+                language: input.language
+            )
         )
 
         if verification.verdict == .unverified,
@@ -327,7 +363,8 @@ enum ReportValidator {
                     stance: candidate.stance,
                     tier: info.tier,
                     syndicationGroup: nil,
-                    fetchedAt: candidate.fetchedAt
+                    fetchedAt: candidate.fetchedAt,
+                    angle: candidate.angle
                 )
             )
         }

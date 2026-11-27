@@ -382,6 +382,25 @@ struct TransientResearchReportView: View {
     let onClose: () -> Void
     let onOpenWorkspace: () -> Void
     let onOpenEventTimeline: () -> Void
+    /// Reports the height the window needs for what is on screen right now.
+    /// The view measures; the host decides, because only the host knows the
+    /// screen the panel sits on.
+    var onContentHeightChange: (CGFloat) -> Void = { _ in }
+
+    /// Below this the report stops reading as a page: the title plus three
+    /// lines of body no longer fit.
+    static let minimumWidth: CGFloat = 620
+    /// Content floor, excluding the title bar. Matches `ResearchPanelSizing`'s
+    /// frame floor once the title bar is added back.
+    static let minimumContentHeight: CGFloat = ResearchPanelSizing.minimumFrameHeight
+        - ResearchPanelSizing.titlebarHeight
+
+    /// The header is outside the reader's scroll view, so its height is added
+    /// to the measured content instead of being included in it. A fixed value
+    /// would drift as soon as the tag row gains or loses a line.
+    @State private var headerHeight: CGFloat = 0
+    /// Height of the reading column as the reader last measured it.
+    @State private var readerContentHeight: CGFloat = 0
 
     private var english: Bool { settings.appLanguage == .en }
     private var reportTitle: String {
@@ -396,6 +415,10 @@ struct TransientResearchReportView: View {
     var body: some View {
         VStack(spacing: 0) {
             header
+                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height in
+                    headerHeight = height
+                    reportCurrentHeight()
+                }
             Divider()
             if !model.didLoad {
                 ProgressView(english ? "Loading research…" : "正在载入研究报告…")
@@ -429,15 +452,27 @@ struct TransientResearchReportView: View {
                     onOpenURL: openEvidenceURL,
                     onOpenEventTimeline: onOpenEventTimeline,
                     topContent: changes,
-                    presentation: .popup
+                    presentation: .popup,
+                    onContentHeightChange: { height in
+                        readerContentHeight = height
+                        reportCurrentHeight()
+                    }
                 )
                 .environment(\.researchReportCitations, citations)
                 .id(model.readingID)
             } else {
                 noReport
+                    .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height in
+                        readerContentHeight = height
+                        reportCurrentHeight()
+                    }
             }
         }
-        .frame(minWidth: 620, minHeight: 560)
+        // The popup sizes itself to the report. The floor stays at what a
+        // readable page needs; the ceiling belongs to the host, which knows the
+        // screen. No explicit height here: a second constraint would fight the
+        // measured value and reintroduce the empty half-window this replaces.
+        .frame(minWidth: Self.minimumWidth, minHeight: Self.minimumContentHeight)
         .appThemeSurface()
         .background(Color(nsColor: .windowBackgroundColor))
         .adaptiveColorScheme()
@@ -456,6 +491,15 @@ struct TransientResearchReportView: View {
         .onReceive(NotificationCenter.default.publisher(for: .newsEventsChanged)) { _ in
             Task { await model.reload() }
         }
+    }
+
+    /// What the window needs for the current state, sent to the host as one
+    /// number. The header and the reading column are measured separately
+    /// because the reader's scroll view cannot report the header, and the
+    /// header's height changes with the title and the tag row.
+    private func reportCurrentHeight() {
+        guard headerHeight > 0, readerContentHeight > 0 else { return }
+        onContentHeightChange(headerHeight + readerContentHeight)
     }
 
     private var header: some View {

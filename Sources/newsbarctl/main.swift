@@ -19,10 +19,15 @@ USAGE
   newsbarctl rss export <file|-> [--format opml|json] [--all] [--json]
   newsbarctl refresh [--json]
   newsbarctl recommend summary --window 7d|30d [--json]
+  newsbarctl research start <topic> [--depth quick|standard|deep] [--json]
+  newsbarctl research status <topic> | --record <id> [--json]
 
   recommend summary reads one fixed aggregate from the running app. It never
   launches NewsBar, never writes a command queue and returns app_unavailable
   when the app is not running or no authorization is active.
+
+  research start queues one research pass and returns its record id at once;
+  a deep pass takes minutes, so poll it with research status.
 
 OPTIONS
   --json            Print the full result envelope as one JSON object
@@ -60,6 +65,8 @@ private struct Options {
     var refresh = false
     var dryRun = false
     var all = false
+    var depth: String?
+    var recordID: String?
 }
 
 private func parseOptions(_ args: ArraySlice<String>) throws -> Options {
@@ -100,6 +107,18 @@ private func parseOptions(_ args: ArraySlice<String>) throws -> Options {
         case "--window":
             guard let value = iterator.next() else { throw CLIError.usage("--window wants 7d or 30d") }
             options.window = value.lowercased()
+        case "--depth":
+            guard let value = iterator.next() else { throw CLIError.usage("--depth wants quick, standard or deep") }
+            let normalized = value.lowercased()
+            guard ["quick", "standard", "deep"].contains(normalized) else {
+                throw CLIError.usage("--depth must be quick, standard or deep")
+            }
+            options.depth = normalized
+        case "--record":
+            guard let value = iterator.next(), !value.isEmpty else {
+                throw CLIError.usage("--record wants a research record id")
+            }
+            options.recordID = value
         case "--timeout":
             guard let value = iterator.next(), let seconds = Double(value), seconds > 0 else {
                 throw CLIError.usage("--timeout wants a positive number of seconds")
@@ -234,6 +253,32 @@ private func printResult(_ result: AgentResult, json: Bool) -> Int32 {
         print("Added \(data?.added ?? 0), skipped \(data?.skipped ?? 0).")
     case AgentCommandName.refresh.rawValue:
         print("Refresh requested.")
+    case AgentCommandName.researchStart.rawValue:
+        let id = data?.recordID ?? "?"
+        let topic = data?.topic ?? ""
+        let depth = data?.depth ?? "?"
+        print("Research queued: \(id) · \(depth) · \(topic)")
+        print("Track it with: newsbarctl research status --record \(id)")
+    case AgentCommandName.researchStatus.rawValue:
+        let status = data?.status ?? "?"
+        let topic = data?.topic ?? ""
+        let phase = data?.phase ?? "?"
+        let evidence = data?.evidenceCount ?? 0
+        let timeline = data?.timelineCount ?? 0
+        let commentary = data?.commentaryCount ?? 0
+        let verdict = data?.verdict ?? "—"
+        let strength = data?.verdictStrength.map(String.init) ?? "—"
+        let search = data?.searchCalls ?? 0
+        let ai = data?.aiCalls ?? 0
+        print("\(status) · \(phase) · \(topic)")
+        print("evidence \(evidence) · timeline \(timeline) · commentary \(commentary)")
+        print("verdict \(verdict) (\(strength)) · search \(search) · ai \(ai)")
+        if let error = data?.lastError, !error.isEmpty {
+            print("error: \(error)")
+        }
+        if let generatedAt = data?.generatedAt {
+            print("generated: \(generatedAt)")
+        }
     default:
         if let content = data?.content {
             print(content)
@@ -462,6 +507,37 @@ private func runRefresh(_ options: Options) throws -> Int32 {
     return printResult(result, json: options.json)
 }
 
+// MARK: - Research
+
+/// Starts a research pass. Returns as soon as the job is queued: a deep pass
+/// takes minutes, and waiting here would exceed any sensible CLI timeout.
+private func runResearchStart(_ options: Options) throws -> Int32 {
+    let topic = options.positionals.joined(separator: " ")
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !topic.isEmpty else {
+        throw CLIError.usage("research start needs a topic")
+    }
+    var payload = AgentCommand.Payload(topic: topic)
+    if let depth = options.depth { payload.depth = depth }
+    // A research start writes a record and spends budget, so it waits for the
+    // app's answer instead of only dropping the file.
+    let result = try send(makeCommand(.researchStart, payload: payload), options: options)
+    return printResult(result, json: options.json)
+}
+
+private func runResearchStatus(_ options: Options) throws -> Int32 {
+    let topic = options.positionals.joined(separator: " ")
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !topic.isEmpty || options.recordID != nil else {
+        throw CLIError.usage("research status needs a topic or --record <id>")
+    }
+    var payload = AgentCommand.Payload()
+    if !topic.isEmpty { payload.topic = topic }
+    if let recordID = options.recordID { payload.recordID = recordID }
+    let result = try send(makeCommand(.researchStatus, payload: payload), options: options)
+    return printResult(result, json: options.json)
+}
+
 private func runRecommendSummary(_ options: Options) throws -> Int32 {
     guard let raw = options.window else {
         throw CLIError.usage("recommend summary needs --window 7d or 30d")
@@ -518,6 +594,18 @@ private func main() -> Int32 {
                 return try runRecommendSummary(options)
             default:
                 throw CLIError.usage("Unknown recommend subcommand: \(subcommand)")
+            }
+        case "research":
+            guard !args.isEmpty else { throw CLIError.usage("research needs a subcommand") }
+            let subcommand = args.removeFirst()
+            let options = try parseOptions(args[...])
+            switch subcommand {
+            case "start":
+                return try runResearchStart(options)
+            case "status":
+                return try runResearchStatus(options)
+            default:
+                throw CLIError.usage("Unknown research subcommand: \(subcommand)")
             }
         case "rss":
             guard !args.isEmpty else { throw CLIError.usage("rss needs a subcommand") }

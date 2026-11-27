@@ -88,6 +88,11 @@ struct BurstResearch: Codable, Hashable, Sendable {
     var promptVersion: Int = 0
     var depth: ResearchDepth = .standard
     var method: ResearchMethod? = nil
+    /// Positions on the event from four quadrants (past/present × domestic/
+    /// foreign). Parallel to `evidence`, never part of it: commentary answers
+    /// "what do people think" and must not move the verdict or the independent
+    /// source count. Empty for a report produced before this field existed.
+    var commentary: [CommentaryItem] = []
 
     init(
         summary: String = "",
@@ -103,7 +108,8 @@ struct BurstResearch: Codable, Hashable, Sendable {
         generatedAt: Date? = nil,
         promptVersion: Int = 0,
         depth: ResearchDepth = .standard,
-        method: ResearchMethod? = nil
+        method: ResearchMethod? = nil,
+        commentary: [CommentaryItem] = []
     ) {
         self.summary = summary
         self.overview = overview
@@ -119,11 +125,13 @@ struct BurstResearch: Codable, Hashable, Sendable {
         self.promptVersion = promptVersion
         self.depth = depth
         self.method = method
+        self.commentary = commentary
     }
 
     enum CodingKeys: String, CodingKey {
         case summary, overview, timeline, sources, needsRefetch, refetchURLs, searchStatus
         case evidence, verification, limitations, generatedAt, promptVersion, depth, method
+        case commentary
     }
 
     init(from decoder: Decoder) throws {
@@ -142,6 +150,9 @@ struct BurstResearch: Codable, Hashable, Sendable {
         promptVersion = try container.decodeIfPresent(Int.self, forKey: .promptVersion) ?? 0
         depth = try container.decodeIfPresent(ResearchDepth.self, forKey: .depth) ?? .standard
         method = try container.decodeIfPresent(ResearchMethod.self, forKey: .method)
+        // Reports written before commentary existed decode to an empty list;
+        // an older build never sees the key at all.
+        commentary = try container.decodeIfPresent([CommentaryItem].self, forKey: .commentary) ?? []
     }
 
     func encode(to encoder: Encoder) throws {
@@ -160,6 +171,7 @@ struct BurstResearch: Codable, Hashable, Sendable {
         try container.encode(promptVersion, forKey: .promptVersion)
         try container.encode(depth, forKey: .depth)
         try container.encodeIfPresent(method, forKey: .method)
+        try container.encode(commentary, forKey: .commentary)
     }
 }
 

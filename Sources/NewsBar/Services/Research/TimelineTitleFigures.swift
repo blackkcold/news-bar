@@ -1,0 +1,84 @@
+import Foundation
+
+/// Checks the one thing a quantitative timeline title can lie about: its
+/// numbers.
+///
+/// The popup's first screen shows capsule titles, so a title like "销量降 17%"
+/// is the highest-value line in the report — and the easiest one for a model to
+/// invent. Every number in a title must appear verbatim in one of the quotes
+/// that node cites. Anything else is reported to the reader as a limitation.
+///
+/// Nothing is deleted and no ID is cleared: an unsupported number is a reason
+/// to warn, not a reason to throw away the node and its citations. The same
+/// verbatim principle already governs quotes elsewhere in the report.
+enum TimelineTitleFigures {
+    /// Titles that claim a number their own citations do not contain.
+    ///
+    /// `extraQuotesByCanonicalURL` carries quotes from the cited pages that the
+    /// report itself folded away. `mergeSameURL` keeps one row per page, so a
+    /// figure may sit in a quote that is no longer its own row while the title
+    /// legitimately cites that page. Without these, the check accused correct
+    /// titles of inventing figures — measured on a real deep run, 2 of 8 titles.
+    static func unsupportedTitles(
+        in report: BurstResearch,
+        extraQuotesByCanonicalURL: [String: [String]] = [:]
+    ) -> [String] {
+        let quotesByID = Dictionary(
+            report.evidence.map { ($0.id, $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
+
+        return report.timeline.compactMap { node -> String? in
+            let figures = numbers(in: node.title)
+            guard !figures.isEmpty else { return nil }
+            // A node with no citations is already reported as unsourced. Saying
+            // it again as a numeric problem would describe one defect twice.
+            guard !node.evidenceIDs.isEmpty else { return nil }
+
+            let cited = node.evidenceIDs.compactMap { quotesByID[$0] }
+            guard !cited.isEmpty else { return nil }
+
+            // A cited page vouches with everything it said, not only with the
+            // one quote that survived merging.
+            var texts = cited.map(\.quote)
+            for item in cited {
+                texts.append(contentsOf: extraQuotesByCanonicalURL[item.canonicalURL] ?? [])
+            }
+
+            let supported = Set(texts.flatMap { numbers(in: $0) })
+            return figures.allSatisfy { supported.contains($0) } ? nil : node.title
+        }
+    }
+
+    /// Every number in a string, normalized so formatting differences do not
+    /// read as different values: "2,840", "2840" and "２８４０" are one number.
+    ///
+    /// Only ASCII digits count. `Character.isNumber` is true for CJK numerals
+    /// too — "一" in "另一件事" would read as the number 1 — which would accuse
+    /// correct Chinese titles of inventing figures. Chinese numerals are
+    /// deliberately not parsed: "前三名" makes a claim this check cannot
+    /// verify, and mapping it would manufacture false accusations.
+    static func numbers(in text: String) -> [String] {
+        let normalized = text.folding(
+            options: [.widthInsensitive],
+            locale: Locale(identifier: "en_US_POSIX")
+        )
+        var figures: [String] = []
+        var current = ""
+        for character in normalized {
+            if character.isASCII, character.isNumber {
+                current.append(character)
+            } else if character == "," || character == "，" || character == " " {
+                // A separator inside a figure continues it; anywhere else it
+                // ends the figure. The distinction falls out of the next
+                // character, so the separator is simply skipped here.
+                continue
+            } else if !current.isEmpty {
+                figures.append(current)
+                current = ""
+            }
+        }
+        if !current.isEmpty { figures.append(current) }
+        return figures
+    }
+}

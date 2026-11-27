@@ -580,6 +580,94 @@ final class ReportValidatorTests: XCTestCase {
         XCTAssertTrue(report.limitations.contains(L10n.string("research.limitation.truncated", language: .en)))
     }
 
+    /// A quantitative timeline title is the most useful line on the popup's
+    /// first screen and the easiest one to fabricate. The validator is where
+    /// the deterministic check belongs: the model never grades its own numbers.
+    func testUnsupportedTitleNumberAddsLimitationWithoutDroppingTheNode() {
+        var draft = ResearchDraft()
+        draft.summary = "摘要"
+        draft.overview = "背景。"
+        draft.timeline = [
+            TimelineNode(
+                date: "2026-10-01",
+                title: "销量降 17%",
+                detail: "",
+                evidenceIDs: ["E1"],
+                confidence: .high
+            )
+        ]
+
+        let quote = "公司确认新品将于十月发布，未披露具体幅度。"
+        let report = ReportValidator.validate(
+            input(
+                draft: draft,
+                candidates: [
+                    EvidenceCandidate(
+                        url: "https://www.reuters.com/a",
+                        title: "Reuters",
+                        quote: quote,
+                        claim: "发布",
+                        stance: .supports,
+                        publishedAt: now
+                    )
+                ],
+                documents: [document("https://www.reuters.com/a", title: "Reuters", text: quote)],
+                plannedClaims: ["发布"]
+            )
+        )
+
+        XCTAssertEqual(report.timeline.count, 1, "An unsupported number warns; it does not delete evidence.")
+        XCTAssertEqual(report.timeline.first?.title, "销量降 17%")
+        XCTAssertEqual(report.timeline.first?.evidenceIDs, ["E1"])
+        XCTAssertTrue(
+            report.limitations.contains(
+                L10n.string("research.limitation.unverifiedFigures", language: .en)
+            )
+        )
+    }
+
+    /// A supported number must not trigger the warning, or the line becomes
+    /// noise on every report that happens to quote a figure correctly.
+    func testSupportedTitleNumberDoesNotAddLimitation() {
+        var draft = ResearchDraft()
+        draft.summary = "摘要"
+        draft.overview = "背景。"
+        draft.timeline = [
+            TimelineNode(
+                date: "2026-10-01",
+                title: "销量 2840 万台",
+                detail: "",
+                evidenceIDs: ["E1"],
+                confidence: .high
+            )
+        ]
+
+        let quote = "今年双十一手机销量 2,840 万台，同比下降。"
+        let report = ReportValidator.validate(
+            input(
+                draft: draft,
+                candidates: [
+                    EvidenceCandidate(
+                        url: "https://www.reuters.com/a",
+                        title: "Reuters",
+                        quote: quote,
+                        claim: "销量",
+                        stance: .supports,
+                        publishedAt: now
+                    )
+                ],
+                documents: [document("https://www.reuters.com/a", title: "Reuters", text: quote)],
+                plannedClaims: ["销量"]
+            )
+        )
+
+        XCTAssertFalse(
+            report.limitations.contains(
+                L10n.string("research.limitation.unverifiedFigures", language: .en)
+            )
+        )
+    }
+
     func testZeroEvidenceProducesNoClaimsEvenWhenClaimsWerePlanned() {
         var draft = ResearchDraft()
         draft.summary = "背景梳理"

@@ -10,15 +10,26 @@ import NewsBarAgentProtocol
 final class AgentCommandService {
     private let settings: AppSettings
     private let refreshAction: () -> Void
+    /// Nil until the orchestrator exists. A research command that arrives
+    /// before that answers `app_unavailable` instead of pretending to queue.
+    private let research: ResearchAgentHooks?
 
     private var source: DispatchSourceFileSystemObject?
     private var inboxDescriptor: Int32 = -1
     private var isProcessing = false
+    /// Set when a scan is refused because one is already running, so the
+    /// in-flight drain can pick the work up instead of dropping it.
+    private var needsRescan = false
     private var pendingScan: DispatchWorkItem?
     private var recentCommandTimes: [Date] = []
 
-    init(settings: AppSettings, refreshAction: @escaping () -> Void) {
+    init(
+        settings: AppSettings,
+        research: ResearchAgentHooks? = nil,
+        refreshAction: @escaping () -> Void
+    ) {
         self.settings = settings
+        self.research = research
         self.refreshAction = refreshAction
     }
 
@@ -71,21 +82,36 @@ final class AgentCommandService {
     // MARK: - Queue
 
     private func processPending() {
-        guard !isProcessing else { return }
+        guard !isProcessing else {
+            // A scan that lands mid-flight must not be dropped silently. The
+            // command it would have picked up lives in the inbox until some
+            // later write happens to sweep it up, which is a timing-dependent
+            // hole rather than a designed behaviour. Set a flag and let the
+            // running drain pick it up.
+            needsRescan = true
+            return
+        }
         isProcessing = true
-        defer { isProcessing = false }
-
-        for url in AgentFile.pendingCommands().prefix(50) {
-            processCommand(at: url)
+        Task { @MainActor in
+            defer { isProcessing = false }
+            // Drain, then check whether anything arrived while we were busy.
+            // `handle` is async now, so the inbox can change under the loop;
+            // without this the trailing scan would be lost.
+            repeat {
+                needsRescan = false
+                for url in AgentFile.pendingCommands().prefix(50) {
+                    await processCommand(at: url)
+                }
+            } while needsRescan
         }
     }
 
-    private func processCommand(at url: URL) {
+    private func processCommand(at url: URL) async {
         let fileID = url.deletingPathExtension().lastPathComponent
         do {
             let data = try AgentFile.read(url)
             let command = try JSONDecoder().decode(AgentCommand.self, from: data)
-            let result = handle(command)
+            let result = await handle(command)
             persist(result, id: command.id)
             archive(url, id: command.id)
             audit(command, result)
@@ -103,7 +129,7 @@ final class AgentCommandService {
 
     // MARK: - Dispatch
 
-    private func handle(_ command: AgentCommand) -> AgentResult {
+    private func handle(_ command: AgentCommand) async -> AgentResult {
         guard command.schemaVersion == AgentProtocol.version else {
             return failure(command, .schemaUnsupported, "Unsupported schema version \(command.schemaVersion)")
         }
@@ -115,6 +141,10 @@ final class AgentCommandService {
         }
 
         switch command.command {
+        case .researchStart:
+            return await researchStartResult(command)
+        case .researchStatus:
+            return await researchStatusResult(command)
         case .status:
             return statusResult(command)
         case .rssList:
@@ -133,6 +163,90 @@ final class AgentCommandService {
             return refreshResult(command)
         }
     }
+
+    // MARK: - Research
+
+    private func researchStartResult(_ command: AgentCommand) async -> AgentResult {
+        guard let research else {
+            return failure(command, .appUnavailable, "Research is not available yet")
+        }
+        let topic = SecurityPolicies
+            .sanitizeUserInput(command.payload.topic ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !topic.isEmpty else {
+            return failure(command, .invalidCommand, "Missing topic")
+        }
+        guard topic.count <= 200 else {
+            return failure(command, .invalidCommand, "Topic is too long")
+        }
+        let requested = ResearchDepth(rawValue: (command.payload.depth ?? "").lowercased())
+        let depth = requested ?? .standard
+
+        switch await research.start(topic, depth) {
+        case let .started(recordID, resolvedTopic, resolvedDepth):
+            return success(
+                command,
+                data: .init(recordID: recordID, topic: resolvedTopic, depth: resolvedDepth.rawValue)
+            )
+        case let .alreadyActive(recordID):
+            return success(command, data: .init(running: true, recordID: recordID))
+        case .queueFull:
+            return failure(
+                command,
+                .limitExceeded,
+                "Too many research jobs are already running or queued"
+            )
+        case .persistenceFailed:
+            return failure(command, .ioError, "Could not write the research record")
+        case .unavailable:
+            return failure(command, .appUnavailable, "Research could not start for that topic")
+        }
+    }
+
+    private func researchStatusResult(_ command: AgentCommand) async -> AgentResult {
+        guard let research else {
+            return failure(command, .appUnavailable, "Research is not available yet")
+        }
+        let recordID = command.payload.recordID?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let topic = command.payload.topic?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard recordID?.isEmpty == false || topic?.isEmpty == false else {
+            return failure(command, .invalidCommand, "Needs recordID or topic")
+        }
+
+        guard let snapshot = await research.snapshot(recordID, topic) else {
+            return failure(command, .notFound, "No such research record")
+        }
+
+        let generatedAt = snapshot.generatedAt.map { AgentTimestamp.string(from: $0) }
+        return success(
+            command,
+            data: .init(
+                recordID: snapshot.recordID,
+                topic: snapshot.topic,
+                depth: snapshot.depth.rawValue,
+                status: snapshot.status.rawValue,
+                phase: snapshot.phase.rawValue,
+                summary: snapshot.summary,
+                evidenceCount: snapshot.evidenceCount,
+                timelineCount: snapshot.timelineCount,
+                commentaryCount: snapshot.commentaryCount,
+                verdict: snapshot.verdict?.rawValue,
+                verdictStrength: snapshot.verdictStrength,
+                searchCalls: snapshot.searchCalls,
+                aiCalls: snapshot.aiCalls,
+                pagesRead: snapshot.pagesRead,
+                queries: snapshot.queries,
+                limitations: snapshot.limitations,
+                lastError: snapshot.lastError,
+                isPartial: snapshot.isPartial,
+                generatedAt: generatedAt
+            )
+        )
+    }
+
+    // MARK: - Hosts
 
     private func statusResult(_ command: AgentCommand) -> AgentResult {
         success(

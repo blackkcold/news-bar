@@ -22,6 +22,22 @@ enum ResearchAutomationPolicy {
     static let urgentWindow: TimeInterval = 2 * 60 * 60
     static let maximumUrgentExtras = 2
 
+    /// How many user/agent-requested research jobs may be running or waiting.
+    ///
+    /// Automatic runs are capped at one, because a feed refresh must never stack
+    /// work nobody asked for. An explicit request is different — it may be
+    /// legitimate to queue a few — but "explicit" is not "unlimited": the CLI's
+    /// `research start` can be called in a loop, and each job costs real search
+    /// and AI budget. Measured before this cap existed: nothing bounded the
+    /// manual queue at all, so distinct topics could pile up without limit and
+    /// then drain on later days against a fresh daily allowance.
+    static let maxActiveManualRuns = 3
+
+    /// Whether one more explicit research request may be admitted.
+    static func allowsManualAdmission(activeManualRuns: Int) -> Bool {
+        activeManualRuns < maxActiveManualRuns
+    }
+
     static func ordinaryDailyTarget(taskCap: Int) -> Int {
         max(0, min(ordinaryDailyTaskTarget, taskCap))
     }

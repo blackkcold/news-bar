@@ -17,7 +17,7 @@
   "release_branch": true,
   "auto_merge": false,
   "release_note_style": "structured-cn",
-  "summary": "将 agent CLI 拆为独立 NewsBarAgent 进程，App 入口只保留同步 runApp()；agent 显式隔离，store-summary 读真实副本，doctor 报告真实/隔离根",
-  "summary_en": "Move the agent CLI into a separate NewsBarAgent process; keep the app entry synchronous, isolate the agent explicitly, and report real versus effective store roots",
+  "summary": "深度研究引擎重写：抽取打五角度标签并按缺口补搜、四象限评论带三道确定性核验、时间线标题量化，弹窗首屏更安静；新增 newsbarctl research 入口",
+  "summary_en": "Rework the deep-research engine: label extracted facts by the question they answer, close gaps with a bounded second round, add four-quadrant commentary behind deterministic gates, quantify timeline titles, and expose research through newsbarctl",
   "validation": ""
 }
