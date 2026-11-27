@@ -6,6 +6,9 @@ final class AgentCommandServiceTests: XCTestCase {
 
     private var root: URL!
     private var service: AgentCommandService?
+    /// Whether the cached `service` was built with research hooks. Tests that
+    /// assert the no-hooks path must not inherit one that has them.
+    private var serviceHasResearch = false
     private var settings: AppSettings!
 
     override func setUpWithError() throws {
@@ -23,6 +26,7 @@ final class AgentCommandServiceTests: XCTestCase {
     override func tearDownWithError() throws {
         service?.stop()
         service = nil
+        serviceHasResearch = false
         unsetenv("NEWSBAR_AGENT_ROOT")
         try? FileManager.default.removeItem(at: root)
         TestIsolation.defaults.removeObject(forKey: "rssSources")
@@ -279,9 +283,15 @@ final class AgentCommandServiceTests: XCTestCase {
     }
 
     private func run(_ command: AgentCommand, research: ResearchAgentHooks?) throws -> AgentResult {
-        if service == nil || research != nil {
+        // The cached service is only reusable while it was built with the same
+        // research wiring. Reusing a service that has hooks in a test that
+        // asserts the no-hooks path is how CI failed while this file passed
+        // locally: the order of tests decided which wiring the assertion saw.
+        let needsRebuild = service == nil || (serviceHasResearch != (research != nil))
+        if needsRebuild {
             service?.stop()
             service = AgentCommandService(settings: settings, research: research) {}
+            serviceHasResearch = research != nil
             service?.start()
         }
         try AgentFile.write(
