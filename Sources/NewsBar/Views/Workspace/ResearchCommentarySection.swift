@@ -12,11 +12,20 @@ import SwiftUI
 struct ResearchCommentarySection: View {
     @Environment(AppSettings.self) private var settings
     @Environment(\.researchReportPresentation) private var presentation
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     let commentary: [CommentaryItem]
     let onOpenURL: (String, String) -> Void
 
     private var isRetro: Bool { settings.appTheme == .retroEditorial }
+
+    /// The quadrant label is pinned point size, so it does not follow the
+    /// system's text size on its own. It is the only thing on the row that says
+    /// whose view this is, and the copy it introduces scales: left fixed, at
+    /// `.accessibility3` the argument grew to ~32pt while its label stayed 9.5.
+    private var quadrantPointSize: CGFloat {
+        9.5 * dynamicTypeSize.readerTextScale
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -34,7 +43,7 @@ struct ResearchCommentarySection: View {
     private func row(_ item: CommentaryItem) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             Text(ResearchCommentarySection.quadrantLabel(item, language: settings.appLanguage))
-                .font(.system(size: 9.5, weight: .black, design: isRetro ? .serif : .default))
+                .font(.system(size: quadrantPointSize, weight: .black, design: isRetro ? .serif : .default))
                 .tracking(isRetro ? 0.7 : 0.25)
                 .foregroundStyle(.secondary)
 
@@ -76,9 +85,15 @@ struct ResearchCommentarySection: View {
     /// paraphrase is the model's summary of a position, so it carries no quote
     /// marks and says so — presenting an approximation in quotation marks is the
     /// one failure this feature exists to prevent.
+    ///
+    /// Every mark around the words follows the interface language. They were
+    /// hard-coded full-width, so an English reader saw
+    /// `Alice Brown（Reuters）："…"` — a Chinese colon and Chinese parentheses
+    /// around an English name, and VoiceOver in English read the same marks.
     private func attributed(_ item: CommentaryItem) -> AttributedString {
+        let marks = CommentaryMarks(language: settings.appLanguage)
         var text = AttributedString()
-        let role = item.role.map { "（\($0)）" } ?? ""
+        let role = item.role.map { "\(marks.openParen)\($0)\(marks.closeParen)" } ?? ""
         let name = AttributedString("\(item.speaker)\(role)")
         var namePart = name
         namePart.font = .system(
@@ -87,12 +102,10 @@ struct ResearchCommentarySection: View {
             design: isRetro ? .serif : .default
         )
         text.append(namePart)
-        text.append(AttributedString("："))
+        text.append(AttributedString(marks.colon))
 
         var words = AttributedString(
-            item.isParaphrase
-                ? item.quote
-                : (settings.appLanguage == .zh ? "「\(item.quote)」" : "\u{201C}\(item.quote)\u{201D}")
+            item.isParaphrase ? item.quote : "\(marks.openQuote)\(item.quote)\(marks.closeQuote)"
         )
         if item.isParaphrase {
             words.foregroundColor = .secondary
@@ -102,12 +115,56 @@ struct ResearchCommentarySection: View {
     }
 
     private func accessibilityLabel(_ item: CommentaryItem) -> String {
+        let marks = CommentaryMarks(language: settings.appLanguage)
         let quadrant = ResearchCommentarySection.quadrantLabel(item, language: settings.appLanguage)
         let kind = item.isParaphrase
             ? L10n.string("research.report.commentary.paraphrase", language: settings.appLanguage)
             : L10n.string("research.report.commentary.quoted", language: settings.appLanguage)
-        let role = item.role.map { "，\($0)" } ?? ""
-        return "\(quadrant)，\(item.speaker)\(role)，\(kind)：\(item.quote)"
+        let role = item.role.map { "\(marks.phraseSeparator)\($0)" } ?? ""
+        return [
+            quadrant,
+            "\(item.speaker)\(role)",
+            kind,
+            item.quote,
+        ].joined(separator: marks.clauseSeparator)
+    }
+}
+
+/// The marks that frame a quoted opinion, in the interface's own language.
+///
+/// Extracted so the visible row and the accessibility label cannot drift apart,
+/// and so "which marks" is one decision rather than five scattered ternaries.
+struct CommentaryMarks {
+    let openQuote: String
+    let closeQuote: String
+    let openParen: String
+    let closeParen: String
+    let colon: String
+    /// Between clauses of the accessibility label, which also separates the
+    /// sentence-level parts of that label.
+    let clauseSeparator: String
+    /// Between an entity and its qualifier, e.g. a name and a title.
+    let phraseSeparator: String
+
+    init(language: AppLanguage) {
+        switch language {
+        case .zh:
+            openQuote = "「"
+            closeQuote = "」"
+            openParen = "（"
+            closeParen = "）"
+            colon = "："
+            clauseSeparator = "，"
+            phraseSeparator = "，"
+        case .en:
+            openQuote = "\u{201C}"
+            closeQuote = "\u{201D}"
+            openParen = " ("
+            closeParen = ")"
+            colon = ": "
+            clauseSeparator = ", "
+            phraseSeparator = ", "
+        }
     }
 }
 

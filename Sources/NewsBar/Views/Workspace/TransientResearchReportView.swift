@@ -392,13 +392,13 @@ struct TransientResearchReportView: View {
     static let minimumWidth: CGFloat = 620
     /// Content floor, excluding the title bar. Matches `ResearchPanelSizing`'s
     /// frame floor once the title bar is added back.
-    static let minimumContentHeight: CGFloat = ResearchPanelSizing.minimumFrameHeight
-        - ResearchPanelSizing.titlebarHeight
+    static let minimumContentHeight: CGFloat = ResearchPanelSizing.minimumContentHeight
 
-    /// The header is outside the reader's scroll view, so its height is added
+    /// The chrome is outside the reader's scroll view, so its height is added
     /// to the measured content instead of being included in it. A fixed value
-    /// would drift as soon as the tag row gains or loses a line.
-    @State private var headerHeight: CGFloat = 0
+    /// would drift as soon as the tag row gains or loses a line, or a banner
+    /// appears.
+    @State private var chromeHeight: CGFloat = 0
     /// Height of the reading column as the reader last measured it.
     @State private var readerContentHeight: CGFloat = 0
 
@@ -414,31 +414,21 @@ struct TransientResearchReportView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            header
+            // Everything above the reader is measured as one block, not just the
+            // header. The update banner and the task-status row are between them
+            // and are as fixed as the header; leaving them out sized the panel
+            // ~35–45pt shorter than its content, which produced a scrollbar and a
+            // clipped last line on exactly the states that create them — a re-run
+            // (banner) and a pass still in flight (status).
+            chrome
                 .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height in
-                    headerHeight = height
+                    chromeHeight = height
                     reportCurrentHeight()
                 }
-            Divider()
             if !model.didLoad {
                 ProgressView(english ? "Loading research…" : "正在载入研究报告…")
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if let report = model.displayedReport {
-                if model.availableRecord != nil {
-                    updateAvailableBanner
-                    Divider()
-                } else if let status = model.currentTaskStatus, status.isActive || status == .failed {
-                    Label(
-                        taskLabel(status),
-                        systemImage: status.isActive ? "clock" : "exclamationmark.circle"
-                    )
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 18)
-                    .padding(.vertical, 7)
-                    Divider()
-                }
                 let changes: AnyView? = {
                     guard model.isShowingChanges,
                           let previous = model.previousVersion,
@@ -493,13 +483,48 @@ struct TransientResearchReportView: View {
         }
     }
 
+    /// Everything above the reader's scroll view: the header, the update banner
+    /// and the task-status row.
+    ///
+    /// All three are fixed height and all three are outside what the reader
+    /// measures, so they are stacked in one view and measured as one block. They
+    /// used to be siblings of the reader with only the header measured, which
+    /// sized the panel ~35–45pt shorter than its content on exactly the states
+    /// that create the other two: a re-run (banner) and a pass still in flight
+    /// (status). Keeping them together means a future row cannot be added to the
+    /// panel without being included in the measurement.
+    private var chrome: some View {
+        VStack(spacing: 0) {
+            header
+            Divider()
+            if model.didLoad, model.displayedReport != nil {
+                if model.availableRecord != nil {
+                    updateAvailableBanner
+                    Divider()
+                } else if let status = model.currentTaskStatus, status.isActive || status == .failed {
+                    Label(
+                        taskLabel(status),
+                        systemImage: status.isActive ? "clock" : "exclamationmark.circle"
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 18)
+                    .padding(.vertical, 7)
+                    Divider()
+                }
+            }
+        }
+    }
+
     /// What the window needs for the current state, sent to the host as one
-    /// number. The header and the reading column are measured separately
-    /// because the reader's scroll view cannot report the header, and the
-    /// header's height changes with the title and the tag row.
+    /// number. The chrome and the reading column are measured separately
+    /// because the reader's scroll view cannot report anything above it, and the
+    /// chrome's height changes with the title, the tag row, the update banner
+    /// and the task-status row.
     private func reportCurrentHeight() {
-        guard headerHeight > 0, readerContentHeight > 0 else { return }
-        onContentHeightChange(headerHeight + readerContentHeight)
+        guard chromeHeight > 0, readerContentHeight > 0 else { return }
+        onContentHeightChange(chromeHeight + readerContentHeight)
     }
 
     private var header: some View {

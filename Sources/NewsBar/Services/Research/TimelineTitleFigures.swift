@@ -58,27 +58,66 @@ enum TimelineTitleFigures {
     /// correct Chinese titles of inventing figures. Chinese numerals are
     /// deliberately not parsed: "前三名" makes a claim this check cannot
     /// verify, and mapping it would manufacture false accusations.
+    /// The shortest figure worth checking.
+    ///
+    /// A single digit cannot be told apart from a label that happens to contain
+    /// one — "Q3", "5G", "第一名" — so checking it produces accusations a reader
+    /// cannot act on. A warning that fires on correct reports is worse than an
+    /// unchecked one-digit claim: it teaches the reader to skip the line that
+    /// also carries the real warnings.
+    static let minimumCheckedDigits = 2
+
     static func numbers(in text: String) -> [String] {
-        let normalized = text.folding(
+        let normalized = Array(text.folding(
             options: [.widthInsensitive],
             locale: Locale(identifier: "en_US_POSIX")
-        )
+        ))
         var figures: [String] = []
         var current = ""
-        for character in normalized {
+        var index = 0
+        while index < normalized.count {
+            let character = normalized[index]
             if character.isASCII, character.isNumber {
                 current.append(character)
-            } else if character == "," || character == "，" || character == " " {
-                // A separator inside a figure continues it; anywhere else it
-                // ends the figure. The distinction falls out of the next
-                // character, so the separator is simply skipped here.
+                index += 1
                 continue
-            } else if !current.isEmpty {
+            }
+            if (character == "," || character == "，"),
+               !current.isEmpty,
+               Self.groupsExactlyThreeDigits(normalized, from: index + 1) {
+                // A comma continues a figure only when it groups three digits.
+                // Skipping every separator merged separate figures: "Q3 17%"
+                // parsed as the single number 317, so the quote's 17 could never
+                // support it and a correct title was reported as inventing a
+                // figure. A space is not a thousands separator at all — it ends
+                // the figure.
+                index += 1
+                continue
+            }
+            if !current.isEmpty {
                 figures.append(current)
                 current = ""
             }
+            index += 1
         }
         if !current.isEmpty { figures.append(current) }
-        return figures
+        return figures.filter { $0.count >= Self.minimumCheckedDigits }
+    }
+
+    /// Whether the run of digits starting at `index` is exactly three long.
+    /// "2,840" groups, "增长，17%" does not, and "2,8400" is not a grouping.
+    private static func groupsExactlyThreeDigits(
+        _ characters: [Character],
+        from index: Int
+    ) -> Bool {
+        var count = 0
+        var position = index
+        while position < characters.count,
+              characters[position].isASCII,
+              characters[position].isNumber {
+            count += 1
+            position += 1
+        }
+        return count == 3
     }
 }

@@ -54,18 +54,77 @@ enum QuoteVerifier {
         return whole.count >= minimumSegmentLength ? [whole] : []
     }
 
-    static func verified(quote: String, in pageText: String) -> Bool {
-        let segments = segments(of: quote)
-        guard !segments.isEmpty else { return false }
-        let page = normalize(pageText)
-        guard !page.isEmpty else { return false }
+    /// How much of a quote the page actually contains.
+    ///
+    /// Kept separate from `verified` because the two questions differ. "Are these
+    /// the speaker's exact words" keeps the 0.6 threshold above; "did the speaker
+    /// say anything like this at all" is a much weaker bar, and it is the bar
+    /// that decides whether an item is a loose quotation or an invention. A
+    /// quote sharing nothing with the page is not a paraphrase: there is no
+    /// evidence the position was ever stated.
+    struct Match: Equatable, Sendable {
+        /// Segments that were long enough to check.
+        var segments: Int
+        /// Segments that appear verbatim in the page.
+        var hits: Int
+        /// True when the page contains at least one normalized run of the quote
+        /// of the required length. A shortened or reworded real sentence keeps a
+        /// run; a sentence the model wrote for a person the page merely mentions
+        /// does not.
+        var sharesRun: Bool
 
-        var hits = 0
-        for segment in segments where page.contains(segment) {
-            hits += 1
+        /// Verbatim enough to render in quote marks. Unchanged rule.
+        var isVerified: Bool {
+            guard hits >= 1, segments > 0 else { return false }
+            return Double(hits) / Double(segments) >= QuoteVerifier.minimumHitRatio
         }
-        guard hits >= 1 else { return false }
-        return Double(hits) / Double(segments.count) >= minimumHitRatio
+    }
+
+    /// The shortest run that counts as the same words.
+    ///
+    /// Not a flat `minimumSegmentLength`: a short item ("销量好于预期") can never
+    /// contain an eight-character run and would be dropped for being brief
+    /// rather than for being invented. Half the quote's length, capped at the
+    /// segment threshold, keeps short real items and long fabrications apart.
+    static func requiredRun(for quote: String) -> Int {
+        let count = normalize(quote).count
+        guard count > 0 else { return minimumSegmentLength }
+        return min(minimumSegmentLength, max(2, count / 2))
+    }
+
+    /// Whether any window of `length` characters in the quote appears in the page.
+    static func sharesRun(_ quote: String, page: String, length: Int) -> Bool {
+        let characters = Array(quote)
+        guard length > 0, characters.count >= length, !page.isEmpty else { return false }
+        var start = 0
+        while start + length <= characters.count {
+            if page.contains(String(characters[start..<(start + length)])) { return true }
+            start += 1
+        }
+        return false
+    }
+
+    static func match(quote: String, in pageText: String) -> Match {
+        let segments = segments(of: quote)
+        let page = normalize(pageText)
+        var hits = 0
+        if !page.isEmpty {
+            hits = segments.filter { page.contains($0) }.count
+        }
+        let normalizedQuote = normalize(quote)
+        return Match(
+            segments: segments.count,
+            hits: hits,
+            sharesRun: sharesRun(
+                normalizedQuote,
+                page: page,
+                length: requiredRun(for: quote)
+            )
+        )
+    }
+
+    static func verified(quote: String, in pageText: String) -> Bool {
+        match(quote: quote, in: pageText).isVerified
     }
 }
 

@@ -19,6 +19,15 @@ enum ResearchPanelSizing {
     /// includes it; getting this wrong clips the last 28pt of content.
     static let titlebarHeight: CGFloat = 28
 
+    /// The floor expressed in content coordinates.
+    ///
+    /// `contentMinSize` and the SwiftUI content minimum are both content
+    /// heights, so both must be the frame floor minus the title bar. Derived
+    /// here rather than at each call site: one caller subtracted it and the
+    /// other did not, which made the window's real minimum 28pt taller than the
+    /// rules allow.
+    static let minimumContentHeight: CGFloat = minimumFrameHeight - titlebarHeight
+
     /// Slack so an exact fit cannot produce a scrollbar from sub-pixel rounding.
     static let breathingRoom: CGFloat = 2
 

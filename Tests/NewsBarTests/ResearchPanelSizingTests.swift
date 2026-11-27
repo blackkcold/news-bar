@@ -98,6 +98,18 @@ final class ResearchPanelSizingTests: XCTestCase {
         XCTAssertFalse(ResearchReportPresentation.workspace.usesOverviewAsBody)
     }
 
+    /// The paragraph layout belongs to the popup. Both hosts render this view,
+    /// so a change here reaches the workbench as well — and the workbench's
+    /// summary briefly lost its own line spacing to exactly that. The switch
+    /// makes the choice explicit instead of implied by the body text.
+    func testOnlyThePopupSplitsTheBodyIntoParagraphs() {
+        XCTAssertTrue(ResearchReportPresentation.popup.splitsBodyIntoParagraphs)
+        XCTAssertFalse(
+            ResearchReportPresentation.workspace.splitsBodyIntoParagraphs,
+            "the workbench shares this view and must keep its single-Text body"
+        )
+    }
+
     func testPopupReaderSectionsDoNotDependOnTheBodyChoice() {
         // Swapping the body must not add or remove a chapter.
         var report = BurstResearch(summary: "一句话。", overview: "一段背景。")

@@ -124,16 +124,29 @@ struct ResearchReportConclusionSection: View {
     /// than showing a blank body — old records always carry both, but the
     /// contract must not depend on that.
     ///
-    /// The copy is stacked paragraph by paragraph, because the model writes
-    /// 2–4 paragraphs separated by a blank line. Handing the whole string to a
-    /// single `Text` makes the paragraph gap identical to the line gap, and
-    /// the body reads as one undifferentiated block.
+    /// The popup stacks the copy paragraph by paragraph, because the model
+    /// writes 2–4 paragraphs separated by a blank line and handing the whole
+    /// string to a single `Text` makes the paragraph gap identical to the line
+    /// gap. The workbench keeps its one `Text` with its own line spacing; this
+    /// view is shared, so the decision belongs to `presentation`.
     @ViewBuilder
     private var bodyCopy: some View {
-        if presentation.usesOverviewAsBody, !trimmedOverview.isEmpty {
-            paragraphStack(trimmedOverview)
-        } else if hasSummary {
-            paragraphStack(report.summary)
+        let text = presentation.usesOverviewAsBody && !trimmedOverview.isEmpty
+            ? trimmedOverview
+            : (hasSummary ? report.summary : "")
+        if text.isEmpty {
+            EmptyView()
+        } else if presentation.splitsBodyIntoParagraphs {
+            paragraphStack(text)
+        } else {
+            // The workbench's rendering, unchanged: one run of text, line
+            // spacing 2. It was briefly routed through the paragraph stack,
+            // which restyled a host outside this work's scope.
+            Text(text)
+                .font(presentation.bodyFont(14, isRetro: isRetro))
+                .lineSpacing(2)
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 
