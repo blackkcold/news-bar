@@ -285,10 +285,19 @@ struct ResearchPipeline: Sendable {
 
     // MARK: - Search rounds
 
+    /// Why a pass stopped early.
+    enum StopKind: Equatable, Sendable {
+        /// The user or the session ended the pass. Nothing more may be spent.
+        case cancelled
+        /// The task's wall clock ran out. What has already been gathered stays
+        /// usable: dropping it turns a recoverable pass into a lost one.
+        case timeout
+    }
+
     /// Why a search round stopped before its plan was exhausted.
     private enum SearchRoundAbort: Error {
         case cancelled
-        case stopped(String)
+        case stopped(StopKind)
         /// The ledger could not record the spent requests. Continuing would
         /// spend budget the app cannot account for.
         case ledger
@@ -321,13 +330,13 @@ struct ResearchPipeline: Sendable {
         language: AppLanguage,
         settle: () -> Bool,
         onWave: (_ completedInWave: Int) async -> Void,
-        stopReason: () async -> String?
+        stopReason: () async -> StopKind?
     ) async throws -> SearchWaveResult {
         var result = SearchWaveResult()
         var offset = 0
 
         while offset < plan.count {
-            if let reason = await stopReason() { throw SearchRoundAbort.stopped(reason) }
+            if let kind = await stopReason() { throw SearchRoundAbort.stopped(kind) }
             // A query needs at least one dispatch, so a wave wider than the
             // remaining budget would only manufacture budget-exhausted failures
             // that say nothing about the providers.
@@ -481,17 +490,25 @@ struct ResearchPipeline: Sendable {
             return .failure(message)
         }
 
-        func checkStop() async -> String? {
-            if Task.isCancelled {
-                return L10n.string("research.error.cancelled", language: language)
-            }
-            if await configuration.isAllowed() == false {
-                return L10n.string("research.error.cancelled", language: language)
-            }
+        /// Why the pass must stop. Callers that only need to abort use
+        /// `checkStop()`; the gap round needs the distinction, because a
+        /// timeout there should cost the follow-up round, not the report the
+        /// first round already built.
+        func checkStopKind() async -> StopKind? {
+            if Task.isCancelled { return .cancelled }
+            if await configuration.isAllowed() == false { return .cancelled }
             if now().timeIntervalSince(startedAt) > DepthProfile.taskTimeout {
-                return L10n.string("research.error.timeout", language: language)
+                return .timeout
             }
             return nil
+        }
+
+        func checkStop() async -> String? {
+            switch await checkStopKind() {
+            case .cancelled: return L10n.string("research.error.cancelled", language: language)
+            case .timeout: return L10n.string("research.error.timeout", language: language)
+            case nil: return nil
+            }
         }
 
         func callAI(_ request: AIChatRequest) async -> AIChatResponse? {
@@ -694,7 +711,7 @@ struct ResearchPipeline: Sendable {
                         state.queriesCompleted += completed
                         await progress(snapshot(.searching))
                     },
-                    stopReason: checkStop
+                    stopReason: checkStopKind
                 )
                 anySearchSucceeded = round.anySucceeded
                 anySearchFailed = round.anyFailed
@@ -705,9 +722,15 @@ struct ResearchPipeline: Sendable {
             } catch SearchRoundAbort.cancelled {
                 _ = settleSearchCalls()
                 return await fail(L10n.string("research.error.cancelled", language: language))
-            } catch let SearchRoundAbort.stopped(reason) {
+            } catch let SearchRoundAbort.stopped(kind) {
                 _ = settleSearchCalls()
-                return await fail(reason)
+                switch kind {
+                case .cancelled:
+                    return await fail(L10n.string("research.error.cancelled", language: language))
+                case .timeout:
+                    // Nothing has been read yet, so there is no report to save.
+                    return await fail(L10n.string("research.error.timeout", language: language))
+                }
             } catch SearchRoundAbort.ledger {
                 return await fail(budgetMessage())
             } catch {
@@ -1094,7 +1117,7 @@ struct ResearchPipeline: Sendable {
                             state.queriesCompleted += completed
                             await progress(snapshot(.searching))
                         },
-                        stopReason: checkStop
+                        stopReason: checkStopKind
                     )
                     gapHits = round.hits
                     // Only the queries the round actually dispatched. When the
@@ -1109,9 +1132,18 @@ struct ResearchPipeline: Sendable {
                 } catch SearchRoundAbort.cancelled {
                     _ = settleSearchCalls()
                     return await fail(L10n.string("research.error.cancelled", language: language))
-                } catch let SearchRoundAbort.stopped(reason) {
+                } catch let SearchRoundAbort.stopped(kind) {
                     _ = settleSearchCalls()
-                    return await fail(reason)
+                    switch kind {
+                    case .cancelled:
+                        return await fail(L10n.string("research.error.cancelled", language: language))
+                    case .timeout:
+                        // The round is an addition, not the report. Round one
+                        // already searched, read and extracted; throwing that
+                        // away because the follow-up ran out of clock turns a
+                        // usable report into "timed out, nothing saved".
+                        state.partial = true
+                    }
                 } catch SearchRoundAbort.ledger {
                     return await fail(budgetMessage())
                 } catch {
@@ -1144,7 +1176,17 @@ struct ResearchPipeline: Sendable {
             if !fresh.isEmpty {
                 await progress(snapshot(.reading))
                 for start in stride(from: 0, to: fresh.count, by: 3) {
-                    if let reason = await checkStop() { return await fail(reason) }
+                    // The gap round is an addition to the report, not the report
+                    // itself. Running out of clock here degrades it; only an
+                    // explicit cancellation ends the pass.
+                    let stop = await checkStopKind()
+                    if stop == .cancelled {
+                        return await fail(L10n.string("research.error.cancelled", language: language))
+                    }
+                    if stop == .timeout {
+                        state.partial = true
+                        break
+                    }
                     let chunk = Array(fresh[start..<min(start + 3, fresh.count)])
                     do {
                         try await withThrowingTaskGroup(of: ResearchDocument?.self) { group in
@@ -1176,13 +1218,27 @@ struct ResearchPipeline: Sendable {
                 orderedDocuments.append(document)
             }
             state.pagesRead = orderedDocuments.filter(\.isFullText).count
-            state.partial = state.pagesRead == 0
+            // Never clear a degradation that already happened. This was a plain
+            // assignment, so a failed extraction batch before the gap round
+            // (which sets `partial = true`) was erased here as soon as the
+            // round had read a page — and the report was stored as `.ready`
+            // with an entire batch of pages never turned into evidence.
+            state.partial = state.partial || state.pagesRead == 0
 
             let gapDocuments = gapRead.filter(\.isFullText)
             if !gapDocuments.isEmpty {
                 await progress(snapshot(.extracting))
                 for start in stride(from: 0, to: gapDocuments.count, by: 2) {
-                    if let reason = await checkStop() { return await fail(reason) }
+                    // Same rule as the read loop above: a timeout stops the
+                    // follow-up round, it does not discard the first round.
+                    let stop = await checkStopKind()
+                    if stop == .cancelled {
+                        return await fail(L10n.string("research.error.cancelled", language: language))
+                    }
+                    if stop == .timeout {
+                        state.partial = true
+                        break
+                    }
                     let batch = Array(gapDocuments[start..<min(start + 2, gapDocuments.count)])
                     guard let response = await callAI(
                         AIChatRequest(
@@ -1338,7 +1394,7 @@ struct ResearchPipeline: Sendable {
         case .none:
             // Either it parsed, or there is nothing a second call would add.
             state.truncated = response.truncated
-            state.partial = state.truncated
+            state.partial = state.partial || state.truncated
 
         case .enlargeBudget:
             let retryRequest = AIChatRequest(
@@ -1356,7 +1412,7 @@ struct ResearchPipeline: Sendable {
             } else {
                 state.truncated = true
             }
-            state.partial = state.truncated
+            state.partial = state.partial || state.truncated
 
         case .repair:
             let repair = ResearchPrompts.repairUserPrompt(

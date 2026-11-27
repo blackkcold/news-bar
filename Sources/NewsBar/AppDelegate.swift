@@ -70,6 +70,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     /// keeps the size the user chose, until they reset it by double-clicking
     /// the title bar.
     private var transientResearchSizeIsUserChosen = false
+    /// The last content height the report view reported. Kept so the reset
+    /// gesture can refit without waiting for another layout pass.
+    private var transientResearchContentHeight: CGFloat = 0
     /// True while the report panel is closing because the workspace took over,
     /// so the close path does not restore the window behind it or hide the Dock.
     private var isHandingOffTransientReport = false
@@ -1302,12 +1305,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 defer: false
             )
             panel.title = settings.appLanguage == .en ? "Research report" : "研究报告"
-            // The floor belongs to the sizing rules, which express it in frame
-            // coordinates: `contentMinSize` includes the title bar, and a value
-            // copied from the SwiftUI content floor would clip that much again.
+            // `contentMinSize` is expressed in content coordinates, which
+            // exclude the title bar, while the sizing rules speak in frame
+            // coordinates, which include it. Feeding the frame floor to it made
+            // the window's real minimum 28pt taller than the rules allow: the
+            // 480 `frameHeight` returns could never be applied because AppKit
+            // clamped every setFrame to 508, so each measurement issued a no-op
+            // and a short report showed a band of dead space. The view already
+            // publishes the same floor; use it instead of re-deriving it here.
             panel.contentMinSize = NSSize(
                 width: TransientResearchReportView.minimumWidth,
-                height: ResearchPanelSizing.minimumFrameHeight
+                height: TransientResearchReportView.minimumContentHeight
             )
             panel.isReleasedWhenClosed = false
             panel.hidesOnDeactivate = false
@@ -1326,6 +1334,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                     },
                     onContentHeightChange: { [weak self, weak panel] contentHeight in
                         guard let self, let panel else { return }
+                        self.transientResearchContentHeight = contentHeight
                         self.fitTransientResearchPanel(panel, contentHeight: contentHeight)
                     }
                 )
@@ -1458,14 +1467,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
 
     /// Double-clicking the title bar is the standard macOS "put it back" gesture;
-    /// here it also hands the height back to the content. The view reports a
-    /// fresh measurement on the next layout pass, and `fitTransientResearchPanel`
-    /// then applies it.
+    /// here it also hands the height back to the content.
+    ///
+    /// Returning `true` let AppKit zoom the panel first, and the next content
+    /// measurement immediately refit it back — a flicker that looked like a
+    /// no-op, and an actual no-op when the zoomed height already matched. The
+    /// reset is applied directly from the last measurement instead, so the
+    /// gesture has one visible effect: the panel returns to its content height.
     @MainActor
     func windowShouldZoom(_ window: NSWindow, toFrame newFrame: NSRect) -> Bool {
         guard window === transientResearchWindow else { return true }
         transientResearchSizeIsUserChosen = false
-        return true
+        // The panel is held as `NSPanel` already; re-deriving it from the
+        // `NSWindow` argument would need a forced cast for no reason.
+        if let panel = transientResearchWindow, transientResearchContentHeight > 0 {
+            fitTransientResearchPanel(panel, contentHeight: transientResearchContentHeight)
+        }
+        return false
     }
 
     @MainActor
@@ -1476,6 +1494,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         transientResearchModel = nil
         isUserResizingTransientResearch = false
         transientResearchSizeIsUserChosen = false
+        // The next report gets its own measurement. Keeping this one would let
+        // the reset gesture fit a new report to the previous report's height.
+        transientResearchContentHeight = 0
         let returnWindow = transientResearchReturnWindow
         transientResearchReturnWindow = nil
         if let returnWindow, returnWindow.isVisible {

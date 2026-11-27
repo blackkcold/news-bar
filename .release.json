@@ -17,7 +17,7 @@
   "release_branch": true,
   "auto_merge": false,
   "release_note_style": "structured-cn",
-  "summary": "深度研究引擎重写：抽取打五角度标签并按缺口补搜、四象限评论带三道确定性核验、时间线标题量化，弹窗首屏更安静；新增 newsbarctl research 入口",
-  "summary_en": "Rework the deep-research engine: label extracted facts by the question they answer, close gaps with a bounded second round, add four-quadrant commentary behind deterministic gates, quantify timeline titles, and expose research through newsbarctl",
+  "summary": "深度研究复核修复：降级标记不再被覆盖、补搜超时不再丢弃报告、评论转述必须有原文依据、弹窗测高补齐、数字校验与工作台正文恢复",
+  "summary_en": "Harden the deep-research pass: degradations survive the gap round, a gap-round timeout no longer discards round one, commentary must share text with its source, the popup measures every fixed row, and the workbench body is restored",
   "validation": ""
 }

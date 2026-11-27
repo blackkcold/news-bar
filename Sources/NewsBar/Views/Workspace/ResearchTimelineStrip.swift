@@ -310,6 +310,7 @@ enum ResearchDetailFoldPreview {
 
 struct ResearchDetailFoldStrip: View {
     @Environment(AppSettings.self) private var settings
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     let isExpanded: Bool
     /// The report the strip stands in front of. Passed as data, not as a
@@ -323,6 +324,13 @@ struct ResearchDetailFoldStrip: View {
         ResearchDetailFoldPreview.make(report: report, language: settings.appLanguage)
     }
 
+    /// The strip is pinned point size, so it does not follow the system's text
+    /// size on its own. It sits on the same screen as body copy that does, and
+    /// at enlarged sizes a fixed strip reads as chrome that shrank.
+    private func scaled(_ size: CGFloat) -> CGFloat {
+        size * dynamicTypeSize.readerTextScale
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             Rectangle()
@@ -333,13 +341,13 @@ struct ResearchDetailFoldStrip: View {
                     Text(isExpanded
                          ? L10n.string("research.report.fold.collapse", language: settings.appLanguage)
                          : L10n.string("research.report.fold.expand", language: settings.appLanguage))
-                        .font(.system(size: 11.5, weight: .semibold, design: isRetro ? .serif : .default))
+                        .font(.system(size: scaled(11.5), weight: .semibold, design: isRetro ? .serif : .default))
                     Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
-                        .font(.system(size: 9, weight: .semibold))
+                        .font(.system(size: scaled(9), weight: .semibold))
                         .foregroundStyle(.secondary)
                     if let preview, !isExpanded {
                         Text(preview)
-                            .font(.system(size: 10.5, weight: .regular, design: isRetro ? .serif : .default))
+                            .font(.system(size: scaled(10.5), weight: .regular, design: isRetro ? .serif : .default))
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
                             .padding(.leading, 2)

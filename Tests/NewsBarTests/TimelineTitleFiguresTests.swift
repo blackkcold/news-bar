@@ -47,6 +47,32 @@ final class TimelineTitleFiguresTests: XCTestCase {
         XCTAssertTrue(TimelineTitleFigures.unsupportedTitles(in: report).isEmpty)
     }
 
+    /// A space between figures separates them; it does not group thousands.
+    ///
+    /// Treating every separator as "the figure continues" merged "Q3 17%" into
+    /// the single number 317, which no quote could support — so a correct title
+    /// was reported as inventing a figure. A warning that fires on correct
+    /// reports is worse than an unchecked one: it teaches the reader to skip the
+    /// line that carries the real warnings.
+    func testAdjacentFiguresSeparatedBySpaceAreNotMerged() {
+        XCTAssertEqual(TimelineTitleFigures.numbers(in: "Q3 17%"), ["17"])
+        XCTAssertEqual(TimelineTitleFigures.numbers(in: "销量 2,840 万台"), ["2840"])
+        XCTAssertEqual(TimelineTitleFigures.numbers(in: "同比降 17%，环比降 9%"), ["17"])
+        let report = makeReport(
+            title: "Q3 份额 17%",
+            quotes: ["第三季度份额为 17%，高于预期。"]
+        )
+        XCTAssertTrue(
+            TimelineTitleFigures.unsupportedTitles(in: report).isEmpty,
+            "a quarter label must not be read as part of the percentage"
+        )
+    }
+
+    /// A single digit cannot be told apart from a label, so it is not checked.
+    func testSingleDigitIsNotTreatedAsAFigure() {
+        XCTAssertEqual(TimelineTitleFigures.numbers(in: "Q3 发布 5G 新品"), [])
+    }
+
     /// Every number in the title must be supported, not merely one of them:
     /// a title is a single claim, and half of it being true is not support.
     func testEveryNumberInTheTitleMustBeSupported() {

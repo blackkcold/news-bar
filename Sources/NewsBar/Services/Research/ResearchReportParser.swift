@@ -234,9 +234,16 @@ enum ResearchReportParser {
             // Without an author, words, or a place to check them, there is
             // nothing to verify and nothing to show.
             guard !speaker.isEmpty, !quote.isEmpty, !url.isEmpty else { return nil }
+            // The quadrant is the feature: "古·国内" and "今·外" are different
+            // claims about where an opinion comes from. Defaulting a missing or
+            // misspelled one to 今·国内 turns an unknown into a definite false
+            // label on screen, which is worse than showing nothing.
+            guard let era = CommentaryEra(rawValue: string(item["era"]).lowercased()),
+                  let origin = CommentaryOrigin(rawValue: string(item["origin"]).lowercased())
+            else { return nil }
             return CommentaryCandidate(
-                era: CommentaryEra(rawValue: string(item["era"]).lowercased()) ?? .present,
-                origin: CommentaryOrigin(rawValue: string(item["origin"]).lowercased()) ?? .domestic,
+                era: era,
+                origin: origin,
                 speaker: speaker,
                 role: stringIfPresent(item["role"]),
                 quote: quote,

@@ -108,21 +108,79 @@ final class ResearchCommentaryTests: XCTestCase {
 
     // MARK: - Gate 3: verbatim or paraphrase
 
-    /// A quote the page does not literally contain is kept — the position may
-    /// still be real and worth reading — but it is marked as a paraphrase so the
-    /// UI never presents an approximation as a quotation.
-    func testNonVerbatimQuoteIsDowngradedToParaphrase() throws {
+    /// A quote that is *partly* verbatim keeps the item: the model shortened or
+    /// joined a real sentence, and the position may still be worth reading. It
+    /// is downgraded to a paraphrase so the UI never presents an approximation
+    /// in quote marks.
+    ///
+    /// This used to accept a quote with **nothing** in common with the page.
+    /// That was the hole: a line the model wrote for a person the page happens
+    /// to name survived as "a paraphrase from a named expert", and the only
+    /// visible difference from a real quotation was the missing 「」. A
+    /// paraphrase now has to share text with the source; see
+    /// `testInventedLineThatSharesNothingWithThePageIsDropped`.
+    func testPartlyVerbatimQuoteIsDowngradedToParaphrase() throws {
         let document = makeDocument(
             text: "分析师张伟表示，本季度销量好于预期，尤其是高端机型。"
         )
         let kept = ResearchCommentaryValidator.accepted(
-            [raw(speaker: "张伟", quote: "销量远超所有人的想象，创下历史新高。")],
+            [raw(
+                speaker: "张伟",
+                quote: "本季度销量好于预期……渠道商普遍反映备货意愿不强。"
+            )],
             documents: [document.canonicalURL: document],
             language: .zh
         )
         let item = try XCTUnwrap(kept.first)
         XCTAssertTrue(item.isParaphrase)
         XCTAssertFalse(item.quoteVerified)
+    }
+
+    /// A paraphrase still has to be about something the page said. The failure
+    /// this guards against is not a loose quotation — it is a line the model
+    /// wrote for a person whose name happens to appear in the source. Before
+    /// this gate, such a line reached the report labelled as a paraphrase from
+    /// a named expert, and the UI difference from a real quote was two details:
+    /// no 「」 and a secondary text colour.
+    func testInventedLineThatSharesNothingWithThePageIsDropped() throws {
+        let document = makeDocument(
+            text: "分析师张伟表示，本季度销量好于预期，尤其是高端机型。"
+        )
+        let kept = ResearchCommentaryValidator.accepted(
+            [raw(speaker: "张伟", quote: "这类补贴退坡在 2016 年也发生过。")],
+            documents: [document.canonicalURL: document],
+            language: .zh
+        )
+        XCTAssertTrue(
+            kept.isEmpty,
+            "a line the page shares no text with is an invention, not a paraphrase"
+        )
+    }
+
+    /// The gate must not throw away a real sentence the model merely shortened.
+    /// One overlap is enough to keep it; the verbatim threshold still decides
+    /// whether it renders in quote marks.
+    func testShortenedRealSentenceStaysAsParaphrase() throws {
+        let document = makeDocument(
+            text: "分析师张伟表示，本季度销量好于预期，尤其是高端机型。"
+        )
+        let kept = ResearchCommentaryValidator.accepted(
+            [raw(speaker: "张伟", quote: "本季度销量好于预期，尤其是高端机型，经销商补货意愿强烈。")],
+            documents: [document.canonicalURL: document],
+            language: .zh
+        )
+        let item = try XCTUnwrap(kept.first)
+        XCTAssertFalse(item.quoteVerified, "the added clause is the model's, not the page's")
+    }
+
+    /// A short quotation is below the segment length, so a flat eight-character
+    /// run test would drop it for being brief rather than for being invented.
+    /// The required run scales down with the quote instead.
+    func testShortRealQuoteSharesARunWithThePage() {
+        let document = makeDocument(text: "张伟：销量好于预期。")
+        let match = QuoteVerifier.match(quote: "销量好于预期", in: document.text)
+        XCTAssertTrue(match.sharesRun)
+        XCTAssertEqual(QuoteVerifier.requiredRun(for: "销量好于预期"), 3)
     }
 
     // MARK: - Quadrant composition

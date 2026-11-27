@@ -45,6 +45,15 @@ struct ResearchReportPresentation: Sendable {
     /// sentence of restatement is the opposite of that. The summary stays in
     /// the data layer because the notification and the Markdown export use it.
     var usesOverviewAsBody = false
+    /// Whether the body copy is laid out paragraph by paragraph.
+    ///
+    /// The popup's body is the overview, which the model writes as 2–4
+    /// paragraphs separated by a blank line; handing that to a single `Text`
+    /// makes the paragraph gap identical to the line gap, so the body reads as
+    /// one undifferentiated block. The workbench keeps its own single `Text` and
+    /// its own line spacing: it shares this view, and turning this on there
+    /// would restyle a host that was not part of this work.
+    var splitsBodyIntoParagraphs = false
     /// Which parts of the conclusion's count line this host wants. The popup
     /// asks for the evidence-only line: two of the five parts of the full line
     /// were measured to be constant or duplicated across every report on this
@@ -87,7 +96,8 @@ struct ResearchReportPresentation: Sendable {
         showsChapterNavigator: false, foldsDetailChapters: true,
         showsMissingSummaryInConclusion: false, usesPlainCountLine: true,
         enablesTextSelection: true, showsOverviewInConclusion: false,
-        usesOverviewAsBody: true, countLineScope: .evidence,
+        usesOverviewAsBody: true, splitsBodyIntoParagraphs: true,
+        countLineScope: .evidence,
         hidesConclusionHeading: true, titlePointSize: 22
     )
 

@@ -125,10 +125,16 @@ struct CommentaryCandidate: Sendable, Equatable {
 ///    policy the reader applies to links, plus a lookup in the documents this
 ///    run actually fetched: a plausible URL that was never opened cannot vouch
 ///    for anything.
-/// 3. **The words must be verbatim.** Reuses `QuoteVerifier`, the same check
-///    behind `EvidenceItem.quoteVerified`. Failing this does not drop the item —
-///    the position may still be real — it downgrades it to `isParaphrase` so the
-///    UI never presents an approximation in quote marks.
+/// 3. **The words must be verbatim — or share text with the page.** Reuses
+///    `QuoteVerifier`, the same check behind `EvidenceItem.quoteVerified`.
+///    Failing the verbatim threshold does not drop the item, because a model
+///    that shortened or rephrased a real sentence still found a real position;
+///    it downgrades it to `isParaphrase` so the UI never presents an
+///    approximation in quote marks. Finding *nothing* at all is different: a
+///    sentence the page shares no text with is not a loose paraphrase, it is an
+///    invention, and it is dropped. Measured on the base implementation, the
+///    only thing a fabricated line had to do was name a person the page
+///    mentioned.
 ///
 /// At most one item per quadrant, and the resulting order is fixed, so a report
 /// reads the same way every run. Ids are renumbered after filtering, so the
@@ -168,8 +174,14 @@ enum ResearchCommentaryValidator {
             let quote = candidate.quote.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !quote.isEmpty else { continue }
 
-            // Gate 3 — verbatim, or an honest paraphrase.
-            let verbatim = QuoteVerifier.verified(quote: quote, in: document.text)
+            // Gate 3 — verbatim, a real paraphrase, or an invention.
+            let match = QuoteVerifier.match(quote: quote, in: document.text)
+            // Nothing in common with the page is not a paraphrase. It is the one
+            // shape this feature exists to keep out: a plausible opinion the
+            // model wrote for a person the page happens to name.
+            guard match.sharesRun else { continue }
+
+            let verbatim = match.isVerified
             let info = SourceTierCatalog.info(for: candidate.url)
             byQuadrant[quadrant] = CommentaryItem(
                 id: "", // assigned below, after filtering
