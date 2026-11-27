@@ -448,6 +448,68 @@ final class ResearchReportReaderRenderingTests: XCTestCase {
         }
     }
 
+    /// Commentary is an inserted block, not a chapter, so no existing assertion
+    /// covers it. This renders it inside the popup's expanded detail area and
+    /// checks it survives into the picture rather than being an unused view.
+    func testPopupRendersCommentaryBetweenTimelineAndVerification() throws {
+        let output = try researchTestDirectory()
+            .appendingPathComponent("popup-commentary", isDirectory: true)
+        try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+
+        var report = makePopupStripReport(nodeCount: 3, titlePad: "销量数据发布")
+        report.commentary = [
+            CommentaryItem(
+                id: "C1",
+                era: .past,
+                origin: .domestic,
+                speaker: "王明",
+                role: "历史学者",
+                quote: "这类补贴退坡在 2016 年也发生过。",
+                quoteVerified: true,
+                url: "https://example.org/past-domestic",
+                domain: "example.org",
+                publishedAt: Date(timeIntervalSince1970: 1_700_000_000),
+                evidenceID: "E1",
+                isParaphrase: false
+            ),
+            CommentaryItem(
+                id: "C2",
+                era: .present,
+                origin: .foreign,
+                speaker: "Alice Brown",
+                role: nil,
+                quote: "中国市场仍是关键增长引擎。",
+                quoteVerified: false,
+                url: "https://example.org/present-foreign",
+                domain: "example.org",
+                publishedAt: nil,
+                evidenceID: nil,
+                isParaphrase: true
+            ),
+        ]
+
+        let defaults = TestIsolation.defaults
+        let previous = defaults.object(forKey: ResearchDetailDisclosureState.defaultsKey)
+        defaults.set(true, forKey: ResearchDetailDisclosureState.defaultsKey)
+        defer {
+            if let previous {
+                defaults.set(previous, forKey: ResearchDetailDisclosureState.defaultsKey)
+            } else {
+                defaults.removeObject(forKey: ResearchDetailDisclosureState.defaultsKey)
+            }
+        }
+
+        for size in sizes {
+            try render(
+                state: "popup-commentary",
+                theme: .modern,
+                size: size,
+                output: output,
+                content: popupReader(report)
+            )
+        }
+    }
+
     /// Six or twelve nodes with captions long enough to overflow a 584pt strip,
     /// plus a mix of node states so the dots differ in shape and not only hue.
     private func makePopupStripReport(nodeCount: Int, titlePad: String) -> BurstResearch {

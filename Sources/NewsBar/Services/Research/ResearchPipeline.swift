@@ -80,6 +80,334 @@ private final class ResearchRunState {
 struct ResearchPipeline: Sendable {
     typealias ProgressHandler = @Sendable (ResearchRun) async -> Void
 
+    // MARK: - Gap round
+
+    /// Angles that still need work after the first extraction pass. A partial
+    /// angle (one verified fact) and an uncovered angle (none) are both gaps;
+    /// the difference only decides how badly they are needed, not whether the
+    /// question is worth asking.
+    static func gapAngles(
+        covered: Set<ResearchAngle>,
+        partial: Set<ResearchAngle>
+    ) -> [ResearchAngle] {
+        ResearchAngle.allCases.filter { !covered.contains($0) || partial.contains($0) }
+    }
+
+    /// One query per missing question, phrased as the question rather than as a
+    /// paraphrase of the event. A query naming the same question as an earlier
+    /// one would buy the same pages again, so it is dropped.
+    static func gapQueries(
+        title: String,
+        angles: [ResearchAngle],
+        language: AppLanguage,
+        excluding earlierQueries: [String],
+        limit: Int
+    ) -> [PlannedQuery] {
+        guard limit > 0 else { return [] }
+        var used = Set(earlierQueries.map(normalizeQuery))
+        var queries: [PlannedQuery] = []
+
+        for angle in angles where queries.count < limit {
+            let text = gapQueryText(title: title, angle: angle, language: language)
+            let key = normalizeQuery(text)
+            guard !key.isEmpty, used.insert(key).inserted else { continue }
+            queries.append(PlannedQuery(text: text, recency: nil))
+        }
+        return queries
+    }
+
+    /// Whitespace- and case-insensitive comparison of two query strings.
+    /// Punctuation is kept: "销量 排名" and "销量  排名" are the same request,
+    /// while "份额" and "占比" are legitimately different phrasings.
+    static func normalizeQuery(_ text: String) -> String {
+        text
+            .folding(
+                options: [.widthInsensitive, .caseInsensitive],
+                locale: Locale(identifier: "en_US_POSIX")
+            )
+            .split(whereSeparator: \.isWhitespace)
+            .joined(separator: " ")
+            .lowercased()
+    }
+
+    /// The question itself, in the search language. These are the same five
+    /// questions the extraction prompt labels, so a gap query and an angle label
+    /// cannot drift apart.
+    static func gapQueryText(
+        title: String,
+        angle: ResearchAngle,
+        language: AppLanguage
+    ) -> String {
+        if language == .en {
+            switch angle {
+            case .time: return "\(title) last year comparison"
+            case .compare: return "\(title) compare other markets competitors"
+            case .structure: return "\(title) rankings market share breakdown"
+            case .cause: return "\(title) why cause policy impact"
+            case .next: return "\(title) what happens next outlook"
+            }
+        }
+        switch angle {
+        case .time: return "\(title) 去年 同比 对比"
+        case .compare: return "\(title) 其他市场 同行 对比"
+        case .structure: return "\(title) 排名 份额 占比"
+        case .cause: return "\(title) 原因 政策 影响"
+        case .next: return "\(title) 接下来 预计 展望"
+        }
+    }
+
+    /// One call is reserved for synthesis and one for a single remedy after it.
+    /// The gap round only runs when a call remains beyond those two: a thin
+    /// report beats no report.
+    static let reservedAICallsForSynthesis = 2
+
+    /// What to do when the synthesis response was not usable.
+    ///
+    /// Exactly one remedy is allowed, so that the worst case is the attempt plus
+    /// one call — the two that `reservedAICallsForSynthesis` actually reserves.
+    /// Before this was bounded, a truncated response used the enlarged-budget
+    /// retry and then asked for a repair as well: three calls against two
+    /// reserved, so the third was refused and the pass failed with "AI request
+    /// failed" after every page had already been read and paid for.
+    enum SynthesisRemedy: Equatable {
+        /// Re-ask with a larger token budget. Truncation is a length problem, so
+        /// more room is the remedy that can actually fix it.
+        case enlargeBudget
+        /// Re-emit from the broken text. Complete but unparseable output needs a
+        /// second attempt at the same length, not more room.
+        case repair
+        /// The response is usable as it stands.
+        case none
+    }
+
+    /// One attempt plus one remedy is the whole budget for writing a report.
+    static let maxSynthesisAICalls = 1 + 1
+
+    static func synthesisRemedy(truncated: Bool, parsed: Bool) -> SynthesisRemedy {
+        // Truncation wins over parseability. A response can parse and still have
+        // had content cut off the end, and the enlarged-budget retry is the only
+        // thing that can recover it — skipping it would ship a silently
+        // incomplete report as a limitation.
+        if truncated { return .enlargeBudget }
+        if parsed { return .none }
+        return .repair
+    }
+
+    static func canAffordGapRound(aiCalls: Int, aiCallLimit: Int) -> Bool {
+        gapRoundAllowance(aiCalls: aiCalls, aiCallLimit: aiCallLimit) > 0
+    }
+
+    /// How many AI calls the gap round may actually spend.
+    ///
+    /// `canAffordGapRound` only answered yes/no, and the round then derived its
+    /// own page budget from `pageCount` — so a deep run with one spare call could
+    /// still read eight pages, which is four extraction batches. Measured on a
+    /// real deep run: planning plus four batches spent five of eight calls, the
+    /// round passed the yes/no check, spent the remaining three, and synthesis
+    /// failed with no report. The allowance is therefore an amount, not a flag.
+    static func gapRoundAllowance(aiCalls: Int, aiCallLimit: Int) -> Int {
+        max(0, aiCallLimit - aiCalls - reservedAICallsForSynthesis)
+    }
+
+    /// How many gap pages may be read, given the call allowance.
+    ///
+    /// One extraction batch is two pages and one AI call, so the page budget is
+    /// the allowance times two. The profile's page count stays a hard ceiling:
+    /// the round never widens the reading window beyond a normal pass.
+    static func gapPageBudget(allowance: Int, pageLimit: Int) -> Int {
+        max(0, min(pageLimit, allowance * 2))
+    }
+
+    /// How many stage-2 queries may be in flight at once. Search providers
+    /// rate-limit per account, and a burst that trips 429s costs more wall clock
+    /// than the queue it replaced, so this stays small: three is enough to turn
+    /// six serial dispatches into two waves.
+    static let searchConcurrencyLimit = 3
+
+    /// What one concurrent query reports back. A wave collects these instead of
+    /// mutating the run counters from inside the task group, which keeps the
+    /// accounting single-threaded and the hit order identical to planned order.
+    private struct SearchWaveOutcome: Sendable {
+        let offset: Int
+        let batch: SearchBatch?
+        let failed: Bool
+        let forbiddenProviders: [SearchProviderID]
+    }
+
+    /// One dispatch inside a wave. Provider errors are answers, not failures: a
+    /// query that exhausted every provider must not cancel its siblings, so
+    /// only cancellation escapes.
+    private static func dispatchSearch(
+        router: SearchRouter,
+        query: SearchQuery,
+        configuration: SearchRouterConfiguration,
+        forceRefresh: Bool,
+        ticket: SearchAttemptTicket,
+        offset: Int
+    ) async throws -> SearchWaveOutcome {
+        do {
+            let batch = try await router.search(
+                query,
+                configuration: configuration,
+                useCache: !forceRefresh,
+                ticket: ticket
+            )
+            let forbidden = batch.failures.compactMap { failure -> SearchProviderID? in
+                failure.reason == .forbidden ? failure.provider : nil
+            }
+            return SearchWaveOutcome(
+                offset: offset,
+                batch: batch,
+                failed: false,
+                forbiddenProviders: forbidden
+            )
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch let unavailable as SearchUnavailableError {
+            let forbidden = unavailable.failures.compactMap { failure -> SearchProviderID? in
+                failure.reason == .forbidden ? failure.provider : nil
+            }
+            return SearchWaveOutcome(
+                offset: offset,
+                batch: nil,
+                failed: true,
+                forbiddenProviders: forbidden
+            )
+        } catch {
+            return SearchWaveOutcome(
+                offset: offset,
+                batch: nil,
+                failed: true,
+                forbiddenProviders: []
+            )
+        }
+    }
+
+    // MARK: - Search rounds
+
+    /// Why a search round stopped before its plan was exhausted.
+    private enum SearchRoundAbort: Error {
+        case cancelled
+        case stopped(String)
+        /// The ledger could not record the spent requests. Continuing would
+        /// spend budget the app cannot account for.
+        case ledger
+    }
+
+    /// Everything one round reports back. The caller applies it to the run
+    /// state so the accounting stays in one place, and both the event round and
+    /// the gap round feed it the same way.
+    private struct SearchWaveResult: Sendable {
+        var hits: [SearchHit] = []
+        var forbidden: Set<SearchProviderID> = []
+        var failovers = 0
+        var providers: Set<SearchProviderID> = []
+        var anySucceeded = false
+        var anyFailed = false
+        var completed = 0
+        var budgetExhausted = false
+    }
+
+    /// Runs a plan through bounded-concurrency waves against one shared budget
+    /// ticket. Extracted from stage 2 because the gap round issues its own plan
+    /// and must behave identically: same cap, same budget, same planned-order
+    /// hit list, same cancellation and ledger semantics.
+    private func runSearchWaves(
+        _ plan: [PlannedQuery],
+        ticket: SearchAttemptTicket,
+        blockedProviders: inout Set<SearchProviderID>,
+        configuration: ResearchPipelineConfiguration,
+        recency: SearchRecency,
+        language: AppLanguage,
+        settle: () -> Bool,
+        onWave: (_ completedInWave: Int) async -> Void,
+        stopReason: () async -> String?
+    ) async throws -> SearchWaveResult {
+        var result = SearchWaveResult()
+        var offset = 0
+
+        while offset < plan.count {
+            if let reason = await stopReason() { throw SearchRoundAbort.stopped(reason) }
+            // A query needs at least one dispatch, so a wave wider than the
+            // remaining budget would only manufacture budget-exhausted failures
+            // that say nothing about the providers.
+            let waveSize = min(
+                Self.searchConcurrencyLimit,
+                ticket.remaining,
+                plan.count - offset
+            )
+            guard waveSize > 0 else {
+                result.budgetExhausted = true
+                break
+            }
+
+            var queryConfiguration = configuration.searchConfiguration
+            queryConfiguration.enabled.subtract(blockedProviders)
+            let wave = Array(plan[offset..<(offset + waveSize)])
+            let queries = wave.map { planned in
+                SearchQuery(
+                    text: planned.text,
+                    recency: planned.recency ?? recency,
+                    language: language.bcp47,
+                    maxResults: 6
+                )
+            }
+
+            let outcomes: [SearchWaveOutcome]
+            do {
+                outcomes = try await withThrowingTaskGroup(
+                    of: SearchWaveOutcome.self
+                ) { group in
+                    for (index, query) in queries.enumerated() {
+                        group.addTask {
+                            try await Self.dispatchSearch(
+                                router: searchRouter,
+                                query: query,
+                                configuration: queryConfiguration,
+                                forceRefresh: configuration.forceRefresh,
+                                ticket: ticket,
+                                offset: offset + index
+                            )
+                        }
+                    }
+                    var collected: [SearchWaveOutcome] = []
+                    collected.reserveCapacity(queries.count)
+                    for try await outcome in group {
+                        collected.append(outcome)
+                    }
+                    return collected
+                }
+            } catch is CancellationError {
+                throw SearchRoundAbort.cancelled
+            }
+
+            guard settle() else { throw SearchRoundAbort.ledger }
+            // Apply in planned order, not completion order: the hit list feeds
+            // ranking, and a completion-order list would make the same report
+            // come out differently on every run.
+            for outcome in outcomes.sorted(by: { $0.offset < $1.offset }) {
+                if let batch = outcome.batch {
+                    result.anySucceeded = true
+                    result.failovers += batch.failovers
+                    result.providers.formUnion(batch.providers)
+                    result.hits.append(contentsOf: batch.hits)
+                } else if outcome.failed {
+                    result.anyFailed = true
+                }
+                result.forbidden.formUnion(outcome.forbiddenProviders)
+            }
+            blockedProviders.formUnion(result.forbidden)
+            result.completed += outcomes.count
+            await onWave(outcomes.count)
+            offset += waveSize
+            if ticket.remaining <= 0, offset < plan.count {
+                result.budgetExhausted = true
+                break
+            }
+        }
+        return result
+    }
+
     let ai: any AIChatClienting
     let searchRouter: SearchRouter
     let pageReader: PageReader
@@ -325,82 +653,68 @@ struct ResearchPipeline: Sendable {
         /// not remembered across passes either.
         var blockedProviders: Set<SearchProviderID> = []
 
-        if incremental == nil {
-            for planned in plannedQueries {
-                if let reason = await checkStop() { return await fail(reason) }
-                let remainingCalls = DepthProfile.maxSearchHTTPCallsPerTask - state.searchCalls
-                guard remainingCalls > 0 else {
-                    state.partial = true
-                    break
-                }
-                let query = SearchQuery(
-                    text: planned.text,
-                    recency: planned.recency ?? recency,
-                    language: language.bcp47,
-                    maxResults: 6
-                )
-                // One ticket per query. Every dispatched request consumes a slot
-                // before it leaves the process; skips and cache hits cost nothing.
-                // The same ticket is read after success, failure and cancellation,
-                // so the pipeline never has to guess how many requests were sent.
-                let ticket = SearchAttemptTicket(
-                    limit: remainingCalls,
-                    trafficClass: origin.isAutomatic ? .automaticSearch : .manual,
-                    automaticDailyLimit: origin.isAutomatic
-                        ? configuration.automaticSearchDailyLimit : nil
-                )
-                var settled = false
-                func settleSearchCalls() {
-                    guard !settled else { return }
-                    settled = true
-                    let used = ticket.used
-                    guard used > 0 else { return }
-                    state.searchCalls += used
-                    if !ledger.recordSearchCalls(used, origin: origin) {
-                        ledgerWriteFailed = true
-                    }
-                }
+        // One ticket for the whole pass — not one per query, and not one per
+        // round. The budget is global: per-query tickets would each read the
+        // same unspent balance and collectively overspend the moment they run
+        // at once, and a per-round ticket would hand the gap round a second
+        // full ceiling on top of the first.
+        let searchTicket = SearchAttemptTicket(
+            limit: DepthProfile.maxSearchHTTPCallsPerTask,
+            trafficClass: origin.isAutomatic ? .automaticSearch : .manual,
+            automaticDailyLimit: origin.isAutomatic
+                ? configuration.automaticSearchDailyLimit : nil
+        )
+        var settledSearchCalls = 0
+        /// Records what the ticket consumed since the last settle. `false` means
+        /// the ledger could not write, and the pass must stop: continuing would
+        /// spend budget the app cannot account for.
+        func settleSearchCalls() -> Bool {
+            let total = searchTicket.used
+            let used = total - settledSearchCalls
+            guard used > 0 else { return !ledgerWriteFailed }
+            settledSearchCalls = total
+            state.searchCalls += used
+            if !ledger.recordSearchCalls(used, origin: origin) {
+                ledgerWriteFailed = true
+            }
+            return !ledgerWriteFailed
+        }
 
-                var queryConfiguration = configuration.searchConfiguration
-                queryConfiguration.enabled.subtract(blockedProviders)
-                do {
-                    let batch = try await searchRouter.search(
-                        query,
-                        configuration: queryConfiguration,
-                        maxAttempts: remainingCalls,
-                        useCache: !configuration.forceRefresh,
-                        ticket: ticket
-                    )
-                    settleSearchCalls()
-                    anySearchSucceeded = true
-                    state.failovers += batch.failovers
-                    state.usedProviders.formUnion(batch.providers)
-                    for failure in batch.failures where failure.reason == .forbidden {
-                        if let provider = failure.provider {
-                            blockedProviders.insert(provider)
-                        }
-                    }
-                    hits.append(contentsOf: batch.hits)
-                } catch is CancellationError {
-                    settleSearchCalls()
-                    return await fail(L10n.string("research.error.cancelled", language: language))
-                } catch let unavailable as SearchUnavailableError {
-                    settleSearchCalls()
-                    anySearchFailed = true
-                    for failure in unavailable.failures where failure.reason == .forbidden {
-                        if let provider = failure.provider {
-                            blockedProviders.insert(provider)
-                        }
-                    }
-                } catch {
-                    settleSearchCalls()
-                    anySearchFailed = true
-                }
-                state.queriesCompleted += 1
-                await progress(snapshot(.searching))
-                if ledgerWriteFailed {
-                    return await fail(budgetMessage())
-                }
+        if incremental == nil {
+            do {
+                let round = try await runSearchWaves(
+                    plannedQueries,
+                    ticket: searchTicket,
+                    blockedProviders: &blockedProviders,
+                    configuration: configuration,
+                    recency: recency,
+                    language: language,
+                    settle: settleSearchCalls,
+                    onWave: { completed in
+                        state.queriesCompleted += completed
+                        await progress(snapshot(.searching))
+                    },
+                    stopReason: checkStop
+                )
+                anySearchSucceeded = round.anySucceeded
+                anySearchFailed = round.anyFailed
+                hits.append(contentsOf: round.hits)
+                state.failovers += round.failovers
+                state.usedProviders.formUnion(round.providers)
+                if round.budgetExhausted { state.partial = true }
+            } catch SearchRoundAbort.cancelled {
+                _ = settleSearchCalls()
+                return await fail(L10n.string("research.error.cancelled", language: language))
+            } catch let SearchRoundAbort.stopped(reason) {
+                _ = settleSearchCalls()
+                return await fail(reason)
+            } catch SearchRoundAbort.ledger {
+                return await fail(budgetMessage())
+            } catch {
+                // Pattern-matched catches do not make a `do` exhaustive for the
+                // compiler; this arm is unreachable and exists only to prove it.
+                _ = settleSearchCalls()
+                return await fail(L10n.string("research.error.searchFailed", language: language))
             }
         }
 
@@ -667,6 +981,7 @@ struct ResearchPipeline: Sendable {
                             claim: item.claim,
                             stance: item.stance,
                             publishedAt: item.publishedAt ?? document.publishedAt,
+                            angle: item.angle,
                             fetchedAt: document.fetchedAt
                         )
                     )
@@ -713,6 +1028,205 @@ struct ResearchPipeline: Sendable {
                             )
                         )
                     }
+                }
+            }
+        }
+
+        // Stage 5b — the gap round.
+        //
+        // The event round answers what the plan guessed the subject was about.
+        // Extraction is the first point where the report can tell which reader
+        // questions are still open, because every verified fact now carries the
+        // question it answers. This round asks only those, and it is bounded
+        // three ways: the depth profile's allowance, the pass's shared request
+        // ticket, and the AI budget that synthesis and repair still need.
+        var gapHits: [SearchHit] = []
+        /// Queries the gap round actually dispatched. `method.queries` is the
+        /// report's own account of what was searched, so a second round that
+        /// never appears there would make the method section understate the work.
+        var gapQueriesIssued: [String] = []
+        /// How many AI calls the gap round may spend. Computed as an amount, not
+        /// a yes/no: the round reads pages, and an extraction batch is one call
+        /// per two pages, so a boolean check let a deep pass read eight pages on
+        /// one spare call and leave synthesis nothing. Measured on a real deep
+        /// run before this bound existed: the report failed outright.
+        let gapAllowance = Self.gapRoundAllowance(
+            aiCalls: state.aiCalls,
+            aiCallLimit: profile.aiCallLimit
+        )
+        let gapPageLimit = Self.gapPageBudget(
+            allowance: gapAllowance,
+            pageLimit: profile.pageCount
+        )
+        let coverage = ResearchAngleCoverage.evaluate(candidates, documents: documents)
+        if incremental == nil,
+           profile.gapQueryCount > 0,
+           gapPageLimit > 0,
+           // No angle signal means every angle looks empty, and a round would
+           // spend its whole allowance chasing a guess. A report whose facts are
+           // unlabelled and whose claims match no keyword gets no second round.
+           coverage.labelledFacts > 0 {
+            let gapPlan = Self.gapQueries(
+                title: title,
+                angles: Self.gapAngles(covered: coverage.covered, partial: coverage.partial),
+                language: language,
+                excluding: plannedQueries.map(\.text),
+                limit: profile.gapQueryCount
+            )
+            if !gapPlan.isEmpty {
+                // Planned means planned: the gap round decides these queries
+                // before it dispatches them, so the counter has to include them
+                // from that moment. Measured on a real deep run before this
+                // line existed: the progress row read "7 of 6", because only the
+                // event round was ever counted.
+                plannedQueryCount += gapPlan.count
+                await progress(snapshot(.searching))
+                do {
+                    let round = try await runSearchWaves(
+                        gapPlan,
+                        ticket: searchTicket,
+                        blockedProviders: &blockedProviders,
+                        configuration: configuration,
+                        recency: recency,
+                        language: language,
+                        settle: settleSearchCalls,
+                        onWave: { completed in
+                            state.queriesCompleted += completed
+                            await progress(snapshot(.searching))
+                        },
+                        stopReason: checkStop
+                    )
+                    gapHits = round.hits
+                    // Only the queries the round actually dispatched. When the
+                    // shared ticket runs dry the loop breaks early, and listing
+                    // the rest would tell the reader those angles were searched
+                    // when they were not — the method section is the report's own
+                    // account of what it looked for.
+                    gapQueriesIssued = Array(gapPlan.prefix(round.completed).map(\.text))
+                    state.failovers += round.failovers
+                    state.usedProviders.formUnion(round.providers)
+                    if round.budgetExhausted { state.partial = true }
+                } catch SearchRoundAbort.cancelled {
+                    _ = settleSearchCalls()
+                    return await fail(L10n.string("research.error.cancelled", language: language))
+                } catch let SearchRoundAbort.stopped(reason) {
+                    _ = settleSearchCalls()
+                    return await fail(reason)
+                } catch SearchRoundAbort.ledger {
+                    return await fail(budgetMessage())
+                } catch {
+                    // A gap round that fails is a thinner report, not a failed
+                    // one: everything the first round found is still in hand.
+                    _ = settleSearchCalls()
+                    state.partial = true
+                }
+            }
+        }
+
+        // Read and extract the gap round's new pages. Only URLs the pass has
+        // not already read are touched; re-reading a page to ask it a second
+        // question is what the extraction label was for, not a reason to spend
+        // another request.
+        if !gapHits.isEmpty {
+            hits.append(contentsOf: gapHits)
+            let known = Set(orderedDocuments.map(\.canonicalURL))
+            let fresh = Array(
+                SearchResultRanking.deduplicated(gapHits)
+                    .filter { !known.contains($0.canonicalURL) }
+                    // Bounded by the AI calls left, not by the profile's page
+                    // count. One extraction batch is two pages and one call, so
+                    // reading more pages than the allowance can pay for leaves
+                    // the extra batches unextracted — and, before this bound
+                    // existed, left nothing for synthesis at all.
+                    .prefix(gapPageLimit)
+            )
+            var gapRead: [ResearchDocument] = []
+            if !fresh.isEmpty {
+                await progress(snapshot(.reading))
+                for start in stride(from: 0, to: fresh.count, by: 3) {
+                    if let reason = await checkStop() { return await fail(reason) }
+                    let chunk = Array(fresh[start..<min(start + 3, fresh.count)])
+                    do {
+                        try await withThrowingTaskGroup(of: ResearchDocument?.self) { group in
+                            for hit in chunk {
+                                group.addTask {
+                                    try await pageReader.read(
+                                        hit,
+                                        apiKey: configuration.firecrawlAPIKey,
+                                        useCache: !configuration.forceRefresh
+                                    )
+                                }
+                            }
+                            for try await document in group {
+                                if let document { gapRead.append(document) }
+                            }
+                        }
+                    } catch is CancellationError {
+                        return await fail(
+                            L10n.string("research.error.cancelled", language: language)
+                        )
+                    } catch {
+                        continue
+                    }
+                }
+            }
+
+            for document in gapRead where documents[document.canonicalURL] == nil {
+                documents[document.canonicalURL] = document
+                orderedDocuments.append(document)
+            }
+            state.pagesRead = orderedDocuments.filter(\.isFullText).count
+            state.partial = state.pagesRead == 0
+
+            let gapDocuments = gapRead.filter(\.isFullText)
+            if !gapDocuments.isEmpty {
+                await progress(snapshot(.extracting))
+                for start in stride(from: 0, to: gapDocuments.count, by: 2) {
+                    if let reason = await checkStop() { return await fail(reason) }
+                    let batch = Array(gapDocuments[start..<min(start + 2, gapDocuments.count)])
+                    guard let response = await callAI(
+                        AIChatRequest(
+                            messages: [
+                                AIChatMessage(
+                                    role: .system,
+                                    content: ResearchPrompts.extractionSystemPrompt(language: language)
+                                ),
+                                AIChatMessage(
+                                    role: .user,
+                                    content: ResearchPrompts.extractionUserPrompt(
+                                        documents: batch,
+                                        claims: plannedClaims,
+                                        language: language
+                                    )
+                                ),
+                            ],
+                            maxTokens: 4_096,
+                            temperature: 0.1
+                        )
+                    ) else {
+                        state.partial = true
+                        if state.budgetExhausted || state.aiLimitReached { break }
+                        continue
+                    }
+                    guard let items = ResearchReportParser.evidence(from: response.text, now: now()) else {
+                        continue
+                    }
+                    for item in items {
+                        guard let document = Self.resolveDocument(item, in: batch) else { continue }
+                        candidates.append(
+                            EvidenceCandidate(
+                                url: document.url,
+                                title: document.title,
+                                quote: String(item.quote.prefix(300)),
+                                claim: item.claim,
+                                stance: item.stance,
+                                publishedAt: item.publishedAt ?? document.publishedAt,
+                                angle: item.angle,
+                                fetchedAt: document.fetchedAt
+                            )
+                        )
+                    }
+                    await progress(snapshot(.extracting))
                 }
             }
         }
@@ -812,7 +1326,21 @@ struct ResearchPipeline: Sendable {
             )
         }
 
-        if response.truncated {
+        /// At most one remedy, so the worst case is the attempt plus one call —
+        /// exactly what `reservedAICallsForSynthesis` reserves. Running the
+        /// enlarged-budget retry and then a repair made three, and the third was
+        /// refused after every page had already been read and paid for.
+        var draft = ResearchReportParser.synthesis(from: response.text, now: now())
+        switch Self.synthesisRemedy(
+            truncated: response.truncated,
+            parsed: draft != nil
+        ) {
+        case .none:
+            // Either it parsed, or there is nothing a second call would add.
+            state.truncated = response.truncated
+            state.partial = state.truncated
+
+        case .enlargeBudget:
             let retryRequest = AIChatRequest(
                 messages: [
                     AIChatMessage(role: .system, content: synthesisSystem),
@@ -824,14 +1352,13 @@ struct ResearchPipeline: Sendable {
             if let retry = await callAI(retryRequest) {
                 response = retry
                 state.truncated = retry.truncated
+                draft = ResearchReportParser.synthesis(from: retry.text, now: now())
             } else {
                 state.truncated = true
             }
             state.partial = state.truncated
-        }
 
-        var draft = ResearchReportParser.synthesis(from: response.text, now: now())
-        if draft == nil {
+        case .repair:
             let repair = ResearchPrompts.repairUserPrompt(
                 brokenOutput: response.text,
                 language: language
@@ -891,7 +1418,7 @@ struct ResearchPipeline: Sendable {
                     .filter { state.usedProviders.contains($0) }
                     .map(\.rawValue),
             queries: incremental?.priorReport.method?.queries
-                ?? plannedQueries.map(\.text),
+                ?? plannedQueries.map(\.text) + gapQueriesIssued,
             pagesRead: state.pagesRead,
             recency: incremental?.priorReport.method?.recency ?? recency.rawValue,
             generatedAt: now(),
@@ -974,7 +1501,7 @@ struct ResearchPipeline: Sendable {
             pagesRead: state.pagesRead,
             searchCalls: state.searchCalls,
             aiCalls: state.aiCalls,
-            queries: plannedQueries.map(\.text),
+            queries: plannedQueries.map(\.text) + gapQueriesIssued,
             isPartial: state.partial
                 || state.truncated
                 || searchStatus != .succeeded

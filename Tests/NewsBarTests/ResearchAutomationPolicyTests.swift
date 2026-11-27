@@ -139,4 +139,36 @@ final class ResearchAutomationPolicyTests: XCTestCase {
             0
         )
     }
+
+    // MARK: - Explicit requests
+
+    /// An explicit request may queue a few jobs, but "explicit" is not
+    /// "unlimited". Before this cap the CLI's `research start` could pile up
+    /// distinct topics without bound, and each queued job then drained on a
+    /// later day against a fresh daily allowance — real spending the user never
+    /// asked for.
+    func testManualAdmissionIsBounded() {
+        XCTAssertTrue(ResearchAutomationPolicy.allowsManualAdmission(activeManualRuns: 0))
+        XCTAssertTrue(
+            ResearchAutomationPolicy.allowsManualAdmission(
+                activeManualRuns: ResearchAutomationPolicy.maxActiveManualRuns - 1
+            )
+        )
+        XCTAssertFalse(
+            ResearchAutomationPolicy.allowsManualAdmission(
+                activeManualRuns: ResearchAutomationPolicy.maxActiveManualRuns
+            )
+        )
+        XCTAssertFalse(ResearchAutomationPolicy.allowsManualAdmission(activeManualRuns: 99))
+    }
+
+    /// The automatic cap must stay tighter than the manual one: a feed refresh
+    /// must never stack work the user did not ask for, while an explicit request
+    /// is allowed a small queue.
+    func testAutomaticCapStaysTighterThanManual() {
+        XCTAssertLessThan(
+            ResearchAutomationPolicy.maxActiveAutomaticRuns,
+            ResearchAutomationPolicy.maxActiveManualRuns
+        )
+    }
 }

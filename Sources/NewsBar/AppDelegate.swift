@@ -62,6 +62,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private var transientResearchWindow: NSPanel?
     private var transientResearchModel: TransientResearchReportModel?
     private weak var transientResearchReturnWindow: NSWindow?
+    /// True only while the *user* is dragging the panel's edge. Programmatic
+    /// `setFrame` calls must not set it, or the panel would lock itself into
+    /// whatever height it happened to be measured at and stop adapting.
+    private var isUserResizingTransientResearch = false
+    /// Set once the user has dragged the panel's edge. From then on the panel
+    /// keeps the size the user chose, until they reset it by double-clicking
+    /// the title bar.
+    private var transientResearchSizeIsUserChosen = false
     /// True while the report panel is closing because the workspace took over,
     /// so the close path does not restore the window behind it or hide the Dock.
     private var isHandingOffTransientReport = false
@@ -123,7 +131,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             )
         }
 
-        let agentService = AgentCommandService(settings: settings) { [weak self] in
+        let agentService = AgentCommandService(
+            settings: settings,
+            research: orchestrator.map {
+                ResearchAgentHooksFactory.production(settings: settings, orchestrator: $0)
+            }
+        ) { [weak self] in
             guard let self, let orchestrator = self.orchestrator else { return }
             Task { await orchestrator.manualRefresh(settings: self.settings) }
         }
@@ -1289,9 +1302,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 defer: false
             )
             panel.title = settings.appLanguage == .en ? "Research report" : "研究报告"
-            // The content floor is what the SwiftUI view pins (`.frame(minHeight: 560)`);
-            // `minSize` includes the titlebar, so it would clip 28pt of content.
-            panel.contentMinSize = NSSize(width: 620, height: 560)
+            // The floor belongs to the sizing rules, which express it in frame
+            // coordinates: `contentMinSize` includes the title bar, and a value
+            // copied from the SwiftUI content floor would clip that much again.
+            panel.contentMinSize = NSSize(
+                width: TransientResearchReportView.minimumWidth,
+                height: ResearchPanelSizing.minimumFrameHeight
+            )
             panel.isReleasedWhenClosed = false
             panel.hidesOnDeactivate = false
             panel.becomesKeyOnlyIfNeeded = false
@@ -1306,6 +1323,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                     },
                     onOpenEventTimeline: { [weak self] in
                         self?.handOffTransientReportToWorkspace(segment: .timeline)
+                    },
+                    onContentHeightChange: { [weak self, weak panel] contentHeight in
+                        guard let self, let panel else { return }
+                        self.fitTransientResearchPanel(panel, contentHeight: contentHeight)
                     }
                 )
                 .onChange(of: settings.resolvedColorScheme, initial: true) { [weak panel] _, scheme in
@@ -1370,12 +1391,91 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         return ResearchReadingContextRegistry.contains(eventID: eventID, recordID: recordID)
     }
 
+    /// Fits the report panel to the content the view just measured.
+    ///
+    /// The panel keeps its top edge and grows or shrinks downward: anchoring
+    /// the top keeps the title and the first line of body copy still, which is
+    /// what stops the window from moving under the reader's eyes when the
+    /// detail expands or a shorter report loads.
+    ///
+    /// A user who dragged the edge owns the height from then on. That is why
+    /// the flag is set by `windowDidEndLiveResize` and never here: this method
+    /// calls `setFrame`, and treating its own call as a user action would pin
+    /// the panel at its first measurement.
+    @MainActor
+    private func fitTransientResearchPanel(_ panel: NSPanel, contentHeight: CGFloat) {
+        guard panel.isVisible, !panel.isMiniaturized else { return }
+        guard !transientResearchSizeIsUserChosen else { return }
+        guard !isUserResizingTransientResearch else { return }
+
+        let screen = panel.screen ?? NSScreen.main
+        let visibleHeight = screen?.visibleFrame.height ?? 900
+        let height = ResearchPanelSizing.frameHeight(
+            contentHeight: contentHeight,
+            screenVisibleHeight: visibleHeight
+        )
+        let current = panel.frame
+        // A sub-point difference would still trigger a full layout pass on
+        // every measurement, and the measurement itself changes once the panel
+        // resizes. Ignoring it keeps the loop from oscillating.
+        guard abs(current.height - height) >= 1 else { return }
+
+        // The width is the user's (within the minimum); only the height adapts.
+        let width = max(current.width, TransientResearchReportView.minimumWidth)
+        let origin = ResearchPanelSizing.originKeepingTop(currentFrame: current, newHeight: height)
+        panel.setFrame(
+            NSRect(origin: origin, size: NSSize(width: width, height: height)),
+            display: true,
+            animate: false
+        )
+    }
+
+    @MainActor
+    func windowWillStartLiveResize(_ notification: Notification) {
+        guard let window = notification.object as? NSWindow,
+              window === transientResearchWindow else { return }
+        isUserResizingTransientResearch = true
+    }
+
+    @MainActor
+    func windowDidEndLiveResize(_ notification: Notification) {
+        guard let window = notification.object as? NSWindow,
+              window === transientResearchWindow else { return }
+        isUserResizingTransientResearch = false
+        transientResearchSizeIsUserChosen = true
+    }
+
+    @MainActor
+    func windowDidResize(_ notification: Notification) {
+        guard let window = notification.object as? NSWindow,
+              window === transientResearchWindow else { return }
+        // Only a live drag counts as the user choosing a size. This method also
+        // fires for `setFrame`, so the guard on the live flag is what keeps the
+        // two apart.
+        if isUserResizingTransientResearch {
+            transientResearchSizeIsUserChosen = true
+        }
+    }
+
+    /// Double-clicking the title bar is the standard macOS "put it back" gesture;
+    /// here it also hands the height back to the content. The view reports a
+    /// fresh measurement on the next layout pass, and `fitTransientResearchPanel`
+    /// then applies it.
+    @MainActor
+    func windowShouldZoom(_ window: NSWindow, toFrame newFrame: NSRect) -> Bool {
+        guard window === transientResearchWindow else { return true }
+        transientResearchSizeIsUserChosen = false
+        return true
+    }
+
     @MainActor
     func windowWillClose(_ notification: Notification) {
         guard let window = notification.object as? NSWindow,
               window === transientResearchWindow else { return }
         transientResearchWindow = nil
         transientResearchModel = nil
+        isUserResizingTransientResearch = false
+        transientResearchSizeIsUserChosen = false
         let returnWindow = transientResearchReturnWindow
         transientResearchReturnWindow = nil
         if let returnWindow, returnWindow.isVisible {

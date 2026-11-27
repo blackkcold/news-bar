@@ -41,6 +41,12 @@ struct ResearchTimelineStrip: View {
     /// capsule happens to reach the right edge.
     private static let badgeSlotWidth: CGFloat = 40
 
+    /// Room for the caption's own title. Real report titles run 11–15 Chinese
+    /// characters; at 11pt this fits roughly 13, so the longest ones ellipsize
+    /// instead of being clipped. Three captions plus the badge and the gaps
+    /// stay inside the 584pt a 620pt window offers.
+    static let captionTextWidth: CGFloat = 118
+
     let preview: ResearchTimelinePreview
     /// Called with the node id when a caption is clicked. Opening the detail
     /// (when needed) is the host's job, so this view stays layout only.
@@ -104,6 +110,21 @@ struct ResearchTimelineStrip: View {
                 .onPreferenceChange(ResearchTimelineStripFrameKey.self) { frames = $0 }
                 .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { viewportWidth = $0 }
                 .onAppear { scrollToImportanceWindow(proxy) }
+                // A capsule that does not fit is cut by the viewport edge, and a
+                // glyph sliced down the middle reads as a broken layout. The
+                // fade says "the row continues" instead, and it disappears once
+                // the strip reaches its end where nothing is being cut.
+                .mask(alignment: .leading) {
+                    LinearGradient(
+                        stops: [
+                            .init(color: .black, location: 0),
+                            .init(color: .black, location: overflowCount > 0 ? 0.9 : 1),
+                            .init(color: .clear, location: 1),
+                        ],
+                        startPoint: .leading,
+                        endPoint: .trailing
+                    )
+                }
                 .accessibilityElement(children: .contain)
                 .accessibilityLabel(accessibilitySummary)
 
@@ -147,14 +168,19 @@ struct ResearchTimelineStrip: View {
             VStack(alignment: .leading, spacing: 5) {
                 HStack(spacing: 5) {
                     stateDot(node.state)
+                    // The width limit belongs on the text, not on the HStack:
+                    // a `frame` on the container clips the already-laid-out
+                    // string, which produces a chopped glyph with no ellipsis
+                    // and reads as a rendering fault. Constraining the `Text`
+                    // itself is what makes `truncationMode(.tail)` apply.
                     Text(node.node.title)
                         .font(.system(size: 11, weight: .semibold, design: isRetro ? .serif : .default))
                         .lineLimit(1)
                         .truncationMode(.tail)
+                        .frame(maxWidth: Self.captionTextWidth, alignment: .leading)
                 }
                 .padding(.horizontal, 9)
                 .padding(.vertical, 5)
-                .frame(maxWidth: 132, alignment: .leading)
                 .background(.quaternary.opacity(0.45), in: Capsule())
 
                 if !node.node.date.isEmpty {
@@ -231,13 +257,71 @@ struct ResearchTimelineStrip: View {
 /// The one control that reveals the detail chapters. It stays in place while
 /// the chapters are appended below it, so expanding never moves what the
 /// reader was looking at.
+///
+/// The trailing preview answers "is it worth opening?" before the click. It
+/// deliberately does not repeat the source count: the conclusion's count line
+/// already carries it, and the same number twice on one screen is noise.
+enum ResearchDetailFoldPreview {
+    static func make(report: BurstResearch, language: AppLanguage) -> String? {
+        let metrics = ResearchReportMetrics(report: report)
+        var parts: [String] = []
+        if metrics.timelineNodeCount > 0 {
+            parts.append(L10n.string(
+                countKey(
+                    base: "research.report.fold.preview.timeline",
+                    count: metrics.timelineNodeCount
+                ),
+                language: language,
+                metrics.timelineNodeCount
+            ))
+        }
+        if metrics.claimCount > 0 {
+            parts.append(L10n.string(
+                countKey(
+                    base: "research.report.fold.preview.checks",
+                    count: metrics.claimCount
+                ),
+                language: language,
+                metrics.claimCount
+            ))
+        }
+        if metrics.missingCount > 0 {
+            parts.append(L10n.string(
+                countKey(
+                    base: "research.report.fold.preview.missing",
+                    count: metrics.missingCount
+                ),
+                language: language,
+                metrics.missingCount
+            ))
+        }
+        // Nil, not "": the strip only exists when at least one detail chapter
+        // does, and an empty string would still take a separator's width.
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+
+    /// English inflects for one; Chinese does not. A key ending in `.one`
+    /// exists only for the languages that need it, so the lookup falls back to
+    /// the plural key when a table has no singular form.
+    private static func countKey(base: String, count: Int) -> String {
+        count == 1 ? "\(base).one" : base
+    }
+}
+
 struct ResearchDetailFoldStrip: View {
     @Environment(AppSettings.self) private var settings
 
     let isExpanded: Bool
+    /// The report the strip stands in front of. Passed as data, not as a
+    /// pre-rendered string, so the preview and the button label resolve their
+    /// language from the same place and can never disagree.
+    let report: BurstResearch
     let onToggle: () -> Void
 
     private var isRetro: Bool { settings.appTheme == .retroEditorial }
+    private var preview: String? {
+        ResearchDetailFoldPreview.make(report: report, language: settings.appLanguage)
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -253,6 +337,13 @@ struct ResearchDetailFoldStrip: View {
                     Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
                         .font(.system(size: 9, weight: .semibold))
                         .foregroundStyle(.secondary)
+                    if let preview, !isExpanded {
+                        Text(preview)
+                            .font(.system(size: 10.5, weight: .regular, design: isRetro ? .serif : .default))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .padding(.leading, 2)
+                    }
                 }
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 9)
@@ -261,9 +352,17 @@ struct ResearchDetailFoldStrip: View {
             .buttonStyle(.plain)
             // The label names the action; the value reports the state, so a
             // VoiceOver reader knows both what will happen and where they are.
-            .accessibilityValue(isExpanded
-                ? L10n.string("research.report.fold.value.expanded", language: settings.appLanguage)
-                : L10n.string("research.report.fold.value.collapsed", language: settings.appLanguage))
+            // The preview joins the value so it is spoken without becoming a
+            // second label for the same button.
+            .accessibilityValue(accessibilityValue)
         }
+    }
+
+    private var accessibilityValue: String {
+        let state = isExpanded
+            ? L10n.string("research.report.fold.value.expanded", language: settings.appLanguage)
+            : L10n.string("research.report.fold.value.collapsed", language: settings.appLanguage)
+        guard !isExpanded, let preview else { return state }
+        return "\(state) · \(preview)"
     }
 }

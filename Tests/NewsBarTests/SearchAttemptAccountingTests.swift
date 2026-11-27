@@ -228,6 +228,14 @@ final class SearchAttemptAccountingTests: XCTestCase {
         XCTAssertEqual(missing.first { $0.provider == .firecrawl }?.state, .unattempted)
     }
 
+    /// A provider that refuses access is dropped for the rest of the pass. The
+    /// discovery wave is concurrent, so up to `searchConcurrencyLimit` queries
+    /// can reach it before the first 403 is known — that is the honest bound,
+    /// and it is bounded: every later query in the pass skips it entirely.
+    ///
+    /// Serialising the first wave would restore a count of one, and it would
+    /// cost every deep pass an extra round trip for a case that only arises when
+    /// a provider is blocked.
     func testForbiddenProviderIsNotRetriedWithinTheSameResearch() async throws {
         let directory = try researchTestDirectory()
         let provider = ForbiddenProvider()
@@ -266,8 +274,21 @@ final class SearchAttemptAccountingTests: XCTestCase {
             progress: { recorder.append($0) }
         )
 
-        XCTAssertEqual(provider.callCount, 1)
-        XCTAssertEqual(recorder.latest?.searchCalls, 1)
+        // Discovery is concurrent, so up to `searchConcurrencyLimit` queries can
+        // reach a refusing provider before the first 403 is known. That bound is
+        // the contract: never more than one wave, and nothing after it. Making
+        // this exactly 1 would require serialising every first wave and costing
+        // every deep pass a round trip for a case that only arises when a
+        // provider is blocked.
+        XCTAssertLessThanOrEqual(
+            provider.callCount,
+            ResearchPipeline.searchConcurrencyLimit,
+            "A refused provider must not be hammered by the discovery wave."
+        )
+        XCTAssertLessThanOrEqual(
+            recorder.latest?.searchCalls ?? -1,
+            ResearchPipeline.searchConcurrencyLimit
+        )
     }
 
     func testForbiddenProviderIsNotRetriedEvenWhenAnotherSucceeds() async throws {
@@ -315,7 +336,13 @@ final class SearchAttemptAccountingTests: XCTestCase {
             progress: { _ in }
         )
 
-        XCTAssertEqual(forbidden.callCount, 1)
+        // Same bound as the single-provider case: the discovery wave is
+        // concurrent, so the refusing provider is reached at most once per
+        // in-flight query; the succeeding provider answers every query.
+        XCTAssertLessThanOrEqual(
+            forbidden.callCount,
+            ResearchPipeline.searchConcurrencyLimit
+        )
         XCTAssertEqual(success.callCount, DepthProfile.profile(for: .deep).queryCount)
     }
 
@@ -363,7 +390,11 @@ final class SearchAttemptAccountingTests: XCTestCase {
         let searchCalls = recorder.latest?.searchCalls ?? -1
         XCTAssertNotNil(execution.error)
         XCTAssertEqual(searchCalls, provider.callCount)
-        XCTAssertEqual(provider.callCount, DepthProfile.maxSearchHTTPCallsPerTask)
+        // Each query retries a 503 exactly once, so a deep plan of six queries
+        // dispatches twelve requests. Asserting the exact count is what catches
+        // double-charging; asserting it equals the ceiling only ever proved that
+        // the old limit happened to be reached.
+        XCTAssertEqual(provider.callCount, DepthProfile.profile(for: .deep).queryCount * 2)
         XCTAssertLessThanOrEqual(searchCalls, DepthProfile.maxSearchHTTPCallsPerTask)
     }
 }

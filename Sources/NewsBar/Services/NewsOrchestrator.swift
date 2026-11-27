@@ -1642,7 +1642,13 @@ final class NewsOrchestrator {
             .takeForceRefresh(recordID: record.id)
         let pipelineConfiguration = ResearchPipelineConfiguration(
             record: record,
-            depth: depth ?? storedDepth ?? settings.researchDepth,
+            // Automatic research runs unattended against a daily request cap,
+            // and deep now plans two rounds of searches. The policy caps that
+            // path at standard; a manual run keeps exactly what was asked for.
+            depth: ResearchDepthPolicy.effectiveDepth(
+                requested: depth ?? storedDepth ?? settings.researchDepth,
+                isAutomatic: isAutomaticRun
+            ),
             language: settings.appLanguage,
             trendContext: latestTrendSummary.context,
             defaultRecency: settings.researchDefaultRecency,

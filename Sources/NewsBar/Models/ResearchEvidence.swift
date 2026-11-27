@@ -39,12 +39,16 @@ struct EvidenceItem: Codable, Hashable, Sendable, Identifiable {
     /// Merge key for syndicated copies of the same article.
     let syndicationGroup: String?
     let fetchedAt: Date
+    /// Which reader question this quote answers. Nil for a report produced
+    /// before angle labelling existed, or for a fact the model could not place;
+    /// coverage then falls back to reading the claim.
+    var angle: ResearchAngle? = nil
 }
 
 extension EvidenceItem {
     enum CodingKeys: String, CodingKey {
         case id, url, canonicalURL, domain, title, publishedAt, quote
-        case quoteVerified, stance, tier, syndicationGroup, fetchedAt
+        case quoteVerified, stance, tier, syndicationGroup, fetchedAt, angle
     }
 
     init(from decoder: Decoder) throws {
@@ -79,6 +83,7 @@ extension EvidenceItem {
             ?? SourceTierCatalog.info(for: url).tier
         syndicationGroup = try container.decodeIfPresent(String.self, forKey: .syndicationGroup)
         fetchedAt = try container.decodeIfPresent(Date.self, forKey: .fetchedAt) ?? .distantPast
+        angle = try container.decodeIfPresent(ResearchAngle.self, forKey: .angle)
     }
 }
 

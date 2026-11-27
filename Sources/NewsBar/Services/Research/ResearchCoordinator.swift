@@ -246,6 +246,15 @@ final class ResearchCoordinator {
             + queue.filter { $0.trigger.isAutomatic }.count
     }
 
+    /// Number of explicitly requested jobs (user, workspace, CLI) that are
+    /// running or waiting. The agent bridge consults this before admitting a
+    /// new pass: `newsbarctl research start` can be called in a loop, and each
+    /// job spends real search and AI budget.
+    func activeManualRunCount() -> Int {
+        running.values.filter { !$0.trigger.isAutomatic }.count
+            + queue.filter { !$0.trigger.isAutomatic }.count
+    }
+
     /// Test and shutdown helper. Production never blocks on this.
     func waitForAll() async {
         while !running.isEmpty || !queue.isEmpty {
